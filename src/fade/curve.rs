@@ -53,9 +53,10 @@ mod tests {
 
     #[test]
     fn midpoint_is_linear_in_position_space() {
-        // -144 dB = pos 0.0, 0 dB = pos 0.75; midpoint pos = 0.375 → db at that pos
-        use crate::fade::fader_law::pos_to_db;
-        let expected = pos_to_db(0.375);
+        // Midpoint in position space should be derived from the measured fader law.
+        use crate::fade::fader_law::{db_to_pos, pos_to_db};
+        let expected_pos = db_to_pos(-144.0) + (db_to_pos(0.0) - db_to_pos(-144.0)) * 0.5;
+        let expected = pos_to_db(expected_pos);
         let v = interpolate(-144.0, 0.0, 0.5, FadeCurve::Linear);
         assert!((v - expected).abs() < 1e-10);
     }

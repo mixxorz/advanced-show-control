@@ -4,17 +4,18 @@
 //! Based on empirical analysis of the Waves LV1 fader response.
 
 /// Lookup table: (normalized_position, gain_db) knots, sorted by position ascending.
+/// Positions are derived from measured LV1 fader pixel distances over 516 px of travel.
 const KNOTS: &[(f64, f64)] = &[
-    (0.000, -144.0),
-    (0.050, -60.0),
-    (0.100, -50.0),
-    (0.300, -30.0),
-    (0.400, -20.0),
-    (0.500, -10.0),
-    (0.625, -5.0),
-    (0.750, 0.0),
-    (0.875, 5.0),
-    (1.000, 10.0),
+    (0.0 / 516.0, -144.0),
+    (29.0 / 516.0, -60.0),
+    (59.0 / 516.0, -50.0),
+    (151.0 / 516.0, -30.0),
+    (211.0 / 516.0, -20.0),
+    (272.0 / 516.0, -10.0),
+    (333.0 / 516.0, -5.0),
+    (394.0 / 516.0, 0.0),
+    (455.0 / 516.0, 5.0),
+    (516.0 / 516.0, 10.0),
 ];
 
 /// Convert a normalized fader position (0.0–1.0) to dB.
@@ -65,14 +66,15 @@ mod tests {
     }
 
     #[test]
-    fn pos_to_db_at_unity_is_0() {
-        assert!((pos_to_db(0.750) - 0.0).abs() < 1e-10);
+    fn pos_to_db_at_measured_unity_is_0() {
+        assert!((pos_to_db(394.0 / 516.0) - 0.0).abs() < 1e-10);
     }
 
     #[test]
     fn pos_to_db_midpoint_of_segment_is_midpoint_db() {
-        // Between (0.5, -10) and (0.625, -5): midpoint pos=0.5625 → db=-7.5
-        let v = pos_to_db(0.5625);
+        // Between measured -10 dB and -5 dB positions, midpoint maps to -7.5 dB.
+        let mid_pos = ((272.0 / 516.0) + (333.0 / 516.0)) / 2.0;
+        let v = pos_to_db(mid_pos);
         assert!((v - -7.5).abs() < 1e-10);
     }
 
@@ -86,9 +88,30 @@ mod tests {
         assert!((db_to_pos(10.0) - 1.0).abs() < 1e-10);
     }
 
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-6,
+            "expected {expected}, got {actual}"
+        );
+    }
+
     #[test]
-    fn db_to_pos_at_0_is_0_75() {
-        assert!((db_to_pos(0.0) - 0.750).abs() < 1e-10);
+    fn db_to_pos_uses_measured_pixel_law() {
+        assert_close(db_to_pos(-144.0), 0.0 / 516.0);
+        assert_close(db_to_pos(-60.0), 29.0 / 516.0);
+        assert_close(db_to_pos(-50.0), 59.0 / 516.0);
+        assert_close(db_to_pos(-30.0), 151.0 / 516.0);
+        assert_close(db_to_pos(-20.0), 211.0 / 516.0);
+        assert_close(db_to_pos(-10.0), 272.0 / 516.0);
+        assert_close(db_to_pos(-5.0), 333.0 / 516.0);
+        assert_close(db_to_pos(0.0), 394.0 / 516.0);
+        assert_close(db_to_pos(5.0), 455.0 / 516.0);
+        assert_close(db_to_pos(10.0), 516.0 / 516.0);
+    }
+
+    #[test]
+    fn db_to_pos_at_0_uses_measured_position() {
+        assert!((db_to_pos(0.0) - 394.0 / 516.0).abs() < 1e-10);
     }
 
     #[test]
