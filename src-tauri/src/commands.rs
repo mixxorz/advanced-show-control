@@ -1,7 +1,9 @@
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::lv1::discovery::resolve_target;
+use lv1_scene_fade_utility::lv1::state::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
-use tauri::{AppHandle, Emitter, State};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::app_state::{AppSnapshot, ShellState};
 
@@ -17,20 +19,23 @@ pub async fn set_lockout(
     enabled: bool,
 ) -> Result<AppSnapshot, String> {
     let snapshot = state.set_lockout(enabled).await;
-    emit_snapshot(&app, &snapshot)?;
+    emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 #[tauri::command]
-pub async fn disconnect_lv1(app: AppHandle, state: State<'_, ShellState>) -> Result<AppSnapshot, String> {
+pub async fn disconnect_lv1(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+) -> Result<AppSnapshot, String> {
     {
         let mut handles = state.handles.lock().await;
         handles.lv1 = None;
         handles.fade = None;
     }
 
-    let snapshot = state.clear_lv1_snapshot().await;
-    emit_snapshot(&app, &snapshot)?;
+    let snapshot = state.disconnect().await;
+    emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
@@ -73,24 +78,82 @@ pub async fn connect_lv1(
         handles.fade = Some(fade);
     }
 
-    let snapshot = state.replace_lv1_snapshot(initial_snapshot).await;
-    emit_snapshot(&app, &snapshot)?;
+    let (generation, snapshot) = state.begin_connection(initial_snapshot).await;
+    emit_snapshot(&app, &snapshot);
 
     let mut events = lv1.subscribe().await;
     let app_for_task = app.clone();
-    let state_for_task = state.inner().clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
-            let snapshot = state_for_task.apply_lv1_event(&event).await;
-            let _ = app_for_task.emit("lv1-event", format!("{:?}", event));
-            let _ = app_for_task.emit("app-status-changed", &snapshot);
+            let state_for_task = app_for_task.state::<ShellState>();
+            if let Some(snapshot) = state_for_task
+                .apply_lv1_event_for_generation(generation, &event)
+                .await
+            {
+                if let Err(err) = app_for_task.emit("lv1-event", &Lv1EventPayload::from(&event)) {
+                    eprintln!("failed to emit lv1-event: {err}");
+                }
+                if let Err(err) = app_for_task.emit("app-status-changed", &snapshot) {
+                    eprintln!("failed to emit app-status-changed: {err}");
+                }
+            }
         }
     });
 
     Ok(snapshot)
 }
 
-fn emit_snapshot(app: &AppHandle, snapshot: &AppSnapshot) -> Result<(), String> {
-    app.emit("app-status-changed", snapshot)
-        .map_err(|err| err.to_string())
+fn emit_snapshot(app: &AppHandle, snapshot: &AppSnapshot) {
+    if let Err(err) = app.emit("app-status-changed", snapshot) {
+        eprintln!("failed to emit app-status-changed: {err}");
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct Lv1EventPayload {
+    kind: String,
+    message: String,
+}
+
+impl From<&Lv1Event> for Lv1EventPayload {
+    fn from(event: &Lv1Event) -> Self {
+        match event {
+            Lv1Event::Connected => Self {
+                kind: "Connected".to_string(),
+                message: "LV1 connected".to_string(),
+            },
+            Lv1Event::Disconnected => Self {
+                kind: "Disconnected".to_string(),
+                message: "LV1 disconnected".to_string(),
+            },
+            Lv1Event::SceneChanged(scene) => Self {
+                kind: "SceneChanged".to_string(),
+                message: format!("scene changed to {}: {}", scene.index, scene.name),
+            },
+            Lv1Event::SceneListChanged(scenes) => Self {
+                kind: "SceneListChanged".to_string(),
+                message: format!("scene list updated: {} scenes", scenes.len()),
+            },
+            Lv1Event::FaderChanged {
+                group,
+                channel,
+                gain_db,
+            } => Self {
+                kind: "FaderChanged".to_string(),
+                message: format!("fader changed: group {group}, channel {channel}, gain {gain_db}"),
+            },
+            Lv1Event::MuteChanged {
+                group,
+                channel,
+                muted,
+            } => Self {
+                kind: "MuteChanged".to_string(),
+                message: format!("mute changed: group {group}, channel {channel}, muted {muted}"),
+            },
+            Lv1Event::ChannelTopologyChanged(channels) => Self {
+                kind: "ChannelTopologyChanged".to_string(),
+                message: format!("channel topology updated: {} channels", channels.len()),
+            },
+        }
+    }
 }

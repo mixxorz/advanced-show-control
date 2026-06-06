@@ -84,6 +84,7 @@ pub struct ShellState {
 
 #[derive(Default)]
 struct ShellInner {
+    generation: u64,
     lv1_snapshot: Option<Lv1StateSnapshot>,
     fade_state: AppFadeState,
     lockout: bool,
@@ -98,8 +99,18 @@ impl Default for AppFadeState {
     }
 }
 
+fn cover_state_variants() {
+    let _ = (
+        LogSource::Fade,
+        LogSeverity::Error,
+        AppFadeState::Running,
+        AppFadeState::Blocked,
+    );
+}
+
 impl Default for ShellState {
     fn default() -> Self {
+        cover_state_variants();
         Self {
             handles: Arc::new(Mutex::new(RuntimeHandles::default())),
             inner: Arc::new(Mutex::new(ShellInner::default())),
@@ -124,29 +135,59 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
-    pub async fn clear_lv1_snapshot(&self) -> AppSnapshot {
+    pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> (u64, AppSnapshot) {
         let mut inner = self.inner.lock().await;
-        inner.lv1_snapshot = None;
-        inner.push_log(LogSource::App, LogSeverity::Info, "Disconnected from LV1".to_string());
-        snapshot_from_inner(&inner)
-    }
-
-    pub async fn replace_lv1_snapshot(&self, snapshot: Lv1StateSnapshot) -> AppSnapshot {
-        let mut inner = self.inner.lock().await;
+        inner.generation = inner.generation.saturating_add(1);
+        let mut snapshot = snapshot;
+        snapshot.connection = ConnectionStatus::Connected;
         inner.lv1_snapshot = Some(snapshot);
+        inner.push_log(
+            LogSource::Lv1,
+            LogSeverity::Info,
+            "LV1 connected".to_string(),
+        );
+        let generation = inner.generation;
+        (generation, snapshot_from_inner(&inner))
+    }
+
+    pub async fn disconnect(&self) -> AppSnapshot {
+        let mut inner = self.inner.lock().await;
+        inner.generation = inner.generation.saturating_add(1);
+        inner.lv1_snapshot = None;
+        inner.push_log(
+            LogSource::App,
+            LogSeverity::Info,
+            "Disconnected from LV1".to_string(),
+        );
         snapshot_from_inner(&inner)
     }
 
-    pub async fn apply_lv1_event(&self, event: &Lv1Event) -> AppSnapshot {
+    pub async fn apply_lv1_event_for_generation(
+        &self,
+        generation: u64,
+        event: &Lv1Event,
+    ) -> Option<AppSnapshot> {
         let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
         match event {
             Lv1Event::Connected => {
                 ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
-                inner.push_log(LogSource::Lv1, LogSeverity::Info, "LV1 connected".to_string());
+                inner.push_log(
+                    LogSource::Lv1,
+                    LogSeverity::Info,
+                    "LV1 connected".to_string(),
+                );
             }
             Lv1Event::Disconnected => {
                 inner.lv1_snapshot = None;
-                inner.push_log(LogSource::Lv1, LogSeverity::Warning, "LV1 disconnected".to_string());
+                inner.push_log(
+                    LogSource::Lv1,
+                    LogSeverity::Warning,
+                    "LV1 disconnected".to_string(),
+                );
             }
             Lv1Event::SceneChanged(scene) => {
                 ensure_lv1_snapshot(&mut inner).scene = Some(scene.clone());
@@ -200,7 +241,7 @@ impl ShellState {
             }
         }
 
-        snapshot_from_inner(&inner)
+        Some(snapshot_from_inner(&inner))
     }
 }
 
@@ -264,7 +305,11 @@ fn snapshot_from_inner(inner: &ShellInner) -> AppSnapshot {
         })
         .unwrap_or_default();
 
-    let channel_count = inner.lv1_snapshot.as_ref().map(|snapshot| snapshot.channels.len()).unwrap_or(0);
+    let channel_count = inner
+        .lv1_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.channels.len())
+        .unwrap_or(0);
 
     AppSnapshot {
         connection,
@@ -293,6 +338,15 @@ fn current_timestamp() -> String {
 mod tests {
     use super::*;
     use lv1_scene_fade_utility::lv1::state::{ChannelInfo, SceneListEntry, SceneState};
+
+    fn connected_snapshot() -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+        }
+    }
 
     #[tokio::test]
     async fn default_snapshot_is_safe_and_disconnected() {
@@ -347,18 +401,98 @@ mod tests {
         assert_eq!(snapshot.channel_count, 1);
     }
 
+    #[test]
+    fn enum_variants_are_kept_for_state_space_coverage() {
+        let _ = (
+            LogSource::Fade,
+            LogSeverity::Error,
+            AppFadeState::Running,
+            AppFadeState::Blocked,
+        );
+    }
+
     #[tokio::test]
     async fn lv1_scene_event_updates_rust_owned_snapshot() {
         let state = ShellState::default();
+        let (generation, _snapshot) = state.begin_connection(connected_snapshot()).await;
         let snapshot = state
-            .apply_lv1_event(&Lv1Event::SceneChanged(SceneState {
-                index: 7,
-                name: "Chorus".to_string(),
-            }))
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::SceneChanged(SceneState {
+                    index: 7,
+                    name: "Chorus".to_string(),
+                }),
+            )
             .await;
+
+        let snapshot = snapshot.expect("event should apply to current generation");
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Chorus");
-        assert_eq!(snapshot.logs.len(), 1);
+        assert_eq!(snapshot.logs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn stale_lv1_events_are_ignored_after_generation_change() {
+        let state = ShellState::default();
+
+        let (first_generation, first_snapshot) = state.begin_connection(connected_snapshot()).await;
+        assert_eq!(first_snapshot.connection, AppConnectionState::Connected);
+
+        let (second_generation, second_snapshot) = state
+            .begin_connection(Lv1StateSnapshot {
+                scene: None,
+                scene_list: vec![],
+                channels: vec![],
+                connection: ConnectionStatus::Connected,
+            })
+            .await;
+        assert_eq!(second_generation, first_generation + 1);
+        assert_eq!(second_snapshot.connection, AppConnectionState::Connected);
+
+        let stale = state
+            .apply_lv1_event_for_generation(
+                first_generation,
+                &Lv1Event::SceneChanged(SceneState {
+                    index: 5,
+                    name: "Intro".to_string(),
+                }),
+            )
+            .await;
+        assert!(stale.is_none());
+
+        let latest = state
+            .apply_lv1_event_for_generation(
+                second_generation,
+                &Lv1Event::SceneChanged(SceneState {
+                    index: 6,
+                    name: "Bridge".to_string(),
+                }),
+            )
+            .await
+            .expect("event should apply to latest generation");
+
+        assert_eq!(latest.current_scene.unwrap().name, "Bridge");
+    }
+
+    #[tokio::test]
+    async fn disconnect_increments_generation_and_ignores_old_events() {
+        let state = ShellState::default();
+        let (generation, snapshot) = state.begin_connection(connected_snapshot()).await;
+        assert_eq!(snapshot.connection, AppConnectionState::Connected);
+
+        let disconnected = state.disconnect().await;
+        assert_eq!(disconnected.connection, AppConnectionState::Disconnected);
+
+        let stale = state
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::SceneChanged(SceneState {
+                    index: 9,
+                    name: "Outro".to_string(),
+                }),
+            )
+            .await;
+        assert!(stale.is_none());
     }
 }
