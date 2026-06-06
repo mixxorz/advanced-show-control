@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { disconnectedAppViewState, type AppViewState, type ChannelSummary, type SceneFadeConfig } from "./types";
@@ -205,6 +205,76 @@ function StatusBadge(props: { label: string; tone: "neutral" | "warning" | "good
   return <span className={`rounded-full border px-3 py-1 text-sm ${tone}`}>{props.label}</span>;
 }
 
+function DurationInput(props: {
+  sceneId: string;
+  durationMs: number;
+  setSceneDurationMs: (sceneId: string, durationMs: number) => void;
+}) {
+  const [draft, setDraft] = useState(formatDurationSeconds(props.durationMs));
+
+  useEffect(() => {
+    setDraft(formatDurationSeconds(props.durationMs));
+  }, [props.sceneId, props.durationMs]);
+
+  function resetDraft() {
+    setDraft(formatDurationSeconds(props.durationMs));
+  }
+
+  function commit() {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      resetDraft();
+      return;
+    }
+
+    const seconds = Number(trimmed);
+    if (!Number.isFinite(seconds)) {
+      resetDraft();
+      return;
+    }
+
+    const clamped = Math.min(120, Math.max(0.1, seconds));
+    const nextDurationMs = Math.round(clamped * 1000);
+    setDraft(formatDurationSeconds(nextDurationMs));
+
+    if (nextDurationMs !== props.durationMs) {
+      props.setSceneDurationMs(props.sceneId, nextDurationMs);
+    }
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commit();
+      event.currentTarget.blur();
+      return;
+    }
+
+    if (event.key === "Escape") {
+      event.preventDefault();
+      resetDraft();
+      event.currentTarget.blur();
+    }
+  }
+
+  return (
+    <label className="mt-4 flex w-full max-w-xs flex-col gap-1 text-sm text-slate-300">
+      Fade duration (seconds)
+      <input
+        className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+        max={120}
+        min={0.1}
+        onBlur={commit}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={handleKeyDown}
+        step={0.1}
+        type="number"
+        value={draft}
+      />
+    </label>
+  );
+}
+
 function ShowFileControls(props: {
   dirty: boolean;
   fileName: string;
@@ -394,23 +464,11 @@ function SceneTab(props: {
                 </button>
               </div>
             </div>
-            <label className="mt-4 flex w-full max-w-xs flex-col gap-1 text-sm text-slate-300">
-              Fade duration (seconds)
-              <input
-                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-                max={120}
-                min={0.1}
-                onChange={(event) => {
-                  const seconds = Number(event.target.value);
-                  if (Number.isFinite(seconds)) {
-                    props.setSceneDurationMs(selected.sceneId, Math.round(seconds * 1000));
-                  }
-                }}
-                step={0.1}
-                type="number"
-                value={(selected.durationMs / 1000).toFixed(1)}
-              />
-            </label>
+            <DurationInput
+              durationMs={selected.durationMs}
+              sceneId={selected.sceneId}
+              setSceneDurationMs={props.setSceneDurationMs}
+            />
 
             <FadeTargetTable
               channels={props.appState.channels}
@@ -495,6 +553,10 @@ function formatDb(value: number) {
 
 function channelName(channels: ChannelSummary[], group: number, channel: number) {
   return channels.find((entry) => entry.group === group && entry.channel === channel)?.name ?? "Unknown";
+}
+
+function formatDurationSeconds(durationMs: number) {
+  return (durationMs / 1000).toFixed(1);
 }
 
 function LogsTab({ appState }: { appState: AppViewState }) {
