@@ -1,6 +1,8 @@
 //! Waves LV1 custom /zDNS discovery.
 
 use crate::osc::{decode_packet, OscArg, OscError};
+use std::net::{Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 
 pub const MCAST_ADDR: &str = "225.1.1.1";
 pub const MCAST_PORT: u16 = 13337;
@@ -25,36 +27,31 @@ pub enum DiscoveryError {
 }
 
 fn ipv4_like(value: &str) -> bool {
-    let parts: Vec<_> = value.split('.').collect();
-    parts.len() == 4 && parts.iter().all(|part| part.parse::<u8>().is_ok())
+    Ipv4Addr::from_str(value).is_ok()
 }
 
 fn ipv6_like(value: &str) -> bool {
-    value.contains(':')
+    Ipv6Addr::from_str(value).is_ok()
 }
 
 pub fn rank_ip(ip: &str) -> i32 {
-    if ip.starts_with("127.") {
+    let Ok(ip) = Ipv4Addr::from_str(ip) else {
+        return 0;
+    };
+    let octets = ip.octets();
+
+    if octets[0] == 127 {
         -100
-    } else if ip.starts_with("169.254.") {
+    } else if octets[0] == 169 && octets[1] == 254 {
         -50
-    } else if ip.starts_with("192.168.56.") {
+    } else if octets[0] == 192 && octets[1] == 168 && octets[2] == 56 {
         20
-    } else if ip.starts_with("172.") {
-        let second = ip
-            .split('.')
-            .nth(1)
-            .and_then(|value| value.parse::<u8>().ok())
-            .unwrap_or(0);
-        if (16..=31).contains(&second) {
-            30
-        } else {
-            40
-        }
-    } else if ip.starts_with("192.168.") {
+    } else if octets[0] == 192 && octets[1] == 168 {
         100
-    } else if ip.starts_with("10.") {
+    } else if octets[0] == 10 {
         90
+    } else if octets[0] == 172 && (16..=31).contains(&octets[1]) {
+        80
     } else {
         40
     }
@@ -153,5 +150,35 @@ mod tests {
         assert!(rank_ip("192.168.1.10") > rank_ip("172.20.1.9"));
         assert!(rank_ip("10.0.0.4") > rank_ip("169.254.1.1"));
         assert!(rank_ip("127.0.0.1") < rank_ip("169.254.1.1"));
+    }
+
+    #[test]
+    fn ignores_invalid_address_like_strings() {
+        let packet = encode_message(
+            "/zDNS",
+            &[
+                OscArg::String("_waveslv113._tcp".to_string()),
+                OscArg::String("uuid-1".to_string()),
+                OscArg::String("lv1-host".to_string()),
+                OscArg::Int(50000),
+                OscArg::String("192.168.001.10".to_string()),
+                OscArg::String("lv1-host:control".to_string()),
+            ],
+        )
+        .unwrap();
+
+        let entry = parse_zdns_packet(&packet, "192.168.1.10").unwrap();
+
+        assert_eq!(entry.host.as_deref(), Some("lv1-host"));
+        assert!(entry.addresses.is_empty());
+        assert!(entry.ipv6.is_empty());
+    }
+
+    #[test]
+    fn ranks_private_172_addresses_above_public_addresses() {
+        assert!(rank_ip("172.16.0.1") > rank_ip("8.8.8.8"));
+        assert!(rank_ip("172.31.255.254") > rank_ip("8.8.8.8"));
+        assert!(rank_ip("172.15.255.255") <= rank_ip("8.8.8.8"));
+        assert!(rank_ip("172.32.0.1") <= rank_ip("8.8.8.8"));
     }
 }
