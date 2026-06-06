@@ -1,7 +1,8 @@
 use lv1_scene_fade_utility::lv1::state::{ChannelInfo, Lv1StateSnapshot, SceneListEntry};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::Write;
+use std::fs::OpenOptions;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
@@ -133,25 +134,17 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
         })?;
     }
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Show file path has no parent: {}", path.display()))?;
-    let temp_path = parent.join(format!(
-        ".{}.tmp-{}",
-        path.file_name().and_then(|n| n.to_str()).unwrap_or("show"),
-        current_timestamp()
-    ));
-
     let json = serde_json::to_string_pretty(file)
         .map_err(|err| format!("Failed to serialize show file {}: {err}", path.display()))?;
 
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("Show file path has no parent: {}", path.display()))?;
+    let timestamp = current_timestamp();
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("show");
+    let (temp_path, mut temp_file) = reserve_unique_temp_file(parent, file_name, &timestamp)?;
+
     let write_result = (|| -> Result<(), String> {
-        let mut temp_file = fs::File::create(&temp_path).map_err(|err| {
-            format!(
-                "Failed to create temp show file {}: {err}",
-                temp_path.display()
-            )
-        })?;
         temp_file
             .write_all(json.as_bytes())
             .and_then(|_| temp_file.sync_all())
@@ -161,6 +154,7 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
                     temp_path.display()
                 )
             })?;
+        drop(temp_file);
         fs::rename(&temp_path, path).map_err(|err| {
             format!(
                 "Failed to replace show file {} from {}: {err}",
@@ -193,27 +187,12 @@ pub fn backup_folder() -> PathBuf {
 }
 
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(backup_dir).map_err(|err| {
-        format!(
-            "Failed to create backup directory {}: {err}",
-            backup_dir.display()
-        )
-    })?;
-
-    let stem = path
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .unwrap_or("show");
     let timestamp = current_timestamp();
-    let mut candidate = backup_dir.join(format!("{timestamp}-{stem}.lv1show"));
-    let mut suffix = 1usize;
+    let (candidate, mut dest) = reserve_unique_backup_file(backup_dir, path, &timestamp)?;
+    let mut source = fs::File::open(path)
+        .map_err(|err| format!("Failed to open source show file {}: {err}", path.display()))?;
 
-    while candidate.exists() {
-        candidate = backup_dir.join(format!("{timestamp}-{stem}-{suffix}.lv1show"));
-        suffix += 1;
-    }
-
-    fs::copy(path, &candidate).map_err(|err| {
+    io::copy(&mut source, &mut dest).map_err(|err| {
         format!(
             "Failed to create backup {} from {}: {err}",
             candidate.display(),
@@ -221,7 +200,83 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
         )
     })?;
 
+    dest.sync_all().map_err(|err| {
+        format!(
+            "Failed to flush backup {} from {}: {err}",
+            candidate.display(),
+            path.display()
+        )
+    })?;
+
     Ok(())
+}
+
+fn reserve_unique_backup_file(
+    backup_dir: &Path,
+    source_path: &Path,
+    timestamp: &str,
+) -> Result<(PathBuf, fs::File), String> {
+    fs::create_dir_all(backup_dir).map_err(|err| {
+        format!(
+            "Failed to create backup directory {}: {err}",
+            backup_dir.display()
+        )
+    })?;
+
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("show");
+
+    reserve_unique_file(backup_dir, |suffix| {
+        if suffix == 0 {
+            format!("{timestamp}-{stem}.lv1show")
+        } else {
+            format!("{timestamp}-{stem}-{suffix}.lv1show")
+        }
+    })
+}
+
+fn reserve_unique_temp_file(
+    parent_dir: &Path,
+    file_name: &str,
+    timestamp: &str,
+) -> Result<(PathBuf, fs::File), String> {
+    reserve_unique_file(parent_dir, |suffix| {
+        if suffix == 0 {
+            format!(".{file_name}.tmp-{timestamp}")
+        } else {
+            format!(".{file_name}.tmp-{timestamp}-{suffix}")
+        }
+    })
+}
+
+fn reserve_unique_file<F>(
+    directory: &Path,
+    candidate_name: F,
+) -> Result<(PathBuf, fs::File), String>
+where
+    F: Fn(usize) -> String,
+{
+    for suffix in 0.. {
+        let candidate = directory.join(candidate_name(suffix));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(format!(
+                    "Failed to reserve file {}: {err}",
+                    candidate.display()
+                ));
+            }
+        }
+    }
+
+    unreachable!("suffix loop is unbounded")
 }
 
 fn current_timestamp() -> String {
@@ -327,6 +382,39 @@ mod tests {
 
         let backups = fs::read_dir(&backup_dir).unwrap().count();
         assert_eq!(backups, 1);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn reserve_unique_backup_file_adds_suffix_when_candidate_exists() {
+        let backup_dir = temp_test_dir("backup-path");
+        let candidate = backup_dir.join("123-test.lv1show");
+        fs::write(&candidate, "taken").unwrap();
+
+        let (path, _file) =
+            reserve_unique_backup_file(&backup_dir, Path::new("test.lv1show"), "123").unwrap();
+
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some("123-test-1.lv1show")
+        );
+
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn reserve_unique_temp_file_adds_suffix_when_candidate_exists() {
+        let temp_dir = temp_test_dir("temp-path");
+        let candidate = temp_dir.join(".test.lv1show.tmp-123");
+        fs::write(&candidate, "taken").unwrap();
+
+        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.lv1show", "123").unwrap();
+
+        assert_eq!(
+            path.file_name().and_then(|value| value.to_str()),
+            Some(".test.lv1show.tmp-123-1")
+        );
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

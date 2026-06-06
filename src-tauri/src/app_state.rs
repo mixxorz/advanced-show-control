@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use lv1_scene_fade_utility::lv1::state::{
@@ -137,7 +137,7 @@ struct ShellInner {
     scene_fade_configs: Vec<SceneFadeConfig>,
     selected_scene_id: Option<String>,
     listen_mode_active: bool,
-    show_file_path: Option<String>,
+    show_file_path: Option<PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
     unknown_fader_warnings: HashSet<(i32, i32)>,
@@ -263,7 +263,7 @@ impl ShellState {
         show_file_from_inner(&inner, saved_at)
     }
 
-    pub async fn current_show_file_path(&self) -> Option<String> {
+    pub async fn current_show_file_path(&self) -> Option<PathBuf> {
         let inner = self.inner.lock().await;
         inner.show_file_path.clone()
     }
@@ -299,7 +299,7 @@ impl ShellState {
         Ok(snapshot_from_inner(&inner))
     }
 
-    pub async fn mark_show_file_saved(&self, path: String, saved_at: String) -> AppViewState {
+    pub async fn mark_show_file_saved(&self, path: PathBuf, saved_at: String) -> AppViewState {
         let mut inner = self.inner.lock().await;
         inner.show_file_path = Some(path);
         inner.show_file_last_saved_at = Some(saved_at);
@@ -314,7 +314,7 @@ impl ShellState {
 
     pub async fn load_show_file_from_dto(
         &self,
-        path: String,
+        path: PathBuf,
         file: &mut ShowFile,
     ) -> Result<AppViewState, String> {
         let mut inner = self.inner.lock().await;
@@ -810,11 +810,14 @@ fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         show_file_name: inner
             .show_file_path
             .as_ref()
-            .and_then(|path| Path::new(path).file_name())
+            .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .map(|name| name.to_string())
             .unwrap_or_else(|| "Untitled Show".to_string()),
-        show_file_path: inner.show_file_path.clone(),
+        show_file_path: inner
+            .show_file_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned()),
         show_file_dirty: inner.show_file_dirty,
         show_file_last_saved_at: inner.show_file_last_saved_at.clone(),
         logs: inner.logs.iter().cloned().collect(),
@@ -1049,7 +1052,7 @@ mod tests {
     #[test]
     fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
         let mut inner = ShellInner::default();
-        inner.show_file_path = Some("/tmp/test.lv1show".to_string());
+        inner.show_file_path = Some(std::path::PathBuf::from("/tmp/test.lv1show"));
         inner.scene_fade_configs = vec![SceneFadeConfig {
             scene_id: "1::Intro".to_string(),
             scene_index: 1,
@@ -1166,7 +1169,7 @@ mod tests {
         {
             let mut inner = state.inner.lock().await;
             inner.scene_fade_configs[0].fade_enabled = true;
-            inner.show_file_path = Some("/tmp/existing.lv1show".to_string());
+            inner.show_file_path = Some(std::path::PathBuf::from("/tmp/existing.lv1show"));
             inner.show_file_last_saved_at = Some("123".to_string());
             inner.show_file_dirty = true;
             inner.lockout = true;
@@ -1184,6 +1187,18 @@ mod tests {
             snapshot.logs.last().unwrap().message,
             "New show file created"
         );
+    }
+
+    #[tokio::test]
+    async fn current_show_file_path_returns_pathbuf() {
+        let state = ShellState::default();
+        let path = std::path::PathBuf::from("/tmp/test.lv1show");
+
+        state
+            .mark_show_file_saved(path.clone(), "999".to_string())
+            .await;
+
+        assert_eq!(state.current_show_file_path().await, Some(path));
     }
 
     #[tokio::test]
@@ -1228,7 +1243,10 @@ mod tests {
         let state = ShellState::default();
 
         let snapshot = state
-            .mark_show_file_saved("/tmp/test.lv1show".to_string(), "999".to_string())
+            .mark_show_file_saved(
+                std::path::PathBuf::from("/tmp/test.lv1show"),
+                "999".to_string(),
+            )
             .await;
 
         assert_eq!(
@@ -1277,7 +1295,7 @@ mod tests {
         };
 
         let snapshot = state
-            .load_show_file_from_dto("/tmp/test.lv1show".to_string(), &mut file)
+            .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
             .await
             .unwrap();
 
@@ -1320,7 +1338,7 @@ mod tests {
         };
 
         state
-            .load_show_file_from_dto("/tmp/test.lv1show".to_string(), &mut file)
+            .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
             .await
             .unwrap();
 

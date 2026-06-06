@@ -3,6 +3,7 @@ use lv1_scene_fade_utility::lv1::discovery::resolve_target;
 use lv1_scene_fade_utility::lv1::state::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use serde::Serialize;
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::task::spawn_blocking;
 
@@ -42,9 +43,7 @@ pub async fn open_show_file_dialog(
     .ok_or_else(|| "Open show file cancelled".to_string())?;
 
     let mut file = read_show_file(&path)?;
-    let snapshot = state
-        .load_show_file_from_dto(path.display().to_string(), &mut file)
-        .await?;
+    let snapshot = state.load_show_file_from_dto(path, &mut file).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -118,7 +117,7 @@ pub async fn save_show_file(
     state: State<'_, ShellState>,
 ) -> Result<AppViewState, String> {
     if let Some(path) = state.current_show_file_path().await {
-        let snapshot = save_show_file_to_path(&state, path.into()).await?;
+        let snapshot = save_show_file_to_path(&state, path).await?;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     }
@@ -251,14 +250,12 @@ fn emit_snapshot(app: &AppHandle, snapshot: &AppViewState) {
 
 async fn save_show_file_to_path(
     state: &State<'_, ShellState>,
-    path: std::path::PathBuf,
+    path: PathBuf,
 ) -> Result<AppViewState, String> {
     let saved_at = current_timestamp_millis();
     let file = state.export_show_file(saved_at.clone()).await;
     write_show_file(&path, &file, &backup_folder())?;
-    Ok(state
-        .mark_show_file_saved(path.display().to_string(), saved_at)
-        .await)
+    Ok(state.mark_show_file_saved(path, saved_at).await)
 }
 
 fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
