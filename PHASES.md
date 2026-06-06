@@ -2,6 +2,25 @@
 
 This document outlines a practical phased plan for building a timed fader fade overlay app for Waves eMotion LV1 / LV1 Classic scene workflows.
 
+## Current Progress Checklist
+
+- [x] **Phase 0: Product Definition And Risk Framing** — product model, safety defaults, MVP direction, and Rust/Tauri direction are established in `PROJECT.md` and design notes.
+- [x] **Phase 1: LV1 Protocol Discovery Prototype** — discovery, TCP connection, MyFOH-style handshake, keepalive, message logging, fader set commands, rate testing, and hardware findings are implemented in the CLI/core.
+- [x] **Phase 2: Core State Mirror** — `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, events, reconnect behavior, and snapshots.
+- [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, final target send, abort, finish-now, replacement behavior, and manual override detection are implemented and tested.
+- [ ] **Phase 4: Capture Engine And Listen Mode** — not implemented yet. Listen Mode state machine, capture threshold behavior, captured target table, accidental-touch removal, and save handoff remain to build.
+- [ ] **Phase 5: Storage And Project Files** — not implemented yet. JSON project save/load, scene config validation, mismatch warnings, and backup/autosave remain to build.
+- [~] **Phase 6: MVP Desktop UI** — partially implemented ahead of Phases 4–5. A durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, and LV1 connection commands. Capture/save UI is still deferred.
+- [ ] **Phase 7: Scene Recall Automation** — not implemented yet. Automatic fade triggering on LV1 scene recall, scene matching, safety blocks, and overlap policy remain to build.
+- [ ] **Phase 8: HTTP And WebSocket Control API** — not implemented yet.
+- [ ] **Phase 9: Bitfocus Companion Integration** — not implemented yet.
+- [ ] **Phase 10: Beta Hardening** — not implemented yet.
+- [ ] **Phase 11: Polished Release Candidate** — not implemented yet.
+
+**Immediate Next Build Order:** finish Phase 4 capture workflow inside the new desktop shell, then Phase 5 storage, then Phase 7 recall automation.
+
+---
+
 ## Phase 0: Product Definition And Risk Framing
 
 **Goal:** Lock the app’s operating model before writing production code.
