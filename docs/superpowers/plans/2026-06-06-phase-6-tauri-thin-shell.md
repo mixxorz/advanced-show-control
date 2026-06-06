@@ -15,7 +15,7 @@
 | File | Status | Responsibility |
 |---|---|---|
 | `.gitignore` | Modify | Ignore visual companion scratch files and frontend build artifacts |
-| `Cargo.toml` | Modify | Add workspace members for root crate and `src-tauri` |
+| `Cargo.toml` | Modify | Add workspace members once `src-tauri` exists |
 | `package.json` | Create | Root npm scripts for frontend and Tauri commands |
 | `ui/package.json` | Create | Frontend package dependencies and scripts |
 | `ui/index.html` | Create | Vite HTML entry |
@@ -39,7 +39,6 @@
 
 **Files:**
 - Modify: `.gitignore`
-- Modify: `Cargo.toml`
 
 - [ ] **Step 1: Add ignored generated directories**
 
@@ -55,28 +54,16 @@ ui/dist/
 src-tauri/target/
 ```
 
-- [ ] **Step 2: Convert the Rust manifest to a workspace package**
-
-In `Cargo.toml`, add this workspace section after the `[package]` block:
-
-```toml
-[workspace]
-members = [".", "src-tauri"]
-resolver = "2"
-```
-
-Keep the existing `[package]`, `[lib]`, and `[dependencies]` sections unchanged.
-
-- [ ] **Step 3: Verify the current Rust tests still pass**
+- [ ] **Step 2: Verify the current Rust tests still pass**
 
 Run: `cargo test`
 
 Expected: all existing tests pass.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add .gitignore Cargo.toml Cargo.lock
+git add .gitignore
 git commit -m "chore: prepare workspace for tauri shell"
 ```
 
@@ -419,10 +406,22 @@ git commit -m "feat: scaffold react tauri shell ui"
 - Create: `src-tauri/build.rs`
 - Create: `src-tauri/src/main.rs`
 - Create: `src-tauri/src/app_state.rs`
+- Modify: `Cargo.toml`
 
 - [ ] **Step 1: Create Tauri crate manifest**
 
-Create `src-tauri/Cargo.toml`:
+In root `Cargo.toml`, add this workspace section after the `[package]` block:
+
+```toml
+[workspace]
+members = [".", "src-tauri"]
+resolver = "2"
+```
+
+Keep the existing `[package]`, `[lib]`, and `[dependencies]` sections unchanged.
+
+Then create `src-tauri/Cargo.toml`:
+
 
 ```toml
 [package]
