@@ -985,7 +985,6 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
 
                 if !state.is_active() {
                     tick_interval = None;
-                    fade_start = None;
                     state.fan_out(FadeEvent::FadeCompleted);
                 }
             }
@@ -1001,7 +1000,6 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
 
                                 if !state.is_active() {
                                     tick_interval = None;
-                                    fade_start = None;
                                 }
                             }
                         }
@@ -1010,7 +1008,6 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
-                            fade_start = None;
                             state.fan_out(FadeEvent::FadeAborted);
                         }
                     }
