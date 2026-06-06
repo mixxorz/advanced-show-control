@@ -258,9 +258,9 @@ impl ShellState {
         Ok(snapshot_from_inner(&inner))
     }
 
-    pub async fn export_show_file(&self) -> ShowFile {
+    pub async fn export_show_file(&self, saved_at: String) -> ShowFile {
         let inner = self.inner.lock().await;
-        show_file_from_inner(&inner)
+        show_file_from_inner(&inner, saved_at)
     }
 
     pub async fn load_show_file_from_dto(
@@ -286,6 +286,7 @@ impl ShellState {
             .iter()
             .map(scene_config_from_show_file)
             .collect();
+        inner.unknown_fader_warnings.clear();
         inner.selected_scene_id = inner
             .scene_fade_configs
             .first()
@@ -769,11 +770,11 @@ fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
     }
 }
 
-fn show_file_from_inner(inner: &ShellInner) -> ShowFile {
+fn show_file_from_inner(inner: &ShellInner, saved_at: String) -> ShowFile {
     ShowFile {
         schema_version: SHOW_FILE_SCHEMA_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
-        saved_at: current_timestamp(),
+        saved_at,
         safety: ShowFileSafety {
             lockout: inner.lockout,
         },
@@ -1092,10 +1093,11 @@ mod tests {
             .await
             .unwrap();
 
-        let file = state.export_show_file().await;
+        let file = state.export_show_file("saved".to_string()).await;
 
         assert_eq!(file.schema_version, 1);
         assert!(!file.safety.lockout);
+        assert_eq!(file.saved_at, "saved");
         assert_eq!(file.scene_fade_configs[0].scene_index, 1);
         assert_eq!(file.scene_fade_configs[0].duration_ms, 4000);
     }
@@ -1147,6 +1149,38 @@ mod tests {
         assert!(snapshot.logs.iter().any(|entry| {
             entry.message == "Deleted saved scene config during load: 2: Missing"
         }));
+    }
+
+    #[tokio::test]
+    async fn load_show_file_clears_unknown_fader_warnings() {
+        let state = ShellState::default();
+        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        {
+            let mut inner = state.inner.lock().await;
+            inner.unknown_fader_warnings.insert((0, 99));
+        }
+
+        let mut file = crate::show_file::ShowFile {
+            schema_version: 1,
+            app_version: "0.1.0".to_string(),
+            saved_at: "123".to_string(),
+            safety: crate::show_file::ShowFileSafety { lockout: false },
+            scene_fade_configs: vec![crate::show_file::ShowFileSceneFadeConfig {
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                fade_enabled: false,
+                duration_ms: 4000,
+                fade_targets: Vec::new(),
+            }],
+        };
+
+        state
+            .load_show_file_from_dto("/tmp/test.lv1show".to_string(), &mut file)
+            .await
+            .unwrap();
+
+        let inner = state.inner.lock().await;
+        assert!(inner.unknown_fader_warnings.is_empty());
     }
 
     #[test]
