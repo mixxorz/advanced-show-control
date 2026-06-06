@@ -1,18 +1,26 @@
-//! Fade curve interpolation.
+//! Fade curve interpolation in fader position space.
 
+use crate::fade::fader_law::{db_to_pos, pos_to_db};
+
+/// Fade curve — controls how the fader position moves over time.
+///
+/// "Linear" means linear in fader position (using the LV1 fader law),
+/// not linear in dB. This matches the perceptual feel of moving a physical fader.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FadeCurve {
-    LinearDb,
-    EaseInOutDb,
+    Linear,
 }
 
-pub fn interpolate(start_db: f64, target_db: f64, t: f64, curve: FadeCurve) -> f64 {
+/// Interpolate between `start_db` and `target_db` at normalized time `t` (0.0–1.0).
+///
+/// Interpolation happens in fader position space so that the movement feels
+/// linear from the fader's perspective rather than the dB scale.
+pub fn interpolate(start_db: f64, target_db: f64, t: f64, _curve: FadeCurve) -> f64 {
     let t = t.clamp(0.0, 1.0);
-    let t_shaped = match curve {
-        FadeCurve::LinearDb => t,
-        FadeCurve::EaseInOutDb => t * t * (3.0 - 2.0 * t),
-    };
-    start_db + (target_db - start_db) * t_shaped
+    let start_pos = db_to_pos(start_db);
+    let target_pos = db_to_pos(target_db);
+    let pos = start_pos + (target_pos - start_pos) * t;
+    pos_to_db(pos)
 }
 
 #[cfg(test)]
@@ -20,73 +28,68 @@ mod tests {
     use super::*;
 
     #[test]
-    fn linear_db_at_t0_returns_start() {
-        assert_eq!(interpolate(-20.0, -10.0, 0.0, FadeCurve::LinearDb), -20.0);
+    fn at_t0_returns_start() {
+        let v = interpolate(-20.0, -10.0, 0.0, FadeCurve::Linear);
+        assert!((v - -20.0).abs() < 1e-10);
     }
 
     #[test]
-    fn linear_db_at_t1_returns_target() {
-        assert_eq!(interpolate(-20.0, -10.0, 1.0, FadeCurve::LinearDb), -10.0);
+    fn at_t1_returns_target() {
+        let v = interpolate(-20.0, -10.0, 1.0, FadeCurve::Linear);
+        assert!((v - -10.0).abs() < 1e-10);
     }
 
     #[test]
-    fn linear_db_at_midpoint_is_halfway() {
-        let v = interpolate(-20.0, -10.0, 0.5, FadeCurve::LinearDb);
-        assert!((v - -15.0).abs() < 1e-10);
+    fn at_t0_with_wide_range_returns_start() {
+        let v = interpolate(-144.0, 0.0, 0.0, FadeCurve::Linear);
+        assert!((v - -144.0).abs() < 1e-10);
     }
 
     #[test]
-    fn ease_in_out_at_t0_returns_start() {
-        assert_eq!(interpolate(-20.0, -10.0, 0.0, FadeCurve::EaseInOutDb), -20.0);
+    fn at_t1_with_wide_range_returns_target() {
+        let v = interpolate(-144.0, 0.0, 1.0, FadeCurve::Linear);
+        assert!((v - 0.0).abs() < 1e-10);
     }
 
     #[test]
-    fn ease_in_out_at_t1_returns_target() {
-        assert_eq!(interpolate(-20.0, -10.0, 1.0, FadeCurve::EaseInOutDb), -10.0);
+    fn midpoint_is_linear_in_position_space() {
+        // -144 dB = pos 0.0, 0 dB = pos 0.75; midpoint pos = 0.375 → db at that pos
+        use crate::fade::fader_law::pos_to_db;
+        let expected = pos_to_db(0.375);
+        let v = interpolate(-144.0, 0.0, 0.5, FadeCurve::Linear);
+        assert!((v - expected).abs() < 1e-10);
     }
 
     #[test]
-    fn ease_in_out_at_midpoint_is_halfway() {
-        // smoothstep(0.5) = 0.5 * 0.5 * (3 - 2*0.5) = 0.25 * 2 = 0.5
-        let v = interpolate(-20.0, -10.0, 0.5, FadeCurve::EaseInOutDb);
-        assert!((v - -15.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn ease_in_out_has_slow_start() {
-        // At t=0.1, ease-in-out should be less than linear
-        let linear = interpolate(0.0, 1.0, 0.1, FadeCurve::LinearDb);
-        let eased = interpolate(0.0, 1.0, 0.1, FadeCurve::EaseInOutDb);
-        assert!(eased < linear);
-    }
-
-    #[test]
-    fn ease_in_out_has_slow_end() {
-        // At t=0.9, ease-in-out should be greater than linear (closer to target)
-        let linear = interpolate(0.0, 1.0, 0.9, FadeCurve::LinearDb);
-        let eased = interpolate(0.0, 1.0, 0.9, FadeCurve::EaseInOutDb);
-        assert!(eased > linear);
+    fn midpoint_is_not_midpoint_in_db_space() {
+        // Confirms fader-law interpolation differs from dB interpolation for wide ranges
+        let fader_mid = interpolate(-144.0, 0.0, 0.5, FadeCurve::Linear);
+        let db_mid = -72.0; // naive dB midpoint
+        assert!((fader_mid - db_mid).abs() > 1.0);
     }
 
     #[test]
     fn clamps_t_below_zero() {
-        assert_eq!(interpolate(-20.0, -10.0, -1.0, FadeCurve::LinearDb), -20.0);
+        let v = interpolate(-20.0, -10.0, -1.0, FadeCurve::Linear);
+        assert!((v - -20.0).abs() < 1e-10);
     }
 
     #[test]
     fn clamps_t_above_one() {
-        assert_eq!(interpolate(-20.0, -10.0, 2.0, FadeCurve::LinearDb), -10.0);
+        let v = interpolate(-20.0, -10.0, 2.0, FadeCurve::Linear);
+        assert!((v - -10.0).abs() < 1e-10);
     }
 
     #[test]
     fn works_with_fade_up() {
-        let v = interpolate(-30.0, -10.0, 0.5, FadeCurve::LinearDb);
-        assert!((v - -20.0).abs() < 1e-10);
+        let v = interpolate(-30.0, -10.0, 0.5, FadeCurve::Linear);
+        // Should be between start and target
+        assert!(v > -30.0 && v < -10.0);
     }
 
     #[test]
     fn works_with_fade_down() {
-        let v = interpolate(-10.0, -30.0, 0.5, FadeCurve::LinearDb);
-        assert!((v - -20.0).abs() < 1e-10);
+        let v = interpolate(-10.0, -30.0, 0.5, FadeCurve::Linear);
+        assert!(v > -30.0 && v < -10.0);
     }
 }

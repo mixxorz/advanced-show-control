@@ -4,11 +4,15 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::fade::curve::{FadeCurve, interpolate};
+use crate::fade::fader_law::db_to_pos;
 use crate::lv1::state::Lv1ActorHandle;
 
 pub const TICK_HZ: u64 = 25;
-pub const MIN_SEND_DELTA_DB: f64 = 0.1;
-pub const OVERRIDE_THRESHOLD_DB: f64 = 0.5;
+/// Minimum fader position change (0.0–1.0) required to send a SetGain command.
+pub const MIN_SEND_DELTA_POS: f64 = 0.002;
+/// Fader position deviation (0.0–1.0) required to declare a manual override.
+/// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
+pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -53,14 +57,11 @@ pub(crate) struct ActiveChannel {
     pub channel: i32,
     pub start_db: f64,
     pub target_db: f64,
+    /// Last dB value sent — for override detection and min-delta suppression.
     pub expected_db: f64,
     pub curve: FadeCurve,
     pub duration: Duration,
     pub started_at: Instant,
-    /// Override threshold for this channel — at least OVERRIDE_THRESHOLD_DB,
-    /// but widened to 1.5x the per-tick step size so hardware quantization
-    /// echoes at extreme gain levels (e.g. -144 dB) don't trigger false overrides.
-    pub override_threshold_db: f64,
 }
 
 impl ActiveChannel {
@@ -73,10 +74,6 @@ impl ActiveChannel {
         duration: Duration,
         started_at: Instant,
     ) -> Self {
-        let total_db = (target_db - start_db).abs();
-        let ticks = (duration.as_secs_f64() * TICK_HZ as f64).max(1.0);
-        let step_db = total_db / ticks;
-        let override_threshold_db = OVERRIDE_THRESHOLD_DB.max(step_db * 1.5);
         Self {
             group,
             channel,
@@ -86,7 +83,6 @@ impl ActiveChannel {
             curve,
             duration,
             started_at,
-            override_threshold_db,
         }
     }
 
@@ -102,12 +98,17 @@ impl ActiveChannel {
         now.duration_since(self.started_at) >= self.duration
     }
 
-    /// Returns true if `reported` deviates from `expected_db` by >= threshold.
+    /// Returns true if `reported_db` deviates from `expected_db` by more than
+    /// OVERRIDE_THRESHOLD_POS in fader position space. Using position space means
+    /// the threshold is proportionally tighter at loud levels and wider at quiet
+    /// levels, matching the physical fader resolution.
     pub(crate) fn is_override(&self, reported_db: f64) -> bool {
-        (reported_db - self.expected_db).abs() >= self.override_threshold_db
+        let reported_pos = db_to_pos(reported_db);
+        let expected_pos = db_to_pos(self.expected_db);
+        (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
     }
 
-    /// Returns Some(new_db) if the value has moved enough to warrant sending.
+    /// Returns Some(new_db) if the fader position has moved enough to warrant sending.
     pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
         let new_db = if self.is_done(now) {
             self.target_db
@@ -115,7 +116,9 @@ impl ActiveChannel {
             self.value_at(now)
         };
 
-        if (new_db - self.expected_db).abs() >= MIN_SEND_DELTA_DB {
+        let new_pos = db_to_pos(new_db);
+        let expected_pos = db_to_pos(self.expected_db);
+        if (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS {
             self.expected_db = new_db;
             Some(new_db)
         } else {
@@ -317,7 +320,7 @@ mod tests {
     fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
         ActiveChannel::new(
             0, 0, start_db, target_db,
-            FadeCurve::LinearDb,
+            FadeCurve::Linear,
             Duration::from_millis(duration_ms),
             Instant::now(),
         )
@@ -353,30 +356,37 @@ mod tests {
     }
 
     #[test]
-    fn is_override_true_when_deviation_exceeds_threshold() {
-        // Small fade: step = 10/100 = 0.1 dB/tick, threshold = max(0.5, 0.15) = 0.5 dB
+    fn is_override_true_when_position_deviation_exceeds_threshold() {
+        use crate::fade::fader_law::{db_to_pos, pos_to_db};
         let ch = make_channel(-20.0, -10.0, 4000);
-        assert!(ch.is_override(-20.0 + ch.override_threshold_db + 0.1));
+        // expected_db = start_db = -20.0; compute a reported_db far enough in position space
+        let expected_pos = db_to_pos(-20.0);
+        let over_pos = expected_pos + OVERRIDE_THRESHOLD_POS + 0.001;
+        let reported_db = pos_to_db(over_pos);
+        assert!(ch.is_override(reported_db));
     }
 
     #[test]
-    fn is_override_false_when_deviation_below_threshold() {
-        // Small fade: threshold = 0.5 dB
+    fn is_override_false_when_position_deviation_below_threshold() {
+        use crate::fade::fader_law::{db_to_pos, pos_to_db};
         let ch = make_channel(-20.0, -10.0, 4000);
-        assert!(!ch.is_override(-20.0 + ch.override_threshold_db - 0.1));
+        let expected_pos = db_to_pos(-20.0);
+        let under_pos = expected_pos + OVERRIDE_THRESHOLD_POS - 0.001;
+        let reported_db = pos_to_db(under_pos);
+        assert!(!ch.is_override(reported_db));
     }
 
     #[test]
-    fn override_threshold_widens_for_large_range_fade() {
-        // -144 → 0 over 4s: step = 144 / (4*25) = 1.44 dB/tick, threshold = max(0.5, 2.16) = 2.16 dB
+    fn override_uses_position_space_so_wide_range_is_not_false_positive() {
+        use crate::fade::fader_law::db_to_pos;
         let ch = make_channel(-144.0, 0.0, 4000);
-        let expected_step = 144.0 / (4.0 * TICK_HZ as f64);
-        let expected_threshold = OVERRIDE_THRESHOLD_DB.max(expected_step * 1.5);
-        assert!((ch.override_threshold_db - expected_threshold).abs() < 1e-10);
-        // A 1.5 dB echo deviation should NOT trigger override (within threshold)
-        assert!(!ch.is_override(-144.0 + 1.5));
-        // A 3.0 dB deviation SHOULD trigger override
-        assert!(ch.is_override(-144.0 + expected_threshold + 0.1));
+        // At -144 dB, the fader law maps large dB gaps to small position gaps.
+        // A 5 dB deviation near the bottom should NOT be an override in position space.
+        let reported_db = -139.0; // 5 dB above start
+        let pos_deviation = (db_to_pos(reported_db) - db_to_pos(-144.0)).abs();
+        // Verify position deviation is well below threshold
+        assert!(pos_deviation < OVERRIDE_THRESHOLD_POS);
+        assert!(!ch.is_override(reported_db));
     }
 
     #[test]
@@ -390,7 +400,7 @@ mod tests {
     #[test]
     fn next_send_returns_some_when_above_min_delta() {
         let mut ch = make_channel(-20.0, -10.0, 4000);
-        // At t=1.0 (end), value is -10.0, delta from -20.0 is 10.0 >= 0.1
+        // At t=1.0 (end), value is -10.0; position delta from -20→-10 is well above MIN_SEND_DELTA_POS
         let end = ch.started_at + Duration::from_millis(4000);
         let result = ch.next_send(end);
         assert!(result.is_some());
@@ -469,7 +479,7 @@ mod tests {
         engine.start_fade(FadeConfig {
             targets: vec![FadeTarget { group: 0, channel: 0, target_db: -10.0 }],
             duration_ms: 500,
-            curve: FadeCurve::LinearDb,
+            curve: FadeCurve::Linear,
         }).await;
 
         wait_for_fade_event(
@@ -515,7 +525,7 @@ mod tests {
         engine.start_fade(FadeConfig {
             targets: vec![FadeTarget { group: 0, channel: 0, target_db: -30.0 }],
             duration_ms: 10_000,
-            curve: FadeCurve::LinearDb,
+            curve: FadeCurve::Linear,
         }).await;
 
         wait_for_fade_event(
@@ -571,7 +581,7 @@ mod tests {
         engine.start_fade(FadeConfig {
             targets: vec![FadeTarget { group: 0, channel: 0, target_db: -20.0 }],
             duration_ms: 10_000,
-            curve: FadeCurve::LinearDb,
+            curve: FadeCurve::Linear,
         }).await;
 
         wait_for_fade_event(
@@ -618,7 +628,7 @@ mod tests {
         engine.start_fade(FadeConfig {
             targets: vec![FadeTarget { group: 0, channel: 0, target_db: -30.0 }],
             duration_ms: 30_000,
-            curve: FadeCurve::LinearDb,
+            curve: FadeCurve::Linear,
         }).await;
 
         wait_for_fade_event(
@@ -631,7 +641,7 @@ mod tests {
         engine.start_fade(FadeConfig {
             targets: vec![FadeTarget { group: 0, channel: 0, target_db: -10.0 }],
             duration_ms: 500,
-            curve: FadeCurve::LinearDb,
+            curve: FadeCurve::Linear,
         }).await;
 
         // Should get another FadeStarted (for the second fade)

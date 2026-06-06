@@ -8,8 +8,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum CurveArg {
-    LinearDb,
-    EaseInOutDb,
+    Linear,
 }
 
 #[derive(Debug, Parser)]
@@ -101,7 +100,7 @@ enum Command {
         target_db: f64,
         #[arg(long, default_value_t = 4000)]
         duration_ms: u64,
-        #[arg(long, value_enum, default_value_t = CurveArg::LinearDb)]
+        #[arg(long, value_enum, default_value_t = CurveArg::Linear)]
         curve: CurveArg,
     },
 }
@@ -416,8 +415,7 @@ fn run_fade_test(
     eprintln!("connecting to {host}:{port}");
 
     let fade_curve = match curve {
-        CurveArg::LinearDb => FadeCurve::LinearDb,
-        CurveArg::EaseInOutDb => FadeCurve::EaseInOutDb,
+        CurveArg::Linear => FadeCurve::Linear,
     };
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -624,7 +622,7 @@ mod tests {
             "--channel", "2",
             "--target-db", "-20.0",
             "--duration-ms", "3000",
-            "--curve", "linear-db",
+            "--curve", "linear",
         ]).unwrap();
 
         match cli.command {
@@ -635,7 +633,7 @@ mod tests {
                 assert_eq!(channel, 2);
                 assert!((target_db - -20.0).abs() < 1e-10);
                 assert_eq!(duration_ms, 3000);
-                assert!(matches!(curve, CurveArg::LinearDb));
+                assert!(matches!(curve, CurveArg::Linear));
             }
             other => panic!("expected FadeTest, got {other:?}"),
         }
