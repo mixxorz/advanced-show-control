@@ -67,7 +67,9 @@ enum Command {
         #[arg(long, default_value_t = 6000)]
         timeout_ms: u64,
     },
-    #[command(about = "Send repeated gain commands on a single connection and report echo rate and latency")]
+    #[command(
+        about = "Send repeated gain commands on a single connection and report echo rate and latency"
+    )]
     RateTest {
         #[arg(long)]
         host: Option<String>,
@@ -163,7 +165,19 @@ async fn main() -> AppResult<()> {
             target_db,
             duration_ms,
             curve,
-        } => run_fade_test(host, port, timeout_ms, group, channel, target_db, duration_ms, curve).await,
+        } => {
+            run_fade_test(
+                host,
+                port,
+                timeout_ms,
+                group,
+                channel,
+                target_db,
+                duration_ms,
+                curve,
+            )
+            .await
+        }
         Command::Vegas {
             host,
             port,
@@ -182,11 +196,7 @@ where
     Cli::try_parse_from(args)
 }
 
-fn run_discover(
-    timeout_ms: u64,
-    filter_host: Option<String>,
-    json: bool,
-) -> AppResult<()> {
+fn run_discover(timeout_ms: u64, filter_host: Option<String>, json: bool) -> AppResult<()> {
     let entries = discover(DiscoverOptions {
         timeout: Duration::from_millis(timeout_ms),
         filter_host_ip: filter_host,
@@ -218,7 +228,9 @@ async fn run_listen(
     let mut logger = JsonlLogger::create(&log_path)?;
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     let mut client = Lv1TcpClient::connect(&host, port).await?;
-    client.register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string()).await?;
+    client
+        .register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string())
+        .await?;
     eprintln!("listening on {host}:{port}; writing {}", log_path.display());
 
     loop {
@@ -267,15 +279,19 @@ async fn run_set_gain(
 ) -> AppResult<()> {
     let (host, port) = resolve_target(host, port, 6000)?;
     let mut client = Lv1TcpClient::connect(&host, port).await?;
-    client.register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string()).await?;
-    client.send(
-        "/Set/Track/Out/Gain",
-        &[
-            OscArg::Int(group),
-            OscArg::Int(channel),
-            OscArg::Double(gain_db),
-        ],
-    ).await?;
+    client
+        .register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string())
+        .await?;
+    client
+        .send(
+            "/Set/Track/Out/Gain",
+            &[
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(gain_db),
+            ],
+        )
+        .await?;
 
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
@@ -290,11 +306,7 @@ async fn run_set_gain(
     Ok(())
 }
 
-async fn run_monitor(
-    host: Option<String>,
-    port: Option<u16>,
-    timeout_ms: u64,
-) -> AppResult<()> {
+async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
     use lv1_scene_fade_utility::lv1::state::{Lv1Event, spawn_actor};
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
@@ -316,10 +328,18 @@ async fn run_monitor(
                     println!("  [{}] {:?}", entry.index, entry.name);
                 }
             }
-            Lv1Event::FaderChanged { group, channel, gain_db } => {
+            Lv1Event::FaderChanged {
+                group,
+                channel,
+                gain_db,
+            } => {
                 println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
             }
-            Lv1Event::MuteChanged { group, channel, muted } => {
+            Lv1Event::MuteChanged {
+                group,
+                channel,
+                muted,
+            } => {
                 println!("[mute] group={group} ch={channel} muted={muted}");
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
@@ -344,13 +364,25 @@ async fn run_rate_test(
 ) -> AppResult<()> {
     let (host, port) = resolve_target(host, port, 6000)?;
     let mut client = Lv1TcpClient::connect(&host, port).await?;
-    client.register_myfoh("lv1-rate-test", &uuid::Uuid::new_v4().to_string()).await?;
+    client
+        .register_myfoh("lv1-rate-test", &uuid::Uuid::new_v4().to_string())
+        .await?;
 
     let interval = Duration::from_micros(1_000_000 / rate_hz);
-    let step = if count > 1 { (end_db - start_db) / (count - 1) as f64 } else { 0.0 };
+    let step = if count > 1 {
+        (end_db - start_db) / (count - 1) as f64
+    } else {
+        0.0
+    };
 
-    eprintln!("rate-test: group={group} ch={channel} {count} cmds @ {rate_hz} Hz ({start_db:.1}→{end_db:.1} dB)");
-    eprintln!("interval={:.1}ms  step={:.3} dB", interval.as_millis() as f64, step);
+    eprintln!(
+        "rate-test: group={group} ch={channel} {count} cmds @ {rate_hz} Hz ({start_db:.1}→{end_db:.1} dB)"
+    );
+    eprintln!(
+        "interval={:.1}ms  step={:.3} dB",
+        interval.as_millis() as f64,
+        step
+    );
 
     let mut sent_times: Vec<Instant> = Vec::with_capacity(count as usize);
     let mut echo_times: Vec<(usize, Instant)> = Vec::new();
@@ -358,10 +390,16 @@ async fn run_rate_test(
     for i in 0..count {
         let gain_db = start_db + i as f64 * step;
         let t = Instant::now();
-        client.send(
-            "/Set/Track/Out/Gain",
-            &[OscArg::Int(group), OscArg::Int(channel), OscArg::Double(gain_db)],
-        ).await?;
+        client
+            .send(
+                "/Set/Track/Out/Gain",
+                &[
+                    OscArg::Int(group),
+                    OscArg::Int(channel),
+                    OscArg::Double(gain_db),
+                ],
+            )
+            .await?;
         sent_times.push(t);
 
         // Drain any frames that arrived since last send
@@ -406,7 +444,10 @@ async fn run_rate_test(
             .collect();
         let avg = latencies_ms.iter().sum::<f64>() / latencies_ms.len() as f64;
         let min = latencies_ms.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max = latencies_ms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let max = latencies_ms
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         println!("Echo latency: avg={avg:.1}ms  min={min:.1}ms  max={max:.1}ms");
     }
 
@@ -448,34 +489,57 @@ async fn run_fade_test(
                 break;
             }
         }
-    }).await.map_err(|_| "timed out waiting for LV1 connection")?;
+    })
+    .await
+    .map_err(|_| "timed out waiting for LV1 connection")?;
 
     // Wait briefly for /Channels to arrive
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let snapshot = lv1.get_state().await;
-    let current_db = snapshot.channels.iter()
+    let current_db = snapshot
+        .channels
+        .iter()
         .find(|ch| ch.group == group && ch.channel == channel)
         .map(|ch| ch.gain_db);
 
     match current_db {
-        Some(db) => println!("[current] group={group} ch={channel} {db:.1} dB → {target_db:.1} dB over {duration_ms}ms {:?}", fade_curve),
-        None => println!("[warning] channel group={group} ch={channel} not found in snapshot — fade will start from target"),
+        Some(db) => println!(
+            "[current] group={group} ch={channel} {db:.1} dB → {target_db:.1} dB over {duration_ms}ms {:?}",
+            fade_curve
+        ),
+        None => println!(
+            "[warning] channel group={group} ch={channel} not found in snapshot — fade will start from target"
+        ),
     }
 
-    engine.start_fade(FadeConfig {
-        targets: vec![FadeTarget { group, channel, target_db }],
-        duration_ms,
-        curve: fade_curve,
-    }).await;
+    engine
+        .start_fade(FadeConfig {
+            targets: vec![FadeTarget {
+                group,
+                channel,
+                target_db,
+            }],
+            duration_ms,
+            curve: fade_curve,
+        })
+        .await;
 
     loop {
         match fade_events.recv().await {
             Some(FadeEvent::FadeStarted) => println!("[fade-started]"),
-            Some(FadeEvent::FadeCompleted) => { println!("[fade-complete] reached {target_db:.1} dB"); break; }
-            Some(FadeEvent::FadeAborted) => { println!("[fade-aborted]"); break; }
+            Some(FadeEvent::FadeCompleted) => {
+                println!("[fade-complete] reached {target_db:.1} dB");
+                break;
+            }
+            Some(FadeEvent::FadeAborted) => {
+                println!("[fade-aborted]");
+                break;
+            }
             Some(FadeEvent::ChannelOverride { group, channel }) => {
-                println!("[override] group={group} ch={channel} — manual move detected, channel cancelled");
+                println!(
+                    "[override] group={group} ch={channel} — manual move detected, channel cancelled"
+                );
             }
             Some(FadeEvent::ChannelCancelled { group, channel }) => {
                 println!("[cancelled] group={group} ch={channel}");
@@ -487,12 +551,83 @@ async fn run_fade_test(
     Ok(())
 }
 
-async fn run_vegas(
-    _host: Option<String>,
-    _port: Option<u16>,
-    _timeout_ms: u64,
-) -> AppResult<()> {
-    Err("vegas command is not implemented yet".into())
+async fn wait_for_channels(
+    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    timeout_ms: u64,
+) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        let snapshot = lv1.get_state().await;
+        if !snapshot.channels.is_empty() {
+            return Ok(snapshot.channels);
+        }
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for LV1 channel snapshot".into());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
+    use lv1_scene_fade_utility::lv1::state::{ChannelInfo, Lv1Event, spawn_actor};
+    use lv1_scene_fade_utility::vegas::gain_db_at;
+
+    const VEGAS_TICK_HZ: u64 = 25;
+
+    let (host, port) = resolve_target(host, port, timeout_ms)?;
+    eprintln!("connecting to {host}:{port}");
+
+    let lv1 = spawn_actor(host.clone(), port);
+    let mut events = lv1.subscribe().await;
+
+    tokio::time::timeout(Duration::from_millis(timeout_ms), async {
+        while let Some(e) = events.recv().await {
+            if matches!(e, Lv1Event::Connected) {
+                println!("[connected] {host}:{port}");
+                break;
+            }
+        }
+    })
+    .await
+    .map_err(|_| "timed out waiting for LV1 connection")?;
+
+    let mut original: Vec<ChannelInfo> = wait_for_channels(&lv1, timeout_ms).await?;
+    original.sort_by_key(|ch| (ch.group, ch.channel));
+    println!("[vegas] captured {} faders", original.len());
+
+    for ch in &original {
+        lv1.set_mute(ch.group, ch.channel, true).await;
+    }
+    println!("[vegas] muted captured faders; press Ctrl-C to stop and restore");
+
+    let mut interval = tokio::time::interval(Duration::from_millis(1000 / VEGAS_TICK_HZ));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut tick = 0_u64;
+
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                println!("[vegas] stopping; restoring captured faders");
+                break;
+            }
+            _ = interval.tick() => {
+                for ch in &original {
+                    lv1.set_gain(ch.group, ch.channel, gain_db_at(ch.group, ch.channel, tick)).await;
+                }
+                tick = tick.wrapping_add(1);
+            }
+        }
+    }
+
+    for ch in &original {
+        lv1.set_gain(ch.group, ch.channel, ch.gain_db).await;
+    }
+    for ch in &original {
+        lv1.set_mute(ch.group, ch.channel, ch.muted).await;
+    }
+
+    println!("[vegas] restore commands sent");
+    Ok(())
 }
 
 fn unix_timestamp_secs() -> u64 {
@@ -505,6 +640,9 @@ fn unix_timestamp_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::time::Duration;
 
     use super::*;
 
@@ -622,7 +760,11 @@ mod tests {
         .unwrap();
 
         match cli.command {
-            Command::Monitor { host, port, timeout_ms } => {
+            Command::Monitor {
+                host,
+                port,
+                timeout_ms,
+            } => {
                 assert_eq!(host.as_deref(), Some("192.168.1.10"));
                 assert_eq!(port, Some(50000));
                 assert_eq!(timeout_ms, 3000);
@@ -636,17 +778,34 @@ mod tests {
         let cli = Cli::try_parse_from([
             "lv1-probe",
             "fade-test",
-            "--host", "192.168.1.10",
-            "--port", "50001",
-            "--group", "0",
-            "--channel", "2",
-            "--target-db", "-20.0",
-            "--duration-ms", "3000",
-            "--curve", "linear",
-        ]).unwrap();
+            "--host",
+            "192.168.1.10",
+            "--port",
+            "50001",
+            "--group",
+            "0",
+            "--channel",
+            "2",
+            "--target-db",
+            "-20.0",
+            "--duration-ms",
+            "3000",
+            "--curve",
+            "linear",
+        ])
+        .unwrap();
 
         match cli.command {
-            Command::FadeTest { host, port, group, channel, target_db, duration_ms, curve, .. } => {
+            Command::FadeTest {
+                host,
+                port,
+                group,
+                channel,
+                target_db,
+                duration_ms,
+                curve,
+                ..
+            } => {
                 assert_eq!(host.as_deref(), Some("192.168.1.10"));
                 assert_eq!(port, Some(50001));
                 assert_eq!(group, 0);
@@ -686,13 +845,55 @@ mod tests {
             other => panic!("expected Vegas, got {other:?}"),
         }
 
-        let err = Cli::try_parse_from([
-            "lv1-probe",
-            "vegas",
-            "--group",
-            "0",
-        ])
-        .unwrap_err();
+        let err = Cli::try_parse_from(["lv1-probe", "vegas", "--group", "0"]).unwrap_err();
         assert!(err.to_string().contains("unexpected argument '--group'"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_channels_returns_snapshot_after_channels_arrive() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(150));
+
+            let mut args = vec![lv1_scene_fade_utility::osc::OscArg::Int(1)];
+            args.push(lv1_scene_fade_utility::osc::OscArg::String(
+                "Channel 1".to_string(),
+            ));
+            args.push(lv1_scene_fade_utility::osc::OscArg::Int(0));
+            args.push(lv1_scene_fade_utility::osc::OscArg::Int(0));
+            args.push(lv1_scene_fade_utility::osc::OscArg::Double(-9.1));
+            for _ in 0..15 {
+                args.push(lv1_scene_fade_utility::osc::OscArg::Int(0));
+            }
+
+            let frame = lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &args).unwrap();
+            stream.write_all(&frame).unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+        });
+
+        let handle = lv1_scene_fade_utility::lv1::state::spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(event) = events.recv().await {
+                if matches!(
+                    event,
+                    lv1_scene_fade_utility::lv1::state::Lv1Event::Connected
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let snapshot = wait_for_channels(&handle, 2_000).await.unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].name, "Channel 1");
+
+        server.await.unwrap();
     }
 }
