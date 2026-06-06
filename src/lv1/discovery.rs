@@ -26,6 +26,72 @@ pub enum DiscoveryError {
     NotZdns,
 }
 
+#[derive(Debug, Clone)]
+pub struct DiscoverOptions {
+    pub timeout: std::time::Duration,
+    pub filter_host_ip: Option<String>,
+    pub filter_service: String,
+}
+
+impl Default for DiscoverOptions {
+    fn default() -> Self {
+        Self {
+            timeout: std::time::Duration::from_millis(6000),
+            filter_host_ip: None,
+            filter_service: "_waveslv113._tcp".to_string(),
+        }
+    }
+}
+
+pub fn entry_matches(entry: &DiscoveryEntry, service: &str, host_ip: Option<&str>) -> bool {
+    if entry.service != service {
+        return false;
+    }
+
+    match host_ip {
+        Some(ip) => entry.addresses.iter().any(|address| address == ip),
+        None => true,
+    }
+}
+
+pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>> {
+    use std::collections::BTreeMap;
+    use std::net::UdpSocket;
+    use std::time::Instant;
+
+    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, MCAST_PORT))?;
+    socket.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+    socket.set_multicast_loop_v4(true)?;
+    socket.join_multicast_v4(&MCAST_ADDR.parse::<Ipv4Addr>().unwrap(), &Ipv4Addr::UNSPECIFIED)?;
+
+    let deadline = Instant::now() + options.timeout;
+    let mut found = BTreeMap::<String, DiscoveryEntry>::new();
+    let mut buf = [0_u8; 65_536];
+
+    while Instant::now() < deadline {
+        match socket.recv_from(&mut buf) {
+            Ok((size, source)) => {
+                if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string()) {
+                    if entry_matches(
+                        &entry,
+                        &options.filter_service,
+                        options.filter_host_ip.as_deref(),
+                    ) {
+                        let key = format!("{}|{:?}|{:?}", entry.service, entry.host, entry.port);
+                        found.entry(key).or_insert(entry);
+                    }
+                }
+            }
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(found.into_values().collect())
+}
+
 fn ipv4_like(value: &str) -> bool {
     Ipv4Addr::from_str(value).is_ok()
 }
@@ -180,5 +246,42 @@ mod tests {
         assert!(rank_ip("172.31.255.254") > rank_ip("8.8.8.8"));
         assert!(rank_ip("172.15.255.255") <= rank_ip("8.8.8.8"));
         assert!(rank_ip("172.32.0.1") <= rank_ip("8.8.8.8"));
+    }
+
+    #[test]
+    fn filter_entry_by_service_and_host_ip() {
+        let entry = DiscoveryEntry {
+            service: "_waveslv113._tcp".to_string(),
+            uuid: Some("uuid-1".to_string()),
+            host: Some("lv1-host".to_string()),
+            port: Some(50000),
+            addresses: vec!["192.168.1.10".to_string()],
+            ipv6: vec![],
+            source: "192.168.1.10".to_string(),
+        };
+
+        assert!(entry_matches(&entry, "_waveslv113._tcp", None));
+        assert!(entry_matches(
+            &entry,
+            "_waveslv113._tcp",
+            Some("192.168.1.10")
+        ));
+        assert!(!entry_matches(
+            &entry,
+            "_waveslv113._tcp",
+            Some("10.0.0.4")
+        ));
+        assert!(!entry_matches(&entry, "_other._tcp", None));
+    }
+
+    #[test]
+    fn discover_returns_empty_when_timeout_elapses_without_packets() {
+        let entries = discover(DiscoverOptions {
+            timeout: std::time::Duration::ZERO,
+            ..DiscoverOptions::default()
+        })
+        .unwrap();
+
+        assert!(entries.is_empty());
     }
 }
