@@ -105,6 +105,15 @@ enum Command {
         #[arg(long, value_enum, default_value_t = CurveArg::Linear)]
         curve: CurveArg,
     },
+    #[command(about = "Run a whole-console LV1 fader sine-wave stress test")]
+    Vegas {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long, default_value_t = 6000)]
+        timeout_ms: u64,
+    },
 }
 
 #[tokio::main]
@@ -155,6 +164,11 @@ async fn main() -> AppResult<()> {
             duration_ms,
             curve,
         } => run_fade_test(host, port, timeout_ms, group, channel, target_db, duration_ms, curve).await,
+        Command::Vegas {
+            host,
+            port,
+            timeout_ms,
+        } => run_vegas(host, port, timeout_ms).await,
     }
 }
 
@@ -473,6 +487,14 @@ async fn run_fade_test(
     Ok(())
 }
 
+async fn run_vegas(
+    _host: Option<String>,
+    _port: Option<u16>,
+    _timeout_ms: u64,
+) -> AppResult<()> {
+    Err("vegas command is not implemented yet".into())
+}
+
 fn unix_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -635,5 +657,42 @@ mod tests {
             }
             other => panic!("expected FadeTest, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_vegas_command_without_group_option() {
+        let cli = Cli::try_parse_from([
+            "lv1-probe",
+            "vegas",
+            "--host",
+            "192.168.1.10",
+            "--port",
+            "50001",
+            "--timeout-ms",
+            "3000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Vegas {
+                host,
+                port,
+                timeout_ms,
+            } => {
+                assert_eq!(host.as_deref(), Some("192.168.1.10"));
+                assert_eq!(port, Some(50001));
+                assert_eq!(timeout_ms, 3000);
+            }
+            other => panic!("expected Vegas, got {other:?}"),
+        }
+
+        let err = Cli::try_parse_from([
+            "lv1-probe",
+            "vegas",
+            "--group",
+            "0",
+        ])
+        .unwrap_err();
+        assert!(err.to_string().contains("unexpected argument '--group'"));
     }
 }
