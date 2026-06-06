@@ -1,6 +1,6 @@
 //! Waves LV1 custom /zDNS discovery.
 
-use crate::osc::{decode_packet, OscArg, OscError};
+use crate::osc::{OscArg, OscError, decode_packet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -70,14 +70,18 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
     socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MCAST_PORT).into())?;
     let socket: UdpSocket = socket.into();
     socket.set_multicast_loop_v4(true)?;
-    socket.join_multicast_v4(&MCAST_ADDR.parse::<Ipv4Addr>().unwrap(), &Ipv4Addr::UNSPECIFIED)?;
+    socket.join_multicast_v4(
+        &MCAST_ADDR.parse::<Ipv4Addr>().unwrap(),
+        &Ipv4Addr::UNSPECIFIED,
+    )?;
 
     let deadline = Instant::now() + options.timeout;
     let mut found = BTreeMap::<String, DiscoveryEntry>::new();
     let mut buf = [0_u8; 65_536];
 
     while Instant::now() < deadline {
-        let Some(read_timeout) = read_timeout_for(deadline.saturating_duration_since(Instant::now()))
+        let Some(read_timeout) =
+            read_timeout_for(deadline.saturating_duration_since(Instant::now()))
         else {
             break;
         };
@@ -304,11 +308,7 @@ mod tests {
             "_waveslv113._tcp",
             Some("192.168.1.10")
         ));
-        assert!(!entry_matches(
-            &entry,
-            "_waveslv113._tcp",
-            Some("10.0.0.4")
-        ));
+        assert!(!entry_matches(&entry, "_waveslv113._tcp", Some("10.0.0.4")));
         assert!(!entry_matches(&entry, "_other._tcp", None));
     }
 

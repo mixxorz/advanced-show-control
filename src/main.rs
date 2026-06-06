@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
-use lv1_scene_fade_utility::lv1::discovery::{discover, DiscoverOptions};
-use lv1_scene_fade_utility::lv1::probe::{entry_for_message, JsonlLogger, MessageKind};
-use lv1_scene_fade_utility::lv1::tcp::{decode_frame_payload, pong_for_ping, Lv1TcpClient};
+use lv1_scene_fade_utility::lv1::discovery::{DiscoverOptions, discover};
+use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
+use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
 use lv1_scene_fade_utility::osc::OscArg;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

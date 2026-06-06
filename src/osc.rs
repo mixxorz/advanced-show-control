@@ -82,7 +82,11 @@ fn read_string(bytes: &[u8], offset: &mut usize) -> Result<String, OscError> {
     Ok(value)
 }
 
-fn take<const N: usize>(bytes: &[u8], offset: &mut usize, label: &'static str) -> Result<[u8; N], OscError> {
+fn take<const N: usize>(
+    bytes: &[u8],
+    offset: &mut usize,
+    label: &'static str,
+) -> Result<[u8; N], OscError> {
     if *offset + N > bytes.len() {
         return Err(OscError::UnexpectedEof(label));
     }
@@ -150,7 +154,10 @@ pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
     let mut offset = 0;
     let address = read_string(bytes, &mut offset)?;
     if offset >= bytes.len() {
-        return Ok(OscMessage { address, args: vec![] });
+        return Ok(OscMessage {
+            address,
+            args: vec![],
+        });
     }
 
     let tags = read_string(bytes, &mut offset)?;
@@ -168,8 +175,8 @@ pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
             's' => OscArg::String(read_string(bytes, &mut offset)?),
             'b' => {
                 let len_i32 = i32::from_be_bytes(take(bytes, &mut offset, "blob length")?);
-                let len = usize::try_from(len_i32)
-                    .map_err(|_| OscError::NegativeBlobLength(len_i32))?;
+                let len =
+                    usize::try_from(len_i32).map_err(|_| OscError::NegativeBlobLength(len_i32))?;
                 if offset + len > bytes.len() {
                     return Err(OscError::UnexpectedEof("blob"));
                 }
@@ -243,7 +250,10 @@ mod tests {
     fn pads_strings_and_blobs_to_four_byte_boundaries() {
         let bytes = encode_message(
             "/pad",
-            &[OscArg::String("abc".to_string()), OscArg::Blob(vec![1, 2, 3])],
+            &[
+                OscArg::String("abc".to_string()),
+                OscArg::Blob(vec![1, 2, 3]),
+            ],
         )
         .unwrap();
 
@@ -252,7 +262,10 @@ mod tests {
             decode_packet(&bytes).unwrap(),
             OscMessage {
                 address: "/pad".to_string(),
-                args: vec![OscArg::String("abc".to_string()), OscArg::Blob(vec![1, 2, 3])],
+                args: vec![
+                    OscArg::String("abc".to_string()),
+                    OscArg::Blob(vec![1, 2, 3])
+                ],
             }
         );
     }
@@ -282,7 +295,10 @@ mod tests {
     fn encoder_writes_zero_padding_for_strings_and_blobs() {
         let bytes = encode_message(
             "/pad",
-            &[OscArg::String("abc".to_string()), OscArg::Blob(vec![1, 2, 3])],
+            &[
+                OscArg::String("abc".to_string()),
+                OscArg::Blob(vec![1, 2, 3]),
+            ],
         )
         .unwrap();
         // address "/pad\0" + 3 zero pad bytes (positions 4-7)
@@ -304,10 +320,7 @@ mod tests {
     #[test]
     fn decoder_rejects_unsupported_type_tag() {
         let packet = [b'/', b'x', 0, 0, b',', b'x', 0, 0];
-        assert_eq!(
-            decode_packet(&packet),
-            Err(OscError::UnsupportedType('x'))
-        );
+        assert_eq!(decode_packet(&packet), Err(OscError::UnsupportedType('x')));
     }
 
     #[test]
@@ -318,11 +331,7 @@ mod tests {
 
     #[test]
     fn decoder_rejects_negative_blob_length() {
-        let packet = [
-            b'/', b'b', 0, 0,
-            b',', b'b', 0, 0,
-            0xFF, 0xFF, 0xFF, 0xFF,
-        ];
+        let packet = [b'/', b'b', 0, 0, b',', b'b', 0, 0, 0xFF, 0xFF, 0xFF, 0xFF];
         assert_eq!(
             decode_packet(&packet),
             Err(OscError::NegativeBlobLength(-1))
@@ -332,12 +341,7 @@ mod tests {
     #[test]
     fn decoder_rejects_truncated_blob() {
         // claims 5 bytes of data but only 2 follow; total length is not a multiple of 4
-        let packet = [
-            b'/', b'b', 0, 0,
-            b',', b'b', 0, 0,
-            0, 0, 0, 5,
-            1, 2,
-        ];
+        let packet = [b'/', b'b', 0, 0, b',', b'b', 0, 0, 0, 0, 0, 5, 1, 2];
         assert!(decode_packet(&packet).is_err());
     }
 }

@@ -1,6 +1,6 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
-use crate::osc::{decode_packet, encode_message, OscArg, OscError, OscMessage};
+use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
 pub const DEFAULT_HEADER: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 const HEADER_LEN: usize = 8;
@@ -278,8 +278,14 @@ mod tests {
         let frames = decoder.push(&bytes).unwrap();
 
         assert_eq!(frames.len(), 2);
-        assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/handshake");
-        assert_eq!(decode_frame_payload(&frames[1]).unwrap().address, "/device_name");
+        assert_eq!(
+            decode_frame_payload(&frames[0]).unwrap().address,
+            "/handshake"
+        );
+        assert_eq!(
+            decode_frame_payload(&frames[1]).unwrap().address,
+            "/device_name"
+        );
     }
 
     #[test]
