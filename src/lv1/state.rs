@@ -2,6 +2,8 @@
 
 use tokio::sync::{mpsc, oneshot};
 
+use crate::osc::OscArg;
+
 // ---------------------------------------------------------------------------
 // Group constants (confirmed from hardware logs)
 // ---------------------------------------------------------------------------
@@ -82,4 +84,225 @@ pub enum Lv1Event {
         gain_db: f64,
     },
     ChannelTopologyChanged(Vec<ChannelInfo>),
+}
+
+// ---------------------------------------------------------------------------
+// Parsers and helpers
+// ---------------------------------------------------------------------------
+
+const CHANNELS_RECORD_STRIDE: usize = 19;
+
+pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'static str> {
+    let count = match args.first() {
+        Some(OscArg::Int(n)) => *n as usize,
+        _ => return Err("missing or wrong-type count arg"),
+    };
+
+    let expected_len = 1 + count * CHANNELS_RECORD_STRIDE;
+    if args.len() < expected_len {
+        return Err("args too short for declared channel count");
+    }
+
+    let mut channels = Vec::with_capacity(count);
+    for i in 0..count {
+        let base = 1 + i * CHANNELS_RECORD_STRIDE;
+        let name = match &args[base] {
+            OscArg::String(s) => s.clone(),
+            _ => return Err("channel name must be a string"),
+        };
+        let group = match args[base + 1] {
+            OscArg::Int(v) => v,
+            _ => return Err("channel group must be an int"),
+        };
+        let channel = match args[base + 2] {
+            OscArg::Int(v) => v,
+            _ => return Err("channel index must be an int"),
+        };
+        let gain_db = match args[base + 3] {
+            OscArg::Double(v) => v,
+            _ => return Err("channel gain must be a double"),
+        };
+        channels.push(ChannelInfo { group, channel, name, gain_db });
+    }
+
+    Ok(channels)
+}
+
+pub fn parse_scene_list(args: &[OscArg]) -> Result<Vec<SceneListEntry>, &'static str> {
+    let count = match args.first() {
+        Some(OscArg::Int(n)) => *n as usize,
+        _ => return Err("missing or wrong-type count arg"),
+    };
+
+    let expected_len = 1 + count * 2;
+    if args.len() < expected_len {
+        return Err("args too short for declared scene count");
+    }
+
+    let mut list = Vec::with_capacity(count);
+    for i in 0..count {
+        let base = 1 + i * 2;
+        let index = match args[base] {
+            OscArg::Int(v) => v,
+            _ => return Err("scene index must be an int"),
+        };
+        let name = match &args[base + 1] {
+            OscArg::String(s) => s.clone(),
+            _ => return Err("scene name must be a string"),
+        };
+        list.push(SceneListEntry { index, name });
+    }
+
+    Ok(list)
+}
+
+#[derive(Default)]
+pub struct SceneBuffer {
+    pending_index: Option<i32>,
+    pending_name: Option<String>,
+}
+
+impl SceneBuffer {
+    pub fn apply_index(&mut self, index: i32) -> Option<SceneState> {
+        self.pending_index = Some(index);
+        self.try_emit()
+    }
+
+    pub fn apply_name(&mut self, name: String) -> Option<SceneState> {
+        self.pending_name = Some(name);
+        self.try_emit()
+    }
+
+    fn try_emit(&mut self) -> Option<SceneState> {
+        match (&self.pending_index, &self.pending_name) {
+            (Some(index), Some(_)) => {
+                let name = self.pending_name.take().unwrap();
+                let idx = *index;
+                self.pending_index = None;
+                Some(SceneState { index: idx, name })
+            }
+            _ => None,
+        }
+    }
+}
+
+pub fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, gain_db: f64) {
+    if let Some(ch) = channels.iter_mut().find(|c| c.group == group && c.channel == channel) {
+        ch.gain_db = gain_db;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_channel_args(channels: &[(&str, i32, i32, f64)]) -> Vec<OscArg> {
+        let mut args = vec![OscArg::Int(channels.len() as i32)];
+        for (name, group, channel, gain_db) in channels {
+            args.push(OscArg::String(name.to_string()));
+            args.push(OscArg::Int(*group));
+            args.push(OscArg::Int(*channel));
+            args.push(OscArg::Double(*gain_db));
+            for _ in 0..15 {
+                args.push(OscArg::Int(0));
+            }
+        }
+        args
+    }
+
+    #[test]
+    fn parses_channels_batch() {
+        let args = make_channel_args(&[
+            ("Channel 1", 0, 0, -9.1),
+            ("Fx 1", 2, 0, -12.0),
+        ]);
+        let channels = parse_channels_batch(&args).unwrap();
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[0], ChannelInfo { group: 0, channel: 0, name: "Channel 1".to_string(), gain_db: -9.1 });
+        assert_eq!(channels[1], ChannelInfo { group: 2, channel: 0, name: "Fx 1".to_string(), gain_db: -12.0 });
+    }
+
+    #[test]
+    fn rejects_channels_batch_with_wrong_arg_count() {
+        let args = vec![OscArg::Int(1)];
+        assert!(parse_channels_batch(&args).is_err());
+    }
+
+    #[test]
+    fn rejects_channels_batch_missing_count() {
+        assert!(parse_channels_batch(&[]).is_err());
+    }
+
+    #[test]
+    fn parses_scene_list_with_multiple_scenes() {
+        let args = vec![
+            OscArg::Int(2),
+            OscArg::Int(0),
+            OscArg::String("My first scene".to_string()),
+            OscArg::Int(1),
+            OscArg::String("My second scene".to_string()),
+        ];
+        let list = parse_scene_list(&args).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0], SceneListEntry { index: 0, name: "My first scene".to_string() });
+        assert_eq!(list[1], SceneListEntry { index: 1, name: "My second scene".to_string() });
+    }
+
+    #[test]
+    fn parses_empty_scene_list() {
+        let args = vec![OscArg::Int(0)];
+        let list = parse_scene_list(&args).unwrap();
+        assert!(list.is_empty());
+    }
+
+    #[test]
+    fn rejects_scene_list_missing_count() {
+        assert!(parse_scene_list(&[]).is_err());
+    }
+
+    #[test]
+    fn scene_buffer_emits_when_name_arrives_first() {
+        let mut buf = SceneBuffer::default();
+        assert!(buf.apply_name("Scene A".to_string()).is_none());
+        let scene = buf.apply_index(0).unwrap();
+        assert_eq!(scene, SceneState { index: 0, name: "Scene A".to_string() });
+        assert!(buf.apply_index(0).is_none());
+    }
+
+    #[test]
+    fn scene_buffer_emits_when_index_arrives_first() {
+        let mut buf = SceneBuffer::default();
+        assert!(buf.apply_index(1).is_none());
+        let scene = buf.apply_name("Scene B".to_string()).unwrap();
+        assert_eq!(scene, SceneState { index: 1, name: "Scene B".to_string() });
+    }
+
+    #[test]
+    fn scene_buffer_overwrites_pending_with_new_name() {
+        let mut buf = SceneBuffer::default();
+        buf.apply_name("Old".to_string());
+        buf.apply_name("New".to_string());
+        let scene = buf.apply_index(2).unwrap();
+        assert_eq!(scene.name, "New");
+    }
+
+    #[test]
+    fn apply_fader_update_changes_matching_channel() {
+        let mut channels = vec![
+            ChannelInfo { group: 0, channel: 0, name: "Ch 1".to_string(), gain_db: -9.0 },
+            ChannelInfo { group: 0, channel: 1, name: "Ch 2".to_string(), gain_db: -12.0 },
+        ];
+        apply_fader_update(&mut channels, 0, 0, -6.0);
+        assert_eq!(channels[0].gain_db, -6.0);
+        assert_eq!(channels[1].gain_db, -12.0);
+    }
+
+    #[test]
+    fn apply_fader_update_ignores_unknown_channel() {
+        let mut channels = vec![
+            ChannelInfo { group: 0, channel: 0, name: "Ch 1".to_string(), gain_db: -9.0 },
+        ];
+        apply_fader_update(&mut channels, 0, 99, -3.0);
+        assert_eq!(channels[0].gain_db, -9.0);
+    }
 }
