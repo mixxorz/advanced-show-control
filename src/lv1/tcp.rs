@@ -145,7 +145,10 @@ impl Lv1TcpClient {
 
         let mut buf = [0_u8; 8192];
         match self.stream.read(&mut buf) {
-            Ok(0) => Ok(Vec::new()),
+            Ok(0) => Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "LV1 TCP connection closed",
+            ))),
             Ok(size) => Ok(self.decoder.push(&buf[..size])?),
             Err(err)
                 if err.kind() == std::io::ErrorKind::WouldBlock
@@ -342,5 +345,26 @@ mod tests {
         assert_eq!(received[1].address, "/device_name");
         assert_eq!(received[2].address, "/custom");
         assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/ping");
+    }
+
+    #[test]
+    fn client_read_available_errors_when_peer_closes_connection() {
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (_stream, _) = listener.accept().unwrap();
+        });
+
+        let mut client = Lv1TcpClient::connect("127.0.0.1", port).unwrap();
+        server.join().unwrap();
+
+        let err = client.read_available().unwrap_err();
+        let io_err = err.downcast_ref::<std::io::Error>().unwrap();
+
+        assert_eq!(io_err.kind(), std::io::ErrorKind::UnexpectedEof);
+        assert_eq!(io_err.to_string(), "LV1 TCP connection closed");
     }
 }
