@@ -1,3 +1,7 @@
 /target
 logs/
-
+.superpowers/
+node_modules/
+ui/node_modules/
+ui/dist/
+src-tauri/target/
