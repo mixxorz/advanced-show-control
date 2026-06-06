@@ -1,9 +1,14 @@
 use std::collections::{HashSet, VecDeque};
+use std::path::Path;
 use std::sync::Arc;
 
-use lv1_scene_fade_utility::lv1::state::{ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry};
+use lv1_scene_fade_utility::lv1::state::{
+    ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry,
+};
 use serde::Serialize;
 use tokio::sync::Mutex;
+
+use crate::show_file::DEFAULT_DURATION_MS;
 
 const MAX_LOGS: usize = 200;
 
@@ -27,6 +32,7 @@ pub struct ChannelSummary {
 pub struct FadeTarget {
     pub group: i32,
     pub channel: i32,
+    pub channel_name: String,
     pub target_db: f64,
     pub enabled: bool,
     pub updated_at: String,
@@ -39,6 +45,7 @@ pub struct SceneFadeConfig {
     pub scene_index: i32,
     pub scene_name: String,
     pub fade_enabled: bool,
+    pub duration_ms: u64,
     pub fade_targets: Vec<FadeTarget>,
 }
 
@@ -98,6 +105,10 @@ pub struct AppViewState {
     pub scene_fade_configs: Vec<SceneFadeConfig>,
     pub selected_scene_id: Option<String>,
     pub listen_mode_active: bool,
+    pub show_file_name: String,
+    pub show_file_path: Option<String>,
+    pub show_file_dirty: bool,
+    pub show_file_last_saved_at: Option<String>,
     pub logs: Vec<AppLogEntry>,
     pub last_event_at: Option<String>,
 }
@@ -123,6 +134,9 @@ struct ShellInner {
     scene_fade_configs: Vec<SceneFadeConfig>,
     selected_scene_id: Option<String>,
     listen_mode_active: bool,
+    show_file_path: Option<String>,
+    show_file_dirty: bool,
+    show_file_last_saved_at: Option<String>,
     unknown_fader_warnings: HashSet<(i32, i32)>,
     logs: VecDeque<AppLogEntry>,
     next_log_id: u64,
@@ -168,7 +182,11 @@ impl ShellState {
             return Err("Stop Listen Mode before selecting another scene".to_string());
         }
 
-        if !inner.scene_fade_configs.iter().any(|config| config.scene_id == scene_id) {
+        if !inner
+            .scene_fade_configs
+            .iter()
+            .any(|config| config.scene_id == scene_id)
+        {
             return Err("Scene config not found".to_string());
         }
 
@@ -190,6 +208,7 @@ impl ShellState {
             .ok_or_else(|| "Scene config not found".to_string())?;
 
         config.fade_enabled = enabled;
+        inner.show_file_dirty = true;
         Ok(snapshot_from_inner(&inner))
     }
 
@@ -215,6 +234,27 @@ impl ShellState {
         Ok(snapshot_from_inner(&inner))
     }
 
+    pub async fn set_scene_duration_ms(
+        &self,
+        scene_id: String,
+        duration_ms: u64,
+    ) -> Result<AppViewState, String> {
+        if !(100..=120_000).contains(&duration_ms) {
+            return Err("Fade duration must be between 100 ms and 120000 ms".to_string());
+        }
+
+        let mut inner = self.inner.lock().await;
+        let config = inner
+            .scene_fade_configs
+            .iter_mut()
+            .find(|config| config.scene_id == scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+
+        config.duration_ms = duration_ms;
+        inner.show_file_dirty = true;
+        Ok(snapshot_from_inner(&inner))
+    }
+
     #[allow(dead_code)]
     pub async fn set_fade_target_enabled(
         &self,
@@ -227,6 +267,7 @@ impl ShellState {
         let target = find_target_mut(&mut inner, &scene_id, group, channel)?;
 
         target.enabled = enabled;
+        inner.show_file_dirty = true;
         Ok(snapshot_from_inner(&inner))
     }
 
@@ -251,6 +292,7 @@ impl ShellState {
             return Err("Fade target not found".to_string());
         }
 
+        inner.show_file_dirty = true;
         Ok(snapshot_from_inner(&inner))
     }
 
@@ -427,6 +469,7 @@ impl ShellInner {
                     scene_index: scene.index,
                     scene_name: scene.name.clone(),
                     fade_enabled: false,
+                    duration_ms: DEFAULT_DURATION_MS,
                     fade_targets: Vec::new(),
                 });
             }
@@ -497,6 +540,18 @@ impl ShellInner {
         }
 
         let timestamp = current_timestamp();
+        let channel_name = self
+            .lv1_snapshot
+            .as_ref()
+            .and_then(|snapshot| {
+                snapshot
+                    .channels
+                    .iter()
+                    .find(|ch| ch.group == group && ch.channel == channel)
+            })
+            .map(|channel| channel.name.clone())
+            .unwrap_or_default();
+
         if let Some(config) = self
             .scene_fade_configs
             .iter_mut()
@@ -509,15 +564,18 @@ impl ShellInner {
             {
                 target.target_db = gain_db;
                 target.updated_at = timestamp;
+                target.channel_name = channel_name;
             } else {
                 config.fade_targets.push(FadeTarget {
                     group,
                     channel,
+                    channel_name,
                     target_db: gain_db,
                     enabled: true,
                     updated_at: timestamp,
                 });
             }
+            self.show_file_dirty = true;
         }
     }
 }
@@ -622,6 +680,16 @@ fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         scene_fade_configs: inner.scene_fade_configs.clone(),
         selected_scene_id: inner.selected_scene_id.clone(),
         listen_mode_active: inner.listen_mode_active,
+        show_file_name: inner
+            .show_file_path
+            .as_ref()
+            .and_then(|path| Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string())
+            .unwrap_or_else(|| "Untitled Show".to_string()),
+        show_file_path: inner.show_file_path.clone(),
+        show_file_dirty: inner.show_file_dirty,
+        show_file_last_saved_at: inner.show_file_last_saved_at.clone(),
         logs: inner.logs.iter().cloned().collect(),
         last_event_at: inner.last_event_at.clone(),
     }
@@ -640,6 +708,7 @@ fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::show_file::DEFAULT_DURATION_MS;
     use lv1_scene_fade_utility::lv1::state::{ChannelInfo, SceneListEntry, SceneState};
 
     fn connected_snapshot() -> Lv1StateSnapshot {
@@ -670,7 +739,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_snapshot_is_safe_and_disconnected() {
+    async fn default_snapshot_exposes_untitled_show_and_is_not_dirty() {
         let state = ShellState::default();
         let snapshot = state.snapshot().await;
 
@@ -681,6 +750,10 @@ mod tests {
         assert!(snapshot.channels.is_empty());
         assert_eq!(snapshot.fade_state, AppFadeState::Idle);
         assert!(!snapshot.lockout);
+        assert_eq!(snapshot.show_file_name, "Untitled Show");
+        assert_eq!(snapshot.show_file_path, None);
+        assert!(!snapshot.show_file_dirty);
+        assert_eq!(snapshot.show_file_last_saved_at, None);
     }
 
     #[tokio::test]
@@ -710,6 +783,7 @@ mod tests {
         assert_eq!(inner.scene_fade_configs.len(), 2);
         assert_eq!(inner.scene_fade_configs[0].scene_id, "1::Intro");
         assert!(!inner.scene_fade_configs[0].fade_enabled);
+        assert_eq!(inner.scene_fade_configs[0].duration_ms, DEFAULT_DURATION_MS);
         assert!(inner.scene_fade_configs[0].fade_targets.is_empty());
         assert_eq!(inner.selected_scene_id.as_deref(), Some("1::Intro"));
     }
@@ -722,9 +796,11 @@ mod tests {
             scene_index: 2,
             scene_name: "Verse".to_string(),
             fade_enabled: true,
+            duration_ms: DEFAULT_DURATION_MS,
             fade_targets: vec![FadeTarget {
                 group: 0,
                 channel: 4,
+                channel_name: "Lead".to_string(),
                 target_db: -5.5,
                 enabled: true,
                 updated_at: "123".to_string(),
@@ -762,6 +838,7 @@ mod tests {
             scene_index: 1,
             scene_name: "Intro".to_string(),
             fade_enabled: false,
+            duration_ms: DEFAULT_DURATION_MS,
             fade_targets: Vec::new(),
         }];
         inner.selected_scene_id = Some("1::Intro".to_string());
@@ -774,7 +851,68 @@ mod tests {
 
         assert!(!inner.listen_mode_active);
         assert_eq!(inner.selected_scene_id.as_deref(), Some("2::Verse"));
-        assert!(inner.logs.iter().any(|entry| entry.message == "Listen Mode stopped because selected scene is no longer available"));
+        assert!(inner.logs.iter().any(|entry| entry.message
+            == "Listen Mode stopped because selected scene is no longer available"));
+    }
+
+    #[tokio::test]
+    async fn set_scene_fade_enabled_marks_show_file_dirty() {
+        let state = ShellState::default();
+        state
+            .begin_connection(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }],
+                channels: vec![ChannelInfo {
+                    group: 0,
+                    channel: 2,
+                    name: "Lead".to_string(),
+                    gain_db: -8.0,
+                    muted: false,
+                }],
+            })
+            .await;
+
+        let snapshot = state
+            .set_scene_fade_enabled("1::Intro".to_string(), true)
+            .await
+            .unwrap();
+
+        assert!(snapshot.scene_fade_configs[0].fade_enabled);
+        assert!(snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
+        let state = ShellState::default();
+        state
+            .begin_connection(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }],
+                channels: vec![ChannelInfo {
+                    group: 0,
+                    channel: 2,
+                    name: "Lead".to_string(),
+                    gain_db: -8.0,
+                    muted: false,
+                }],
+            })
+            .await;
+
+        let snapshot = state
+            .set_scene_duration_ms("1::Intro".to_string(), 8_000)
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.scene_fade_configs[0].duration_ms, 8_000);
+        assert!(snapshot.show_file_dirty);
     }
 
     #[test]
@@ -789,10 +927,8 @@ mod tests {
 
         assert!(inner.listen_mode_active);
         assert_eq!(inner.selected_scene_id.as_deref(), Some("2::Verse"));
-        assert!(!inner
-            .logs
-            .iter()
-            .any(|entry| entry.message == "Listen Mode stopped because selected scene is no longer available"));
+        assert!(!inner.logs.iter().any(|entry| entry.message
+            == "Listen Mode stopped because selected scene is no longer available"));
     }
 
     #[tokio::test]
@@ -1027,7 +1163,9 @@ mod tests {
     async fn fader_events_write_targets_only_while_listen_mode_is_active() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
 
         state
             .apply_lv1_event_for_generation(
@@ -1039,7 +1177,11 @@ mod tests {
                 },
             )
             .await;
-        assert!(state.snapshot().await.scene_fade_configs[0].fade_targets.is_empty());
+        assert!(
+            state.snapshot().await.scene_fade_configs[0]
+                .fade_targets
+                .is_empty()
+        );
 
         state.set_listen_mode(true).await.unwrap();
         state
@@ -1058,15 +1200,19 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].group, 0);
         assert_eq!(targets[0].channel, 2);
+        assert_eq!(targets[0].channel_name, "Lead");
         assert_eq!(targets[0].target_db, -4.5);
         assert!(targets[0].enabled);
+        assert!(view.show_file_dirty);
     }
 
     #[tokio::test]
     async fn repeated_fader_event_updates_existing_target() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         state.set_listen_mode(true).await.unwrap();
 
         state
@@ -1093,13 +1239,16 @@ mod tests {
         let targets = &state.snapshot().await.scene_fade_configs[0].fade_targets;
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target_db, -3.0);
+        assert_eq!(targets[0].channel_name, "Lead");
     }
 
     #[tokio::test]
     async fn repeated_fader_event_preserves_disabled_target_state() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         state.set_listen_mode(true).await.unwrap();
 
         state
@@ -1132,13 +1281,16 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target_db, -3.25);
         assert!(!targets[0].enabled);
+        assert_eq!(targets[0].channel_name, "Lead");
     }
 
     #[tokio::test]
     async fn removed_target_can_be_recaptured_while_listen_mode_is_active() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         state.set_listen_mode(true).await.unwrap();
 
         state
@@ -1152,7 +1304,9 @@ mod tests {
             )
             .await;
         state.remove_fade_target("1::Intro", 0, 2).await.unwrap();
-        assert!(state.snapshot().await.scene_fade_configs[0].fade_targets.is_empty());
+        let snapshot = state.snapshot().await;
+        assert!(snapshot.scene_fade_configs[0].fade_targets.is_empty());
+        assert!(snapshot.show_file_dirty);
 
         state
             .apply_lv1_event_for_generation(
@@ -1173,7 +1327,9 @@ mod tests {
     async fn unknown_channel_fader_warning_logs_only_once_per_channel() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         state.set_listen_mode(true).await.unwrap();
 
         state
@@ -1210,7 +1366,9 @@ mod tests {
     #[tokio::test]
     async fn disconnect_turns_off_listen_mode_and_preserves_configs() {
         let state = ShellState::default();
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         state.set_listen_mode(true).await.unwrap();
 
         let view = state.disconnect().await;
