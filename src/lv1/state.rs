@@ -319,19 +319,15 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
         state.connection = ConnectionStatus::Connected;
         state.last_ping = Instant::now();
 
-        // --- Drain pending commands before first fan-out to ensure subscribers are ready ---
-        loop {
-            match cmd_rx.try_recv() {
-                Ok(Lv1Command::GetState { reply }) => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Ok(Lv1Command::Subscribe { tx }) => {
-                    state.subscribers.push(tx);
-                }
-                Err(_) => break,
+        // Yield to let any pending Subscribe commands arrive before we emit Connected.
+        tokio::task::yield_now().await;
+        // Drain any commands that arrived during connection setup.
+        while let Ok(cmd) = cmd_rx.try_recv() {
+            match cmd {
+                Lv1Command::GetState { reply } => { let _ = reply.send(state.snapshot()); }
+                Lv1Command::Subscribe { tx } => { state.subscribers.push(tx); }
             }
         }
-
         state.fan_out(Lv1Event::Connected);
 
         // --- Run loop ---
