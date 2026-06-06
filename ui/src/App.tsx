@@ -36,9 +36,11 @@ export default function App() {
     try {
       const next = await invoke<AppViewState>(command, args);
       setAppState(next);
+      return true;
     } catch (error) {
       setCommandError(String(error));
       await refreshAppState(setAppState, setCommandError);
+      return false;
     }
   }
 
@@ -161,7 +163,7 @@ export default function App() {
             setSceneFadeEnabled={(sceneId, enabled) =>
               runSnapshotCommand("set_scene_fade_enabled", { sceneId, enabled })
             }
-            setSceneDurationMs={(sceneId, durationMs) =>
+            setSceneDurationMs={async (sceneId, durationMs) =>
               runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs })
             }
             setListenMode={(active) => runSnapshotCommand("set_listen_mode", { active })}
@@ -208,7 +210,7 @@ function StatusBadge(props: { label: string; tone: "neutral" | "warning" | "good
 function DurationInput(props: {
   sceneId: string;
   durationMs: number;
-  setSceneDurationMs: (sceneId: string, durationMs: number) => void;
+  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState(formatDurationSeconds(props.durationMs));
   const skipNextBlurCommit = useRef(false);
@@ -221,7 +223,7 @@ function DurationInput(props: {
     setDraft(formatDurationSeconds(props.durationMs));
   }
 
-  function commit() {
+  async function commit() {
     const trimmed = draft.trim();
     if (!trimmed) {
       resetDraft();
@@ -236,10 +238,16 @@ function DurationInput(props: {
 
     const clamped = Math.min(120, Math.max(0.1, seconds));
     const nextDurationMs = Math.round(clamped * 1000);
-    setDraft(formatDurationSeconds(nextDurationMs));
+    if (nextDurationMs === props.durationMs) {
+      setDraft(formatDurationSeconds(nextDurationMs));
+      return;
+    }
 
-    if (nextDurationMs !== props.durationMs) {
-      props.setSceneDurationMs(props.sceneId, nextDurationMs);
+    const ok = await props.setSceneDurationMs(props.sceneId, nextDurationMs);
+    if (ok) {
+      setDraft(formatDurationSeconds(nextDurationMs));
+    } else {
+      resetDraft();
     }
   }
 
@@ -256,7 +264,7 @@ function DurationInput(props: {
     if (event.key === "Enter") {
       event.preventDefault();
       skipNextBlurCommit.current = true;
-      commit();
+      void commit();
       event.currentTarget.blur();
       return;
     }
@@ -399,7 +407,7 @@ function SceneTab(props: {
   appState: AppViewState;
   selectScene: (sceneId: string) => void;
   setSceneFadeEnabled: (sceneId: string, enabled: boolean) => void;
-  setSceneDurationMs: (sceneId: string, durationMs: number) => void;
+  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
   setListenMode: (active: boolean) => void;
   setFadeTargetEnabled: (sceneId: string, group: number, channel: number, enabled: boolean) => void;
   removeFadeTarget: (sceneId: string, group: number, channel: number) => void;
