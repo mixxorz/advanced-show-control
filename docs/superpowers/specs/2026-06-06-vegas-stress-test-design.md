@@ -42,11 +42,11 @@ The wave is 8 faders wide. For each channel, derive a stable fader index directl
 ```text
 stable_index = group * 128 + channel
 phase = (stable_index / 8.0) * TAU + tick * phase_step
-normalized = (sin(phase) + 1.0) / 2.0
-gain_db = -40.0 + normalized * 40.0
+fader_pos = (sin(phase) + 1.0) / 2.0
+gain_db = pos_to_db(fader_pos)
 ```
 
-The normalized value maps to `-40.0..0.0 dB`. This is wide enough to visibly stress the faders while avoiding LV1's deepest and loudest extremes.
+The sine wave is calculated in normalized fader-position space, not dB space. The resulting `0.0..1.0` fader position is converted to gain with the measured LV1 fader law. This keeps the animation visually sinusoidal on the fader surface instead of clustering movement according to the non-linear dB scale.
 
 ## Channel Ordering And Indexing
 
@@ -79,7 +79,8 @@ Unit tests should cover the pure wave function:
 - Same inputs return the same gain.
 - Tick advancement changes phase.
 - Faders 8 positions apart share the same phase at the same tick.
-- Output remains inside the configured dB range.
+- Output fader position remains inside `0.0..1.0` before conversion through the fader law.
+- Gain output matches the measured fader-law conversion for the calculated fader position.
 
 CLI parsing tests should cover `vegas` with host, port, and timeout options, and confirm there is no group option.
 
