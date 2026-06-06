@@ -270,16 +270,41 @@ pub fn spawn_actor(host: String, port: u16) -> Lv1ActorHandle {
     Lv1ActorHandle { tx: cmd_tx }
 }
 
+/// Drain pending commands for `duration`, responding to GetState immediately.
+/// Used during reconnect delays so callers are never blocked indefinitely.
+async fn drain_commands_for(
+    state: &mut ActorState,
+    cmd_rx: &mut mpsc::Receiver<Lv1Command>,
+    duration: Duration,
+) {
+    let deadline = tokio::time::sleep(duration);
+    tokio::pin!(deadline);
+    loop {
+        tokio::select! {
+            _ = &mut deadline => break,
+            cmd = cmd_rx.recv() => match cmd {
+                None => break,
+                Some(Lv1Command::GetState { reply }) => {
+                    let _ = reply.send(state.snapshot());
+                }
+                Some(Lv1Command::Subscribe { tx }) => {
+                    state.subscribers.push(tx);
+                }
+            },
+        }
+    }
+}
+
 async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Command>) {
     let mut state = ActorState::new();
 
     loop {
-        // --- Connect ---
+        // --- Connect (drain commands during reconnect sleeps) ---
         let mut client = loop {
             match Lv1TcpClient::connect(&host, port) {
                 Ok(c) => break c,
                 Err(_) => {
-                    tokio::time::sleep(RECONNECT_DELAY).await;
+                    drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
                 }
             }
         };
@@ -287,7 +312,7 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
         let device_name = "lv1-state-mirror";
         let uuid = uuid::Uuid::new_v4().to_string();
         if client.register_myfoh(device_name, &uuid).is_err() {
-            tokio::time::sleep(RECONNECT_DELAY).await;
+            drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
             continue;
         }
 
