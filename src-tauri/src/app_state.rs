@@ -277,6 +277,7 @@ impl ShellState {
 
         inner.lockout = false;
         inner.scene_fade_configs.clear();
+        inner.selected_scene_id = None;
         inner.show_file_path = None;
         inner.show_file_dirty = false;
         inner.show_file_last_saved_at = None;
@@ -1183,6 +1184,29 @@ mod tests {
             snapshot.logs.last().unwrap().message,
             "New show file created"
         );
+    }
+
+    #[tokio::test]
+    async fn new_show_file_clears_stale_selection_when_disconnected() {
+        let state = ShellState::default();
+
+        {
+            let mut inner = state.inner.lock().await;
+            inner.selected_scene_id = Some("stale::scene".to_string());
+            inner.scene_fade_configs = vec![SceneFadeConfig {
+                scene_id: "stale::scene".to_string(),
+                scene_index: 99,
+                scene_name: "Stale".to_string(),
+                fade_enabled: true,
+                duration_ms: DEFAULT_DURATION_MS,
+                fade_targets: Vec::new(),
+            }];
+        }
+
+        let snapshot = state.new_show_file().await.unwrap();
+
+        assert_eq!(snapshot.selected_scene_id, None);
+        assert!(snapshot.scene_fade_configs.is_empty());
     }
 
     #[tokio::test]
