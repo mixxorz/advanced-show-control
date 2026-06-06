@@ -317,6 +317,7 @@ impl ShellState {
     pub async fn set_lockout(&self, enabled: bool) -> AppViewState {
         let mut inner = self.inner.lock().await;
         inner.lockout = enabled;
+        inner.show_file_dirty = true;
         inner.push_log(
             LogSource::App,
             LogSeverity::Info,
@@ -450,6 +451,11 @@ impl ShellState {
 
 impl ShellInner {
     fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) {
+        let previous_scene_ids: HashSet<_> = self
+            .scene_fade_configs
+            .iter()
+            .map(|config| config.scene_id.clone())
+            .collect();
         let mut next = Vec::with_capacity(scenes.len());
 
         for scene in scenes {
@@ -493,7 +499,15 @@ impl ShellInner {
             self.selected_scene_id = next.first().map(|config| config.scene_id.clone());
         }
 
+        let next_scene_ids: HashSet<_> =
+            next.iter().map(|config| config.scene_id.clone()).collect();
+        let scene_set_changed = previous_scene_ids != next_scene_ids;
+
         self.scene_fade_configs = next;
+
+        if scene_set_changed && (self.show_file_path.is_some() || self.show_file_dirty) {
+            self.show_file_dirty = true;
+        }
     }
 
     fn push_log(&mut self, source: LogSource, severity: LogSeverity, message: String) {
@@ -766,6 +780,15 @@ mod tests {
         assert_eq!(snapshot.logs[0].message, "Lockout enabled");
     }
 
+    #[tokio::test]
+    async fn lockout_marks_show_file_dirty() {
+        let state = ShellState::default();
+
+        let snapshot = state.set_lockout(true).await;
+
+        assert!(snapshot.show_file_dirty);
+    }
+
     #[test]
     fn scene_list_reconciliation_creates_default_configs() {
         let mut inner = ShellInner::default();
@@ -853,6 +876,36 @@ mod tests {
         assert_eq!(inner.selected_scene_id.as_deref(), Some("2::Verse"));
         assert!(inner.logs.iter().any(|entry| entry.message
             == "Listen Mode stopped because selected scene is no longer available"));
+    }
+
+    #[test]
+    fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
+        let mut inner = ShellInner::default();
+        inner.show_file_path = Some("/tmp/test.lv1show".to_string());
+        inner.scene_fade_configs = vec![SceneFadeConfig {
+            scene_id: "1::Intro".to_string(),
+            scene_index: 1,
+            scene_name: "Intro".to_string(),
+            fade_enabled: true,
+            duration_ms: DEFAULT_DURATION_MS,
+            fade_targets: vec![FadeTarget {
+                group: 0,
+                channel: 2,
+                channel_name: "Lead".to_string(),
+                target_db: -5.0,
+                enabled: true,
+                updated_at: "123".to_string(),
+            }],
+        }];
+
+        inner.reconcile_scene_fade_configs(&[SceneListEntry {
+            index: 2,
+            name: "Verse".to_string(),
+        }]);
+
+        assert!(inner.show_file_dirty);
+        assert_eq!(inner.scene_fade_configs.len(), 1);
+        assert_eq!(inner.scene_fade_configs[0].scene_id, "2::Verse");
     }
 
     #[tokio::test]
