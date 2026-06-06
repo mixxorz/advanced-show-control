@@ -49,6 +49,7 @@ pub struct ChannelInfo {
     pub channel: i32,
     pub name: String,
     pub gain_db: f64,
+    pub muted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -130,7 +131,7 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
             OscArg::Double(v) => v,
             _ => return Err("channel gain must be a double"),
         };
-        channels.push(ChannelInfo { group, channel, name, gain_db });
+        channels.push(ChannelInfo { group, channel, name, gain_db, muted: false });
     }
 
     Ok(channels)
@@ -200,6 +201,12 @@ impl SceneBuffer {
 pub fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, gain_db: f64) {
     if let Some(ch) = channels.iter_mut().find(|c| c.group == group && c.channel == channel) {
         ch.gain_db = gain_db;
+    }
+}
+
+pub fn apply_mute_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, muted: bool) {
+    if let Some(ch) = channels.iter_mut().find(|c| c.group == group && c.channel == channel) {
+        ch.muted = muted;
     }
 }
 
@@ -508,8 +515,8 @@ mod tests {
         ]);
         let channels = parse_channels_batch(&args).unwrap();
         assert_eq!(channels.len(), 2);
-        assert_eq!(channels[0], ChannelInfo { group: 0, channel: 0, name: "Channel 1".to_string(), gain_db: -9.1 });
-        assert_eq!(channels[1], ChannelInfo { group: 2, channel: 0, name: "Fx 1".to_string(), gain_db: -12.0 });
+        assert_eq!(channels[0], ChannelInfo { group: 0, channel: 0, name: "Channel 1".to_string(), gain_db: -9.1, muted: false });
+        assert_eq!(channels[1], ChannelInfo { group: 2, channel: 0, name: "Fx 1".to_string(), gain_db: -12.0, muted: false });
     }
 
     #[test]
@@ -579,8 +586,8 @@ mod tests {
     #[test]
     fn apply_fader_update_changes_matching_channel() {
         let mut channels = vec![
-            ChannelInfo { group: 0, channel: 0, name: "Ch 1".to_string(), gain_db: -9.0 },
-            ChannelInfo { group: 0, channel: 1, name: "Ch 2".to_string(), gain_db: -12.0 },
+            ChannelInfo { group: 0, channel: 0, name: "Ch 1".to_string(), gain_db: -9.0, muted: false },
+            ChannelInfo { group: 0, channel: 1, name: "Ch 2".to_string(), gain_db: -12.0, muted: false },
         ];
         apply_fader_update(&mut channels, 0, 0, -6.0);
         assert_eq!(channels[0].gain_db, -6.0);
@@ -590,10 +597,53 @@ mod tests {
     #[test]
     fn apply_fader_update_ignores_unknown_channel() {
         let mut channels = vec![
-            ChannelInfo { group: 0, channel: 0, name: "Ch 1".to_string(), gain_db: -9.0 },
+            ChannelInfo { group: 0, channel: 0, name: "Ch 1".to_string(), gain_db: -9.0, muted: false },
         ];
         apply_fader_update(&mut channels, 0, 99, -3.0);
         assert_eq!(channels[0].gain_db, -9.0);
+    }
+
+    #[test]
+    fn channels_default_to_unmuted_when_batch_has_no_mute_field() {
+        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1)]);
+        let channels = parse_channels_batch(&args).unwrap();
+        assert_eq!(channels[0].muted, false);
+    }
+
+    #[test]
+    fn apply_mute_update_changes_matching_channel() {
+        let mut channels = vec![
+            ChannelInfo {
+                group: 0,
+                channel: 0,
+                name: "Ch 1".to_string(),
+                gain_db: -9.0,
+                muted: false,
+            },
+            ChannelInfo {
+                group: 0,
+                channel: 1,
+                name: "Ch 2".to_string(),
+                gain_db: -12.0,
+                muted: false,
+            },
+        ];
+        apply_mute_update(&mut channels, 0, 0, true);
+        assert!(channels[0].muted);
+        assert!(!channels[1].muted);
+    }
+
+    #[test]
+    fn apply_mute_update_ignores_unknown_channel() {
+        let mut channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Ch 1".to_string(),
+            gain_db: -9.0,
+            muted: false,
+        }];
+        apply_mute_update(&mut channels, 0, 99, true);
+        assert!(!channels[0].muted);
     }
 
     use crate::lv1::tcp::encode_frame;
