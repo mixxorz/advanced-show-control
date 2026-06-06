@@ -32,7 +32,7 @@ Deferred:
 
 ## Architecture
 
-The existing Rust crate remains the core protocol and fade library. Tauri wraps it as the desktop runtime, and React renders app state.
+The existing Rust crate remains the core protocol and fade library. Tauri wraps it as the desktop runtime, owns all durable application state, and React renders snapshots from Rust.
 
 ```text
 src/                 existing Rust library and CLI
@@ -45,9 +45,30 @@ Responsibility boundaries:
 - `src/lv1/*` keeps owning LV1 discovery, TCP, OSC parsing, state mirroring, and command sending.
 - `src/fade/*` keeps owning fade curves, fade scheduling, override detection, abort, and finish-now behavior.
 - `src-tauri/` owns desktop app state, Tauri commands, event forwarding, and frontend-safe DTOs.
-- `ui/` owns layout, tabs, status rendering, form state, and user intent dispatch.
+- `ui/` owns layout, tabs, status rendering, ephemeral form inputs, and user intent dispatch.
 
 The frontend must not talk to LV1 directly. All hardware control flows through Rust.
+
+## Frontend State Rule
+
+The frontend should be stateless for application data. Rust is the source of truth for:
+
+- LV1 connection state.
+- Current scene.
+- Scene list and counts.
+- Channel topology and counts.
+- Fade state.
+- Lockout state.
+- Recent logs and events.
+- Connection errors and safety warnings.
+
+React may keep only ephemeral UI state that has no safety meaning:
+
+- Active tab.
+- In-progress text field values before a command is submitted.
+- Local loading/error display while waiting for a command response, if needed.
+
+After every command that can change app state, React should refresh from `get_app_status()` or consume the emitted Rust event that carries the new status. React should not derive or cache authoritative status from previous UI actions.
 
 ## Runtime State
 
@@ -91,28 +112,39 @@ fade-event
 app-log
 ```
 
-Events are for live UI updates. The frontend should still call `get_app_status` on startup and after reconnects so it can recover from missed events.
+Events are for live UI updates and should carry enough information for React to replace its rendered snapshot. The frontend should still call `get_app_status` on startup, after reconnects, and after state-changing commands so it can recover from missed events. React must not infer durable app state by replaying event history locally.
 
-## App Status DTO
+## App Snapshot DTO
 
-The frontend-facing status should be stable and serializable:
+The frontend-facing snapshot should be stable, serializable, and broad enough that React can render the shell without maintaining its own application store:
 
 ```ts
-type AppStatus = {
+type AppSnapshot = {
   connection: "disconnected" | "connecting" | "connected";
   currentScene: null | {
     index: number;
     name: string;
   };
+  scenes: Array<{
+    index: number;
+    name: string;
+  }>;
   sceneCount: number;
   channelCount: number;
   fadeState: "idle" | "running" | "blocked";
   lockout: boolean;
+  logs: Array<{
+    id: number;
+    timestamp: string;
+    source: "app" | "lv1" | "fade";
+    severity: "info" | "warning" | "error";
+    message: string;
+  }>;
   lastEventAt: string | null;
 };
 ```
 
-This DTO can grow later, but Phase 6 should keep it focused on state the shell actually renders.
+This DTO can grow later, but Phase 6 should keep it focused on state the shell actually renders. The key rule is that React receives the current snapshot from Rust instead of reconstructing the app model itself.
 
 ## UI Structure
 
