@@ -1,5 +1,6 @@
 //! LV1 live state mirror — actor, types, commands, and events.
 
+use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::osc::OscArg;
@@ -60,6 +61,18 @@ pub struct Lv1StateSnapshot {
     pub channels: Vec<ChannelInfo>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum Lv1ActorError {
+    #[error("LV1 actor command channel is closed")]
+    CommandChannelClosed,
+    #[error("LV1 actor reply channel is closed")]
+    ReplyChannelClosed,
+    #[error("LV1 actor is not connected")]
+    NotConnected,
+    #[error("LV1 actor failed to send command to LV1")]
+    CommandSendFailed,
+}
+
 // ---------------------------------------------------------------------------
 // Commands and events
 // ---------------------------------------------------------------------------
@@ -75,14 +88,16 @@ pub enum Lv1Command {
         group: i32,
         channel: i32,
         gain_db: f64,
+        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
     },
     SetMute {
         group: i32,
         channel: i32,
         muted: bool,
+        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
     },
     Flush {
-        reply: oneshot::Sender<()>,
+        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
     },
 }
 
@@ -278,34 +293,64 @@ impl Lv1ActorHandle {
     }
 
     /// Send a `/Set/Track/Out/Gain` command to LV1. Fire and forget.
-    pub async fn set_gain(&self, group: i32, channel: i32, gain_db: f64) {
+    pub async fn set_gain(
+        &self,
+        group: i32,
+        channel: i32,
+        gain_db: f64,
+    ) -> Result<(), Lv1ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self
             .tx
             .send(Lv1Command::SetGain {
                 group,
                 channel,
                 gain_db,
+                reply: reply_tx,
             })
-            .await;
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
+
+        reply_rx
+            .await
+            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
     }
 
     /// Send a `/Set/Track/Out/Mute` command to LV1. Fire and forget.
-    pub async fn set_mute(&self, group: i32, channel: i32, muted: bool) {
+    pub async fn set_mute(
+        &self,
+        group: i32,
+        channel: i32,
+        muted: bool,
+    ) -> Result<(), Lv1ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
         let _ = self
             .tx
             .send(Lv1Command::SetMute {
                 group,
                 channel,
                 muted,
+                reply: reply_tx,
             })
-            .await;
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
+
+        reply_rx
+            .await
+            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
     }
 
     /// Wait until all previously queued commands have been processed.
-    pub async fn flush(&self) {
+    pub async fn flush(&self) -> Result<(), Lv1ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self.tx.send(Lv1Command::Flush { reply: reply_tx }).await;
-        let _ = reply_rx.await;
+        self.tx
+            .send(Lv1Command::Flush { reply: reply_tx })
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
+
+        reply_rx
+            .await
+            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
     }
 }
 
@@ -374,14 +419,14 @@ async fn drain_commands_for(
                 Some(Lv1Command::Subscribe { tx }) => {
                     state.subscribers.push(tx);
                 }
-                Some(Lv1Command::SetGain { .. }) => {
-                    // Silently drop — not connected
+                Some(Lv1Command::SetGain { reply, .. }) => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
-                Some(Lv1Command::SetMute { .. }) => {
-                    // Silently drop — not connected
+                Some(Lv1Command::SetMute { reply, .. }) => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
                 Some(Lv1Command::Flush { reply }) => {
-                    let _ = reply.send(());
+                    let _ = reply.send(Ok(()));
                 }
             },
         }
@@ -423,14 +468,14 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
                 Lv1Command::Subscribe { tx } => {
                     state.subscribers.push(tx);
                 }
-                Lv1Command::SetGain { .. } => {
-                    // Silently drop — not connected yet
+                Lv1Command::SetGain { reply, .. } => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
-                Lv1Command::SetMute { .. } => {
-                    // Silently drop — not connected yet
+                Lv1Command::SetMute { reply, .. } => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
                 Lv1Command::Flush { reply } => {
-                    let _ = reply.send(());
+                    let _ = reply.send(Ok(()));
                 }
             }
         }
@@ -506,8 +551,8 @@ async fn run_connected(
                     Some(Lv1Command::Subscribe { tx }) => {
                         state.subscribers.push(tx);
                     }
-                    Some(Lv1Command::SetGain { group, channel, gain_db }) => {
-                        let _ = send_async(
+                    Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
+                        let result = send_async(
                             writer,
                             "/Set/Track/Out/Gain",
                             &[
@@ -515,10 +560,18 @@ async fn run_connected(
                                 crate::osc::OscArg::Int(channel),
                                 crate::osc::OscArg::Double(gain_db),
                             ],
-                        ).await;
+                        )
+                        .await
+                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            return DisconnectReason::TcpError;
+                        }
                     }
-                    Some(Lv1Command::SetMute { group, channel, muted }) => {
-                        let _ = send_async(
+                    Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
+                        let result = send_async(
                             writer,
                             "/Set/Track/Out/Mute",
                             &[
@@ -526,10 +579,18 @@ async fn run_connected(
                                 crate::osc::OscArg::Int(channel),
                                 crate::osc::OscArg::Bool(muted),
                             ],
-                        ).await;
+                        )
+                        .await
+                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            return DisconnectReason::TcpError;
+                        }
                     }
                     Some(Lv1Command::Flush { reply }) => {
-                        let _ = reply.send(());
+                        let _ = reply.send(Ok(()));
                     }
                 }
             }
@@ -1016,7 +1077,7 @@ mod tests {
         .unwrap();
 
         // Should not panic — SetGain command is accepted
-        handle.set_gain(0, 0, -20.0).await;
+        assert!(handle.set_gain(0, 0, -20.0).await.is_ok());
     }
 
     #[tokio::test]
@@ -1067,7 +1128,7 @@ mod tests {
         .unwrap();
 
         let sent_at = std::time::Instant::now();
-        handle.set_gain(0, 1, -12.5).await;
+        assert!(handle.set_gain(0, 1, -12.5).await.is_ok());
 
         tokio::task::spawn_blocking(move || {
             loop {
@@ -1134,7 +1195,7 @@ mod tests {
         .unwrap();
 
         let sent_at = std::time::Instant::now();
-        handle.set_mute(0, 1, true).await;
+        assert!(handle.set_mute(0, 1, true).await.is_ok());
 
         tokio::task::spawn_blocking(move || {
             loop {
@@ -1151,6 +1212,65 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle.set_mute(0, 1, true),
+        )
+        .await
+        .unwrap();
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            drop(stream);
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, Lv1Event::Connected) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, Lv1Event::Disconnected) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let result = handle.set_mute(0, 1, true).await;
+        assert!(result.is_err());
     }
 
     #[tokio::test]
@@ -1200,8 +1320,8 @@ mod tests {
         .await
         .unwrap();
 
-        handle.set_mute(0, 1, true).await;
-        handle.flush().await;
+        assert!(handle.set_mute(0, 1, true).await.is_ok());
+        assert!(handle.flush().await.is_ok());
 
         loop {
             let address = address_rx

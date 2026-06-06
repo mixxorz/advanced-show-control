@@ -568,6 +568,25 @@ async fn wait_for_channels(
     }
 }
 
+// LV1 has no explicit mute-list-complete marker, so give late mute updates a
+// short window to land before capturing the Vegas baseline.
+const INITIAL_MUTE_SETTLE_MS: u64 = 150;
+
+async fn wait_for_channels_with_mute_settle(
+    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    timeout_ms: u64,
+) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
+    let initial = wait_for_channels(lv1, timeout_ms).await?;
+    tokio::time::sleep(Duration::from_millis(INITIAL_MUTE_SETTLE_MS)).await;
+
+    let snapshot = lv1.get_state().await;
+    if snapshot.channels.is_empty() {
+        Ok(initial)
+    } else {
+        Ok(snapshot.channels)
+    }
+}
+
 async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
     use lv1_scene_fade_utility::lv1::state::{ChannelInfo, Lv1Event, spawn_actor};
     use lv1_scene_fade_utility::vegas::gain_db_at;
@@ -591,14 +610,15 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     .await
     .map_err(|_| "timed out waiting for LV1 connection")?;
 
-    let mut original: Vec<ChannelInfo> = wait_for_channels(&lv1, timeout_ms).await?;
+    let mut original: Vec<ChannelInfo> =
+        wait_for_channels_with_mute_settle(&lv1, timeout_ms).await?;
     original.sort_by_key(|ch| (ch.group, ch.channel));
     println!("[vegas] captured {} faders", original.len());
 
     for ch in &original {
-        lv1.set_mute(ch.group, ch.channel, true).await;
+        lv1.set_mute(ch.group, ch.channel, true).await?;
     }
-    lv1.flush().await;
+    lv1.flush().await?;
     println!("[vegas] muted captured faders; press Ctrl-C to stop and restore");
 
     let mut interval = tokio::time::interval(Duration::from_millis(1000 / VEGAS_TICK_HZ));
@@ -613,7 +633,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
             }
             _ = interval.tick() => {
                 for ch in &original {
-                    lv1.set_gain(ch.group, ch.channel, gain_db_at(ch.group, ch.channel, tick)).await;
+                    let _ = lv1.set_gain(ch.group, ch.channel, gain_db_at(ch.group, ch.channel, tick)).await;
                 }
                 tick = tick.wrapping_add(1);
             }
@@ -621,13 +641,13 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     }
 
     for ch in &original {
-        lv1.set_gain(ch.group, ch.channel, ch.gain_db).await;
+        lv1.set_gain(ch.group, ch.channel, ch.gain_db).await?;
     }
-    lv1.flush().await;
+    lv1.flush().await?;
     for ch in &original {
-        lv1.set_mute(ch.group, ch.channel, ch.muted).await;
+        lv1.set_mute(ch.group, ch.channel, ch.muted).await?;
     }
-    lv1.flush().await;
+    lv1.flush().await?;
 
     println!("[vegas] restore commands sent");
     Ok(())
@@ -896,6 +916,79 @@ mod tests {
         let snapshot = wait_for_channels(&handle, 2_000).await.unwrap();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].name, "Channel 1");
+
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn vegas_channel_snapshot_wait_includes_late_mute_notification() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let channels = vec![
+                lv1_scene_fade_utility::osc::OscArg::Int(1),
+                lv1_scene_fade_utility::osc::OscArg::String("Channel 1".to_string()),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Double(-9.1),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+            ];
+            let frame =
+                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &channels).unwrap();
+            stream.write_all(&frame).unwrap();
+
+            std::thread::sleep(Duration::from_millis(100));
+
+            let mute = vec![
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Bool(true),
+            ];
+            let frame =
+                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute)
+                    .unwrap();
+            stream.write_all(&frame).unwrap();
+
+            std::thread::sleep(Duration::from_millis(250));
+        });
+
+        let handle = lv1_scene_fade_utility::lv1::state::spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(event) = events.recv().await {
+                if matches!(
+                    event,
+                    lv1_scene_fade_utility::lv1::state::Lv1Event::Connected
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        let snapshot = wait_for_channels_with_mute_settle(&handle, 2_000)
+            .await
+            .unwrap();
+        assert_eq!(snapshot.len(), 1);
+        assert!(snapshot[0].muted);
 
         server.await.unwrap();
     }

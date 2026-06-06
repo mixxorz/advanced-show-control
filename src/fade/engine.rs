@@ -254,7 +254,7 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                     }
                     Some(FadeCommand::FinishNow) => {
                         for ch in &state.channels {
-                            lv1.set_gain(ch.group, ch.channel, ch.target_db).await;
+                            let _ = lv1.set_gain(ch.group, ch.channel, ch.target_db).await;
                         }
                         state.cancel_all_in_place();
                         tick_interval = None;
@@ -269,7 +269,7 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
                     if let Some(new_db) = ch.next_send(now) {
-                        lv1.set_gain(ch.group, ch.channel, new_db).await;
+                        let _ = lv1.set_gain(ch.group, ch.channel, new_db).await;
                     }
                     if ch.is_done(now) {
                         done_indices.push(i);
