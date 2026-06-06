@@ -3,6 +3,10 @@ name = "lv1-scene-fade-utility"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+members = [".", "src-tauri"]
+resolver = "2"
+
 [lib]
 name = "lv1_scene_fade_utility"
 path = "src/lib.rs"

@@ -1,0 +1,14 @@
+[package]
+name = "lv1-scene-fade-utility-tauri"
+version = "0.1.0"
+description = "Desktop shell for LV1 Scene Fade Utility"
+edition = "2024"
+
+[build-dependencies]
+tauri-build = { version = "=2.6.2", features = [] }
+
+[dependencies]
+lv1-scene-fade-utility = { path = ".." }
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "=2.11.2", features = [] }
+tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }

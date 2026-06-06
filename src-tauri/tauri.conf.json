@@ -1,0 +1,27 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "LV1 Scene Fade Utility",
+  "version": "0.1.0",
+  "identifier": "com.lv1scenefade.utility",
+  "build": {
+    "beforeDevCommand": "npm --prefix ../ui run dev",
+    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "devUrl": "http://127.0.0.1:1420",
+    "frontendDist": "../ui/dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "LV1 Scene Fade Utility",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 960,
+        "minHeight": 640
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all"
+  }
+}
