@@ -60,6 +60,25 @@ enum Command {
         #[arg(long, default_value_t = 6000)]
         timeout_ms: u64,
     },
+    #[command(about = "Send repeated gain commands on a single connection and report echo rate and latency")]
+    RateTest {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long, default_value_t = 0)]
+        group: i32,
+        #[arg(long, default_value_t = 0)]
+        channel: i32,
+        #[arg(long, default_value_t = 25)]
+        rate_hz: u64,
+        #[arg(long, default_value_t = 40)]
+        count: u64,
+        #[arg(long, allow_hyphen_values = true, default_value_t = -20.0)]
+        start_db: f64,
+        #[arg(long, allow_hyphen_values = true, default_value_t = -10.0)]
+        end_db: f64,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -89,6 +108,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             port,
             timeout_ms,
         } => run_monitor(host, port, timeout_ms),
+        Command::RateTest {
+            host,
+            port,
+            group,
+            channel,
+            rate_hz,
+            count,
+            start_db,
+            end_db,
+        } => run_rate_test(host, port, group, channel, rate_hz, count, start_db, end_db),
     }
 }
 
@@ -247,6 +276,88 @@ fn run_monitor(
             }
         }
     });
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_rate_test(
+    host: Option<String>,
+    port: Option<u16>,
+    group: i32,
+    channel: i32,
+    rate_hz: u64,
+    count: u64,
+    start_db: f64,
+    end_db: f64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (host, port) = resolve_target(host, port, 6000)?;
+    let mut client = Lv1TcpClient::connect(&host, port)?;
+    client.register_myfoh("lv1-rate-test", &uuid::Uuid::new_v4().to_string())?;
+
+    let interval = Duration::from_micros(1_000_000 / rate_hz);
+    let step = if count > 1 { (end_db - start_db) / (count - 1) as f64 } else { 0.0 };
+
+    eprintln!("rate-test: group={group} ch={channel} {count} cmds @ {rate_hz} Hz ({start_db:.1}→{end_db:.1} dB)");
+    eprintln!("interval={:.1}ms  step={:.3} dB", interval.as_millis() as f64, step);
+
+    let mut sent_times: Vec<Instant> = Vec::with_capacity(count as usize);
+    let mut echo_times: Vec<(usize, Instant)> = Vec::new();
+
+    for i in 0..count {
+        let gain_db = start_db + i as f64 * step;
+        let t = Instant::now();
+        client.send(
+            "/Set/Track/Out/Gain",
+            &[OscArg::Int(group), OscArg::Int(channel), OscArg::Double(gain_db)],
+        )?;
+        sent_times.push(t);
+
+        // Drain any frames that arrived since last send
+        for frame in client.read_available()? {
+            if let Ok(msg) = decode_frame_payload(&frame) {
+                if let Some((addr, args)) = pong_for_ping(&msg) {
+                    client.send(addr, &args)?;
+                } else if msg.address == "/Notify/Track/Out/Gain" {
+                    echo_times.push((sent_times.len() - 1, Instant::now()));
+                }
+            }
+        }
+
+        if i + 1 < count {
+            std::thread::sleep(interval);
+        }
+    }
+
+    // Wait up to 2s for remaining echoes
+    let wait_until = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < wait_until && echo_times.len() < count as usize {
+        for frame in client.read_available()? {
+            if let Ok(msg) = decode_frame_payload(&frame) {
+                if let Some((addr, args)) = pong_for_ping(&msg) {
+                    client.send(addr, &args)?;
+                } else if msg.address == "/Notify/Track/Out/Gain" {
+                    echo_times.push((sent_times.len() - 1, Instant::now()));
+                }
+            }
+        }
+    }
+
+    let received = echo_times.len();
+    println!("Sent:     {count} commands at {rate_hz} Hz");
+    println!("Received: {received} echoes");
+    println!("Echo rate: {:.1}%", received as f64 / count as f64 * 100.0);
+
+    if !echo_times.is_empty() {
+        let latencies_ms: Vec<f64> = echo_times
+            .iter()
+            .map(|(i, t)| t.duration_since(sent_times[*i]).as_secs_f64() * 1000.0)
+            .collect();
+        let avg = latencies_ms.iter().sum::<f64>() / latencies_ms.len() as f64;
+        let min = latencies_ms.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max = latencies_ms.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        println!("Echo latency: avg={avg:.1}ms  min={min:.1}ms  max={max:.1}ms");
+    }
 
     Ok(())
 }
