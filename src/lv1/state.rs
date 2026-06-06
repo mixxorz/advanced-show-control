@@ -318,6 +318,20 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
 
         state.connection = ConnectionStatus::Connected;
         state.last_ping = Instant::now();
+
+        // --- Drain pending commands before first fan-out to ensure subscribers are ready ---
+        loop {
+            match cmd_rx.try_recv() {
+                Ok(Lv1Command::GetState { reply }) => {
+                    let _ = reply.send(state.snapshot());
+                }
+                Ok(Lv1Command::Subscribe { tx }) => {
+                    state.subscribers.push(tx);
+                }
+                Err(_) => break,
+            }
+        }
+
         state.fan_out(Lv1Event::Connected);
 
         // --- Run loop ---
@@ -553,5 +567,139 @@ mod tests {
         ];
         apply_fader_update(&mut channels, 0, 99, -3.0);
         assert_eq!(channels[0].gain_db, -9.0);
+    }
+
+    use crate::lv1::tcp::encode_frame;
+    use std::net::TcpListener;
+    use std::io::Write;
+
+    fn make_lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
+        encode_frame(address, args).unwrap()
+    }
+
+    #[tokio::test]
+    async fn actor_connects_and_emits_connected_event() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::task::spawn_blocking(move || {
+            let (_stream, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        let event = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            events.recv(),
+        ).await.unwrap().unwrap();
+
+        assert!(matches!(event, Lv1Event::Connected));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let _server = tokio::task::spawn_blocking(move || {
+            for i in 0..2 {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if i == 0 {
+                            // First connection: immediately drop
+                            drop(stream);
+                        } else {
+                            // Second connection: keep alive
+                            std::thread::sleep(std::time::Duration::from_secs(2));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Accept error: {}", e);
+                        break;
+                    }
+                }
+            }
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        let mut got_disconnect = false;
+        let mut got_reconnect = false;
+        let deadline = std::time::Duration::from_secs(10);
+        let result = tokio::time::timeout(deadline, async {
+            while let Some(event) = events.recv().await {
+                match event {
+                    Lv1Event::Disconnected => got_disconnect = true,
+                    Lv1Event::Connected if got_disconnect => {
+                        got_reconnect = true;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }).await;
+        assert!(result.is_ok(), "timed out waiting for reconnect");
+        assert!(got_reconnect);
+    }
+
+    #[tokio::test]
+    async fn actor_parses_and_emits_scene_changed() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            stream.write_all(&make_lv1_frame("/Notify/Scene/Name", &[OscArg::String("Scene A".to_string())])).unwrap();
+            stream.write_all(&make_lv1_frame("/Notify/CurSceneIndex", &[OscArg::Int(0)])).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        let mut scene_event = None;
+        let deadline = std::time::Duration::from_secs(3);
+        tokio::time::timeout(deadline, async {
+            while let Some(event) = events.recv().await {
+                if let Lv1Event::SceneChanged(s) = event {
+                    scene_event = Some(s);
+                    break;
+                }
+            }
+        }).await.unwrap();
+
+        let scene = scene_event.unwrap();
+        assert_eq!(scene.index, 0);
+        assert_eq!(scene.name, "Scene A");
+    }
+
+    #[tokio::test]
+    async fn get_state_returns_snapshot_with_current_values() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(event) = events.recv().await {
+                if matches!(event, Lv1Event::Connected) { break; }
+            }
+        }).await.unwrap();
+
+        let snapshot = handle.get_state().await;
+        assert_eq!(snapshot.connection, ConnectionStatus::Connected);
     }
 }
