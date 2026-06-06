@@ -29,14 +29,16 @@ pub async fn open_show_file_dialog(
     app: AppHandle,
     state: State<'_, ShellState>,
 ) -> Result<AppViewState, String> {
-    let path = spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_directory(default_show_folder())
+    let path = spawn_blocking(|| -> Result<Option<std::path::PathBuf>, String> {
+        let folder = default_show_folder();
+        let folder = ensure_show_file_folder(folder)?;
+        Ok(rfd::FileDialog::new()
+            .set_directory(folder)
             .add_filter("LV1 Show", &["lv1show"])
-            .pick_file()
+            .pick_file())
     })
     .await
-    .map_err(|err| format!("Failed to open file dialog: {err}"))?
+    .map_err(|err| format!("Failed to open file dialog: {err}"))??
     .ok_or_else(|| "Open show file cancelled".to_string())?;
 
     let mut file = read_show_file(&path)?;
@@ -129,15 +131,17 @@ pub async fn save_show_file_as_dialog(
     app: AppHandle,
     state: State<'_, ShellState>,
 ) -> Result<AppViewState, String> {
-    let path = spawn_blocking(|| {
-        rfd::FileDialog::new()
-            .set_directory(default_show_folder())
+    let path = spawn_blocking(|| -> Result<Option<std::path::PathBuf>, String> {
+        let folder = default_show_folder();
+        let folder = ensure_show_file_folder(folder)?;
+        Ok(rfd::FileDialog::new()
+            .set_directory(folder)
             .set_file_name("Untitled.lv1show")
             .add_filter("LV1 Show", &["lv1show"])
-            .save_file()
+            .save_file())
     })
     .await
-    .map_err(|err| format!("Failed to open save dialog: {err}"))?
+    .map_err(|err| format!("Failed to open save dialog: {err}"))??
     .ok_or_else(|| "Save show file cancelled".to_string())?;
 
     let snapshot = save_show_file_to_path(&state, path).await?;
@@ -257,6 +261,12 @@ async fn save_show_file_to_path(
         .await)
 }
 
+fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(&path)
+        .map_err(|err| format!("Failed to create show file folder: {err}"))?;
+    Ok(path)
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct Lv1EventPayload {
     kind: String,
@@ -271,6 +281,40 @@ fn current_timestamp_millis() -> String {
         .unwrap_or_default()
         .as_millis()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "lv1-scene-fade-utility-commands-{}-{}-{}",
+            name,
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        path
+    }
+
+    #[test]
+    fn ensure_show_file_folder_creates_missing_directory() {
+        let folder = temp_dir("show-folder").join("LV1 Scene Fade Utility");
+
+        let created = ensure_show_file_folder(folder.clone()).unwrap();
+
+        assert_eq!(created, folder);
+        assert!(folder.exists());
+
+        let _ = fs::remove_dir_all(created.parent().unwrap());
+    }
 }
 
 impl From<&Lv1Event> for Lv1EventPayload {
