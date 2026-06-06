@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use lv1_scene_fade_utility::lv1::state::{ConnectionStatus, Lv1StateSnapshot};
+use lv1_scene_fade_utility::lv1::state::{ConnectionStatus, Lv1Event, Lv1StateSnapshot};
 use serde::Serialize;
 use tokio::sync::Mutex;
 
@@ -130,6 +130,78 @@ impl ShellState {
         inner.push_log(LogSource::App, LogSeverity::Info, "Disconnected from LV1".to_string());
         snapshot_from_inner(&inner)
     }
+
+    pub async fn replace_lv1_snapshot(&self, snapshot: Lv1StateSnapshot) -> AppSnapshot {
+        let mut inner = self.inner.lock().await;
+        inner.lv1_snapshot = Some(snapshot);
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn apply_lv1_event(&self, event: &Lv1Event) -> AppSnapshot {
+        let mut inner = self.inner.lock().await;
+        match event {
+            Lv1Event::Connected => {
+                ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
+                inner.push_log(LogSource::Lv1, LogSeverity::Info, "LV1 connected".to_string());
+            }
+            Lv1Event::Disconnected => {
+                inner.lv1_snapshot = None;
+                inner.push_log(LogSource::Lv1, LogSeverity::Warning, "LV1 disconnected".to_string());
+            }
+            Lv1Event::SceneChanged(scene) => {
+                ensure_lv1_snapshot(&mut inner).scene = Some(scene.clone());
+                inner.push_log(
+                    LogSource::Lv1,
+                    LogSeverity::Info,
+                    format!("Scene changed to {}: {}", scene.index, scene.name),
+                );
+            }
+            Lv1Event::SceneListChanged(scenes) => {
+                ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
+                inner.push_log(
+                    LogSource::Lv1,
+                    LogSeverity::Info,
+                    format!("Scene list updated: {} scenes", scenes.len()),
+                );
+            }
+            Lv1Event::FaderChanged {
+                group,
+                channel,
+                gain_db,
+            } => {
+                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
+                {
+                    existing.gain_db = *gain_db;
+                }
+            }
+            Lv1Event::MuteChanged {
+                group,
+                channel,
+                muted,
+            } => {
+                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
+                {
+                    existing.muted = *muted;
+                }
+            }
+            Lv1Event::ChannelTopologyChanged(channels) => {
+                ensure_lv1_snapshot(&mut inner).channels = channels.clone();
+                inner.push_log(
+                    LogSource::Lv1,
+                    LogSeverity::Info,
+                    format!("Channel topology updated: {} channels", channels.len()),
+                );
+            }
+        }
+
+        snapshot_from_inner(&inner)
+    }
 }
 
 impl ShellInner {
@@ -148,6 +220,15 @@ impl ShellInner {
             self.logs.pop_front();
         }
     }
+}
+
+fn ensure_lv1_snapshot(inner: &mut ShellInner) -> &mut Lv1StateSnapshot {
+    inner.lv1_snapshot.get_or_insert_with(|| Lv1StateSnapshot {
+        connection: ConnectionStatus::Connected,
+        scene: None,
+        scene_list: Vec::new(),
+        channels: Vec::new(),
+    })
 }
 
 fn snapshot_from_inner(inner: &ShellInner) -> AppSnapshot {
@@ -264,5 +345,20 @@ mod tests {
         assert_eq!(snapshot.current_scene.unwrap().name, "Verse");
         assert_eq!(snapshot.scene_count, 1);
         assert_eq!(snapshot.channel_count, 1);
+    }
+
+    #[tokio::test]
+    async fn lv1_scene_event_updates_rust_owned_snapshot() {
+        let state = ShellState::default();
+        let snapshot = state
+            .apply_lv1_event(&Lv1Event::SceneChanged(SceneState {
+                index: 7,
+                name: "Chorus".to_string(),
+            }))
+            .await;
+
+        assert_eq!(snapshot.connection, AppConnectionState::Connected);
+        assert_eq!(snapshot.current_scene.unwrap().name, "Chorus");
+        assert_eq!(snapshot.logs.len(), 1);
     }
 }
