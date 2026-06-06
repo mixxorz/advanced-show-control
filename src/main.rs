@@ -51,6 +51,15 @@ enum Command {
         #[arg(long, allow_hyphen_values = true)]
         gain_db: f64,
     },
+    #[command(about = "Connect to an LV1 device and print state changes to the terminal")]
+    Monitor {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long, default_value_t = 6000)]
+        timeout_ms: u64,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -75,6 +84,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             channel,
             gain_db,
         } => run_set_gain(host, port, group, channel, gain_db),
+        Command::Monitor {
+            host,
+            port,
+            timeout_ms,
+        } => run_monitor(host, port, timeout_ms),
     }
 }
 
@@ -196,6 +210,47 @@ fn run_set_gain(
     Ok(())
 }
 
+fn run_monitor(
+    host: Option<String>,
+    port: Option<u16>,
+    timeout_ms: u64,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use lv1_scene_fade_utility::lv1::state::{Lv1Event, spawn_actor};
+
+    let (host, port) = resolve_target(host, port, timeout_ms)?;
+    eprintln!("connecting to {host}:{port}");
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let handle = spawn_actor(host.clone(), port);
+        let mut events = handle.subscribe().await;
+
+        while let Some(event) = events.recv().await {
+            match event {
+                Lv1Event::Connected => println!("[connected] {host}:{port}"),
+                Lv1Event::Disconnected => println!("[disconnected] reconnecting in 3s..."),
+                Lv1Event::SceneChanged(scene) => {
+                    println!("[scene] index={} name={:?}", scene.index, scene.name);
+                }
+                Lv1Event::SceneListChanged(list) => {
+                    println!("[scene-list] {} scenes", list.len());
+                    for entry in &list {
+                        println!("  [{}] {:?}", entry.index, entry.name);
+                    }
+                }
+                Lv1Event::FaderChanged { group, channel, gain_db } => {
+                    println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
+                }
+                Lv1Event::ChannelTopologyChanged(channels) => {
+                    println!("[channels] {} channels loaded", channels.len());
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
 fn unix_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -306,5 +361,29 @@ mod tests {
         let err = parse_cli_from(["lv1-scene-fade-utility", "--help"]).unwrap_err();
 
         assert!(err.to_string().contains("Usage: lv1-probe <COMMAND>"));
+    }
+
+    #[test]
+    fn parses_monitor_command() {
+        let cli = Cli::try_parse_from([
+            "lv1-probe",
+            "monitor",
+            "--host",
+            "192.168.1.10",
+            "--port",
+            "50000",
+            "--timeout-ms",
+            "3000",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::Monitor { host, port, timeout_ms } => {
+                assert_eq!(host.as_deref(), Some("192.168.1.10"));
+                assert_eq!(port, Some(50000));
+                assert_eq!(timeout_ms, 3000);
+            }
+            other => panic!("expected monitor command, got {other:?}"),
+        }
     }
 }
