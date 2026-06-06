@@ -556,34 +556,117 @@ async fn wait_for_channels(
     timeout_ms: u64,
 ) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    wait_for_channels_until(lv1, deadline).await
+}
+
+async fn wait_for_channels_until(
+    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    deadline: Instant,
+) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
     loop {
         let snapshot = lv1.get_state().await;
         if !snapshot.channels.is_empty() {
             return Ok(snapshot.channels);
         }
-        if Instant::now() >= deadline {
+        let now = Instant::now();
+        if now >= deadline {
             return Err("timed out waiting for LV1 channel snapshot".into());
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        tokio::time::sleep((deadline - now).min(Duration::from_millis(50))).await;
     }
 }
 
-// LV1 has no explicit mute-list-complete marker, so give late mute updates a
-// short window to land before capturing the Vegas baseline.
+// LV1 has no explicit mute-list-complete marker, so quiet settling is the best
+// protocol boundary we have for the initial Vegas mute baseline.
 const INITIAL_MUTE_SETTLE_MS: u64 = 150;
 
 async fn wait_for_channels_with_mute_settle(
     lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    events: &mut tokio::sync::mpsc::Receiver<lv1_scene_fade_utility::lv1::state::Lv1Event>,
     timeout_ms: u64,
 ) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
-    let initial = wait_for_channels(lv1, timeout_ms).await?;
-    tokio::time::sleep(Duration::from_millis(INITIAL_MUTE_SETTLE_MS)).await;
+    use lv1_scene_fade_utility::lv1::state::Lv1Event;
 
-    let snapshot = lv1.get_state().await;
-    if snapshot.channels.is_empty() {
-        Ok(initial)
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let mut snapshot = wait_for_channels_until(lv1, deadline).await?;
+    let settle_window = Duration::from_millis(INITIAL_MUTE_SETTLE_MS);
+    let mut settle_deadline = Instant::now() + settle_window;
+
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(snapshot);
+        }
+
+        let sleep_until = settle_deadline.min(deadline);
+        let sleep = tokio::time::sleep(sleep_until.saturating_duration_since(now));
+        tokio::pin!(sleep);
+
+        tokio::select! {
+            _ = &mut sleep => {
+                let latest = lv1.get_state().await;
+                if !latest.channels.is_empty() {
+                    snapshot = latest.channels;
+                }
+                if Instant::now() >= settle_deadline || Instant::now() >= deadline {
+                    return Ok(snapshot);
+                }
+            }
+            event = events.recv() => {
+                match event {
+                    Some(Lv1Event::MuteChanged { .. }) | Some(Lv1Event::ChannelTopologyChanged(_)) => {
+                        let latest = lv1.get_state().await;
+                        if !latest.channels.is_empty() {
+                            snapshot = latest.channels;
+                        }
+                        settle_deadline = Instant::now() + settle_window;
+                    }
+                    Some(_) => {}
+                    None => {}
+                }
+            }
+        }
+    }
+}
+
+fn summarize_vegas_restore_failures(failures: &[String]) -> String {
+    format!("failed to restore Vegas snapshot: {}", failures.join("; "))
+}
+
+async fn restore_vegas_snapshot(
+    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    original: &[lv1_scene_fade_utility::lv1::state::ChannelInfo],
+) -> AppResult<()> {
+    let mut failures = Vec::new();
+
+    for ch in original {
+        if let Err(err) = lv1.set_gain(ch.group, ch.channel, ch.gain_db).await {
+            failures.push(format!(
+                "gain restore failed for {}:{} ({err})",
+                ch.group, ch.channel
+            ));
+        }
+    }
+    if let Err(err) = lv1.flush().await {
+        failures.push(format!("gain flush failed ({err})"));
+    }
+
+    for ch in original {
+        if let Err(err) = lv1.set_mute(ch.group, ch.channel, ch.muted).await {
+            failures.push(format!(
+                "mute restore failed for {}:{} ({err})",
+                ch.group, ch.channel
+            ));
+        }
+    }
+    if let Err(err) = lv1.flush().await {
+        failures.push(format!("mute flush failed ({err})"));
+    }
+
+    if failures.is_empty() {
+        Ok(())
     } else {
-        Ok(snapshot.channels)
+        Err(summarize_vegas_restore_failures(&failures).into())
     }
 }
 
@@ -611,7 +694,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     .map_err(|_| "timed out waiting for LV1 connection")?;
 
     let mut original: Vec<ChannelInfo> =
-        wait_for_channels_with_mute_settle(&lv1, timeout_ms).await?;
+        wait_for_channels_with_mute_settle(&lv1, &mut events, timeout_ms).await?;
     original.sort_by_key(|ch| (ch.group, ch.channel));
     println!("[vegas] captured {} faders", original.len());
 
@@ -633,24 +716,25 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
             }
             _ = interval.tick() => {
                 for ch in &original {
-                    let _ = lv1.set_gain(ch.group, ch.channel, gain_db_at(ch.group, ch.channel, tick)).await;
+                    if let Err(err) = lv1.set_gain(ch.group, ch.channel, gain_db_at(ch.group, ch.channel, tick)).await {
+                        let animation_error = format!("[vegas] animation failed for {}:{} ({err})", ch.group, ch.channel);
+                        let restore_error = restore_vegas_snapshot(&lv1, &original).await.err();
+                        return match restore_error {
+                            Some(restore_error) => Err(format!("{animation_error}; {restore_error}").into()),
+                            None => Err(animation_error.into()),
+                        };
+                    }
                 }
                 tick = tick.wrapping_add(1);
             }
         }
     }
 
-    for ch in &original {
-        lv1.set_gain(ch.group, ch.channel, ch.gain_db).await?;
+    let restore_result = restore_vegas_snapshot(&lv1, &original).await;
+    if restore_result.is_ok() {
+        println!("[vegas] restore commands sent");
     }
-    lv1.flush().await?;
-    for ch in &original {
-        lv1.set_mute(ch.group, ch.channel, ch.muted).await?;
-    }
-    lv1.flush().await?;
-
-    println!("[vegas] restore commands sent");
-    Ok(())
+    restore_result
 }
 
 fn unix_timestamp_secs() -> u64 {
@@ -953,15 +1037,27 @@ mod tests {
                 lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &channels).unwrap();
             stream.write_all(&frame).unwrap();
 
-            std::thread::sleep(Duration::from_millis(100));
+            std::thread::sleep(Duration::from_millis(50));
 
-            let mute = vec![
+            let mute_on = vec![
                 lv1_scene_fade_utility::osc::OscArg::Int(0),
                 lv1_scene_fade_utility::osc::OscArg::Int(0),
                 lv1_scene_fade_utility::osc::OscArg::Bool(true),
             ];
             let frame =
-                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute)
+                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_on)
+                    .unwrap();
+            stream.write_all(&frame).unwrap();
+
+            std::thread::sleep(Duration::from_millis(80));
+
+            let mute_off = vec![
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                lv1_scene_fade_utility::osc::OscArg::Bool(false),
+            ];
+            let frame =
+                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_off)
                     .unwrap();
             stream.write_all(&frame).unwrap();
 
@@ -984,12 +1080,25 @@ mod tests {
         .await
         .unwrap();
 
-        let snapshot = wait_for_channels_with_mute_settle(&handle, 2_000)
+        let snapshot = wait_for_channels_with_mute_settle(&handle, &mut events, 2_000)
             .await
             .unwrap();
         assert_eq!(snapshot.len(), 1);
-        assert!(snapshot[0].muted);
+        assert!(!snapshot[0].muted);
 
         server.await.unwrap();
+    }
+
+    #[test]
+    fn summarize_vegas_restore_failures_combines_all_messages() {
+        let message = summarize_vegas_restore_failures(&[
+            "gain restore failed for 1:2 (boom)".to_string(),
+            "mute flush failed (kaput)".to_string(),
+        ]);
+
+        assert_eq!(
+            message,
+            "failed to restore Vegas snapshot: gain restore failed for 1:2 (boom); mute flush failed (kaput)"
+        );
     }
 }
