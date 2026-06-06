@@ -25,9 +25,9 @@ pub struct ProbeLogEntry {
 
 pub fn classify_message(msg: &OscMessage) -> MessageKind {
     let address = msg.address.as_str();
-    if address == "/Notify/Track/Out/Gain" || address.contains("/Gain") {
+    if is_fader_gain_address(address) {
         MessageKind::Fader
-    } else if address.to_ascii_lowercase().contains("scene") {
+    } else if is_scene_address(address) {
         MessageKind::Scene
     } else if address == "/handshake" || address == "/device_name" {
         MessageKind::Handshake
@@ -36,6 +36,23 @@ pub fn classify_message(msg: &OscMessage) -> MessageKind {
     } else {
         MessageKind::Other
     }
+}
+
+fn is_fader_gain_address(address: &str) -> bool {
+    let segments: Vec<_> = address
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    segments.last() == Some(&"Gain") && segments.iter().any(|segment| *segment == "Track")
+}
+
+fn is_scene_address(address: &str) -> bool {
+    address
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .any(|segment| {
+            segment.eq_ignore_ascii_case("Scene") || segment.eq_ignore_ascii_case("CurrentScene")
+        })
 }
 
 pub fn format_arg(arg: &OscArg) -> String {
@@ -126,6 +143,23 @@ mod tests {
         assert_eq!(classify_message(&msg("/ping")), MessageKind::Keepalive);
         assert_eq!(classify_message(&msg("/pong")), MessageKind::Keepalive);
         assert_eq!(classify_message(&msg("/Notify/Meters")), MessageKind::Other);
+    }
+
+    #[test]
+    fn leaves_gain_like_non_fader_messages_as_other() {
+        assert_eq!(
+            classify_message(&msg("/Notify/Track/Out/GainReduction")),
+            MessageKind::Other
+        );
+        assert_eq!(classify_message(&msg("/Some/GainMode")), MessageKind::Other);
+    }
+
+    #[test]
+    fn leaves_scene_like_non_scene_messages_as_other() {
+        assert_eq!(
+            classify_message(&msg("/Notify/Scenery")),
+            MessageKind::Other
+        );
     }
 
     #[test]
