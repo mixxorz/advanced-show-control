@@ -27,3 +27,15 @@ export type AppSnapshot = {
   logs: AppLogEntry[];
   lastEventAt: string | null;
 };
+
+export const disconnectedSnapshot: AppSnapshot = {
+  connection: "disconnected",
+  currentScene: null,
+  scenes: [],
+  sceneCount: 0,
+  channelCount: 0,
+  fadeState: "idle",
+  lockout: false,
+  logs: [],
+  lastEventAt: null,
+};
