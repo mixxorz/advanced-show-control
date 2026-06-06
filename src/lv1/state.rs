@@ -263,6 +263,159 @@ impl ActorState {
     }
 }
 
+/// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
+pub fn spawn_actor(host: String, port: u16) -> Lv1ActorHandle {
+    let (cmd_tx, cmd_rx) = mpsc::channel(32);
+    tokio::spawn(run_actor(host, port, cmd_rx));
+    Lv1ActorHandle { tx: cmd_tx }
+}
+
+async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Command>) {
+    let mut state = ActorState::new();
+
+    loop {
+        // --- Connect ---
+        let mut client = loop {
+            match Lv1TcpClient::connect(&host, port) {
+                Ok(c) => break c,
+                Err(_) => {
+                    tokio::time::sleep(RECONNECT_DELAY).await;
+                }
+            }
+        };
+
+        let device_name = "lv1-state-mirror";
+        let uuid = uuid::Uuid::new_v4().to_string();
+        if client.register_myfoh(device_name, &uuid).is_err() {
+            tokio::time::sleep(RECONNECT_DELAY).await;
+            continue;
+        }
+
+        state.connection = ConnectionStatus::Connected;
+        state.last_ping = Instant::now();
+        state.fan_out(Lv1Event::Connected);
+
+        // --- Run loop ---
+        let disconnected = run_connected(&mut client, &mut state, &mut cmd_rx).await;
+
+        // --- Disconnect ---
+        state.connection = ConnectionStatus::Disconnected;
+        state.scene = None;
+        state.channels.clear();
+        state.fan_out(Lv1Event::Disconnected);
+
+        if disconnected == DisconnectReason::CommandChannelClosed {
+            break;
+        }
+
+        tokio::time::sleep(RECONNECT_DELAY).await;
+    }
+}
+
+#[derive(PartialEq)]
+enum DisconnectReason {
+    TcpError,
+    PingTimeout,
+    CommandChannelClosed,
+}
+
+async fn run_connected(
+    client: &mut Lv1TcpClient,
+    state: &mut ActorState,
+    cmd_rx: &mut mpsc::Receiver<Lv1Command>,
+) -> DisconnectReason {
+    loop {
+        // Check ping watchdog
+        if state.last_ping.elapsed() > PING_TIMEOUT {
+            return DisconnectReason::PingTimeout;
+        }
+
+        tokio::select! {
+            // Poll TCP (non-blocking — read_available uses a 250ms timeout internally)
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                match client.read_available() {
+                    Err(_) => return DisconnectReason::TcpError,
+                    Ok(frames) => {
+                        for frame in frames {
+                            if let Ok(msg) = decode_frame_payload(&frame) {
+                                // Handle ping/pong
+                                if let Some((addr, args)) = pong_for_ping(&msg) {
+                                    let _ = client.send(addr, &args);
+                                    state.last_ping = Instant::now();
+                                    continue;
+                                }
+                                handle_message(state, &msg, client);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Handle commands
+            cmd = cmd_rx.recv() => {
+                match cmd {
+                    None => return DisconnectReason::CommandChannelClosed,
+                    Some(Lv1Command::GetState { reply }) => {
+                        let _ = reply.send(state.snapshot());
+                    }
+                    Some(Lv1Command::Subscribe { tx }) => {
+                        state.subscribers.push(tx);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage, _client: &mut Lv1TcpClient) {
+    match msg.address.as_str() {
+        "/Channels" => {
+            if let Ok(channels) = parse_channels_batch(&msg.args) {
+                state.channels = channels.clone();
+                state.fan_out(Lv1Event::ChannelTopologyChanged(channels));
+            }
+        }
+        "/Notify/CurSceneIndex" => {
+            if let Some(crate::osc::OscArg::Int(index)) = msg.args.first() {
+                if let Some(scene) = state.scene_buf.apply_index(*index) {
+                    state.scene = Some(scene.clone());
+                    state.fan_out(Lv1Event::SceneChanged(scene));
+                }
+            }
+        }
+        "/Notify/Scene/Name" => {
+            if let Some(crate::osc::OscArg::String(name)) = msg.args.first() {
+                if let Some(scene) = state.scene_buf.apply_name(name.clone()) {
+                    state.scene = Some(scene.clone());
+                    state.fan_out(Lv1Event::SceneChanged(scene));
+                }
+            }
+        }
+        "/Notify/SceneList" => {
+            if let Ok(list) = parse_scene_list(&msg.args) {
+                state.scene_list = list.clone();
+                state.fan_out(Lv1Event::SceneListChanged(list));
+            }
+        }
+        "/Notify/Track/Out/Gain" => {
+            if let (
+                Some(crate::osc::OscArg::Int(group)),
+                Some(crate::osc::OscArg::Int(channel)),
+                Some(crate::osc::OscArg::Double(gain_db)),
+            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+            {
+                apply_fader_update(&mut state.channels, *group, *channel, *gain_db);
+                state.fan_out(Lv1Event::FaderChanged {
+                    group: *group,
+                    channel: *channel,
+                    gain_db: *gain_db,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
