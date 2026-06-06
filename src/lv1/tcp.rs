@@ -22,6 +22,10 @@ pub enum Lv1TcpError {
 
 pub fn encode_frame(address: &str, args: &[OscArg]) -> Result<Vec<u8>, Lv1TcpError> {
     let payload = encode_message(address, args)?;
+    if payload.is_empty() || payload.len() > MAX_FRAME_PAYLOAD {
+        return Err(Lv1TcpError::InvalidLength(payload.len()));
+    }
+
     let mut frame = Vec::with_capacity(4 + HEADER_LEN + payload.len());
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
     frame.extend_from_slice(&DEFAULT_HEADER);
@@ -84,6 +88,16 @@ mod tests {
         let payload_len = u32::from_be_bytes(frame[0..4].try_into().unwrap()) as usize;
         assert_eq!(&frame[4..12], &DEFAULT_HEADER);
         assert_eq!(payload_len, frame.len() - 12);
+    }
+
+    #[test]
+    fn rejects_encoded_payloads_that_exceed_max_frame_payload() {
+        let err = encode_frame("/blob", &[OscArg::Blob(vec![0; MAX_FRAME_PAYLOAD])]).unwrap_err();
+
+        assert!(matches!(
+            err,
+            Lv1TcpError::InvalidLength(length) if length > MAX_FRAME_PAYLOAD
+        ));
     }
 
     #[test]
