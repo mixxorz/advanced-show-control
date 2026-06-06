@@ -172,18 +172,39 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
 }
 
 pub fn default_show_folder() -> PathBuf {
-    dirs::document_dir()
-        .or_else(dirs::home_dir)
+    default_show_folder_from(dirs::document_dir(), dirs::home_dir())
+}
+
+pub fn backup_folder() -> PathBuf {
+    backup_folder_from(dirs::data_dir(), dirs::home_dir())
+}
+
+fn default_show_folder_from(document_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
+    document_dir
+        .or_else(|| home_dir.as_ref().map(|home| home.join("Documents")))
+        .or(home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("LV1 Scene Fade Utility")
 }
 
-pub fn backup_folder() -> PathBuf {
-    dirs::data_dir()
-        .or_else(dirs::home_dir)
+fn backup_folder_from(data_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
+    data_dir
+        .or_else(|| home_dir.clone())
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("LV1 Scene Fade Utility")
+        .join(app_data_folder_name())
         .join("backups")
+}
+
+fn app_data_folder_name() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        "lv1-scene-fade-utility"
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        "LV1 Scene Fade Utility"
+    }
 }
 
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
@@ -365,6 +386,28 @@ mod tests {
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         path
+    }
+
+    #[test]
+    fn default_show_folder_uses_home_documents_when_document_dir_is_missing() {
+        let home = temp_test_dir("home-documents");
+        let folder = default_show_folder_from(None, Some(home.clone()));
+
+        assert_eq!(
+            folder,
+            home.join("Documents").join("LV1 Scene Fade Utility")
+        );
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn app_data_folder_name_matches_platform_expectation() {
+        #[cfg(target_os = "linux")]
+        assert_eq!(app_data_folder_name(), "lv1-scene-fade-utility");
+
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(app_data_folder_name(), "LV1 Scene Fade Utility");
     }
 
     #[test]
