@@ -8,7 +8,7 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [x] **Phase 1: LV1 Protocol Discovery Prototype** — discovery, TCP connection, MyFOH-style handshake, keepalive, message logging, fader set commands, rate testing, and hardware findings are implemented in the CLI/core.
 - [x] **Phase 2: Core State Mirror** — `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, events, reconnect behavior, and snapshots.
 - [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, final target send, abort, finish-now, replacement behavior, and manual override detection are implemented and tested.
-- [x] **Phase 4: Capture Engine And Listen Mode** — in-memory scene fade configs, selected-scene editing, Listen Mode direct-write capture, target enable/remove behavior, scene-list reconciliation, and split Scene tab UI are implemented and tested. Persistence and durable rename/reorder matching remain deferred to Phase 5.
+- [x] **Phase 4: Capture Engine And Listen Mode** — in-memory scene fade configs, selected-scene editing, Listen Mode direct-write capture, target enable/remove behavior, scene-list reconciliation, and split Scene tab UI are implemented and tested.
 - [x] **Phase 5: Storage And Show Files** — JSON `.lv1show` save/load, native Open/Save dialogs, platform-aware default show folder, internal backup-on-save, exact-match load validation, deletion of missing/renamed scene or channel configs on load, duration storage, captured channel names, and dirty state are implemented and tested. Remapping, scene rename handling, channel rename handling, autosave, and durable rename/reorder matching remain deferred.
 - [~] **Phase 6: MVP Desktop UI** — partially implemented ahead of Phases 4–5. A durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, and LV1 connection commands. Capture/save UI is still deferred.
 - [ ] **Phase 7: Scene Recall Automation** — not implemented yet. Automatic fade triggering on LV1 scene recall, scene matching, safety blocks, and overlap policy remain to build.
@@ -17,7 +17,7 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [ ] **Phase 10: Beta Hardening** — not implemented yet.
 - [ ] **Phase 11: Polished Release Candidate** — not implemented yet.
 
-**Immediate Next Build Order:** finish Phase 4 capture workflow inside the new desktop shell, then Phase 5 storage, then Phase 7 recall automation.
+**Immediate Next Build Order:** Phase 7 recall automation next, then Phase 8/9 external control.
 
 ---
 
