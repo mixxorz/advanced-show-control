@@ -598,6 +598,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     for ch in &original {
         lv1.set_mute(ch.group, ch.channel, true).await;
     }
+    lv1.flush().await;
     println!("[vegas] muted captured faders; press Ctrl-C to stop and restore");
 
     let mut interval = tokio::time::interval(Duration::from_millis(1000 / VEGAS_TICK_HZ));
@@ -622,9 +623,11 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     for ch in &original {
         lv1.set_gain(ch.group, ch.channel, ch.gain_db).await;
     }
+    lv1.flush().await;
     for ch in &original {
         lv1.set_mute(ch.group, ch.channel, ch.muted).await;
     }
+    lv1.flush().await;
 
     println!("[vegas] restore commands sent");
     Ok(())
