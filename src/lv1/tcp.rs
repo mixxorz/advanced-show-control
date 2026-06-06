@@ -1,6 +1,6 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
-use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
+use crate::osc::{decode_packet, encode_message, OscArg, OscError, OscMessage};
 
 pub const DEFAULT_HEADER: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 const HEADER_LEN: usize = 8;
@@ -44,7 +44,11 @@ impl FrameDecoder {
                 break;
             }
 
-            let payload_len = u32::from_be_bytes(self.buffer[0..4].try_into().unwrap()) as usize;
+            let payload_len = u32::from_be_bytes(
+                self.buffer[0..4]
+                    .try_into()
+                    .expect("frame length slice is exactly 4 bytes"),
+            ) as usize;
             if payload_len == 0 || payload_len > MAX_FRAME_PAYLOAD {
                 return Err(Lv1TcpError::InvalidLength(payload_len));
             }
@@ -110,5 +114,62 @@ mod tests {
             decoder.push(&bytes),
             Err(Lv1TcpError::InvalidLength(_))
         ));
+    }
+
+    #[test]
+    fn rejects_zero_length_payloads() {
+        let mut decoder = FrameDecoder::default();
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&0_u32.to_be_bytes());
+        bytes.extend_from_slice(&DEFAULT_HEADER);
+
+        assert!(matches!(
+            decoder.push(&bytes),
+            Err(Lv1TcpError::InvalidLength(0))
+        ));
+    }
+
+    #[test]
+    fn decodes_frame_from_byte_by_byte_pushes() {
+        let bytes = encode_frame("/meter", &[OscArg::Float(0.5)]).unwrap();
+        let mut decoder = FrameDecoder::default();
+        let mut frames = Vec::new();
+
+        for byte in bytes {
+            frames.extend(decoder.push(&[byte]).unwrap());
+        }
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].header, DEFAULT_HEADER);
+        assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/meter");
+    }
+
+    #[test]
+    fn decodes_multiple_complete_frames_from_one_push() {
+        let first = encode_frame("/first", &[OscArg::Int(1)]).unwrap();
+        let second = encode_frame("/second", &[OscArg::Int(2)]).unwrap();
+        let mut bytes = first;
+        bytes.extend_from_slice(&second);
+        let mut decoder = FrameDecoder::default();
+
+        let frames = decoder.push(&bytes).unwrap();
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/first");
+        assert_eq!(decode_frame_payload(&frames[1]).unwrap().address, "/second");
+    }
+
+    #[test]
+    fn encoded_frames_round_trip_through_decoder() {
+        let args = [OscArg::String("scene-a".to_owned()), OscArg::Int64(42)];
+        let bytes = encode_frame("/scene/fade", &args).unwrap();
+        let mut decoder = FrameDecoder::default();
+
+        let frames = decoder.push(&bytes).unwrap();
+        let message = decode_frame_payload(&frames[0]).unwrap();
+
+        assert_eq!(frames.len(), 1);
+        assert_eq!(message.address, "/scene/fade");
+        assert_eq!(message.args, args);
     }
 }
