@@ -90,6 +90,9 @@ pub enum Lv1Event {
 // Parsers and helpers
 // ---------------------------------------------------------------------------
 
+// Each channel record in the /Channels batch has 19 fields:
+// [0] s:name, [1] i:group, [2] i:channel, [3] d:gain_db,
+// [4..18] other fields (phantom sends, colors, flags — not used in Phase 2)
 const CHANNELS_RECORD_STRIDE: usize = 19;
 
 pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'static str> {
@@ -156,6 +159,11 @@ pub fn parse_scene_list(args: &[OscArg]) -> Result<Vec<SceneListEntry>, &'static
     Ok(list)
 }
 
+/// Pairs `/Notify/CurSceneIndex` and `/Notify/Scene/Name` OSC messages into a
+/// complete `SceneState`. LV1 sends these as two separate messages that always
+/// arrive close together but in either order. Call `apply_index` and `apply_name`
+/// as messages arrive; the buffer emits `Some(SceneState)` once both have been
+/// received, then clears itself.
 #[derive(Default)]
 pub struct SceneBuffer {
     pending_index: Option<i32>,
@@ -174,14 +182,12 @@ impl SceneBuffer {
     }
 
     fn try_emit(&mut self) -> Option<SceneState> {
-        match (&self.pending_index, &self.pending_name) {
-            (Some(index), Some(_)) => {
-                let name = self.pending_name.take().unwrap();
-                let idx = *index;
-                self.pending_index = None;
-                Some(SceneState { index: idx, name })
-            }
-            _ => None,
+        if self.pending_index.is_some() && self.pending_name.is_some() {
+            let index = self.pending_index.take().unwrap();
+            let name = self.pending_name.take().unwrap();
+            Some(SceneState { index, name })
+        } else {
+            None
         }
     }
 }
