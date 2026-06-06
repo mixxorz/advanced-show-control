@@ -113,7 +113,13 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
             OscArg::Double(_) => 'd',
             OscArg::String(_) => 's',
             OscArg::Blob(_) => 'b',
-            OscArg::Bool(value) => if *value { 'T' } else { 'F' },
+            OscArg::Bool(value) => {
+                if *value {
+                    'T'
+                } else {
+                    'F'
+                }
+            }
             OscArg::True => 'T',
             OscArg::False => 'F',
             OscArg::Nil => 'N',

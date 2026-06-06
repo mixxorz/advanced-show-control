@@ -120,19 +120,15 @@ impl Lv1TcpClient {
         })
     }
 
-    pub async fn register_myfoh(
-        &mut self,
-        device_name: &str,
-        uuid: &str,
-    ) -> TcpResult<()> {
-        send_bytes(&mut self.writer, &build_myfoh_handshake_batch(device_name, uuid)?).await
+    pub async fn register_myfoh(&mut self, device_name: &str, uuid: &str) -> TcpResult<()> {
+        send_bytes(
+            &mut self.writer,
+            &build_myfoh_handshake_batch(device_name, uuid)?,
+        )
+        .await
     }
 
-    pub async fn send(
-        &mut self,
-        address: &str,
-        args: &[OscArg],
-    ) -> TcpResult<()> {
+    pub async fn send(&mut self, address: &str, args: &[OscArg]) -> TcpResult<()> {
         let frame = encode_frame(address, args)?;
         send_bytes(&mut self.writer, &frame).await
     }
@@ -158,10 +154,7 @@ pub(crate) async fn send_async(
     send_bytes(writer, &frame).await
 }
 
-async fn send_bytes(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    bytes: &[u8],
-) -> TcpResult<()> {
+async fn send_bytes(writer: &mut tokio::net::tcp::OwnedWriteHalf, bytes: &[u8]) -> TcpResult<()> {
     use tokio::io::AsyncWriteExt;
 
     writer.write_all(bytes).await?;

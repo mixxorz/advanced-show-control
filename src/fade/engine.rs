@@ -180,7 +180,8 @@ impl EngineState {
     }
 
     fn fan_out(&mut self, event: FadeEvent) {
-        self.subscribers.retain(|tx| tx.try_send(event.clone()).is_ok());
+        self.subscribers
+            .retain(|tx| tx.try_send(event.clone()).is_ok());
     }
 
     fn is_active(&self) -> bool {
@@ -201,8 +202,11 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
         // Build the tick future: only poll when active
         let tick_fut = async {
             match tick_interval.as_mut() {
-                Some(interval) => { interval.tick().await; true }
-                None => { std::future::pending::<bool>().await }
+                Some(interval) => {
+                    interval.tick().await;
+                    true
+                }
+                None => std::future::pending::<bool>().await,
             }
         };
 
@@ -319,7 +323,10 @@ mod tests {
 
     fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
         ActiveChannel::new(
-            0, 0, start_db, target_db,
+            0,
+            0,
+            start_db,
+            target_db,
             FadeCurve::Linear,
             Duration::from_millis(duration_ms),
             Instant::now(),
@@ -441,10 +448,14 @@ mod tests {
     ) -> FadeEvent {
         tokio::time::timeout(timeout, async {
             while let Some(e) = events.recv().await {
-                if pred(&e) { return e; }
+                if pred(&e) {
+                    return e;
+                }
             }
             panic!("event stream ended without matching event");
-        }).await.expect("timed out waiting for fade event")
+        })
+        .await
+        .expect("timed out waiting for fade event")
     }
 
     #[tokio::test]
@@ -454,7 +465,9 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.write_all(&lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            stream
+                .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
             // Send a /Channels batch with one channel so start values are available
             let channels_args = {
                 let mut a = vec![OscArg::Int(1)];
@@ -462,10 +475,14 @@ mod tests {
                 a.push(OscArg::Int(0)); // group
                 a.push(OscArg::Int(0)); // channel
                 a.push(OscArg::Double(-8.0)); // gain_db
-                for _ in 0..15 { a.push(OscArg::Int(0)); }
+                for _ in 0..15 {
+                    a.push(OscArg::Int(0));
+                }
                 a
             };
-            stream.write_all(&lv1_frame("/Channels", &channels_args)).unwrap();
+            stream
+                .write_all(&lv1_frame("/Channels", &channels_args))
+                .unwrap();
             std::thread::sleep(std::time::Duration::from_secs(3));
         });
 
@@ -476,23 +493,29 @@ mod tests {
         // Wait a moment for /Channels to be processed
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        engine.start_fade(FadeConfig {
-            targets: vec![FadeTarget { group: 0, channel: 0, target_db: -10.0 }],
-            duration_ms: 500,
-            curve: FadeCurve::Linear,
-        }).await;
+        engine
+            .start_fade(FadeConfig {
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    target_db: -10.0,
+                }],
+                duration_ms: 500,
+                curve: FadeCurve::Linear,
+            })
+            .await;
 
         wait_for_fade_event(
             &mut fade_events,
             std::time::Duration::from_millis(500),
             |e| matches!(e, FadeEvent::FadeStarted),
-        ).await;
+        )
+        .await;
 
-        wait_for_fade_event(
-            &mut fade_events,
-            std::time::Duration::from_secs(3),
-            |e| matches!(e, FadeEvent::FadeCompleted),
-        ).await;
+        wait_for_fade_event(&mut fade_events, std::time::Duration::from_secs(3), |e| {
+            matches!(e, FadeEvent::FadeCompleted)
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -502,17 +525,23 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.write_all(&lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            stream
+                .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
             let channels_args = {
                 let mut a = vec![OscArg::Int(1)];
                 a.push(OscArg::String("Ch 1".to_string()));
                 a.push(OscArg::Int(0));
                 a.push(OscArg::Int(0));
                 a.push(OscArg::Double(-8.0));
-                for _ in 0..15 { a.push(OscArg::Int(0)); }
+                for _ in 0..15 {
+                    a.push(OscArg::Int(0));
+                }
                 a
             };
-            stream.write_all(&lv1_frame("/Channels", &channels_args)).unwrap();
+            stream
+                .write_all(&lv1_frame("/Channels", &channels_args))
+                .unwrap();
             std::thread::sleep(std::time::Duration::from_secs(5));
         });
 
@@ -522,25 +551,31 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        engine.start_fade(FadeConfig {
-            targets: vec![FadeTarget { group: 0, channel: 0, target_db: -30.0 }],
-            duration_ms: 10_000,
-            curve: FadeCurve::Linear,
-        }).await;
+        engine
+            .start_fade(FadeConfig {
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    target_db: -30.0,
+                }],
+                duration_ms: 10_000,
+                curve: FadeCurve::Linear,
+            })
+            .await;
 
         wait_for_fade_event(
             &mut fade_events,
             std::time::Duration::from_millis(500),
             |e| matches!(e, FadeEvent::FadeStarted),
-        ).await;
+        )
+        .await;
 
         engine.abort_all().await;
 
-        wait_for_fade_event(
-            &mut fade_events,
-            std::time::Duration::from_secs(2),
-            |e| matches!(e, FadeEvent::FadeAborted),
-        ).await;
+        wait_for_fade_event(&mut fade_events, std::time::Duration::from_secs(2), |e| {
+            matches!(e, FadeEvent::FadeAborted)
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -550,24 +585,37 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.write_all(&lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            stream
+                .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
             let channels_args = {
                 let mut a = vec![OscArg::Int(1)];
                 a.push(OscArg::String("Ch 1".to_string()));
                 a.push(OscArg::Int(0));
                 a.push(OscArg::Int(0));
                 a.push(OscArg::Double(-8.0));
-                for _ in 0..15 { a.push(OscArg::Int(0)); }
+                for _ in 0..15 {
+                    a.push(OscArg::Int(0));
+                }
                 a
             };
-            stream.write_all(&lv1_frame("/Channels", &channels_args)).unwrap();
+            stream
+                .write_all(&lv1_frame("/Channels", &channels_args))
+                .unwrap();
             std::thread::sleep(std::time::Duration::from_millis(400));
 
             // Simulate a large unexpected fader move (override)
-            stream.write_all(&lv1_frame(
-                "/Notify/Track/Out/Gain",
-                &[OscArg::Int(0), OscArg::Int(0), OscArg::Double(0.0), OscArg::True],
-            )).unwrap();
+            stream
+                .write_all(&lv1_frame(
+                    "/Notify/Track/Out/Gain",
+                    &[
+                        OscArg::Int(0),
+                        OscArg::Int(0),
+                        OscArg::Double(0.0),
+                        OscArg::True,
+                    ],
+                ))
+                .unwrap();
 
             std::thread::sleep(std::time::Duration::from_secs(3));
         });
@@ -578,23 +626,29 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-        engine.start_fade(FadeConfig {
-            targets: vec![FadeTarget { group: 0, channel: 0, target_db: -20.0 }],
-            duration_ms: 10_000,
-            curve: FadeCurve::Linear,
-        }).await;
+        engine
+            .start_fade(FadeConfig {
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    target_db: -20.0,
+                }],
+                duration_ms: 10_000,
+                curve: FadeCurve::Linear,
+            })
+            .await;
 
         wait_for_fade_event(
             &mut fade_events,
             std::time::Duration::from_millis(500),
             |e| matches!(e, FadeEvent::FadeStarted),
-        ).await;
+        )
+        .await;
 
-        wait_for_fade_event(
-            &mut fade_events,
-            std::time::Duration::from_secs(3),
-            |e| matches!(e, FadeEvent::ChannelOverride { .. }),
-        ).await;
+        wait_for_fade_event(&mut fade_events, std::time::Duration::from_secs(3), |e| {
+            matches!(e, FadeEvent::ChannelOverride { .. })
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -604,17 +658,23 @@ mod tests {
 
         tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
-            stream.write_all(&lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            stream
+                .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
             let channels_args = {
                 let mut a = vec![OscArg::Int(1)];
                 a.push(OscArg::String("Ch 1".to_string()));
                 a.push(OscArg::Int(0));
                 a.push(OscArg::Int(0));
                 a.push(OscArg::Double(-8.0));
-                for _ in 0..15 { a.push(OscArg::Int(0)); }
+                for _ in 0..15 {
+                    a.push(OscArg::Int(0));
+                }
                 a
             };
-            stream.write_all(&lv1_frame("/Channels", &channels_args)).unwrap();
+            stream
+                .write_all(&lv1_frame("/Channels", &channels_args))
+                .unwrap();
             std::thread::sleep(std::time::Duration::from_secs(5));
         });
 
@@ -625,37 +685,50 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // First fade — very long
-        engine.start_fade(FadeConfig {
-            targets: vec![FadeTarget { group: 0, channel: 0, target_db: -30.0 }],
-            duration_ms: 30_000,
-            curve: FadeCurve::Linear,
-        }).await;
+        engine
+            .start_fade(FadeConfig {
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    target_db: -30.0,
+                }],
+                duration_ms: 30_000,
+                curve: FadeCurve::Linear,
+            })
+            .await;
 
         wait_for_fade_event(
             &mut fade_events,
             std::time::Duration::from_millis(500),
             |e| matches!(e, FadeEvent::FadeStarted),
-        ).await;
+        )
+        .await;
 
         // Second fade — short, replaces first
-        engine.start_fade(FadeConfig {
-            targets: vec![FadeTarget { group: 0, channel: 0, target_db: -10.0 }],
-            duration_ms: 500,
-            curve: FadeCurve::Linear,
-        }).await;
+        engine
+            .start_fade(FadeConfig {
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    target_db: -10.0,
+                }],
+                duration_ms: 500,
+                curve: FadeCurve::Linear,
+            })
+            .await;
 
         // Should get another FadeStarted (for the second fade)
         wait_for_fade_event(
             &mut fade_events,
             std::time::Duration::from_millis(500),
             |e| matches!(e, FadeEvent::FadeStarted),
-        ).await;
+        )
+        .await;
 
         // Should complete the second fade
-        wait_for_fade_event(
-            &mut fade_events,
-            std::time::Duration::from_secs(3),
-            |e| matches!(e, FadeEvent::FadeCompleted),
-        ).await;
+        wait_for_fade_event(&mut fade_events, std::time::Duration::from_secs(3), |e| {
+            matches!(e, FadeEvent::FadeCompleted)
+        })
+        .await;
     }
 }

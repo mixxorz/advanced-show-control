@@ -119,7 +119,10 @@ mod tests {
         for &(pos, _) in KNOTS {
             let db = pos_to_db(pos);
             let pos2 = db_to_pos(db);
-            assert!((pos2 - pos).abs() < 1e-10, "roundtrip failed for pos={pos}: got {pos2}");
+            assert!(
+                (pos2 - pos).abs() < 1e-10,
+                "roundtrip failed for pos={pos}: got {pos2}"
+            );
         }
     }
 
@@ -128,7 +131,10 @@ mod tests {
         for &(_, db) in KNOTS {
             let pos = db_to_pos(db);
             let db2 = pos_to_db(pos);
-            assert!((db2 - db).abs() < 1e-10, "roundtrip failed for db={db}: got {db2}");
+            assert!(
+                (db2 - db).abs() < 1e-10,
+                "roundtrip failed for db={db}: got {db2}"
+            );
         }
     }
 

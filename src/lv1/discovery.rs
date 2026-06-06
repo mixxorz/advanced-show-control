@@ -389,12 +389,7 @@ mod tests {
 
     #[test]
     fn resolve_target_returns_explicit_host_and_port_without_discovery() {
-        let result = resolve_target(
-            Some("192.168.1.10".to_string()),
-            Some(50000),
-            0,
-        )
-        .unwrap();
+        let result = resolve_target(Some("192.168.1.10".to_string()), Some(50000), 0).unwrap();
 
         assert_eq!(result, ("192.168.1.10".to_string(), 50000));
     }

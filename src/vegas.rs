@@ -23,7 +23,10 @@ mod tests {
     use super::*;
 
     fn assert_close(actual: f64, expected: f64) {
-        assert!((actual - expected).abs() < 1e-10, "expected {expected}, got {actual}");
+        assert!(
+            (actual - expected).abs() < 1e-10,
+            "expected {expected}, got {actual}"
+        );
     }
 
     #[test]
@@ -44,7 +47,10 @@ mod tests {
         let a = fader_position_at(4, 9, 0);
         let b = fader_position_at(4, 9, 1);
 
-        assert!((a - b).abs() > 1e-12, "expected different values, got {a} and {b}");
+        assert!(
+            (a - b).abs() > 1e-12,
+            "expected different values, got {a} and {b}"
+        );
     }
 
     #[test]
