@@ -1,5 +1,6 @@
 mod app_state;
 mod commands;
+mod show_file;
 
 use app_state::ShellState;
 
