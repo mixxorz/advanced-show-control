@@ -5,11 +5,74 @@ use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::app_state::{AppSnapshot, ShellState};
+use crate::app_state::{AppViewState, ShellState};
 
 #[tauri::command]
-pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppSnapshot, String> {
+pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppViewState, String> {
     Ok(state.snapshot().await)
+}
+
+#[tauri::command]
+pub async fn select_scene_config(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+) -> Result<AppViewState, String> {
+    let snapshot = state.select_scene_config(scene_id).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn set_scene_fade_enabled(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+    enabled: bool,
+) -> Result<AppViewState, String> {
+    let snapshot = state.set_scene_fade_enabled(scene_id, enabled).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn set_listen_mode(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    active: bool,
+) -> Result<AppViewState, String> {
+    let snapshot = state.set_listen_mode(active).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn set_fade_target_enabled(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+    group: i32,
+    channel: i32,
+    enabled: bool,
+) -> Result<AppViewState, String> {
+    let snapshot = state
+        .set_fade_target_enabled(scene_id, group, channel, enabled)
+        .await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn remove_fade_target(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+    group: i32,
+    channel: i32,
+) -> Result<AppViewState, String> {
+    let snapshot = state.remove_fade_target(&scene_id, group, channel).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -17,7 +80,7 @@ pub async fn set_lockout(
     app: AppHandle,
     state: State<'_, ShellState>,
     enabled: bool,
-) -> Result<AppSnapshot, String> {
+) -> Result<AppViewState, String> {
     let snapshot = state.set_lockout(enabled).await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -27,7 +90,7 @@ pub async fn set_lockout(
 pub async fn disconnect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
-) -> Result<AppSnapshot, String> {
+) -> Result<AppViewState, String> {
     {
         let mut handles = state.handles.lock().await;
         handles.lv1 = None;
@@ -64,7 +127,7 @@ pub async fn connect_lv1(
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: Option<u64>,
-) -> Result<AppSnapshot, String> {
+) -> Result<AppViewState, String> {
     let timeout = timeout_ms.unwrap_or(6000);
     let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
 
@@ -106,7 +169,7 @@ pub async fn connect_lv1(
     Ok(snapshot)
 }
 
-fn emit_snapshot(app: &AppHandle, snapshot: &AppSnapshot) {
+fn emit_snapshot(app: &AppHandle, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         eprintln!("failed to emit app-status-changed: {err}");
     }

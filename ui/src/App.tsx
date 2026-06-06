@@ -1,7 +1,7 @@
 import { type ReactNode, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { disconnectedSnapshot, type AppSnapshot } from "./types";
+import { disconnectedAppViewState, type AppViewState, type ChannelSummary, type SceneFadeConfig } from "./types";
 
 type Tab = "connection" | "scene" | "logs";
 
@@ -10,17 +10,17 @@ export default function App() {
   const [host, setHost] = useState("");
   const [port, setPort] = useState("");
   const [commandError, setCommandError] = useState<string | null>(null);
-  const [snapshot, setSnapshot] = useState<AppSnapshot>(disconnectedSnapshot);
+  const [appState, setAppState] = useState<AppViewState>(disconnectedAppViewState);
 
   useEffect(() => {
     let cancelled = false;
-    void refreshSnapshot(setSnapshot, setCommandError);
+    void refreshAppState(setAppState, setCommandError);
 
-    const unlistenPromise = listen<AppSnapshot>("app-status-changed", (event) => {
+    const unlistenPromise = listen<AppViewState>("app-status-changed", (event) => {
       if (cancelled) {
         return;
       }
-      setSnapshot(event.payload);
+      setAppState(event.payload);
     });
 
     return () => {
@@ -34,11 +34,11 @@ export default function App() {
   async function runSnapshotCommand(command: string, args?: Record<string, unknown>) {
     setCommandError(null);
     try {
-      const next = await invoke<AppSnapshot>(command, args);
-      setSnapshot(next);
+      const next = await invoke<AppViewState>(command, args);
+      setAppState(next);
     } catch (error) {
       setCommandError(String(error));
-      await refreshSnapshot(setSnapshot, setCommandError);
+      await refreshAppState(setAppState, setCommandError);
     }
   }
 
@@ -46,7 +46,7 @@ export default function App() {
     setCommandError(null);
     try {
       await invoke(command);
-      await refreshSnapshot(setSnapshot, setCommandError);
+      await refreshAppState(setAppState, setCommandError);
     } catch (error) {
       setCommandError(String(error));
     }
@@ -74,29 +74,29 @@ export default function App() {
           <div>
             <h1 className="text-xl font-semibold">LV1 Scene Fade Utility</h1>
             <p className="text-sm text-slate-400">
-              {snapshot.currentScene
-                ? `Scene ${snapshot.currentScene.index}: ${snapshot.currentScene.name}`
+              {appState.currentScene
+                ? `Scene ${appState.currentScene.index}: ${appState.currentScene.name}`
                 : "No LV1 scene selected"}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <StatusBadge
-              label={snapshot.connection}
-              tone={snapshot.connection === "connected" ? "good" : "neutral"}
+              label={appState.connection}
+              tone={appState.connection === "connected" ? "good" : "neutral"}
             />
             <StatusBadge
-              label={`Fade: ${snapshot.fadeState}`}
-              tone={snapshot.fadeState === "blocked" ? "warning" : "neutral"}
+              label={`Fade: ${appState.fadeState}`}
+              tone={appState.fadeState === "blocked" ? "warning" : "neutral"}
             />
             <button
               className={
-                snapshot.lockout
+                appState.lockout
                   ? "rounded-full border border-amber-500/60 bg-amber-950 px-3 py-1 text-sm text-amber-100"
                   : "rounded-full border border-slate-700 bg-slate-800 px-3 py-1 text-sm text-slate-200"
               }
-              onClick={() => runSnapshotCommand("set_lockout", { enabled: !snapshot.lockout })}
+              onClick={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout })}
             >
-              {snapshot.lockout ? "Lockout On" : "Lockout Off"}
+              {appState.lockout ? "Lockout On" : "Lockout Off"}
             </button>
             <button
               className="rounded-lg border border-slate-700 px-4 py-3 font-semibold text-slate-100 hover:bg-slate-800"
@@ -138,15 +138,30 @@ export default function App() {
           <ConnectionTab
             host={host}
             port={port}
-            snapshot={snapshot}
+            appState={appState}
             setHost={setHost}
             setPort={setPort}
             connect={connect}
             disconnect={() => runSnapshotCommand("disconnect_lv1")}
           />
         )}
-        {activeTab === "scene" && <SceneTab snapshot={snapshot} />}
-        {activeTab === "logs" && <LogsTab snapshot={snapshot} />}
+        {activeTab === "scene" && (
+          <SceneTab
+            appState={appState}
+            selectScene={(sceneId) => runSnapshotCommand("select_scene_config", { sceneId })}
+            setSceneFadeEnabled={(sceneId, enabled) =>
+              runSnapshotCommand("set_scene_fade_enabled", { sceneId, enabled })
+            }
+            setListenMode={(active) => runSnapshotCommand("set_listen_mode", { active })}
+            setFadeTargetEnabled={(sceneId, group, channel, enabled) =>
+              runSnapshotCommand("set_fade_target_enabled", { sceneId, group, channel, enabled })
+            }
+            removeFadeTarget={(sceneId, group, channel) =>
+              runSnapshotCommand("remove_fade_target", { sceneId, group, channel })
+            }
+          />
+        )}
+        {activeTab === "logs" && <LogsTab appState={appState} />}
       </section>
     </main>
   );
@@ -179,7 +194,7 @@ function StatusBadge(props: { label: string; tone: "neutral" | "warning" | "good
 }
 
 function ConnectionTab(props: {
-  snapshot: AppSnapshot;
+  appState: AppViewState;
   host: string;
   port: string;
   setHost: (value: string) => void;
@@ -230,55 +245,186 @@ function ConnectionTab(props: {
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
         <h2 className="text-lg font-semibold">Status</h2>
         <dl className="mt-4 grid gap-2 text-sm">
-          <StatusRow label="Connection" value={props.snapshot.connection} />
-          <StatusRow label="Scenes" value={String(props.snapshot.sceneCount)} />
-          <StatusRow label="Channels" value={String(props.snapshot.channelCount)} />
-          <StatusRow label="Last Event" value={props.snapshot.lastEventAt ?? "None"} />
+          <StatusRow label="Connection" value={props.appState.connection} />
+          <StatusRow label="Scenes" value={String(props.appState.sceneCount)} />
+          <StatusRow label="Channels" value={String(props.appState.channelCount)} />
+          <StatusRow label="Last Event" value={props.appState.lastEventAt ?? "None"} />
         </dl>
       </section>
     </div>
   );
 }
 
-function SceneTab({ snapshot }: { snapshot: AppSnapshot }) {
+function SceneTab(props: {
+  appState: AppViewState;
+  selectScene: (sceneId: string) => void;
+  setSceneFadeEnabled: (sceneId: string, enabled: boolean) => void;
+  setListenMode: (active: boolean) => void;
+  setFadeTargetEnabled: (sceneId: string, group: number, channel: number, enabled: boolean) => void;
+  removeFadeTarget: (sceneId: string, group: number, channel: number) => void;
+}) {
+  const selected = props.appState.sceneFadeConfigs.find((scene) => scene.sceneId === props.appState.selectedSceneId);
+
   return (
-    <div className="grid gap-5 lg:grid-cols-[1fr_1fr]">
+    <div className="grid gap-5 lg:grid-cols-[22rem_1fr]">
       <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-        <h2 className="text-lg font-semibold">Current Scene</h2>
-        <p className="mt-2 text-slate-300">
-          {snapshot.currentScene ? `${snapshot.currentScene.index}: ${snapshot.currentScene.name}` : "No current scene reported."}
+        <h2 className="text-lg font-semibold">Scenes</h2>
+        <p className="mt-1 text-sm text-slate-400">
+          Select the scene fade config to edit. Scene selection locks while Listen Mode is active.
         </p>
-        <p className="mt-4 rounded-lg border border-slate-800 bg-slate-950 p-3 text-sm text-slate-400">
-          Capture and save workflow will be added in the next phase.
-        </p>
-      </section>
-      <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
-        <h2 className="text-lg font-semibold">Scene List</h2>
-        <div className="mt-4 max-h-96 overflow-auto rounded-lg border border-slate-800">
-          {snapshot.scenes.length === 0 ? (
+        <div className="mt-4 max-h-[34rem] overflow-auto rounded-lg border border-slate-800">
+          {props.appState.sceneFadeConfigs.length === 0 ? (
             <p className="p-3 text-sm text-slate-400">No scenes loaded.</p>
           ) : (
-            snapshot.scenes.map((scene) => (
-              <div className="border-b border-slate-800 px-3 py-2 text-sm last:border-b-0" key={`${scene.index}-${scene.name}`}>
-                {scene.index}: {scene.name}
-              </div>
-            ))
+            props.appState.sceneFadeConfigs.map((scene) => {
+              const selectedRow = scene.sceneId === props.appState.selectedSceneId;
+
+              return (
+                <button
+                  className={
+                    selectedRow
+                      ? "block w-full border-b border-slate-800 bg-cyan-950/40 px-3 py-3 text-left last:border-b-0"
+                      : "block w-full border-b border-slate-800 px-3 py-3 text-left hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 last:border-b-0"
+                  }
+                  disabled={props.appState.listenModeActive}
+                  key={scene.sceneId}
+                  onClick={() => props.selectScene(scene.sceneId)}
+                >
+                  <span className="block text-sm font-semibold text-slate-100">
+                    {scene.sceneIndex}: {scene.sceneName}
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-400">
+                    {scene.fadeEnabled ? "Enabled" : "Disabled"} · {scene.fadeTargets.length} targets
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
+      </section>
+      <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
+        {selected ? (
+          <div>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold">
+                  {selected.sceneIndex}: {selected.sceneName}
+                </h2>
+                <p className="mt-1 text-sm text-slate-400">Current LV1 scene does not affect which scene config is edited.</p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  className={
+                    selected.fadeEnabled
+                      ? "rounded-lg border border-emerald-500/60 bg-emerald-950 px-4 py-2 font-semibold text-emerald-100"
+                      : "rounded-lg border border-slate-700 px-4 py-2 font-semibold text-slate-100 hover:bg-slate-800"
+                  }
+                  onClick={() => props.setSceneFadeEnabled(selected.sceneId, !selected.fadeEnabled)}
+                >
+                  {selected.fadeEnabled ? "Fade Enabled" : "Fade Disabled"}
+                </button>
+                <button
+                  className={
+                    props.appState.listenModeActive
+                      ? "rounded-lg bg-amber-700 px-4 py-2 font-bold text-white hover:bg-amber-600"
+                      : "rounded-lg bg-cyan-700 px-4 py-2 font-bold text-white hover:bg-cyan-600"
+                  }
+                  onClick={() => props.setListenMode(!props.appState.listenModeActive)}
+                >
+                  {props.appState.listenModeActive ? "Stop Listen Mode" : "Start Listen Mode"}
+                </button>
+              </div>
+            </div>
+
+            <FadeTargetTable
+              channels={props.appState.channels}
+              removeFadeTarget={props.removeFadeTarget}
+              scene={selected}
+              setFadeTargetEnabled={props.setFadeTargetEnabled}
+            />
+          </div>
+        ) : (
+          <p className="text-sm text-slate-400">Select a scene to edit its fade targets.</p>
+        )}
       </section>
     </div>
   );
 }
 
-function LogsTab({ snapshot }: { snapshot: AppSnapshot }) {
+function FadeTargetTable(props: {
+  channels: ChannelSummary[];
+  scene: SceneFadeConfig;
+  setFadeTargetEnabled: (sceneId: string, group: number, channel: number, enabled: boolean) => void;
+  removeFadeTarget: (sceneId: string, group: number, channel: number) => void;
+}) {
+  return (
+    <div className="mt-5 overflow-auto rounded-lg border border-slate-800">
+      {props.scene.fadeTargets.length === 0 ? (
+        <p className="p-3 text-sm text-slate-400">No fader targets captured. Start Listen Mode and move LV1 faders.</p>
+      ) : (
+        <table className="w-full min-w-[42rem] text-sm">
+          <thead className="bg-slate-950 text-left text-slate-400">
+            <tr>
+              <th className="px-3 py-2">Include</th>
+              <th className="px-3 py-2">Group</th>
+              <th className="px-3 py-2">Channel</th>
+              <th className="px-3 py-2">Name</th>
+              <th className="px-3 py-2">Target</th>
+              <th className="px-3 py-2">Updated</th>
+              <th className="px-3 py-2">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {props.scene.fadeTargets.map((target) => (
+              <tr className="border-t border-slate-800" key={`${target.group}-${target.channel}`}>
+                <td className="px-3 py-2">
+                  <input
+                    checked={target.enabled}
+                    onChange={(event) =>
+                      props.setFadeTargetEnabled(props.scene.sceneId, target.group, target.channel, event.target.checked)
+                    }
+                    type="checkbox"
+                  />
+                </td>
+                <td className="px-3 py-2">{target.group}</td>
+                <td className="px-3 py-2">{target.channel}</td>
+                <td className="px-3 py-2">{channelName(props.channels, target.group, target.channel)}</td>
+                <td className="px-3 py-2">{formatDb(target.targetDb)}</td>
+                <td className="px-3 py-2 text-slate-400">{target.updatedAt}</td>
+                <td className="px-3 py-2">
+                  <button
+                    className="rounded border border-red-800 px-3 py-1 text-red-100 hover:bg-red-950"
+                    onClick={() => props.removeFadeTarget(props.scene.sceneId, target.group, target.channel)}
+                  >
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function formatDb(value: number) {
+  return `${value.toFixed(1)} dB`;
+}
+
+function channelName(channels: ChannelSummary[], group: number, channel: number) {
+  return channels.find((entry) => entry.group === group && entry.channel === channel)?.name ?? "Unknown";
+}
+
+function LogsTab({ appState }: { appState: AppViewState }) {
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
       <h2 className="text-lg font-semibold">Logs</h2>
       <div className="mt-4 max-h-[34rem] overflow-auto rounded-lg border border-slate-800">
-        {snapshot.logs.length === 0 ? (
+        {appState.logs.length === 0 ? (
           <p className="p-3 text-sm text-slate-400">No events yet.</p>
         ) : (
-          snapshot.logs.map((entry) => (
+          appState.logs.map((entry) => (
             <div
               className="grid grid-cols-[9rem_5rem_1fr] gap-3 border-b border-slate-800 px-3 py-2 text-sm last:border-b-0"
               key={entry.id}
@@ -303,12 +449,12 @@ function StatusRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-async function refreshSnapshot(
-  setSnapshot: (snapshot: AppSnapshot) => void,
+async function refreshAppState(
+  setAppState: (appState: AppViewState) => void,
   setCommandError: (message: string | null) => void,
 ) {
   try {
-    setSnapshot(await invoke<AppSnapshot>("get_app_status"));
+    setAppState(await invoke<AppViewState>("get_app_status"));
   } catch (error) {
     setCommandError(String(error));
   }

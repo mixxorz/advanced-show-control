@@ -8,10 +8,15 @@ fn main() {
         .manage(ShellState::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_status,
+            commands::select_scene_config,
             commands::connect_lv1,
             commands::disconnect_lv1,
             commands::abort_all_fades,
             commands::finish_fade_now,
+            commands::set_scene_fade_enabled,
+            commands::set_listen_mode,
+            commands::set_fade_target_enabled,
+            commands::remove_fade_target,
             commands::set_lockout,
         ])
         .run(tauri::generate_context!())

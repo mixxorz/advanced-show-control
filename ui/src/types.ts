@@ -8,6 +8,22 @@ export type SceneSummary = {
   name: string;
 };
 
+export type ChannelSummary = {
+  group: number;
+  channel: number;
+  name: string;
+};
+
+export type FadeTarget = { group: number; channel: number; targetDb: number; enabled: boolean; updatedAt: string };
+
+export type SceneFadeConfig = {
+  sceneId: string;
+  sceneIndex: number;
+  sceneName: string;
+  fadeEnabled: boolean;
+  fadeTargets: FadeTarget[];
+};
+
 export type AppLogEntry = {
   id: number;
   timestamp: string;
@@ -16,26 +32,34 @@ export type AppLogEntry = {
   message: string;
 };
 
-export type AppSnapshot = {
+export type AppViewState = {
   connection: ConnectionState;
   currentScene: SceneSummary | null;
   scenes: SceneSummary[];
   sceneCount: number;
   channelCount: number;
+  channels: ChannelSummary[];
   fadeState: FadeState;
   lockout: boolean;
   logs: AppLogEntry[];
   lastEventAt: string | null;
+  sceneFadeConfigs: SceneFadeConfig[];
+  selectedSceneId: string | null;
+  listenModeActive: boolean;
 };
 
-export const disconnectedSnapshot: AppSnapshot = {
+export const disconnectedAppViewState: AppViewState = {
   connection: "disconnected",
   currentScene: null,
   scenes: [],
   sceneCount: 0,
   channelCount: 0,
+  channels: [],
   fadeState: "idle",
   lockout: false,
   logs: [],
   lastEventAt: null,
+  sceneFadeConfigs: [],
+  selectedSceneId: null,
+  listenModeActive: false,
 };
