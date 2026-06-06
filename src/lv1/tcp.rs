@@ -77,6 +77,87 @@ pub fn decode_frame_payload(frame: &Lv1Frame) -> Result<OscMessage, Lv1TcpError>
     Ok(decode_packet(&frame.payload)?)
 }
 
+pub fn build_myfoh_handshake_batch(device_name: &str, uuid: &str) -> Result<Vec<u8>, Lv1TcpError> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&encode_frame(
+        "/handshake",
+        &[OscArg::Int(1), OscArg::Int(-1), OscArg::Int(1)],
+    )?);
+    out.extend_from_slice(&encode_frame(
+        "/device_name",
+        &[
+            OscArg::String(device_name.to_string()),
+            OscArg::String(uuid.to_string()),
+        ],
+    )?);
+    Ok(out)
+}
+
+pub fn pong_for_ping(msg: &OscMessage) -> Option<(&'static str, Vec<OscArg>)> {
+    if msg.address == "/ping" {
+        Some(("/pong", msg.args.clone()))
+    } else {
+        None
+    }
+}
+
+pub struct Lv1TcpClient {
+    stream: std::net::TcpStream,
+    decoder: FrameDecoder,
+}
+
+impl Lv1TcpClient {
+    pub fn connect(host: &str, port: u16) -> std::io::Result<Self> {
+        let stream = std::net::TcpStream::connect((host, port))?;
+        stream.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+        Ok(Self {
+            stream,
+            decoder: FrameDecoder::default(),
+        })
+    }
+
+    pub fn register_myfoh(
+        &mut self,
+        device_name: &str,
+        uuid: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+
+        let batch = build_myfoh_handshake_batch(device_name, uuid)?;
+        self.stream.write_all(&batch)?;
+        Ok(())
+    }
+
+    pub fn send(
+        &mut self,
+        address: &str,
+        args: &[OscArg],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::Write;
+
+        let frame = encode_frame(address, args)?;
+        self.stream.write_all(&frame)?;
+        Ok(())
+    }
+
+    pub fn read_available(&mut self) -> Result<Vec<Lv1Frame>, Box<dyn std::error::Error>> {
+        use std::io::Read;
+
+        let mut buf = [0_u8; 8192];
+        match self.stream.read(&mut buf) {
+            Ok(0) => Ok(Vec::new()),
+            Ok(size) => Ok(self.decoder.push(&buf[..size])?),
+            Err(err)
+                if err.kind() == std::io::ErrorKind::WouldBlock
+                    || err.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                Ok(Vec::new())
+            }
+            Err(err) => Err(Box::new(err)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -185,5 +266,81 @@ mod tests {
         assert_eq!(frames.len(), 1);
         assert_eq!(message.address, "/scene/fade");
         assert_eq!(message.args, args);
+    }
+
+    #[test]
+    fn builds_myfoh_handshake_batch() {
+        let bytes = build_myfoh_handshake_batch("lv1-probe", "uuid-1").unwrap();
+        let mut decoder = FrameDecoder::default();
+        let frames = decoder.push(&bytes).unwrap();
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/handshake");
+        assert_eq!(decode_frame_payload(&frames[1]).unwrap().address, "/device_name");
+    }
+
+    #[test]
+    fn identifies_ping_and_builds_matching_pong() {
+        let ping = OscMessage {
+            address: "/ping".to_string(),
+            args: vec![OscArg::Int64(123), OscArg::Int(7)],
+        };
+
+        let pong = pong_for_ping(&ping).unwrap();
+
+        assert_eq!(pong.0, "/pong");
+        assert_eq!(pong.1, ping.args);
+    }
+
+    #[test]
+    fn client_registers_sends_and_reads_available_frames() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_millis(500)))
+                .unwrap();
+            let mut decoder = FrameDecoder::default();
+            let mut frames = Vec::new();
+            let mut buf = [0_u8; 1024];
+
+            while frames.len() < 3 {
+                let size = stream.read(&mut buf).unwrap();
+                frames.extend(decoder.push(&buf[..size]).unwrap());
+            }
+
+            stream
+                .write_all(&encode_frame("/ping", &[OscArg::Int64(123)]).unwrap())
+                .unwrap();
+            frames
+                .into_iter()
+                .map(|frame| decode_frame_payload(&frame).unwrap())
+                .collect::<Vec<_>>()
+        });
+
+        let mut client = Lv1TcpClient::connect("127.0.0.1", port).unwrap();
+        client.register_myfoh("lv1-probe", "uuid-1").unwrap();
+        client.send("/custom", &[OscArg::Int(5)]).unwrap();
+
+        let mut frames = Vec::new();
+        for _ in 0..10 {
+            frames.extend(client.read_available().unwrap());
+            if !frames.is_empty() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+
+        let received = server.join().unwrap();
+        assert_eq!(received[0].address, "/handshake");
+        assert_eq!(received[1].address, "/device_name");
+        assert_eq!(received[2].address, "/custom");
+        assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/ping");
     }
 }
