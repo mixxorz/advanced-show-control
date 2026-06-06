@@ -305,6 +305,9 @@ async fn run_monitor(
             Lv1Event::FaderChanged { group, channel, gain_db } => {
                 println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
             }
+            Lv1Event::MuteChanged { group, channel, muted } => {
+                println!("[mute] group={group} ch={channel} muted={muted}");
+            }
             Lv1Event::ChannelTopologyChanged(channels) => {
                 println!("[channels] {} channels loaded", channels.len());
             }

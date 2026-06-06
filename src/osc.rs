@@ -8,6 +8,7 @@ pub enum OscArg {
     Double(f64),
     String(String),
     Blob(Vec<u8>),
+    Bool(bool),
     True,
     False,
     Nil,
@@ -112,6 +113,7 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
             OscArg::Double(_) => 'd',
             OscArg::String(_) => 's',
             OscArg::Blob(_) => 'b',
+            OscArg::Bool(value) => if *value { 'T' } else { 'F' },
             OscArg::True => 'T',
             OscArg::False => 'F',
             OscArg::Nil => 'N',
@@ -140,7 +142,7 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
                 out.extend_from_slice(value);
                 out.extend(std::iter::repeat_n(0, pad_to_4(value.len())));
             }
-            OscArg::True | OscArg::False | OscArg::Nil | OscArg::Impulse => {}
+            OscArg::Bool(_) | OscArg::True | OscArg::False | OscArg::Nil | OscArg::Impulse => {}
         }
     }
 

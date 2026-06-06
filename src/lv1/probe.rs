@@ -63,6 +63,7 @@ pub fn format_arg(arg: &OscArg) -> String {
         OscArg::Double(value) => format!("d:{value}"),
         OscArg::String(value) => format!("s:{value}"),
         OscArg::Blob(value) => format!("b:{} bytes", value.len()),
+        OscArg::Bool(value) => format!("{}:{}", if *value { 'T' } else { 'F' }, value),
         OscArg::True => "T:true".to_string(),
         OscArg::False => "F:false".to_string(),
         OscArg::Nil => "N:null".to_string(),
