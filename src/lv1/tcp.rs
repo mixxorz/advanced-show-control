@@ -2,6 +2,8 @@
 
 use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
+type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 pub const DEFAULT_HEADER: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 const HEADER_LEN: usize = 8;
 const MAX_FRAME_PAYLOAD: usize = 16 * 1024 * 1024;
@@ -102,62 +104,84 @@ pub fn pong_for_ping(msg: &OscMessage) -> Option<(&'static str, Vec<OscArg>)> {
 }
 
 pub struct Lv1TcpClient {
-    stream: std::net::TcpStream,
-    decoder: FrameDecoder,
+    pub(crate) reader: tokio::net::tcp::OwnedReadHalf,
+    pub(crate) writer: tokio::net::tcp::OwnedWriteHalf,
+    pub(crate) decoder: FrameDecoder,
 }
 
 impl Lv1TcpClient {
-    pub fn connect(host: &str, port: u16) -> std::io::Result<Self> {
-        let stream = std::net::TcpStream::connect((host, port))?;
-        stream.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+    pub async fn connect(host: &str, port: u16) -> std::io::Result<Self> {
+        let stream = tokio::net::TcpStream::connect((host, port)).await?;
+        let (reader, writer) = stream.into_split();
         Ok(Self {
-            stream,
+            reader,
+            writer,
             decoder: FrameDecoder::default(),
         })
     }
 
-    pub fn register_myfoh(
+    pub async fn register_myfoh(
         &mut self,
         device_name: &str,
         uuid: &str,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        use std::io::Write;
-
-        let batch = build_myfoh_handshake_batch(device_name, uuid)?;
-        self.stream.write_all(&batch)?;
-        Ok(())
+    ) -> TcpResult<()> {
+        send_bytes(&mut self.writer, &build_myfoh_handshake_batch(device_name, uuid)?).await
     }
 
-    pub fn send(
+    pub async fn send(
         &mut self,
         address: &str,
         args: &[OscArg],
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        use std::io::Write;
-
+    ) -> TcpResult<()> {
         let frame = encode_frame(address, args)?;
-        self.stream.write_all(&frame)?;
-        Ok(())
+        send_bytes(&mut self.writer, &frame).await
     }
 
-    pub fn read_available(&mut self) -> Result<Vec<Lv1Frame>, Box<dyn std::error::Error>> {
-        use std::io::Read;
+    pub async fn read_next(&mut self) -> TcpResult<Vec<Lv1Frame>> {
+        read_next_async(&mut self.reader, &mut self.decoder).await
+    }
 
-        let mut buf = [0_u8; 8192];
-        match self.stream.read(&mut buf) {
-            Ok(0) => Err(Box::new(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "LV1 TCP connection closed",
-            ))),
-            Ok(size) => Ok(self.decoder.push(&buf[..size])?),
-            Err(err)
-                if err.kind() == std::io::ErrorKind::WouldBlock
-                    || err.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                Ok(Vec::new())
-            }
-            Err(err) => Err(Box::new(err)),
+    pub async fn read_available(&mut self) -> TcpResult<Vec<Lv1Frame>> {
+        match tokio::time::timeout(std::time::Duration::from_millis(250), self.read_next()).await {
+            Ok(result) => result,
+            Err(_) => Ok(Vec::new()),
         }
+    }
+}
+
+pub(crate) async fn send_async(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    address: &str,
+    args: &[OscArg],
+) -> TcpResult<()> {
+    let frame = encode_frame(address, args)?;
+    send_bytes(writer, &frame).await
+}
+
+async fn send_bytes(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    bytes: &[u8],
+) -> TcpResult<()> {
+    use tokio::io::AsyncWriteExt;
+
+    writer.write_all(bytes).await?;
+    Ok(())
+}
+
+pub(crate) async fn read_next_async(
+    reader: &mut tokio::net::tcp::OwnedReadHalf,
+    decoder: &mut FrameDecoder,
+) -> TcpResult<Vec<Lv1Frame>> {
+    use tokio::io::AsyncReadExt;
+
+    let mut buf = [0_u8; 8192];
+    match reader.read(&mut buf).await {
+        Ok(0) => Err(Box::new(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "LV1 TCP connection closed",
+        ))),
+        Ok(size) => Ok(decoder.push(&buf[..size])?),
+        Err(err) => Err(Box::new(err)),
     }
 }
 
@@ -301,8 +325,8 @@ mod tests {
         assert_eq!(pong.1, ping.args);
     }
 
-    #[test]
-    fn client_registers_sends_and_reads_available_frames() {
+    #[tokio::test]
+    async fn client_registers_sends_and_reads_available_frames() {
         use std::io::{Read, Write};
         use std::net::TcpListener;
         use std::thread;
@@ -333,17 +357,17 @@ mod tests {
                 .collect::<Vec<_>>()
         });
 
-        let mut client = Lv1TcpClient::connect("127.0.0.1", port).unwrap();
-        client.register_myfoh("lv1-probe", "uuid-1").unwrap();
-        client.send("/custom", &[OscArg::Int(5)]).unwrap();
+        let mut client = Lv1TcpClient::connect("127.0.0.1", port).await.unwrap();
+        client.register_myfoh("lv1-probe", "uuid-1").await.unwrap();
+        client.send("/custom", &[OscArg::Int(5)]).await.unwrap();
 
         let mut frames = Vec::new();
         for _ in 0..10 {
-            frames.extend(client.read_available().unwrap());
+            frames.extend(client.read_available().await.unwrap());
             if !frames.is_empty() {
                 break;
             }
-            thread::sleep(Duration::from_millis(25));
+            tokio::time::sleep(Duration::from_millis(25)).await;
         }
 
         let received = server.join().unwrap();
@@ -353,8 +377,8 @@ mod tests {
         assert_eq!(decode_frame_payload(&frames[0]).unwrap().address, "/ping");
     }
 
-    #[test]
-    fn client_read_available_errors_when_peer_closes_connection() {
+    #[tokio::test]
+    async fn client_read_available_errors_when_peer_closes_connection() {
         use std::net::TcpListener;
         use std::thread;
 
@@ -364,10 +388,10 @@ mod tests {
             let (_stream, _) = listener.accept().unwrap();
         });
 
-        let mut client = Lv1TcpClient::connect("127.0.0.1", port).unwrap();
+        let mut client = Lv1TcpClient::connect("127.0.0.1", port).await.unwrap();
         server.join().unwrap();
 
-        let err = client.read_available().unwrap_err();
+        let err = client.read_available().await.unwrap_err();
         let io_err = err.downcast_ref::<std::io::Error>().unwrap();
 
         assert_eq!(io_err.kind(), std::io::ErrorKind::UnexpectedEof);

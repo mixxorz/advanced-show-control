@@ -203,7 +203,7 @@ pub fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: 
     }
 }
 
-use crate::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
+use crate::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping, read_next_async, send_async};
 use std::time::{Duration, Instant};
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
@@ -314,7 +314,7 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
     loop {
         // --- Connect (drain commands during reconnect sleeps) ---
         let mut client = loop {
-            match Lv1TcpClient::connect(&host, port) {
+            match Lv1TcpClient::connect(&host, port).await {
                 Ok(c) => break c,
                 Err(_) => {
                     drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
@@ -324,7 +324,7 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
 
         let device_name = "lv1-state-mirror";
         let uuid = uuid::Uuid::new_v4().to_string();
-        if client.register_myfoh(device_name, &uuid).is_err() {
+        if client.register_myfoh(device_name, &uuid).await.is_err() {
             drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
             continue;
         }
@@ -376,6 +376,10 @@ async fn run_connected(
     state: &mut ActorState,
     cmd_rx: &mut mpsc::Receiver<Lv1Command>,
 ) -> DisconnectReason {
+    let reader = &mut client.reader;
+    let writer = &mut client.writer;
+    let decoder = &mut client.decoder;
+
     loop {
         // Check ping watchdog
         if state.last_ping.elapsed() > PING_TIMEOUT {
@@ -383,20 +387,19 @@ async fn run_connected(
         }
 
         tokio::select! {
-            // Poll TCP (non-blocking — read_available uses a 250ms timeout internally)
-            _ = tokio::time::sleep(Duration::from_millis(10)) => {
-                match client.read_available() {
+            frames = read_next_async(reader, decoder) => {
+                match frames {
                     Err(_) => return DisconnectReason::TcpError,
                     Ok(frames) => {
                         for frame in frames {
                             if let Ok(msg) = decode_frame_payload(&frame) {
                                 // Handle ping/pong
                                 if let Some((addr, args)) = pong_for_ping(&msg) {
-                                    let _ = client.send(addr, &args);
+                                    let _ = send_async(writer, addr, &args).await;
                                     state.last_ping = Instant::now();
                                     continue;
                                 }
-                                handle_message(state, &msg, client);
+                                handle_message(state, &msg);
                             }
                         }
                     }
@@ -414,14 +417,15 @@ async fn run_connected(
                         state.subscribers.push(tx);
                     }
                     Some(Lv1Command::SetGain { group, channel, gain_db }) => {
-                        let _ = client.send(
+                        let _ = send_async(
+                            writer,
                             "/Set/Track/Out/Gain",
                             &[
                                 crate::osc::OscArg::Int(group),
                                 crate::osc::OscArg::Int(channel),
                                 crate::osc::OscArg::Double(gain_db),
                             ],
-                        );
+                        ).await;
                     }
                 }
             }
@@ -429,7 +433,7 @@ async fn run_connected(
     }
 }
 
-fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage, _client: &mut Lv1TcpClient) {
+fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
     match msg.address.as_str() {
         "/Channels" => {
             if let Ok(channels) = parse_channels_batch(&msg.args) {
@@ -759,5 +763,62 @@ mod tests {
 
         // Should not panic — SetGain command is accepted
         handle.set_gain(0, 0, -20.0).await;
+    }
+
+    #[tokio::test]
+    async fn actor_sends_set_gain_while_waiting_for_input() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (address_tx, address_rx) = std::sync::mpsc::channel();
+
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_millis(50))).unwrap();
+
+            let mut buf = [0_u8; 1024];
+            let mut decoder = crate::lv1::tcp::FrameDecoder::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        for frame in decoder.push(&buf[..n]).unwrap() {
+                            let msg = decode_frame_payload(&frame).unwrap();
+                            let _ = address_tx.send(msg.address);
+                        }
+                    }
+                    Err(err)
+                        if err.kind() == std::io::ErrorKind::WouldBlock
+                            || err.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(err) => panic!("server read failed: {err}"),
+                }
+            }
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, Lv1Event::Connected) { break; }
+            }
+        }).await.unwrap();
+
+        let sent_at = std::time::Instant::now();
+        handle.set_gain(0, 1, -12.5).await;
+
+        tokio::task::spawn_blocking(move || {
+            loop {
+                let address = address_rx
+                    .recv_timeout(std::time::Duration::from_millis(150))
+                    .expect("SetGain frame was not sent promptly while actor was waiting for input");
+                if address == "/Set/Track/Out/Gain" {
+                    assert!(sent_at.elapsed() < std::time::Duration::from_millis(150));
+                    break;
+                }
+            }
+        }).await.unwrap();
     }
 }

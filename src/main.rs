@@ -6,6 +6,8 @@ use lv1_scene_fade_utility::osc::OscArg;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 enum CurveArg {
     Linear,
@@ -105,7 +107,8 @@ enum Command {
     },
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::main]
+async fn main() -> AppResult<()> {
     let cli = parse_cli_from(std::env::args_os()).unwrap_or_else(|err| err.exit());
     match cli.command {
         Command::Discover {
@@ -119,19 +122,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             timeout_ms,
             log_dir,
             json,
-        } => run_listen(host, port, timeout_ms, log_dir, json),
+        } => run_listen(host, port, timeout_ms, log_dir, json).await,
         Command::SetGain {
             host,
             port,
             group,
             channel,
             gain_db,
-        } => run_set_gain(host, port, group, channel, gain_db),
+        } => run_set_gain(host, port, group, channel, gain_db).await,
         Command::Monitor {
             host,
             port,
             timeout_ms,
-        } => run_monitor(host, port, timeout_ms),
+        } => run_monitor(host, port, timeout_ms).await,
         Command::RateTest {
             host,
             port,
@@ -141,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             count,
             start_db,
             end_db,
-        } => run_rate_test(host, port, group, channel, rate_hz, count, start_db, end_db),
+        } => run_rate_test(host, port, group, channel, rate_hz, count, start_db, end_db).await,
         Command::FadeTest {
             host,
             port,
@@ -151,7 +154,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             target_db,
             duration_ms,
             curve,
-        } => run_fade_test(host, port, timeout_ms, group, channel, target_db, duration_ms, curve),
+        } => run_fade_test(host, port, timeout_ms, group, channel, target_db, duration_ms, curve).await,
     }
 }
 
@@ -169,7 +172,7 @@ fn run_discover(
     timeout_ms: u64,
     filter_host: Option<String>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     let entries = discover(DiscoverOptions {
         timeout: Duration::from_millis(timeout_ms),
         filter_host_ip: filter_host,
@@ -189,26 +192,26 @@ fn run_discover(
     Ok(())
 }
 
-fn run_listen(
+async fn run_listen(
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: u64,
     log_dir: PathBuf,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     std::fs::create_dir_all(&log_dir)?;
     let log_path = log_dir.join(format!("lv1-probe-{}.jsonl", unix_timestamp_secs()));
     let mut logger = JsonlLogger::create(&log_path)?;
     let (host, port) = resolve_target(host, port, timeout_ms)?;
-    let mut client = Lv1TcpClient::connect(&host, port)?;
-    client.register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string())?;
+    let mut client = Lv1TcpClient::connect(&host, port).await?;
+    client.register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string()).await?;
     eprintln!("listening on {host}:{port}; writing {}", log_path.display());
 
     loop {
-        for frame in client.read_available()? {
+        for frame in client.read_available().await? {
             let msg = decode_frame_payload(&frame)?;
             if let Some((address, args)) = pong_for_ping(&msg) {
-                client.send(address, &args)?;
+                client.send(address, &args).await?;
             }
 
             let entry = entry_for_message(
@@ -241,16 +244,16 @@ fn run_listen(
     }
 }
 
-fn run_set_gain(
+async fn run_set_gain(
     host: Option<String>,
     port: Option<u16>,
     group: i32,
     channel: i32,
     gain_db: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     let (host, port) = resolve_target(host, port, 6000)?;
-    let mut client = Lv1TcpClient::connect(&host, port)?;
-    client.register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string())?;
+    let mut client = Lv1TcpClient::connect(&host, port).await?;
+    client.register_myfoh("lv1-probe", &uuid::Uuid::new_v4().to_string()).await?;
     client.send(
         "/Set/Track/Out/Gain",
         &[
@@ -258,14 +261,14 @@ fn run_set_gain(
             OscArg::Int(channel),
             OscArg::Double(gain_db),
         ],
-    )?;
+    ).await?;
 
     let until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < until {
-        for frame in client.read_available()? {
+        for frame in client.read_available().await? {
             let msg = decode_frame_payload(&frame)?;
             if let Some((address, args)) = pong_for_ping(&msg) {
-                client.send(address, &args)?;
+                client.send(address, &args).await?;
             }
             println!("received {} {:?}", msg.address, msg.args);
         }
@@ -273,49 +276,46 @@ fn run_set_gain(
     Ok(())
 }
 
-fn run_monitor(
+async fn run_monitor(
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: u64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     use lv1_scene_fade_utility::lv1::state::{Lv1Event, spawn_actor};
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
 
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move {
-        let handle = spawn_actor(host.clone(), port);
-        let mut events = handle.subscribe().await;
+    let handle = spawn_actor(host.clone(), port);
+    let mut events = handle.subscribe().await;
 
-        while let Some(event) = events.recv().await {
-            match event {
-                Lv1Event::Connected => println!("[connected] {host}:{port}"),
-                Lv1Event::Disconnected => println!("[disconnected] reconnecting in 3s..."),
-                Lv1Event::SceneChanged(scene) => {
-                    println!("[scene] index={} name={:?}", scene.index, scene.name);
-                }
-                Lv1Event::SceneListChanged(list) => {
-                    println!("[scene-list] {} scenes", list.len());
-                    for entry in &list {
-                        println!("  [{}] {:?}", entry.index, entry.name);
-                    }
-                }
-                Lv1Event::FaderChanged { group, channel, gain_db } => {
-                    println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
-                }
-                Lv1Event::ChannelTopologyChanged(channels) => {
-                    println!("[channels] {} channels loaded", channels.len());
+    while let Some(event) = events.recv().await {
+        match event {
+            Lv1Event::Connected => println!("[connected] {host}:{port}"),
+            Lv1Event::Disconnected => println!("[disconnected] reconnecting in 3s..."),
+            Lv1Event::SceneChanged(scene) => {
+                println!("[scene] index={} name={:?}", scene.index, scene.name);
+            }
+            Lv1Event::SceneListChanged(list) => {
+                println!("[scene-list] {} scenes", list.len());
+                for entry in &list {
+                    println!("  [{}] {:?}", entry.index, entry.name);
                 }
             }
+            Lv1Event::FaderChanged { group, channel, gain_db } => {
+                println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
+            }
+            Lv1Event::ChannelTopologyChanged(channels) => {
+                println!("[channels] {} channels loaded", channels.len());
+            }
         }
-    });
+    }
 
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_rate_test(
+async fn run_rate_test(
     host: Option<String>,
     port: Option<u16>,
     group: i32,
@@ -324,10 +324,10 @@ fn run_rate_test(
     count: u64,
     start_db: f64,
     end_db: f64,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     let (host, port) = resolve_target(host, port, 6000)?;
-    let mut client = Lv1TcpClient::connect(&host, port)?;
-    client.register_myfoh("lv1-rate-test", &uuid::Uuid::new_v4().to_string())?;
+    let mut client = Lv1TcpClient::connect(&host, port).await?;
+    client.register_myfoh("lv1-rate-test", &uuid::Uuid::new_v4().to_string()).await?;
 
     let interval = Duration::from_micros(1_000_000 / rate_hz);
     let step = if count > 1 { (end_db - start_db) / (count - 1) as f64 } else { 0.0 };
@@ -344,14 +344,14 @@ fn run_rate_test(
         client.send(
             "/Set/Track/Out/Gain",
             &[OscArg::Int(group), OscArg::Int(channel), OscArg::Double(gain_db)],
-        )?;
+        ).await?;
         sent_times.push(t);
 
         // Drain any frames that arrived since last send
-        for frame in client.read_available()? {
+        for frame in client.read_available().await? {
             if let Ok(msg) = decode_frame_payload(&frame) {
                 if let Some((addr, args)) = pong_for_ping(&msg) {
-                    client.send(addr, &args)?;
+                    client.send(addr, &args).await?;
                 } else if msg.address == "/Notify/Track/Out/Gain" {
                     echo_times.push((sent_times.len() - 1, Instant::now()));
                 }
@@ -359,17 +359,17 @@ fn run_rate_test(
         }
 
         if i + 1 < count {
-            std::thread::sleep(interval);
+            tokio::time::sleep(interval).await;
         }
     }
 
     // Wait up to 2s for remaining echoes
     let wait_until = Instant::now() + Duration::from_secs(2);
     while Instant::now() < wait_until && echo_times.len() < count as usize {
-        for frame in client.read_available()? {
+        for frame in client.read_available().await? {
             if let Ok(msg) = decode_frame_payload(&frame) {
                 if let Some((addr, args)) = pong_for_ping(&msg) {
-                    client.send(addr, &args)?;
+                    client.send(addr, &args).await?;
                 } else if msg.address == "/Notify/Track/Out/Gain" {
                     echo_times.push((sent_times.len() - 1, Instant::now()));
                 }
@@ -397,7 +397,7 @@ fn run_rate_test(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn run_fade_test(
+async fn run_fade_test(
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: u64,
@@ -406,7 +406,7 @@ fn run_fade_test(
     target_db: f64,
     duration_ms: u64,
     curve: CurveArg,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> AppResult<()> {
     use lv1_scene_fade_utility::fade::curve::FadeCurve;
     use lv1_scene_fade_utility::fade::engine::{FadeConfig, FadeEvent, FadeTarget, spawn_engine};
     use lv1_scene_fade_utility::lv1::state::spawn_actor;
@@ -418,59 +418,54 @@ fn run_fade_test(
         CurveArg::Linear => FadeCurve::Linear,
     };
 
-    let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(async move {
-        let lv1 = spawn_actor(host.clone(), port);
-        let engine = spawn_engine(lv1.clone());
-        let mut lv1_events = lv1.subscribe().await;
-        let mut fade_events = engine.subscribe().await;
+    let lv1 = spawn_actor(host.clone(), port);
+    let engine = spawn_engine(lv1.clone());
+    let mut lv1_events = lv1.subscribe().await;
+    let mut fade_events = engine.subscribe().await;
 
-        // Wait for LV1 connection
-        tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            while let Some(e) = lv1_events.recv().await {
-                if matches!(e, lv1_scene_fade_utility::lv1::state::Lv1Event::Connected) {
-                    println!("[connected] {host}:{port}");
-                    break;
-                }
-            }
-        }).await.map_err(|_| "timed out waiting for LV1 connection")?;
-
-        // Wait briefly for /Channels to arrive
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
-        let snapshot = lv1.get_state().await;
-        let current_db = snapshot.channels.iter()
-            .find(|ch| ch.group == group && ch.channel == channel)
-            .map(|ch| ch.gain_db);
-
-        match current_db {
-            Some(db) => println!("[current] group={group} ch={channel} {db:.1} dB → {target_db:.1} dB over {duration_ms}ms {:?}", fade_curve),
-            None => println!("[warning] channel group={group} ch={channel} not found in snapshot — fade will start from target"),
-        }
-
-        engine.start_fade(FadeConfig {
-            targets: vec![FadeTarget { group, channel, target_db }],
-            duration_ms,
-            curve: fade_curve,
-        }).await;
-
-        loop {
-            match fade_events.recv().await {
-                Some(FadeEvent::FadeStarted) => println!("[fade-started]"),
-                Some(FadeEvent::FadeCompleted) => { println!("[fade-complete] reached {target_db:.1} dB"); break; }
-                Some(FadeEvent::FadeAborted) => { println!("[fade-aborted]"); break; }
-                Some(FadeEvent::ChannelOverride { group, channel }) => {
-                    println!("[override] group={group} ch={channel} — manual move detected, channel cancelled");
-                }
-                Some(FadeEvent::ChannelCancelled { group, channel }) => {
-                    println!("[cancelled] group={group} ch={channel}");
-                }
-                None => break,
+    // Wait for LV1 connection
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while let Some(e) = lv1_events.recv().await {
+            if matches!(e, lv1_scene_fade_utility::lv1::state::Lv1Event::Connected) {
+                println!("[connected] {host}:{port}");
+                break;
             }
         }
+    }).await.map_err(|_| "timed out waiting for LV1 connection")?;
 
-        Ok::<(), &str>(())
-    })?;
+    // Wait briefly for /Channels to arrive
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let snapshot = lv1.get_state().await;
+    let current_db = snapshot.channels.iter()
+        .find(|ch| ch.group == group && ch.channel == channel)
+        .map(|ch| ch.gain_db);
+
+    match current_db {
+        Some(db) => println!("[current] group={group} ch={channel} {db:.1} dB → {target_db:.1} dB over {duration_ms}ms {:?}", fade_curve),
+        None => println!("[warning] channel group={group} ch={channel} not found in snapshot — fade will start from target"),
+    }
+
+    engine.start_fade(FadeConfig {
+        targets: vec![FadeTarget { group, channel, target_db }],
+        duration_ms,
+        curve: fade_curve,
+    }).await;
+
+    loop {
+        match fade_events.recv().await {
+            Some(FadeEvent::FadeStarted) => println!("[fade-started]"),
+            Some(FadeEvent::FadeCompleted) => { println!("[fade-complete] reached {target_db:.1} dB"); break; }
+            Some(FadeEvent::FadeAborted) => { println!("[fade-aborted]"); break; }
+            Some(FadeEvent::ChannelOverride { group, channel }) => {
+                println!("[override] group={group} ch={channel} — manual move detected, channel cancelled");
+            }
+            Some(FadeEvent::ChannelCancelled { group, channel }) => {
+                println!("[cancelled] group={group} ch={channel}");
+            }
+            None => break,
+        }
+    }
 
     Ok(())
 }

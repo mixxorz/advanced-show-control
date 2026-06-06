@@ -47,7 +47,7 @@ pub fn resolve_target(
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: u64,
-) -> Result<(String, u16), Box<dyn std::error::Error>> {
+) -> Result<(String, u16), Box<dyn std::error::Error + Send + Sync>> {
     if let (Some(host), Some(port)) = (host.clone(), port) {
         return Ok((host, port));
     }
