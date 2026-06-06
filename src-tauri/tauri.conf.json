@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.lv1scenefade.utility",
   "build": {
-    "beforeDevCommand": "npm --prefix ../ui run dev",
-    "beforeBuildCommand": "npm --prefix ../ui run build",
+    "beforeDevCommand": "npm --prefix ui run dev",
+    "beforeBuildCommand": "npm --prefix ui run build",
     "devUrl": "http://127.0.0.1:1420",
     "frontendDist": "../ui/dist"
   },
