@@ -551,14 +551,6 @@ async fn run_fade_test(
     Ok(())
 }
 
-async fn wait_for_channels(
-    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
-    timeout_ms: u64,
-) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    wait_for_channels_until(lv1, deadline).await
-}
-
 async fn wait_for_channels_until(
     lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
     deadline: Instant,
@@ -997,7 +989,9 @@ mod tests {
         .await
         .unwrap();
 
-        let snapshot = wait_for_channels(&handle, 2_000).await.unwrap();
+        let snapshot = wait_for_channels_until(&handle, Instant::now() + Duration::from_secs(2))
+            .await
+            .unwrap();
         assert_eq!(snapshot.len(), 1);
         assert_eq!(snapshot[0].name, "Channel 1");
 
