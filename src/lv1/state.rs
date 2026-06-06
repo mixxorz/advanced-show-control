@@ -337,6 +337,7 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
         state.connection = ConnectionStatus::Disconnected;
         state.scene = None;
         state.channels.clear();
+        state.scene_buf = SceneBuffer::default();
         state.fan_out(Lv1Event::Disconnected);
 
         if disconnected == DisconnectReason::CommandChannelClosed {
