@@ -8,7 +8,10 @@ use lv1_scene_fade_utility::lv1::state::{
 use serde::Serialize;
 use tokio::sync::Mutex;
 
-use crate::show_file::DEFAULT_DURATION_MS;
+use crate::show_file::{
+    validate_show_file, ShowFile, ShowFileFadeTarget, ShowFileSafety, ShowFileSceneFadeConfig,
+    SHOW_FILE_SCHEMA_VERSION, DEFAULT_DURATION_MS,
+};
 
 const MAX_LOGS: usize = 200;
 
@@ -252,6 +255,63 @@ impl ShellState {
 
         config.duration_ms = duration_ms;
         inner.show_file_dirty = true;
+        Ok(snapshot_from_inner(&inner))
+    }
+
+    pub async fn export_show_file(&self) -> ShowFile {
+        let inner = self.inner.lock().await;
+        show_file_from_inner(&inner)
+    }
+
+    pub async fn load_show_file_from_dto(
+        &self,
+        path: String,
+        file: &mut ShowFile,
+    ) -> Result<AppViewState, String> {
+        let mut inner = self.inner.lock().await;
+
+        if inner.listen_mode_active {
+            return Err("Stop Listen Mode before opening a show file".to_string());
+        }
+
+        let lv1 = inner
+            .lv1_snapshot
+            .clone()
+            .ok_or_else(|| "Open a show file after LV1 scenes and channels are loaded".to_string())?;
+        let report = validate_show_file(file, &lv1)?;
+
+        inner.lockout = file.safety.lockout;
+        inner.scene_fade_configs = file
+            .scene_fade_configs
+            .iter()
+            .map(scene_config_from_show_file)
+            .collect();
+        inner.selected_scene_id = inner
+            .scene_fade_configs
+            .first()
+            .map(|config| config.scene_id.clone());
+        inner.show_file_path = Some(path);
+        inner.show_file_last_saved_at = Some(file.saved_at.clone());
+        inner.show_file_dirty = report.removed_anything();
+
+        for scene in report.removed_scenes {
+            inner.push_log(
+                LogSource::App,
+                LogSeverity::Warning,
+                format!("Deleted saved scene config during load: {scene}"),
+            );
+        }
+
+        for target in report.removed_targets {
+            inner.push_log(
+                LogSource::App,
+                LogSeverity::Warning,
+                format!("Deleted saved fader target during load: {target}"),
+            );
+        }
+
+        inner.push_log(LogSource::App, LogSeverity::Info, "Show file loaded".to_string());
+
         Ok(snapshot_from_inner(&inner))
     }
 
@@ -709,6 +769,61 @@ fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
     }
 }
 
+fn show_file_from_inner(inner: &ShellInner) -> ShowFile {
+    ShowFile {
+        schema_version: SHOW_FILE_SCHEMA_VERSION,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        saved_at: current_timestamp(),
+        safety: ShowFileSafety {
+            lockout: inner.lockout,
+        },
+        scene_fade_configs: inner
+            .scene_fade_configs
+            .iter()
+            .map(|config| ShowFileSceneFadeConfig {
+                scene_index: config.scene_index,
+                scene_name: config.scene_name.clone(),
+                fade_enabled: config.fade_enabled,
+                duration_ms: config.duration_ms,
+                fade_targets: config
+                    .fade_targets
+                    .iter()
+                    .map(|target| ShowFileFadeTarget {
+                        group: target.group,
+                        channel: target.channel,
+                        channel_name: target.channel_name.clone(),
+                        target_db: target.target_db,
+                        enabled: target.enabled,
+                        updated_at: target.updated_at.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn scene_config_from_show_file(config: &ShowFileSceneFadeConfig) -> SceneFadeConfig {
+    SceneFadeConfig {
+        scene_id: scene_id(config.scene_index, &config.scene_name),
+        scene_index: config.scene_index,
+        scene_name: config.scene_name.clone(),
+        fade_enabled: config.fade_enabled,
+        duration_ms: config.duration_ms,
+        fade_targets: config
+            .fade_targets
+            .iter()
+            .map(|target| FadeTarget {
+                group: target.group,
+                channel: target.channel,
+                channel_name: target.channel_name.clone(),
+                target_db: target.target_db,
+                enabled: target.enabled,
+                updated_at: target.updated_at.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn current_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -966,6 +1081,72 @@ mod tests {
 
         assert_eq!(snapshot.scene_fade_configs[0].duration_ms, 8_000);
         assert!(snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn export_show_file_contains_current_configs() {
+        let state = ShellState::default();
+        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .set_scene_fade_enabled("1::Intro".to_string(), true)
+            .await
+            .unwrap();
+
+        let file = state.export_show_file().await;
+
+        assert_eq!(file.schema_version, 1);
+        assert!(!file.safety.lockout);
+        assert_eq!(file.scene_fade_configs[0].scene_index, 1);
+        assert_eq!(file.scene_fade_configs[0].duration_ms, 4000);
+    }
+
+    #[tokio::test]
+    async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
+        let state = ShellState::default();
+        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        let mut file = crate::show_file::ShowFile {
+            schema_version: 1,
+            app_version: "0.1.0".to_string(),
+            saved_at: "123".to_string(),
+            safety: crate::show_file::ShowFileSafety { lockout: true },
+            scene_fade_configs: vec![
+                crate::show_file::ShowFileSceneFadeConfig {
+                    scene_index: 1,
+                    scene_name: "Intro".to_string(),
+                    fade_enabled: true,
+                    duration_ms: 5000,
+                    fade_targets: vec![crate::show_file::ShowFileFadeTarget {
+                        group: 0,
+                        channel: 2,
+                        channel_name: "Lead".to_string(),
+                        target_db: -9.0,
+                        enabled: true,
+                        updated_at: "999".to_string(),
+                    }],
+                },
+                crate::show_file::ShowFileSceneFadeConfig {
+                    scene_index: 2,
+                    scene_name: "Missing".to_string(),
+                    fade_enabled: true,
+                    duration_ms: 5000,
+                    fade_targets: Vec::new(),
+                },
+            ],
+        };
+
+        let snapshot = state
+            .load_show_file_from_dto("/tmp/test.lv1show".to_string(), &mut file)
+            .await
+            .unwrap();
+
+        assert!(snapshot.lockout);
+        assert_eq!(snapshot.scene_fade_configs.len(), 1);
+        assert_eq!(snapshot.scene_fade_configs[0].duration_ms, 5000);
+        assert_eq!(snapshot.scene_fade_configs[0].fade_targets[0].channel_name, "Lead");
+        assert!(snapshot.show_file_dirty);
+        assert!(snapshot.logs.iter().any(|entry| {
+            entry.message == "Deleted saved scene config during load: 2: Missing"
+        }));
     }
 
     #[test]
