@@ -4,12 +4,47 @@ use lv1_scene_fade_utility::lv1::state::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::task::spawn_blocking;
 
 use crate::app_state::{AppViewState, ShellState};
+use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 #[tauri::command]
 pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppViewState, String> {
     Ok(state.snapshot().await)
+}
+
+#[tauri::command]
+pub async fn new_show_file(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+) -> Result<AppViewState, String> {
+    let snapshot = state.new_show_file().await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn open_show_file_dialog(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+) -> Result<AppViewState, String> {
+    let path = spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_directory(default_show_folder())
+            .add_filter("LV1 Show", &["lv1show"])
+            .pick_file()
+    })
+    .await
+    .map_err(|err| format!("Failed to open file dialog: {err}"))?
+    .ok_or_else(|| "Open show file cancelled".to_string())?;
+
+    let mut file = read_show_file(&path)?;
+    let snapshot = state
+        .load_show_file_from_dto(path.display().to_string(), &mut file)
+        .await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 #[tauri::command]
@@ -71,6 +106,41 @@ pub async fn remove_fade_target(
     channel: i32,
 ) -> Result<AppViewState, String> {
     let snapshot = state.remove_fade_target(&scene_id, group, channel).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn save_show_file(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+) -> Result<AppViewState, String> {
+    if let Some(path) = state.current_show_file_path().await {
+        let snapshot = save_show_file_to_path(&state, path.into()).await?;
+        emit_snapshot(&app, &snapshot);
+        return Ok(snapshot);
+    }
+
+    save_show_file_as_dialog(app, state).await
+}
+
+#[tauri::command]
+pub async fn save_show_file_as_dialog(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+) -> Result<AppViewState, String> {
+    let path = spawn_blocking(|| {
+        rfd::FileDialog::new()
+            .set_directory(default_show_folder())
+            .set_file_name("Untitled.lv1show")
+            .add_filter("LV1 Show", &["lv1show"])
+            .save_file()
+    })
+    .await
+    .map_err(|err| format!("Failed to open save dialog: {err}"))?
+    .ok_or_else(|| "Save show file cancelled".to_string())?;
+
+    let snapshot = save_show_file_to_path(&state, path).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -175,10 +245,32 @@ fn emit_snapshot(app: &AppHandle, snapshot: &AppViewState) {
     }
 }
 
+async fn save_show_file_to_path(
+    state: &State<'_, ShellState>,
+    path: std::path::PathBuf,
+) -> Result<AppViewState, String> {
+    let saved_at = current_timestamp_millis();
+    let file = state.export_show_file(saved_at.clone()).await;
+    write_show_file(&path, &file, &backup_folder())?;
+    Ok(state
+        .mark_show_file_saved(path.display().to_string(), saved_at)
+        .await)
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct Lv1EventPayload {
     kind: String,
     message: String,
+}
+
+fn current_timestamp_millis() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .to_string()
 }
 
 impl From<&Lv1Event> for Lv1EventPayload {

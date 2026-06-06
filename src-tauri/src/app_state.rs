@@ -9,8 +9,8 @@ use serde::Serialize;
 use tokio::sync::Mutex;
 
 use crate::show_file::{
-    validate_show_file, ShowFile, ShowFileFadeTarget, ShowFileSafety, ShowFileSceneFadeConfig,
-    SHOW_FILE_SCHEMA_VERSION, DEFAULT_DURATION_MS,
+    DEFAULT_DURATION_MS, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileFadeTarget, ShowFileSafety,
+    ShowFileSceneFadeConfig, validate_show_file,
 };
 
 const MAX_LOGS: usize = 200;
@@ -263,6 +263,54 @@ impl ShellState {
         show_file_from_inner(&inner, saved_at)
     }
 
+    pub async fn current_show_file_path(&self) -> Option<String> {
+        let inner = self.inner.lock().await;
+        inner.show_file_path.clone()
+    }
+
+    pub async fn new_show_file(&self) -> Result<AppViewState, String> {
+        let mut inner = self.inner.lock().await;
+
+        if inner.listen_mode_active {
+            return Err("Stop Listen Mode before creating a new show file".to_string());
+        }
+
+        inner.lockout = false;
+        inner.scene_fade_configs.clear();
+        inner.show_file_path = None;
+        inner.show_file_dirty = false;
+        inner.show_file_last_saved_at = None;
+        inner.unknown_fader_warnings.clear();
+
+        if let Some(scenes) = inner
+            .lv1_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.scene_list.clone())
+        {
+            inner.reconcile_scene_fade_configs(&scenes);
+        }
+
+        inner.push_log(
+            LogSource::App,
+            LogSeverity::Info,
+            "New show file created".to_string(),
+        );
+        Ok(snapshot_from_inner(&inner))
+    }
+
+    pub async fn mark_show_file_saved(&self, path: String, saved_at: String) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.show_file_path = Some(path);
+        inner.show_file_last_saved_at = Some(saved_at);
+        inner.show_file_dirty = false;
+        inner.push_log(
+            LogSource::App,
+            LogSeverity::Info,
+            "Show file saved".to_string(),
+        );
+        snapshot_from_inner(&inner)
+    }
+
     pub async fn load_show_file_from_dto(
         &self,
         path: String,
@@ -274,10 +322,9 @@ impl ShellState {
             return Err("Stop Listen Mode before opening a show file".to_string());
         }
 
-        let lv1 = inner
-            .lv1_snapshot
-            .clone()
-            .ok_or_else(|| "Open a show file after LV1 scenes and channels are loaded".to_string())?;
+        let lv1 = inner.lv1_snapshot.clone().ok_or_else(|| {
+            "Open a show file after LV1 scenes and channels are loaded".to_string()
+        })?;
         let report = validate_show_file(file, &lv1)?;
 
         inner.lockout = file.safety.lockout;
@@ -311,7 +358,11 @@ impl ShellState {
             );
         }
 
-        inner.push_log(LogSource::App, LogSeverity::Info, "Show file loaded".to_string());
+        inner.push_log(
+            LogSource::App,
+            LogSeverity::Info,
+            "Show file loaded".to_string(),
+        );
 
         Ok(snapshot_from_inner(&inner))
     }
@@ -1087,7 +1138,9 @@ mod tests {
     #[tokio::test]
     async fn export_show_file_contains_current_configs() {
         let state = ShellState::default();
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         state
             .set_scene_fade_enabled("1::Intro".to_string(), true)
             .await
@@ -1103,9 +1156,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
+        let state = ShellState::default();
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
+
+        {
+            let mut inner = state.inner.lock().await;
+            inner.scene_fade_configs[0].fade_enabled = true;
+            inner.show_file_path = Some("/tmp/existing.lv1show".to_string());
+            inner.show_file_last_saved_at = Some("123".to_string());
+            inner.show_file_dirty = true;
+            inner.lockout = true;
+        }
+
+        let snapshot = state.new_show_file().await.unwrap();
+
+        assert_eq!(snapshot.show_file_path, None);
+        assert_eq!(snapshot.show_file_last_saved_at, None);
+        assert!(!snapshot.show_file_dirty);
+        assert!(!snapshot.lockout);
+        assert_eq!(snapshot.scene_fade_configs.len(), 1);
+        assert!(!snapshot.scene_fade_configs[0].fade_enabled);
+        assert_eq!(
+            snapshot.logs.last().unwrap().message,
+            "New show file created"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_show_file_rejects_listen_mode() {
+        let state = ShellState::default();
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
+        state.set_listen_mode(true).await.unwrap();
+
+        assert_eq!(
+            state.new_show_file().await.unwrap_err(),
+            "Stop Listen Mode before creating a new show file"
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_show_file_saved_updates_path_and_clears_dirty() {
+        let state = ShellState::default();
+
+        let snapshot = state
+            .mark_show_file_saved("/tmp/test.lv1show".to_string(), "999".to_string())
+            .await;
+
+        assert_eq!(
+            snapshot.show_file_path.as_deref(),
+            Some("/tmp/test.lv1show")
+        );
+        assert_eq!(snapshot.show_file_last_saved_at.as_deref(), Some("999"));
+        assert!(!snapshot.show_file_dirty);
+        assert_eq!(snapshot.logs.last().unwrap().message, "Show file saved");
+    }
+
+    #[tokio::test]
     async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
         let state = ShellState::default();
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         let mut file = crate::show_file::ShowFile {
             schema_version: 1,
             app_version: "0.1.0".to_string(),
@@ -1144,7 +1260,10 @@ mod tests {
         assert!(snapshot.lockout);
         assert_eq!(snapshot.scene_fade_configs.len(), 1);
         assert_eq!(snapshot.scene_fade_configs[0].duration_ms, 5000);
-        assert_eq!(snapshot.scene_fade_configs[0].fade_targets[0].channel_name, "Lead");
+        assert_eq!(
+            snapshot.scene_fade_configs[0].fade_targets[0].channel_name,
+            "Lead"
+        );
         assert!(snapshot.show_file_dirty);
         assert!(snapshot.logs.iter().any(|entry| {
             entry.message == "Deleted saved scene config during load: 2: Missing"
@@ -1154,7 +1273,9 @@ mod tests {
     #[tokio::test]
     async fn load_show_file_clears_unknown_fader_warnings() {
         let state = ShellState::default();
-        state.begin_connection(connected_state_with_scene_and_channel()).await;
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
         {
             let mut inner = state.inner.lock().await;
             inner.unknown_fader_warnings.insert((0, 99));
