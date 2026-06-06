@@ -1,4 +1,4 @@
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { disconnectedAppViewState, type AppViewState, type ChannelSummary, type SceneFadeConfig } from "./types";
@@ -211,6 +211,7 @@ function DurationInput(props: {
   setSceneDurationMs: (sceneId: string, durationMs: number) => void;
 }) {
   const [draft, setDraft] = useState(formatDurationSeconds(props.durationMs));
+  const skipNextBlurCommit = useRef(false);
 
   useEffect(() => {
     setDraft(formatDurationSeconds(props.durationMs));
@@ -242,9 +243,19 @@ function DurationInput(props: {
     }
   }
 
+  function handleBlur() {
+    if (skipNextBlurCommit.current) {
+      skipNextBlurCommit.current = false;
+      return;
+    }
+
+    commit();
+  }
+
   function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
     if (event.key === "Enter") {
       event.preventDefault();
+      skipNextBlurCommit.current = true;
       commit();
       event.currentTarget.blur();
       return;
@@ -252,6 +263,7 @@ function DurationInput(props: {
 
     if (event.key === "Escape") {
       event.preventDefault();
+      skipNextBlurCommit.current = true;
       resetDraft();
       event.currentTarget.blur();
     }
@@ -264,7 +276,7 @@ function DurationInput(props: {
         className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
         max={120}
         min={0.1}
-        onBlur={commit}
+        onBlur={handleBlur}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={handleKeyDown}
         step={0.1}

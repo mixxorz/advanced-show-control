@@ -142,6 +142,8 @@ pub async fn save_show_file_as_dialog(
     app: AppHandle,
     state: State<'_, ShellState>,
 ) -> Result<AppViewState, String> {
+    let _ = state.export_show_file_for_save(String::new()).await?;
+
     let path = spawn_blocking(|| -> Result<Option<std::path::PathBuf>, String> {
         let folder = default_show_folder();
         let folder = ensure_show_file_folder(folder)?;
@@ -265,7 +267,7 @@ async fn save_show_file_to_path(
     path: PathBuf,
 ) -> Result<AppViewState, String> {
     let saved_at = current_timestamp_millis();
-    let file = state.export_show_file(saved_at.clone()).await;
+    let file = state.export_show_file_for_save(saved_at.clone()).await?;
     write_show_file(&path, &file, &backup_folder())?;
     Ok(state.mark_show_file_saved(path, saved_at).await)
 }

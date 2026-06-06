@@ -263,6 +263,15 @@ impl ShellState {
         show_file_from_inner(&inner, saved_at)
     }
 
+    pub async fn export_show_file_for_save(&self, saved_at: String) -> Result<ShowFile, String> {
+        let inner = self.inner.lock().await;
+        if inner.listen_mode_active {
+            return Err("Stop Listen Mode before saving a show file".to_string());
+        }
+
+        Ok(show_file_from_inner(&inner, saved_at))
+    }
+
     pub async fn current_show_file_path(&self) -> Option<PathBuf> {
         let inner = self.inner.lock().await;
         inner.show_file_path.clone()
@@ -1157,6 +1166,20 @@ mod tests {
         assert_eq!(file.saved_at, "saved");
         assert_eq!(file.scene_fade_configs[0].scene_index, 1);
         assert_eq!(file.scene_fade_configs[0].duration_ms, 4000);
+    }
+
+    #[tokio::test]
+    async fn export_show_file_for_save_rejects_listen_mode() {
+        let state = ShellState::default();
+        state
+            .begin_connection(connected_state_with_scene_and_channel())
+            .await;
+        state.set_listen_mode(true).await.unwrap();
+
+        assert_eq!(
+            state.export_show_file_for_save("saved".to_string()).await.unwrap_err(),
+            "Stop Listen Mode before saving a show file"
+        );
     }
 
     #[tokio::test]
