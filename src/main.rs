@@ -16,6 +16,7 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(about = "Scan the network for Waves LV1 devices via zDNS multicast")]
     Discover {
         #[arg(long, default_value_t = 6000)]
         timeout_ms: u64,
@@ -24,6 +25,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = "Connect to an LV1 device and log all received OSC messages")]
     Listen {
         #[arg(long)]
         host: Option<String>,
@@ -36,6 +38,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    #[command(about = "Send a gain command to an LV1 device output channel")]
     SetGain {
         #[arg(long)]
         host: Option<String>,
