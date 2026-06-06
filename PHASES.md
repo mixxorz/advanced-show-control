@@ -9,7 +9,7 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [x] **Phase 2: Core State Mirror** — `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, events, reconnect behavior, and snapshots.
 - [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, final target send, abort, finish-now, replacement behavior, and manual override detection are implemented and tested.
 - [x] **Phase 4: Capture Engine And Listen Mode** — in-memory scene fade configs, selected-scene editing, Listen Mode direct-write capture, target enable/remove behavior, scene-list reconciliation, and split Scene tab UI are implemented and tested. Persistence and durable rename/reorder matching remain deferred to Phase 5.
-- [ ] **Phase 5: Storage And Project Files** — not implemented yet. JSON project save/load, scene config validation, mismatch warnings, and backup/autosave remain to build.
+- [ ] **Phase 5: Storage And Show Files** — not implemented yet. JSON show file save/load, exact-match validation, deletion of missing/renamed scene or channel configs on load, and backup-on-save remain to build. Remapping, scene rename handling, channel rename handling, autosave, and durable rename/reorder matching are deferred.
 - [~] **Phase 6: MVP Desktop UI** — partially implemented ahead of Phases 4–5. A durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, and LV1 connection commands. Capture/save UI is still deferred.
 - [ ] **Phase 7: Scene Recall Automation** — not implemented yet. Automatic fade triggering on LV1 scene recall, scene matching, safety blocks, and overlap policy remain to build.
 - [ ] **Phase 8: HTTP And WebSocket Control API** — not implemented yet.
@@ -239,13 +239,13 @@ The app should never assume stored state is current if the LV1 connection is uns
 
 ---
 
-## Phase 5: Storage And Project Files
+## Phase 5: Storage And Show Files
 
-**Goal:** Persist fade configurations safely and transparently.
+**Goal:** Persist fade configurations safely and transparently as portable show files.
 
 **Recommended Storage Approach For MVP:**
 
-Use a human-readable project file first, such as JSON. Move to SQLite later if the project grows.
+Use a human-readable show file first, such as JSON with an app-specific extension. Move to SQLite later if the project grows.
 
 **Stored Data:**
 
@@ -261,33 +261,25 @@ Use a human-readable project file first, such as JSON. Move to SQLite later if t
 - Safety preferences.
 - Last modified timestamp.
 
-**Important Matching Behavior:**
+**Important Matching Behavior For MVP:**
 
-Because LV1 scene indices and names may change, the app should warn when the current scene does not clearly match the saved config.
+Phase 5 should use strict exact matching when loading a show file. If a saved scene config does not exactly match a current LV1 scene by both index and name, delete that scene config during load and make the deletion visible in logs/warnings. If a saved fader target does not exactly match a current LV1 channel by group, channel, and captured channel name, delete that target during load and make the deletion visible in logs/warnings.
 
-**Suggested Recall Matching Modes:**
-
-| Match Case | Behavior |
-|---|---|
-| Index And Name Match | Run normally |
-| Index Matches, Name Differs | Warn or block, depending on safety setting |
-| Name Matches, Index Differs | Offer remap or allow with warning |
-| Neither Matches | Do not auto-run |
-| Duplicate Scene Names | Prefer index and warn |
+Remapping, scene rename handling, channel rename handling, duplicate-name handling, scene reorder handling, and durable identity matching are intentionally out of scope for Phase 5 and should be covered in a later phase.
 
 **Deliverables:**
 
-- Save/load project files.
+- Save/load show files.
 - Import/export.
-- Scene config validation.
-- Mismatch warnings.
-- Basic backup or autosave strategy.
+- Exact scene and channel validation on load.
+- Visible deletion warnings for non-exact saved scenes and targets.
+- Basic backup-on-save strategy.
 
 **Exit Criteria:**
 
 - Configurations survive app restart.
-- Scene mismatch conditions are visible and safe.
-- User can export and move a project file.
+- Non-exact saved scene and channel entries are removed safely and visibly on load.
+- User can export and move a show file.
 
 ---
 
