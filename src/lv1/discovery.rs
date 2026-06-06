@@ -56,11 +56,19 @@ pub fn entry_matches(entry: &DiscoveryEntry, service: &str, host_ip: Option<&str
 
 pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>> {
     use std::collections::BTreeMap;
-    use std::net::UdpSocket;
+    use std::net::{SocketAddrV4, UdpSocket};
     use std::time::Instant;
 
-    let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, MCAST_PORT))?;
-    socket.set_read_timeout(Some(std::time::Duration::from_millis(250)))?;
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::DGRAM,
+        Some(socket2::Protocol::UDP),
+    )?;
+    socket.set_reuse_address(true)?;
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
+    socket.bind(&SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MCAST_PORT).into())?;
+    let socket: UdpSocket = socket.into();
     socket.set_multicast_loop_v4(true)?;
     socket.join_multicast_v4(&MCAST_ADDR.parse::<Ipv4Addr>().unwrap(), &Ipv4Addr::UNSPECIFIED)?;
 
@@ -69,6 +77,12 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
     let mut buf = [0_u8; 65_536];
 
     while Instant::now() < deadline {
+        let Some(read_timeout) = read_timeout_for(deadline.saturating_duration_since(Instant::now()))
+        else {
+            break;
+        };
+        socket.set_read_timeout(Some(read_timeout))?;
+
         match socket.recv_from(&mut buf) {
             Ok((size, source)) => {
                 if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string()) {
@@ -77,7 +91,7 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
                         &options.filter_service,
                         options.filter_host_ip.as_deref(),
                     ) {
-                        let key = format!("{}|{:?}|{:?}", entry.service, entry.host, entry.port);
+                        let key = dedupe_key(&entry);
                         found.entry(key).or_insert(entry);
                     }
                 }
@@ -90,6 +104,30 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
     }
 
     Ok(found.into_values().collect())
+}
+
+fn dedupe_key(entry: &DiscoveryEntry) -> String {
+    if let Some(uuid) = &entry.uuid {
+        return format!("uuid|{}|{}", entry.service, uuid);
+    }
+
+    let mut addresses = entry.addresses.clone();
+    addresses.sort();
+    let mut ipv6 = entry.ipv6.clone();
+    ipv6.sort();
+
+    format!(
+        "fallback|{}|{:?}|{:?}|{}|{:?}|{:?}",
+        entry.service, entry.host, entry.port, entry.source, addresses, ipv6
+    )
+}
+
+fn read_timeout_for(remaining: std::time::Duration) -> Option<std::time::Duration> {
+    if remaining.is_zero() {
+        None
+    } else {
+        Some(remaining.min(std::time::Duration::from_millis(250)))
+    }
 }
 
 fn ipv4_like(value: &str) -> bool {
@@ -283,5 +321,58 @@ mod tests {
         .unwrap();
 
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn dedupe_key_prefers_uuid_when_present() {
+        let mut entry = DiscoveryEntry {
+            service: "_waveslv113._tcp".to_string(),
+            uuid: Some("uuid-1".to_string()),
+            host: Some("lv1-host".to_string()),
+            port: Some(50000),
+            addresses: vec!["192.168.1.10".to_string()],
+            ipv6: vec![],
+            source: "192.168.1.10".to_string(),
+        };
+        let key = dedupe_key(&entry);
+
+        entry.host = Some("renamed-host".to_string());
+        entry.port = Some(50001);
+        entry.addresses = vec!["10.0.0.4".to_string()];
+        entry.source = "10.0.0.4".to_string();
+
+        assert_eq!(dedupe_key(&entry), key);
+    }
+
+    #[test]
+    fn dedupe_key_without_uuid_keeps_distinct_sources_and_addresses() {
+        let mut entry = DiscoveryEntry {
+            service: "_waveslv113._tcp".to_string(),
+            uuid: None,
+            host: Some("lv1-host".to_string()),
+            port: Some(50000),
+            addresses: vec!["192.168.1.10".to_string()],
+            ipv6: vec![],
+            source: "192.168.1.10".to_string(),
+        };
+        let key = dedupe_key(&entry);
+
+        entry.addresses = vec!["192.168.1.11".to_string()];
+        entry.source = "192.168.1.11".to_string();
+
+        assert_ne!(dedupe_key(&entry), key);
+    }
+
+    #[test]
+    fn read_timeout_is_capped_to_remaining_deadline() {
+        assert_eq!(
+            read_timeout_for(std::time::Duration::from_millis(10)),
+            Some(std::time::Duration::from_millis(10))
+        );
+        assert_eq!(
+            read_timeout_for(std::time::Duration::from_secs(1)),
+            Some(std::time::Duration::from_millis(250))
+        );
+        assert_eq!(read_timeout_for(std::time::Duration::ZERO), None);
     }
 }
