@@ -6,6 +6,12 @@ use lv1_scene_fade_utility::osc::OscArg;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum CurveArg {
+    LinearDb,
+    EaseInOutDb,
+}
+
 #[derive(Debug, Parser)]
 #[command(name = "lv1-probe")]
 #[command(about = "Phase 1 Waves LV1 protocol discovery probe")]
@@ -79,6 +85,25 @@ enum Command {
         #[arg(long, allow_hyphen_values = true, default_value_t = -10.0)]
         end_db: f64,
     },
+    #[command(about = "Run a timed fade on a single LV1 channel")]
+    FadeTest {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long, default_value_t = 6000)]
+        timeout_ms: u64,
+        #[arg(long, default_value_t = 0)]
+        group: i32,
+        #[arg(long, default_value_t = 0)]
+        channel: i32,
+        #[arg(long, allow_hyphen_values = true)]
+        target_db: f64,
+        #[arg(long, default_value_t = 4000)]
+        duration_ms: u64,
+        #[arg(long, value_enum, default_value_t = CurveArg::EaseInOutDb)]
+        curve: CurveArg,
+    },
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -118,6 +143,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             start_db,
             end_db,
         } => run_rate_test(host, port, group, channel, rate_hz, count, start_db, end_db),
+        Command::FadeTest {
+            host,
+            port,
+            timeout_ms,
+            group,
+            channel,
+            target_db,
+            duration_ms,
+            curve,
+        } => run_fade_test(host, port, timeout_ms, group, channel, target_db, duration_ms, curve),
     }
 }
 
@@ -362,6 +397,86 @@ fn run_rate_test(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_fade_test(
+    host: Option<String>,
+    port: Option<u16>,
+    timeout_ms: u64,
+    group: i32,
+    channel: i32,
+    target_db: f64,
+    duration_ms: u64,
+    curve: CurveArg,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use lv1_scene_fade_utility::fade::curve::FadeCurve;
+    use lv1_scene_fade_utility::fade::engine::{FadeConfig, FadeEvent, FadeTarget, spawn_engine};
+    use lv1_scene_fade_utility::lv1::state::spawn_actor;
+
+    let (host, port) = resolve_target(host, port, timeout_ms)?;
+    eprintln!("connecting to {host}:{port}");
+
+    let fade_curve = match curve {
+        CurveArg::LinearDb => FadeCurve::LinearDb,
+        CurveArg::EaseInOutDb => FadeCurve::EaseInOutDb,
+    };
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async move {
+        let lv1 = spawn_actor(host.clone(), port);
+        let engine = spawn_engine(lv1.clone());
+        let mut lv1_events = lv1.subscribe().await;
+        let mut fade_events = engine.subscribe().await;
+
+        // Wait for LV1 connection
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while let Some(e) = lv1_events.recv().await {
+                if matches!(e, lv1_scene_fade_utility::lv1::state::Lv1Event::Connected) {
+                    println!("[connected] {host}:{port}");
+                    break;
+                }
+            }
+        }).await.map_err(|_| "timed out waiting for LV1 connection")?;
+
+        // Wait briefly for /Channels to arrive
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let snapshot = lv1.get_state().await;
+        let current_db = snapshot.channels.iter()
+            .find(|ch| ch.group == group && ch.channel == channel)
+            .map(|ch| ch.gain_db);
+
+        match current_db {
+            Some(db) => println!("[current] group={group} ch={channel} {db:.1} dB → {target_db:.1} dB over {duration_ms}ms {:?}", fade_curve),
+            None => println!("[warning] channel group={group} ch={channel} not found in snapshot — fade will start from target"),
+        }
+
+        engine.start_fade(FadeConfig {
+            targets: vec![FadeTarget { group, channel, target_db }],
+            duration_ms,
+            curve: fade_curve,
+        }).await;
+
+        loop {
+            match fade_events.recv().await {
+                Some(FadeEvent::FadeStarted) => println!("[fade-started]"),
+                Some(FadeEvent::FadeCompleted) => { println!("[fade-complete] reached {target_db:.1} dB"); break; }
+                Some(FadeEvent::FadeAborted) => { println!("[fade-aborted]"); break; }
+                Some(FadeEvent::ChannelOverride { group, channel }) => {
+                    println!("[override] group={group} ch={channel} — manual move detected, channel cancelled");
+                }
+                Some(FadeEvent::ChannelCancelled { group, channel }) => {
+                    println!("[cancelled] group={group} ch={channel}");
+                }
+                None => break,
+            }
+        }
+
+        Ok::<(), &str>(())
+    })?;
+
+    Ok(())
+}
+
 fn unix_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -495,6 +610,34 @@ mod tests {
                 assert_eq!(timeout_ms, 3000);
             }
             other => panic!("expected monitor command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_fade_test_command() {
+        let cli = Cli::try_parse_from([
+            "lv1-probe",
+            "fade-test",
+            "--host", "192.168.1.10",
+            "--port", "50001",
+            "--group", "0",
+            "--channel", "2",
+            "--target-db", "-20.0",
+            "--duration-ms", "3000",
+            "--curve", "linear-db",
+        ]).unwrap();
+
+        match cli.command {
+            Command::FadeTest { host, port, group, channel, target_db, duration_ms, curve, .. } => {
+                assert_eq!(host.as_deref(), Some("192.168.1.10"));
+                assert_eq!(port, Some(50001));
+                assert_eq!(group, 0);
+                assert_eq!(channel, 2);
+                assert!((target_db - -20.0).abs() < 1e-10);
+                assert_eq!(duration_ms, 3000);
+                assert!(matches!(curve, CurveArg::LinearDb));
+            }
+            other => panic!("expected FadeTest, got {other:?}"),
         }
     }
 }
