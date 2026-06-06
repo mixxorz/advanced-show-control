@@ -198,6 +198,71 @@ pub fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: 
     }
 }
 
+use crate::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
+use std::time::{Duration, Instant};
+
+const PING_TIMEOUT: Duration = Duration::from_secs(10);
+const RECONNECT_DELAY: Duration = Duration::from_secs(3);
+
+/// A cloneable handle to the LV1 actor. Use this to send commands.
+#[derive(Clone)]
+pub struct Lv1ActorHandle {
+    tx: mpsc::Sender<Lv1Command>,
+}
+
+impl Lv1ActorHandle {
+    /// Get a point-in-time snapshot of the current state.
+    pub async fn get_state(&self) -> Lv1StateSnapshot {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let _ = self.tx.send(Lv1Command::GetState { reply: reply_tx }).await;
+        reply_rx.await.expect("actor dropped before responding to GetState")
+    }
+
+    /// Subscribe to all future events. Returns a receiver for `Lv1Event`.
+    pub async fn subscribe(&self) -> mpsc::Receiver<Lv1Event> {
+        let (event_tx, event_rx) = mpsc::channel(64);
+        let _ = self.tx.send(Lv1Command::Subscribe { tx: event_tx }).await;
+        event_rx
+    }
+}
+
+struct ActorState {
+    connection: ConnectionStatus,
+    scene: Option<SceneState>,
+    scene_list: Vec<SceneListEntry>,
+    channels: Vec<ChannelInfo>,
+    scene_buf: SceneBuffer,
+    last_ping: Instant,
+    subscribers: Vec<mpsc::Sender<Lv1Event>>,
+}
+
+impl ActorState {
+    fn new() -> Self {
+        Self {
+            connection: ConnectionStatus::Connecting,
+            scene: None,
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+            scene_buf: SceneBuffer::default(),
+            last_ping: Instant::now(),
+            subscribers: Vec::new(),
+        }
+    }
+
+    fn snapshot(&self) -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: self.connection.clone(),
+            scene: self.scene.clone(),
+            scene_list: self.scene_list.clone(),
+            channels: self.channels.clone(),
+        }
+    }
+
+    fn fan_out(&mut self, event: Lv1Event) {
+        self.subscribers.retain(|tx| tx.try_send(event.clone()).is_ok());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
