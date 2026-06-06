@@ -70,6 +70,11 @@ pub enum Lv1Command {
     Subscribe {
         tx: mpsc::Sender<Lv1Event>,
     },
+    SetGain {
+        group: i32,
+        channel: i32,
+        gain_db: f64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -224,6 +229,11 @@ impl Lv1ActorHandle {
         let _ = self.tx.send(Lv1Command::Subscribe { tx: event_tx }).await;
         event_rx
     }
+
+    /// Send a `/Set/Track/Out/Gain` command to LV1. Fire and forget.
+    pub async fn set_gain(&self, group: i32, channel: i32, gain_db: f64) {
+        let _ = self.tx.send(Lv1Command::SetGain { group, channel, gain_db }).await;
+    }
 }
 
 struct ActorState {
@@ -290,6 +300,9 @@ async fn drain_commands_for(
                 Some(Lv1Command::Subscribe { tx }) => {
                     state.subscribers.push(tx);
                 }
+                Some(Lv1Command::SetGain { .. }) => {
+                    // Silently drop — not connected
+                }
             },
         }
     }
@@ -326,6 +339,9 @@ async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Comman
             match cmd {
                 Lv1Command::GetState { reply } => { let _ = reply.send(state.snapshot()); }
                 Lv1Command::Subscribe { tx } => { state.subscribers.push(tx); }
+                Lv1Command::SetGain { .. } => {
+                    // Silently drop — not connected yet
+                }
             }
         }
         state.fan_out(Lv1Event::Connected);
@@ -396,6 +412,16 @@ async fn run_connected(
                     }
                     Some(Lv1Command::Subscribe { tx }) => {
                         state.subscribers.push(tx);
+                    }
+                    Some(Lv1Command::SetGain { group, channel, gain_db }) => {
+                        let _ = client.send(
+                            "/Set/Track/Out/Gain",
+                            &[
+                                crate::osc::OscArg::Int(group),
+                                crate::osc::OscArg::Int(channel),
+                                crate::osc::OscArg::Double(gain_db),
+                            ],
+                        );
                     }
                 }
             }
@@ -698,5 +724,40 @@ mod tests {
 
         let snapshot = handle.get_state().await;
         assert_eq!(snapshot.connection, ConnectionStatus::Connected);
+    }
+
+    #[tokio::test]
+    async fn actor_handles_set_gain_command() {
+        use std::io::Read;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)])).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+
+            // Read what the actor sends after SetGain
+            let mut buf = [0u8; 4096];
+            stream.set_read_timeout(Some(std::time::Duration::from_millis(500))).unwrap();
+            let _ = stream.read(&mut buf); // drain handshake bytes sent by actor
+
+            // Keep alive briefly
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        });
+
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let mut events = handle.subscribe().await;
+
+        // Wait for connected
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(e) = events.recv().await {
+                if matches!(e, Lv1Event::Connected) { break; }
+            }
+        }).await.unwrap();
+
+        // Should not panic — SetGain command is accepted
+        handle.set_gain(0, 0, -20.0).await;
     }
 }
