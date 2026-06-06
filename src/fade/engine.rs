@@ -57,6 +57,10 @@ pub(crate) struct ActiveChannel {
     pub curve: FadeCurve,
     pub duration: Duration,
     pub started_at: Instant,
+    /// Override threshold for this channel — at least OVERRIDE_THRESHOLD_DB,
+    /// but widened to 1.5x the per-tick step size so hardware quantization
+    /// echoes at extreme gain levels (e.g. -144 dB) don't trigger false overrides.
+    pub override_threshold_db: f64,
 }
 
 impl ActiveChannel {
@@ -69,6 +73,10 @@ impl ActiveChannel {
         duration: Duration,
         started_at: Instant,
     ) -> Self {
+        let total_db = (target_db - start_db).abs();
+        let ticks = (duration.as_secs_f64() * TICK_HZ as f64).max(1.0);
+        let step_db = total_db / ticks;
+        let override_threshold_db = OVERRIDE_THRESHOLD_DB.max(step_db * 1.5);
         Self {
             group,
             channel,
@@ -78,6 +86,7 @@ impl ActiveChannel {
             curve,
             duration,
             started_at,
+            override_threshold_db,
         }
     }
 
@@ -95,7 +104,7 @@ impl ActiveChannel {
 
     /// Returns true if `reported` deviates from `expected_db` by >= threshold.
     pub(crate) fn is_override(&self, reported_db: f64) -> bool {
-        (reported_db - self.expected_db).abs() >= OVERRIDE_THRESHOLD_DB
+        (reported_db - self.expected_db).abs() >= self.override_threshold_db
     }
 
     /// Returns Some(new_db) if the value has moved enough to warrant sending.
@@ -345,15 +354,29 @@ mod tests {
 
     #[test]
     fn is_override_true_when_deviation_exceeds_threshold() {
+        // Small fade: step = 10/100 = 0.1 dB/tick, threshold = max(0.5, 0.15) = 0.5 dB
         let ch = make_channel(-20.0, -10.0, 4000);
-        // expected_db starts at start_db (-20.0)
-        assert!(ch.is_override(-20.0 + OVERRIDE_THRESHOLD_DB + 0.1));
+        assert!(ch.is_override(-20.0 + ch.override_threshold_db + 0.1));
     }
 
     #[test]
     fn is_override_false_when_deviation_below_threshold() {
+        // Small fade: threshold = 0.5 dB
         let ch = make_channel(-20.0, -10.0, 4000);
-        assert!(!ch.is_override(-20.0 + OVERRIDE_THRESHOLD_DB - 0.1));
+        assert!(!ch.is_override(-20.0 + ch.override_threshold_db - 0.1));
+    }
+
+    #[test]
+    fn override_threshold_widens_for_large_range_fade() {
+        // -144 → 0 over 4s: step = 144 / (4*25) = 1.44 dB/tick, threshold = max(0.5, 2.16) = 2.16 dB
+        let ch = make_channel(-144.0, 0.0, 4000);
+        let expected_step = 144.0 / (4.0 * TICK_HZ as f64);
+        let expected_threshold = OVERRIDE_THRESHOLD_DB.max(expected_step * 1.5);
+        assert!((ch.override_threshold_db - expected_threshold).abs() < 1e-10);
+        // A 1.5 dB echo deviation should NOT trigger override (within threshold)
+        assert!(!ch.is_override(-144.0 + 1.5));
+        // A 3.0 dB deviation SHOULD trigger override
+        assert!(ch.is_override(-144.0 + expected_threshold + 0.1));
     }
 
     #[test]

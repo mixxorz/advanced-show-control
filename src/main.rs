@@ -101,7 +101,7 @@ enum Command {
         target_db: f64,
         #[arg(long, default_value_t = 4000)]
         duration_ms: u64,
-        #[arg(long, value_enum, default_value_t = CurveArg::EaseInOutDb)]
+        #[arg(long, value_enum, default_value_t = CurveArg::LinearDb)]
         curve: CurveArg,
     },
 }
