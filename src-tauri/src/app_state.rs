@@ -258,6 +258,7 @@ impl ShellState {
         Ok(snapshot_from_inner(&inner))
     }
 
+    #[cfg(test)]
     pub async fn export_show_file(&self, saved_at: String) -> ShowFile {
         let inner = self.inner.lock().await;
         show_file_from_inner(&inner, saved_at)

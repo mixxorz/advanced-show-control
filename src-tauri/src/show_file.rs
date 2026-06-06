@@ -1,4 +1,6 @@
-use lv1_scene_fade_utility::lv1::state::{ChannelInfo, Lv1StateSnapshot, SceneListEntry};
+use lv1_scene_fade_utility::lv1::state::Lv1StateSnapshot;
+#[cfg(test)]
+use lv1_scene_fade_utility::lv1::state::{ChannelInfo, SceneListEntry};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;
