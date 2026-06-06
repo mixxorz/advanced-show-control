@@ -124,6 +124,24 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    pub async fn begin_connecting(&self) -> (u64, AppSnapshot) {
+        let mut inner = self.inner.lock().await;
+        inner.generation = inner.generation.saturating_add(1);
+        inner.lv1_snapshot = Some(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connecting,
+            scene: None,
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+        });
+        inner.push_log(
+            LogSource::Lv1,
+            LogSeverity::Info,
+            "Connecting to LV1".to_string(),
+        );
+        let generation = inner.generation;
+        (generation, snapshot_from_inner(&inner))
+    }
+
     pub async fn set_lockout(&self, enabled: bool) -> AppSnapshot {
         let mut inner = self.inner.lock().await;
         inner.lockout = enabled;
@@ -135,19 +153,21 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
-    pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> (u64, AppSnapshot) {
+    pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppSnapshot {
         let mut inner = self.inner.lock().await;
-        inner.generation = inner.generation.saturating_add(1);
-        let mut snapshot = snapshot;
-        snapshot.connection = ConnectionStatus::Connected;
         inner.lv1_snapshot = Some(snapshot);
-        inner.push_log(
-            LogSource::Lv1,
-            LogSeverity::Info,
-            "LV1 connected".to_string(),
-        );
-        let generation = inner.generation;
-        (generation, snapshot_from_inner(&inner))
+        let message = match inner
+            .lv1_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.connection)
+        {
+            Some(ConnectionStatus::Connecting) => "Connecting to LV1",
+            Some(ConnectionStatus::Connected) => "LV1 connected",
+            Some(ConnectionStatus::Disconnected) => "LV1 disconnected",
+            None => "LV1 disconnected",
+        };
+        inner.push_log(LogSource::Lv1, LogSeverity::Info, message.to_string());
+        snapshot_from_inner(&inner)
     }
 
     pub async fn disconnect(&self) -> AppSnapshot {
@@ -371,6 +391,18 @@ mod tests {
         assert_eq!(snapshot.logs[0].message, "Lockout enabled");
     }
 
+    #[tokio::test]
+    async fn begin_connecting_sets_connecting_snapshot_and_logs_it() {
+        let state = ShellState::default();
+
+        let (generation, snapshot) = state.begin_connecting().await;
+
+        assert_eq!(generation, 1);
+        assert_eq!(snapshot.connection, AppConnectionState::Connecting);
+        assert_eq!(snapshot.logs.len(), 1);
+        assert_eq!(snapshot.logs[0].message, "Connecting to LV1");
+    }
+
     #[test]
     fn snapshot_maps_lv1_scene_and_counts() {
         let mut inner = ShellInner::default();
@@ -414,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn lv1_scene_event_updates_rust_owned_snapshot() {
         let state = ShellState::default();
-        let (generation, _snapshot) = state.begin_connection(connected_snapshot()).await;
+        let (generation, _snapshot) = state.begin_connecting().await;
         let snapshot = state
             .apply_lv1_event_for_generation(
                 generation,
@@ -427,19 +459,53 @@ mod tests {
 
         let snapshot = snapshot.expect("event should apply to current generation");
 
-        assert_eq!(snapshot.connection, AppConnectionState::Connected);
+        assert_eq!(snapshot.connection, AppConnectionState::Connecting);
         assert_eq!(snapshot.current_scene.unwrap().name, "Chorus");
         assert_eq!(snapshot.logs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn begin_connection_preserves_incoming_connection_state() {
+        let state = ShellState::default();
+        let (_, _connecting) = state.begin_connecting().await;
+
+        let snapshot = state
+            .begin_connection(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connecting,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+            })
+            .await;
+
+        assert_eq!(snapshot.connection, AppConnectionState::Connecting);
+        assert_eq!(snapshot.logs.last().unwrap().message, "Connecting to LV1");
+
+        let snapshot = state
+            .begin_connection(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+            })
+            .await;
+
+        assert_eq!(snapshot.connection, AppConnectionState::Connected);
+        assert_eq!(snapshot.logs.last().unwrap().message, "LV1 connected");
     }
 
     #[tokio::test]
     async fn stale_lv1_events_are_ignored_after_generation_change() {
         let state = ShellState::default();
 
-        let (first_generation, first_snapshot) = state.begin_connection(connected_snapshot()).await;
-        assert_eq!(first_snapshot.connection, AppConnectionState::Connected);
+        let (first_generation, first_snapshot) = state.begin_connecting().await;
+        assert_eq!(first_snapshot.connection, AppConnectionState::Connecting);
 
-        let (second_generation, second_snapshot) = state
+        let (second_generation, second_connecting) = state.begin_connecting().await;
+        assert_eq!(second_generation, first_generation + 1);
+        assert_eq!(second_connecting.connection, AppConnectionState::Connecting);
+
+        let second_snapshot = state
             .begin_connection(Lv1StateSnapshot {
                 scene: None,
                 scene_list: vec![],
@@ -447,7 +513,6 @@ mod tests {
                 connection: ConnectionStatus::Connected,
             })
             .await;
-        assert_eq!(second_generation, first_generation + 1);
         assert_eq!(second_snapshot.connection, AppConnectionState::Connected);
 
         let stale = state
@@ -461,7 +526,7 @@ mod tests {
             .await;
         assert!(stale.is_none());
 
-        let latest = state
+        let current = state
             .apply_lv1_event_for_generation(
                 second_generation,
                 &Lv1Event::SceneChanged(SceneState {
@@ -469,16 +534,20 @@ mod tests {
                     name: "Bridge".to_string(),
                 }),
             )
-            .await
-            .expect("event should apply to latest generation");
+            .await;
+        assert!(current.is_some());
 
+        let latest = current.expect("event should apply to current generation");
         assert_eq!(latest.current_scene.unwrap().name, "Bridge");
     }
 
     #[tokio::test]
     async fn disconnect_increments_generation_and_ignores_old_events() {
         let state = ShellState::default();
-        let (generation, snapshot) = state.begin_connection(connected_snapshot()).await;
+        let (generation, snapshot) = state.begin_connecting().await;
+        assert_eq!(snapshot.connection, AppConnectionState::Connecting);
+
+        let snapshot = state.begin_connection(connected_snapshot()).await;
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
 
         let disconnected = state.disconnect().await;

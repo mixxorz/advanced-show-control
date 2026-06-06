@@ -70,7 +70,6 @@ pub async fn connect_lv1(
 
     let lv1 = spawn_actor(host.clone(), port);
     let fade = spawn_engine(lv1.clone());
-    let initial_snapshot = lv1.get_state().await;
 
     {
         let mut handles = state.handles.lock().await;
@@ -78,10 +77,14 @@ pub async fn connect_lv1(
         handles.fade = Some(fade);
     }
 
-    let (generation, snapshot) = state.begin_connection(initial_snapshot).await;
-    emit_snapshot(&app, &snapshot);
+    let (generation, connecting_snapshot) = state.begin_connecting().await;
+    emit_snapshot(&app, &connecting_snapshot);
 
     let mut events = lv1.subscribe().await;
+    let initial_snapshot = lv1.get_state().await;
+    let snapshot = state.begin_connection(initial_snapshot).await;
+    emit_snapshot(&app, &snapshot);
+
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = events.recv().await {
