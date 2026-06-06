@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use lv1_scene_fade_utility::lv1::discovery::{DiscoverOptions, discover};
+use lv1_scene_fade_utility::lv1::discovery::{DiscoverOptions, discover, resolve_target};
 use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
 use lv1_scene_fade_utility::osc::OscArg;
@@ -110,30 +110,6 @@ fn run_discover(
         }
     }
     Ok(())
-}
-
-fn resolve_target(
-    host: Option<String>,
-    port: Option<u16>,
-    timeout_ms: u64,
-) -> Result<(String, u16), Box<dyn std::error::Error>> {
-    if let (Some(host), Some(port)) = (host.clone(), port) {
-        return Ok((host, port));
-    }
-
-    let entries = discover(DiscoverOptions {
-        timeout: Duration::from_millis(timeout_ms),
-        filter_host_ip: host.clone(),
-        ..DiscoverOptions::default()
-    })?;
-    let entry = entries.first().ok_or("no LV1 targets discovered")?;
-    let target_host = host
-        .or_else(|| entry.addresses.first().cloned())
-        .ok_or("discovered LV1 did not advertise an IPv4 address")?;
-    let target_port = port
-        .or(entry.port)
-        .ok_or("discovered LV1 did not advertise a TCP port")?;
-    Ok((target_host, target_port))
 }
 
 fn run_listen(

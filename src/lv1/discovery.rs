@@ -43,6 +43,30 @@ impl Default for DiscoverOptions {
     }
 }
 
+pub fn resolve_target(
+    host: Option<String>,
+    port: Option<u16>,
+    timeout_ms: u64,
+) -> Result<(String, u16), Box<dyn std::error::Error>> {
+    if let (Some(host), Some(port)) = (host.clone(), port) {
+        return Ok((host, port));
+    }
+
+    let entries = discover(DiscoverOptions {
+        timeout: std::time::Duration::from_millis(timeout_ms),
+        filter_host_ip: host.clone(),
+        ..DiscoverOptions::default()
+    })?;
+    let entry = entries.first().ok_or("no LV1 targets discovered")?;
+    let target_host = host
+        .or_else(|| entry.addresses.first().cloned())
+        .ok_or("discovered LV1 did not advertise an IPv4 address")?;
+    let target_port = port
+        .or(entry.port)
+        .ok_or("discovered LV1 did not advertise a TCP port")?;
+    Ok((target_host, target_port))
+}
+
 pub fn entry_matches(entry: &DiscoveryEntry, service: &str, host_ip: Option<&str>) -> bool {
     if entry.service != service {
         return false;
@@ -361,6 +385,25 @@ mod tests {
         entry.source = "192.168.1.11".to_string();
 
         assert_ne!(dedupe_key(&entry), key);
+    }
+
+    #[test]
+    fn resolve_target_returns_explicit_host_and_port_without_discovery() {
+        let result = resolve_target(
+            Some("192.168.1.10".to_string()),
+            Some(50000),
+            0,
+        )
+        .unwrap();
+
+        assert_eq!(result, ("192.168.1.10".to_string(), 50000));
+    }
+
+    #[test]
+    fn resolve_target_errors_when_discovery_finds_nothing() {
+        let err = resolve_target(None, None, 0).unwrap_err();
+
+        assert!(err.to_string().contains("no LV1 targets discovered"));
     }
 
     #[test]
