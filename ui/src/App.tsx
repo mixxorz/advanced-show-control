@@ -80,6 +80,15 @@ export default function App() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <ShowFileControls
+              dirty={appState.showFileDirty}
+              fileName={appState.showFileName}
+              filePath={appState.showFilePath}
+              onNew={() => runSnapshotCommand("new_show_file")}
+              onOpen={() => runSnapshotCommand("open_show_file_dialog")}
+              onSave={() => runSnapshotCommand("save_show_file")}
+              onSaveAs={() => runSnapshotCommand("save_show_file_as_dialog")}
+            />
             <StatusBadge
               label={appState.connection}
               tone={appState.connection === "connected" ? "good" : "neutral"}
@@ -152,6 +161,9 @@ export default function App() {
             setSceneFadeEnabled={(sceneId, enabled) =>
               runSnapshotCommand("set_scene_fade_enabled", { sceneId, enabled })
             }
+            setSceneDurationMs={(sceneId, durationMs) =>
+              runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs })
+            }
             setListenMode={(active) => runSnapshotCommand("set_listen_mode", { active })}
             setFadeTargetEnabled={(sceneId, group, channel, enabled) =>
               runSnapshotCommand("set_fade_target_enabled", { sceneId, group, channel, enabled })
@@ -191,6 +203,52 @@ function StatusBadge(props: { label: string; tone: "neutral" | "warning" | "good
         : "border-slate-700 bg-slate-800 text-slate-200";
 
   return <span className={`rounded-full border px-3 py-1 text-sm ${tone}`}>{props.label}</span>;
+}
+
+function ShowFileControls(props: {
+  dirty: boolean;
+  fileName: string;
+  filePath: string | null;
+  onNew: () => void;
+  onOpen: () => void;
+  onSave: () => void;
+  onSaveAs: () => void;
+}) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3">
+      <div className="text-sm font-semibold text-slate-100">
+        {props.fileName}
+        {props.dirty ? " *" : ""}
+      </div>
+      <div className="mt-1 text-xs text-slate-400">{props.filePath ?? "No show file saved"}</div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          className="rounded border border-slate-700 px-3 py-1 text-sm text-slate-100 hover:bg-slate-800"
+          onClick={props.onNew}
+        >
+          New
+        </button>
+        <button
+          className="rounded border border-slate-700 px-3 py-1 text-sm text-slate-100 hover:bg-slate-800"
+          onClick={props.onOpen}
+        >
+          Open
+        </button>
+        <button
+          className="rounded border border-slate-700 px-3 py-1 text-sm text-slate-100 hover:bg-slate-800"
+          onClick={props.onSave}
+        >
+          Save
+        </button>
+        <button
+          className="rounded border border-slate-700 px-3 py-1 text-sm text-slate-100 hover:bg-slate-800"
+          onClick={props.onSaveAs}
+        >
+          Save As
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function ConnectionTab(props: {
@@ -259,6 +317,7 @@ function SceneTab(props: {
   appState: AppViewState;
   selectScene: (sceneId: string) => void;
   setSceneFadeEnabled: (sceneId: string, enabled: boolean) => void;
+  setSceneDurationMs: (sceneId: string, durationMs: number) => void;
   setListenMode: (active: boolean) => void;
   setFadeTargetEnabled: (sceneId: string, group: number, channel: number, enabled: boolean) => void;
   removeFadeTarget: (sceneId: string, group: number, channel: number) => void;
@@ -335,6 +394,23 @@ function SceneTab(props: {
                 </button>
               </div>
             </div>
+            <label className="mt-4 flex w-full max-w-xs flex-col gap-1 text-sm text-slate-300">
+              Fade duration (seconds)
+              <input
+                className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+                max={120}
+                min={0.1}
+                onChange={(event) => {
+                  const seconds = Number(event.target.value);
+                  if (Number.isFinite(seconds)) {
+                    props.setSceneDurationMs(selected.sceneId, Math.round(seconds * 1000));
+                  }
+                }}
+                step={0.1}
+                type="number"
+                value={(selected.durationMs / 1000).toFixed(1)}
+              />
+            </label>
 
             <FadeTargetTable
               channels={props.appState.channels}
@@ -388,7 +464,12 @@ function FadeTargetTable(props: {
                 </td>
                 <td className="px-3 py-2">{target.group}</td>
                 <td className="px-3 py-2">{target.channel}</td>
-                <td className="px-3 py-2">{channelName(props.channels, target.group, target.channel)}</td>
+                <td className="px-3 py-2">
+                  <div className="font-medium text-slate-100">{target.channelName}</div>
+                  <div className="text-xs text-slate-400">
+                    Current: {channelName(props.channels, target.group, target.channel)}
+                  </div>
+                </td>
                 <td className="px-3 py-2">{formatDb(target.targetDb)}</td>
                 <td className="px-3 py-2 text-slate-400">{target.updatedAt}</td>
                 <td className="px-3 py-2">

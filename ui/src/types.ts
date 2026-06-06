@@ -14,13 +14,21 @@ export type ChannelSummary = {
   name: string;
 };
 
-export type FadeTarget = { group: number; channel: number; targetDb: number; enabled: boolean; updatedAt: string };
+export type FadeTarget = {
+  group: number;
+  channel: number;
+  channelName: string;
+  targetDb: number;
+  enabled: boolean;
+  updatedAt: string;
+};
 
 export type SceneFadeConfig = {
   sceneId: string;
   sceneIndex: number;
   sceneName: string;
   fadeEnabled: boolean;
+  durationMs: number;
   fadeTargets: FadeTarget[];
 };
 
@@ -46,6 +54,10 @@ export type AppViewState = {
   sceneFadeConfigs: SceneFadeConfig[];
   selectedSceneId: string | null;
   listenModeActive: boolean;
+  showFileName: string;
+  showFilePath: string | null;
+  showFileDirty: boolean;
+  showFileLastSavedAt: string | null;
 };
 
 export const disconnectedAppViewState: AppViewState = {
@@ -62,4 +74,8 @@ export const disconnectedAppViewState: AppViewState = {
   sceneFadeConfigs: [],
   selectedSceneId: null,
   listenModeActive: false,
+  showFileName: "Untitled Show",
+  showFilePath: null,
+  showFileDirty: false,
+  showFileLastSavedAt: null,
 };

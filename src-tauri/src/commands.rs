@@ -49,6 +49,18 @@ pub async fn open_show_file_dialog(
 }
 
 #[tauri::command]
+pub async fn set_scene_duration_ms(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+    duration_ms: u64,
+) -> Result<AppViewState, String> {
+    let snapshot = state.set_scene_duration_ms(scene_id, duration_ms).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn select_scene_config(
     app: AppHandle,
     state: State<'_, ShellState>,

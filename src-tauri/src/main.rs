@@ -13,6 +13,7 @@ fn main() {
             commands::open_show_file_dialog,
             commands::save_show_file,
             commands::save_show_file_as_dialog,
+            commands::set_scene_duration_ms,
             commands::select_scene_config,
             commands::connect_lv1,
             commands::disconnect_lv1,
