@@ -211,9 +211,10 @@ pub async fn connect_lv1(
     let command_bus = AppCommandBus::new(command_tx);
     let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
     dispatcher.set_lv1(Some(lv1.clone()));
-    let dispatcher_task = tokio::spawn(async move { dispatcher.run().await });
     let fade_command_bus = command_bus.clone();
     let fade = spawn_engine(command_bus, event_bus.clone());
+    dispatcher.set_fade(Some(fade.clone()));
+    let dispatcher_task = tokio::spawn(async move { dispatcher.run().await });
     let projector_task = spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
     let runtime_handles = RuntimeHandles {
