@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -43,6 +43,7 @@ pub(super) struct ShellInner {
     pub(super) show_file_dirty: bool,
     pub(super) show_file_last_saved_at: Option<String>,
     pub(super) logs: VecDeque<AppLogEntry>,
+    pub(super) duration_zero_skip_logs: HashSet<String>,
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
 }

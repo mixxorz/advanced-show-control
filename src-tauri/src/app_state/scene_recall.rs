@@ -22,6 +22,17 @@ pub enum SceneRecallDecision {
     StaleGeneration,
 }
 
+impl PartialEq for SceneRecallDecision {
+    fn eq(&self, other: &Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Skip, Self::Skip)
+                | (Self::Blocked, Self::Blocked)
+                | (Self::StaleGeneration, Self::StaleGeneration)
+        )
+    }
+}
+
 impl ShellState {
     pub async fn prepare_scene_recall_fade_for_generation(
         &self,
@@ -93,14 +104,16 @@ impl ShellState {
         };
 
         if config.duration_ms == 0 {
-            inner.push_log(
-                LogSource::App,
-                LogSeverity::Info,
-                format!(
-                    "Auto fade skipped for scene {}: {}: duration is 0",
-                    recalled_scene.index, recalled_scene.name
-                ),
-            );
+            if inner.duration_zero_skip_logs.insert(id.clone()) {
+                inner.push_log(
+                    LogSource::App,
+                    LogSeverity::Info,
+                    format!(
+                        "Auto fade skipped for scene {}: {}: duration is 0",
+                        recalled_scene.index, recalled_scene.name
+                    ),
+                );
+            }
             return SceneRecallDecision::Skip;
         }
 
