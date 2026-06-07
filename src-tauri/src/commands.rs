@@ -206,6 +206,7 @@ pub async fn connect_lv1(
     let timeout = timeout_ms.unwrap_or(6000);
     let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
     let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
 
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
     let fade = spawn_engine(lv1.clone());
@@ -219,7 +220,6 @@ pub async fn connect_lv1(
     let (generation, connecting_snapshot) = state.begin_connecting().await;
     emit_snapshot(&app, &connecting_snapshot);
 
-    let mut events = event_bus.subscribe();
     let initial_snapshot = lv1.get_state().await;
     let snapshot = state.begin_connection(initial_snapshot).await;
     emit_snapshot(&app, &snapshot);
