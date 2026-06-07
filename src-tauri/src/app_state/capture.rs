@@ -119,11 +119,21 @@ impl ShellState {
             return Err("Channel config not found".to_string());
         }
 
-        config
+        let is_currently_scoped = config
             .scoped_channels
-            .retain(|entry| !(entry.group == group && entry.channel == channel));
+            .iter()
+            .any(|entry| entry.group == group && entry.channel == channel);
+
+        if scoped == is_currently_scoped {
+            return Ok(snapshot_from_inner(&inner));
+        }
+
         if scoped {
             config.scoped_channels.push(ChannelRef { group, channel });
+        } else {
+            config
+                .scoped_channels
+                .retain(|entry| !(entry.group == group && entry.channel == channel));
         }
 
         inner.show_file_dirty = true;
@@ -143,7 +153,7 @@ impl ShellState {
             .find(|config| config.scene_id == scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
 
-        config.scoped_channels = if scoped {
+        let desired_scoped_channels = if scoped {
             config
                 .channel_configs
                 .iter()
@@ -155,6 +165,12 @@ impl ShellState {
         } else {
             Vec::new()
         };
+
+        if config.scoped_channels == desired_scoped_channels {
+            return Ok(snapshot_from_inner(&inner));
+        }
+
+        config.scoped_channels = desired_scoped_channels;
 
         inner.show_file_dirty = true;
         Ok(snapshot_from_inner(&inner))

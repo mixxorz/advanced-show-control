@@ -26,6 +26,36 @@ async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_stor
 }
 
 #[tokio::test]
+async fn store_scene_config_rejects_missing_scene_id() {
+    let state = ShellState::default();
+    state.begin_connection(connected_state_with_scene_and_channel()).await;
+
+    let err = state.store_scene_config("2::Verse".to_string()).await.unwrap_err();
+
+    assert_eq!(err, "Scene config not found");
+}
+
+#[tokio::test]
+async fn store_scene_config_rejects_empty_lv1_channel_list() {
+    let state = ShellState::default();
+    state
+        .begin_connection(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            channels: Vec::new(),
+        })
+        .await;
+
+    let err = state.store_scene_config("1::Intro".to_string()).await.unwrap_err();
+
+    assert_eq!(err, "LV1 channel list is empty");
+}
+
+#[tokio::test]
 async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
     let state = ShellState::default();
     state.begin_connection(connected_state_with_scene_and_channel()).await;
@@ -47,7 +77,7 @@ async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
 async fn store_scene_config_preserves_existing_scope_on_later_store() {
     let state = ShellState::default();
 
-    state.begin_connection(connected_state_with_two_channels()).await;
+    state.begin_connection(connected_state_with_three_channels()).await;
     state.store_scene_config("1::Intro".to_string()).await.unwrap();
 
     state
@@ -58,23 +88,34 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
                 index: 1,
                 name: "Intro".to_string(),
             }],
-            channels: vec![ChannelInfo {
-                group: 0,
-                channel: 2,
-                name: "Lead".to_string(),
-                gain_db: -8.0,
-                muted: false,
-            }],
+            channels: vec![
+                ChannelInfo {
+                    group: 0,
+                    channel: 4,
+                    name: "Bass".to_string(),
+                    gain_db: -10.0,
+                    muted: false,
+                },
+                ChannelInfo {
+                    group: 0,
+                    channel: 2,
+                    name: "Lead".to_string(),
+                    gain_db: -8.0,
+                    muted: false,
+                },
+            ],
         })
         .await;
 
     let snapshot = state.store_scene_config("1::Intro".to_string()).await.unwrap();
 
     let config = &snapshot.scene_configs[0];
-    assert_eq!(config.channel_configs.len(), 1);
-    assert_eq!(config.scoped_channels.len(), 1);
-    assert_eq!(config.scoped_channels[0].group, 0);
+    assert_eq!(config.channel_configs.len(), 2);
+    assert_eq!(config.channel_configs[0].channel, 4);
+    assert_eq!(config.channel_configs[1].channel, 2);
+    assert_eq!(config.scoped_channels.len(), 2);
     assert_eq!(config.scoped_channels[0].channel, 2);
+    assert_eq!(config.scoped_channels[1].channel, 4);
 }
 
 #[tokio::test]
@@ -100,9 +141,25 @@ async fn set_channel_scoped_toggles_single_channel_scope_and_marks_dirty() {
 }
 
 #[tokio::test]
-async fn set_all_channels_scoped_sets_and_clears_scope() {
+async fn set_channel_scoped_noop_keeps_clean_show_file_clean() {
     let state = ShellState::default();
     state.begin_connection(connected_state_with_scene_and_channel()).await;
+    state.store_scene_config("1::Intro".to_string()).await.unwrap();
+    set_show_file_clean(&state).await;
+
+    let snapshot = state
+        .set_channel_scoped("1::Intro".to_string(), 0, 2, true)
+        .await
+        .unwrap();
+
+    assert!(!snapshot.show_file_dirty);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 1);
+}
+
+#[tokio::test]
+async fn set_all_channels_scoped_sets_and_clears_scope() {
+    let state = ShellState::default();
+    state.begin_connection(connected_state_with_two_channels()).await;
     state.store_scene_config("1::Intro".to_string()).await.unwrap();
 
     let cleared = state.set_all_channels_scoped("1::Intro".to_string(), false).await.unwrap();
@@ -110,9 +167,28 @@ async fn set_all_channels_scoped_sets_and_clears_scope() {
     assert!(cleared.show_file_dirty);
 
     let restored = state.set_all_channels_scoped("1::Intro".to_string(), true).await.unwrap();
-    assert_eq!(restored.scene_configs[0].scoped_channels.len(), 1);
+    assert_eq!(restored.scene_configs[0].scoped_channels.len(), 2);
     assert_eq!(restored.scene_configs[0].scoped_channels[0].group, 0);
     assert_eq!(restored.scene_configs[0].scoped_channels[0].channel, 2);
+    assert_eq!(restored.scene_configs[0].scoped_channels[1].channel, 3);
+}
+
+#[tokio::test]
+async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
+    let state = ShellState::default();
+    state.begin_connection(connected_state_with_two_channels()).await;
+    state.store_scene_config("1::Intro".to_string()).await.unwrap();
+    set_show_file_clean(&state).await;
+
+    let snapshot = state
+        .set_all_channels_scoped("1::Intro".to_string(), true)
+        .await
+        .unwrap();
+
+    assert!(!snapshot.show_file_dirty);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 2);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 2);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels[1].channel, 3);
 }
 
 fn connected_state_with_two_channels() -> Lv1StateSnapshot {
@@ -140,4 +216,43 @@ fn connected_state_with_two_channels() -> Lv1StateSnapshot {
             },
         ],
     }
+}
+
+fn connected_state_with_three_channels() -> Lv1StateSnapshot {
+    Lv1StateSnapshot {
+        connection: ConnectionStatus::Connected,
+        scene: None,
+        scene_list: vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }],
+        channels: vec![
+            ChannelInfo {
+                group: 0,
+                channel: 2,
+                name: "Lead".to_string(),
+                gain_db: -8.0,
+                muted: false,
+            },
+            ChannelInfo {
+                group: 0,
+                channel: 3,
+                name: "Pad".to_string(),
+                gain_db: -12.0,
+                muted: false,
+            },
+            ChannelInfo {
+                group: 0,
+                channel: 4,
+                name: "Bass".to_string(),
+                gain_db: -10.0,
+                muted: false,
+            },
+        ],
+    }
+}
+
+async fn set_show_file_clean(state: &ShellState) {
+    let mut inner = state.inner.lock().await;
+    inner.show_file_dirty = false;
 }
