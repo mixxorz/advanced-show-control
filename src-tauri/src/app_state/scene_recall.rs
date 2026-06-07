@@ -7,30 +7,19 @@ use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, SceneState};
 use super::shell::{ShellState, scene_id};
 use super::view::{LogSeverity, LogSource};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneRecallFadeRequest {
     pub scene_id: String,
     pub scene_label: String,
     pub fade_config: FadeConfig,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SceneRecallDecision {
     Start(SceneRecallFadeRequest),
     Skip,
     Blocked,
     StaleGeneration,
-}
-
-impl PartialEq for SceneRecallDecision {
-    fn eq(&self, other: &Self) -> bool {
-        matches!(
-            (self, other),
-            (Self::Skip, Self::Skip)
-                | (Self::Blocked, Self::Blocked)
-                | (Self::StaleGeneration, Self::StaleGeneration)
-        )
-    }
 }
 
 impl ShellState {

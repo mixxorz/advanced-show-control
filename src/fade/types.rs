@@ -3,14 +3,14 @@ use tokio::sync::oneshot;
 use crate::fade::curve::FadeCurve;
 use crate::runtime::commands::AppCommandError;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FadeTarget {
     pub group: i32,
     pub channel: i32,
     pub target_db: f64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FadeConfig {
     pub targets: Vec<FadeTarget>,
     pub duration_ms: u64,

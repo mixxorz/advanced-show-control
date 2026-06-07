@@ -368,6 +368,86 @@ async fn duration_zero_skip_logs_once_per_generation_for_same_scene() {
     assert_eq!(skip_logs, 1);
 }
 
+#[tokio::test]
+async fn duration_zero_skip_logs_again_after_generation_changes() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state.begin_connection(snapshot_for_intro()).await;
+
+    {
+        let mut inner = state.inner.lock().await;
+        inner.scene_configs = vec![scene_config(
+            1,
+            "Intro",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-12.5),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+        )];
+    }
+
+    assert_eq!(
+        state
+            .prepare_scene_recall_fade_for_generation(
+                generation,
+                &SceneState {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
+            )
+            .await,
+        SceneRecallDecision::Skip
+    );
+
+    let (next_generation, _) = state.begin_connecting().await;
+    state.begin_connection(snapshot_for_intro()).await;
+
+    {
+        let mut inner = state.inner.lock().await;
+        inner.scene_configs = vec![scene_config(
+            1,
+            "Intro",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-12.5),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+        )];
+    }
+
+    for _ in 0..2 {
+        assert_eq!(
+            state
+                .prepare_scene_recall_fade_for_generation(
+                    next_generation,
+                    &SceneState {
+                        index: 1,
+                        name: "Intro".to_string(),
+                    },
+                )
+                .await,
+            SceneRecallDecision::Skip
+        );
+    }
+
+    let snapshot = state.snapshot().await;
+    let skip_logs = snapshot
+        .logs
+        .iter()
+        .filter(|log| log.message == "Auto fade skipped for scene 1: Intro: duration is 0")
+        .count();
+    assert_eq!(skip_logs, 2);
+}
+
 fn snapshot_for_intro() -> Lv1StateSnapshot {
     Lv1StateSnapshot {
         connection: ConnectionStatus::Connected,

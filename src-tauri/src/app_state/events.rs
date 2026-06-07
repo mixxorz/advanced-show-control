@@ -13,6 +13,7 @@ impl ShellState {
     pub async fn begin_connecting(&self) -> (u64, AppViewState) {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
+        inner.duration_zero_skip_logs.clear();
         inner.lv1_snapshot = Some(Lv1StateSnapshot {
             connection: ConnectionStatus::Connecting,
             scene: None,
@@ -61,6 +62,7 @@ impl ShellState {
     pub async fn disconnect(&self) -> (u64, AppViewState) {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
+        inner.duration_zero_skip_logs.clear();
         inner.lv1_snapshot = None;
         inner.push_log(
             LogSource::App,
