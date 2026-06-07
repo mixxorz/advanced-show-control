@@ -1,5 +1,6 @@
 mod app_state;
 mod commands;
+mod scene_recall_fader;
 mod show_file;
 
 use app_state::ShellState;

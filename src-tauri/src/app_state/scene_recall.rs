@@ -218,4 +218,9 @@ impl ShellState {
             },
         })
     }
+
+    pub async fn log_scene_recall_fader_info(&self, message: String) {
+        let mut inner = self.inner.lock().await;
+        inner.push_log(LogSource::App, LogSeverity::Info, message);
+    }
 }
