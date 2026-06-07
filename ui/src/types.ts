@@ -14,22 +14,24 @@ export type ChannelSummary = {
   name: string;
 };
 
-export type FadeTarget = {
+export type ChannelRef = {
   group: number;
   channel: number;
-  channelName: string;
-  targetDb: number;
-  enabled: boolean;
-  updatedAt: string;
 };
 
-export type SceneFadeConfig = {
+export type ChannelConfig = {
+  group: number;
+  channel: number;
+  faderDb: number | null;
+};
+
+export type SceneConfig = {
   sceneId: string;
   sceneIndex: number;
   sceneName: string;
-  fadeEnabled: boolean;
   durationMs: number;
-  fadeTargets: FadeTarget[];
+  channelConfigs: ChannelConfig[];
+  scopedChannels: ChannelRef[];
 };
 
 export type AppLogEntry = {
@@ -51,9 +53,8 @@ export type AppViewState = {
   lockout: boolean;
   logs: AppLogEntry[];
   lastEventAt: string | null;
-  sceneFadeConfigs: SceneFadeConfig[];
+  sceneConfigs: SceneConfig[];
   selectedSceneId: string | null;
-  listenModeActive: boolean;
   showFileName: string;
   showFilePath: string | null;
   showFileDirty: boolean;
@@ -71,9 +72,8 @@ export const disconnectedAppViewState: AppViewState = {
   lockout: false,
   logs: [],
   lastEventAt: null,
-  sceneFadeConfigs: [],
+  sceneConfigs: [],
   selectedSceneId: null,
-  listenModeActive: false,
   showFileName: "Untitled Show",
   showFilePath: null,
   showFileDirty: false,

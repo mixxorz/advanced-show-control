@@ -85,19 +85,18 @@ export default function App() {
         {activeTab === "scene" && (
           <SceneTab
             appState={appState}
-            removeFadeTarget={(sceneId, group, channel) =>
-              runSnapshotCommand("remove_fade_target", { sceneId, group, channel }, setAppState, setCommandError)
-            }
-            selectScene={(sceneId) => runSnapshotCommand("select_scene_config", { sceneId }, setAppState, setCommandError)}
-            setFadeTargetEnabled={(sceneId, group, channel, enabled) =>
-              runSnapshotCommand("set_fade_target_enabled", { sceneId, group, channel, enabled }, setAppState, setCommandError)
-            }
-            setListenMode={(active) => runSnapshotCommand("set_listen_mode", { active }, setAppState, setCommandError)}
-            setSceneDurationMs={(sceneId, durationMs) =>
+            selectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, setAppState, setCommandError)}
+            setSceneDurationMs={(sceneId: string, durationMs: number) =>
               runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, setAppState, setCommandError)
             }
-            setSceneFadeEnabled={(sceneId, enabled) =>
-              runSnapshotCommand("set_scene_fade_enabled", { sceneId, enabled }, setAppState, setCommandError)
+            storeSceneConfig={(sceneId: string) =>
+              runSnapshotCommand("store_scene_config", { sceneId }, setAppState, setCommandError)
+            }
+            setAllChannelsScoped={(sceneId: string, scoped: boolean) =>
+              runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, setAppState, setCommandError)
+            }
+            setChannelScoped={(sceneId: string, group: number, channel: number, scoped: boolean) =>
+              runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, setAppState, setCommandError)
             }
           />
         )}
