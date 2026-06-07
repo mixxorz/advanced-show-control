@@ -70,6 +70,17 @@ Fader change events should continue to update the live LV1 mirror, but they shou
 
 Remove capture-specific UI copy and actions, including instructions to start Listen Mode or move faders to create targets.
 
+Decommission the old workflow completely:
+
+- Remove `listen_mode_active` from app view state and internal shell state unless another non-capture use remains.
+- Remove the `set_listen_mode` command and frontend call sites.
+- Remove Listen Mode buttons, lockouts, and scene-selection restrictions.
+- Remove fader-target capture logic from LV1 fader event handling.
+- Remove target-level enable/remove commands and replace them with scene-level scope commands.
+- Rename capture-era types and fields, including `SceneFadeConfig`, `FadeTarget`, `sceneFadeConfigs`, and `fadeTargets`, to the new scene config model.
+- Replace capture-era tests with Store and scope tests rather than preserving old Listen Mode behavior.
+- Update docs and user-facing text that describe captured targets or Listen Mode.
+
 ## UI Design
 
 The Scene tab keeps scene selection on the left. The right pane edits the selected scene config.
