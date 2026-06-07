@@ -191,7 +191,7 @@ impl ShellState {
                 inner.push_log(
                     LogSource::Fade,
                     LogSeverity::Warning,
-                    format!("Fade blocked by channel override: group {group}, channel {channel}"),
+                    format!("Fade channel override detected: group={group} channel={channel}"),
                 );
             }
             FadeEvent::ChannelCancelled { group, channel } => {

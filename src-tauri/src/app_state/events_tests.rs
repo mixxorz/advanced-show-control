@@ -21,6 +21,14 @@ async fn fade_events_update_fade_state() {
 
     let aborted = state.apply_fade_event(&FadeEvent::FadeAborted).await;
     assert_eq!(aborted.fade_state, AppFadeState::Idle);
+
+    let overridden = state
+        .apply_fade_event(&FadeEvent::ChannelOverride {
+            group: 3,
+            channel: 7,
+        })
+        .await;
+    assert_eq!(overridden.logs.last().unwrap().message, "Fade channel override detected: group=3 channel=7");
 }
 
 #[test]
