@@ -11,13 +11,13 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [x] **Phase 4: Scene Store And Scope Workflow** — in-memory scene configs, selected-scene editing, store/scope controls, scene-list reconciliation, and split Scene tab UI are implemented and tested.
 - [x] **Phase 5: Storage And Show Files** — JSON `.lv1show` save/load, native Open/Save dialogs, platform-aware default show folder, internal backup-on-save, exact-match scene validation, duration storage, full stored channel configs, scoped channel lists, and dirty state are implemented and tested. Remapping, scene rename handling, autosave, and durable rename/reorder matching remain deferred.
 - [x] **Phase 6: MVP Desktop UI** — durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, LV1 connection commands, show-file controls, Store workflow, duration editing, and grouped scoped-channel toggle grid.
-- [ ] **Phase 7: Scene Recall Automation** — not implemented yet. Automatic fade triggering on LV1 scene recall, scene matching, safety blocks, and overlap policy remain to build.
+- [x] **Phase 7: Scene Recall Automation** — `SceneRecallFader` automatically validates LV1 scene recall events, blocks unsafe recalls, skips duration `0` scenes, aborts overlapping fades only after a valid new recall, and starts scoped stored fader fades.
 - [ ] **Phase 8: HTTP And WebSocket Control API** — not implemented yet.
 - [ ] **Phase 9: Bitfocus Companion Integration** — not implemented yet.
 - [ ] **Phase 10: Beta Hardening** — not implemented yet.
 - [ ] **Phase 11: Polished Release Candidate** — not implemented yet.
 
-**Immediate Next Build Order:** Phase 7 recall automation next, then Phase 8/9 external control.
+**Immediate Next Build Order:** Phase 8/9 external control next.
 
 ---
 
