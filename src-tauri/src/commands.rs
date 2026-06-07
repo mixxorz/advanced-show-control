@@ -2,7 +2,7 @@ use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::lv1::discovery::resolve_target;
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
-use lv1_scene_fade_utility::runtime::events::AppEventBus;
+use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -205,8 +205,9 @@ pub async fn connect_lv1(
 ) -> Result<AppViewState, String> {
     let timeout = timeout_ms.unwrap_or(6000);
     let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
+    let event_bus = AppEventBus::default();
 
-    let lv1 = spawn_actor(host.clone(), port, AppEventBus::default());
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
     let fade = spawn_engine(lv1.clone());
 
     {
@@ -218,25 +219,36 @@ pub async fn connect_lv1(
     let (generation, connecting_snapshot) = state.begin_connecting().await;
     emit_snapshot(&app, &connecting_snapshot);
 
-    let mut events = lv1.subscribe().await;
+    let mut events = event_bus.subscribe();
     let initial_snapshot = lv1.get_state().await;
     let snapshot = state.begin_connection(initial_snapshot).await;
     emit_snapshot(&app, &snapshot);
 
     let app_for_task = app.clone();
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            let state_for_task = app_for_task.state::<ShellState>();
-            if let Some(snapshot) = state_for_task
-                .apply_lv1_event_for_generation(generation, &event)
-                .await
-            {
-                if let Err(err) = app_for_task.emit("lv1-event", &Lv1EventPayload::from(&event)) {
-                    eprintln!("failed to emit lv1-event: {err}");
+        loop {
+            match events.recv().await {
+                Ok(app_event) => {
+                    let AppEvent::Lv1(event) = app_event else {
+                        continue;
+                    };
+                    let state_for_task = app_for_task.state::<ShellState>();
+                    if let Some(snapshot) = state_for_task
+                        .apply_lv1_event_for_generation(generation, &event)
+                        .await
+                    {
+                        if let Err(err) = app_for_task.emit("lv1-event", &Lv1EventPayload::from(&event)) {
+                            eprintln!("failed to emit lv1-event: {err}");
+                        }
+                        if let Err(err) = app_for_task.emit("app-status-changed", &snapshot) {
+                            eprintln!("failed to emit app-status-changed: {err}");
+                        }
+                    }
                 }
-                if let Err(err) = app_for_task.emit("app-status-changed", &snapshot) {
-                    eprintln!("failed to emit app-status-changed: {err}");
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    log_lagged_subscriber("lv1-bridge", count);
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     });

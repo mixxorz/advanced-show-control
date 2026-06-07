@@ -5,7 +5,7 @@ use lv1_scene_fade_utility::lv1::model::ChannelInfo;
 use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use lv1_scene_fade_utility::lv1::state::{Lv1ActorHandle, spawn_actor};
 use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
-use lv1_scene_fade_utility::runtime::events::AppEventBus;
+use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use lv1_scene_fade_utility::osc::OscArg;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -315,39 +315,51 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
     eprintln!("connecting to {host}:{port}");
 
     let event_bus = AppEventBus::default();
-    let handle = spawn_actor(host.clone(), port, event_bus);
-    let mut events = handle.subscribe().await;
+    let _handle = spawn_actor(host.clone(), port, event_bus.clone());
+    let mut events = event_bus.subscribe();
 
-    while let Some(event) = events.recv().await {
-        match event {
-            Lv1Event::Connected => println!("[connected] {host}:{port}"),
-            Lv1Event::Disconnected => println!("[disconnected] reconnecting in 3s..."),
-            Lv1Event::SceneChanged(scene) => {
-                println!("[scene] index={} name={:?}", scene.index, scene.name);
-            }
-            Lv1Event::SceneListChanged(list) => {
-                println!("[scene-list] {} scenes", list.len());
-                for entry in &list {
-                    println!("  [{}] {:?}", entry.index, entry.name);
+    loop {
+        match events.recv().await {
+            Ok(app_event) => {
+                let AppEvent::Lv1(event) = app_event else {
+                    continue;
+                };
+
+                match event {
+                    Lv1Event::Connected => println!("[connected] {host}:{port}"),
+                    Lv1Event::Disconnected => println!("[disconnected] reconnecting in 3s..."),
+                    Lv1Event::SceneChanged(scene) => {
+                        println!("[scene] index={} name={:?}", scene.index, scene.name);
+                    }
+                    Lv1Event::SceneListChanged(list) => {
+                        println!("[scene-list] {} scenes", list.len());
+                        for entry in &list {
+                            println!("  [{}] {:?}", entry.index, entry.name);
+                        }
+                    }
+                    Lv1Event::FaderChanged {
+                        group,
+                        channel,
+                        gain_db,
+                    } => {
+                        println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
+                    }
+                    Lv1Event::MuteChanged {
+                        group,
+                        channel,
+                        muted,
+                    } => {
+                        println!("[mute] group={group} ch={channel} muted={muted}");
+                    }
+                    Lv1Event::ChannelTopologyChanged(channels) => {
+                        println!("[channels] {} channels loaded", channels.len());
+                    }
                 }
             }
-            Lv1Event::FaderChanged {
-                group,
-                channel,
-                gain_db,
-            } => {
-                println!("[fader] group={group} ch={channel} {gain_db:.1} dB");
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                log_lagged_subscriber("monitor", count);
             }
-            Lv1Event::MuteChanged {
-                group,
-                channel,
-                muted,
-            } => {
-                println!("[mute] group={group} ch={channel} muted={muted}");
-            }
-            Lv1Event::ChannelTopologyChanged(channels) => {
-                println!("[channels] {} channels loaded", channels.len());
-            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 
@@ -480,19 +492,31 @@ async fn run_fade_test(
     };
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor(host.clone(), port, event_bus);
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
     let engine = spawn_engine(lv1.clone());
-    let mut lv1_events = lv1.subscribe().await;
+    let mut lv1_events = event_bus.subscribe();
     let mut fade_events = engine.subscribe().await;
 
     // Wait for LV1 connection
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while let Some(e) = lv1_events.recv().await {
-            if matches!(e, Lv1Event::Connected) {
-                println!("[connected] {host}:{port}");
-                break;
+    loop {
+        match lv1_events.recv().await {
+            Ok(app_event) => {
+                let AppEvent::Lv1(event) = app_event else {
+                    continue;
+                };
+
+                if matches!(event, Lv1Event::Connected) {
+                    println!("[connected] {host}:{port}");
+                    break;
+                }
             }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                log_lagged_subscriber("fade-test", count);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
+    }
     })
     .await
     .map_err(|_| "timed out waiting for LV1 connection")?;
@@ -578,7 +602,7 @@ const INITIAL_MUTE_SETTLE_MS: u64 = 150;
 
 async fn wait_for_channels_with_mute_settle(
     lv1: &Lv1ActorHandle,
-    events: &mut tokio::sync::mpsc::Receiver<Lv1Event>,
+    events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     timeout_ms: u64,
 ) -> AppResult<Vec<ChannelInfo>> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
@@ -608,15 +632,23 @@ async fn wait_for_channels_with_mute_settle(
             }
             event = events.recv() => {
                 match event {
-                    Some(Lv1Event::MuteChanged { .. }) | Some(Lv1Event::ChannelTopologyChanged(_)) => {
-                        let latest = lv1.get_state().await;
-                        if !latest.channels.is_empty() {
-                            snapshot = latest.channels;
+                    Ok(app_event) => {
+                        let AppEvent::Lv1(event) = app_event else {
+                            continue;
+                        };
+
+                        if matches!(event, Lv1Event::MuteChanged { .. } | Lv1Event::ChannelTopologyChanged(_)) {
+                            let latest = lv1.get_state().await;
+                            if !latest.channels.is_empty() {
+                                snapshot = latest.channels;
+                            }
+                            settle_deadline = Instant::now() + settle_window;
                         }
-                        settle_deadline = Instant::now() + settle_window;
                     }
-                    Some(_) => {}
-                    None => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("vegas-settle", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 }
             }
         }
@@ -670,14 +702,26 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     eprintln!("connecting to {host}:{port}");
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor(host.clone(), port, event_bus);
-    let mut events = lv1.subscribe().await;
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
+    let mut events = event_bus.subscribe();
 
     tokio::time::timeout(Duration::from_millis(timeout_ms), async {
-        while let Some(e) = events.recv().await {
-            if matches!(e, Lv1Event::Connected) {
-                println!("[connected] {host}:{port}");
-                break;
+        loop {
+            match events.recv().await {
+                Ok(app_event) => {
+                    let AppEvent::Lv1(event) = app_event else {
+                        continue;
+                    };
+
+                    if matches!(event, Lv1Event::Connected) {
+                        println!("[connected] {host}:{port}");
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    log_lagged_subscriber("vegas", count);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
     })
