@@ -66,6 +66,55 @@ async fn configured_nonzero_scene_builds_fade_request() {
 }
 
 #[tokio::test]
+async fn recalled_scene_overrides_stale_current_scene_snapshot() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    let mut snapshot = snapshot_for_intro();
+    snapshot.scene = Some(SceneState {
+        index: 0,
+        name: "Old".to_string(),
+    });
+    state.begin_connection(snapshot).await;
+
+    {
+        let mut inner = state.inner.lock().await;
+        let mut config = scene_config(
+            1,
+            "Intro",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-12.5),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+        );
+        config.duration_ms = 4_000;
+        inner.scene_configs = vec![config];
+    }
+
+    let decision = state
+        .prepare_scene_recall_fade_for_generation(
+            generation,
+            &SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+        )
+        .await;
+
+    match decision {
+        SceneRecallDecision::Start(request) => {
+            assert_eq!(request.scene_id, "1::Intro");
+            assert_eq!(request.scene_label, "1: Intro");
+        }
+        other => panic!("unexpected decision: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn duration_zero_skips_without_starting_fade() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
@@ -160,7 +209,7 @@ async fn missing_scene_config_skips() {
 }
 
 #[tokio::test]
-async fn scene_identity_mismatch_blocks() {
+async fn unconfigured_recalled_scene_skips_when_current_snapshot_is_stale() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
@@ -175,7 +224,7 @@ async fn scene_identity_mismatch_blocks() {
         )
         .await;
 
-    assert_eq!(decision, SceneRecallDecision::Blocked);
+    assert_eq!(decision, SceneRecallDecision::Skip);
 }
 
 #[tokio::test]

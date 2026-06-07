@@ -33,7 +33,7 @@ impl ShellState {
             return SceneRecallDecision::StaleGeneration;
         }
 
-        let Some(snapshot) = inner.lv1_snapshot.clone() else {
+        let Some(snapshot) = inner.lv1_snapshot.as_mut() else {
             inner.push_log(
                 LogSource::App,
                 LogSeverity::Warning,
@@ -44,6 +44,8 @@ impl ShellState {
             );
             return SceneRecallDecision::Blocked;
         };
+        snapshot.scene = Some(recalled_scene.clone());
+        let snapshot = snapshot.clone();
 
         if snapshot.connection != ConnectionStatus::Connected {
             inner.push_log(
@@ -222,5 +224,10 @@ impl ShellState {
     pub async fn log_scene_recall_fader_info(&self, message: String) {
         let mut inner = self.inner.lock().await;
         inner.push_log(LogSource::App, LogSeverity::Info, message);
+    }
+
+    pub async fn log_scene_recall_fader_warning(&self, message: String) {
+        let mut inner = self.inner.lock().await;
+        inner.push_log(LogSource::App, LogSeverity::Warning, message);
     }
 }
