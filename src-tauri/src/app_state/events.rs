@@ -41,6 +41,7 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    #[cfg(test)]
     pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppViewState {
         let mut inner = self.inner.lock().await;
         apply_begin_connection(&mut inner, snapshot)
@@ -156,6 +157,7 @@ impl ShellState {
         Some(snapshot_from_inner(&inner))
     }
 
+    #[cfg(test)]
     pub async fn apply_fade_event(&self, event: &FadeEvent) -> AppViewState {
         let mut inner = self.inner.lock().await;
         apply_fade_event_locked(&mut inner, event)

@@ -23,6 +23,7 @@ pub enum SceneRecallDecision {
 }
 
 impl ShellState {
+    #[cfg(test)]
     pub async fn prepare_scene_recall_fade_for_generation(
         &self,
         generation: u64,
