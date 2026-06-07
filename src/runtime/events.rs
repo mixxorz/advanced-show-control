@@ -23,7 +23,7 @@ pub struct AppEventBus {
 
 impl AppEventBus {
     pub fn new(capacity: usize) -> Self {
-        let (tx, _) = broadcast::channel(capacity);
+        let (tx, _) = broadcast::channel(capacity.max(1));
         Self { tx }
     }
 
@@ -61,6 +61,26 @@ mod tests {
         });
 
         assert_eq!(sent, 0);
+    }
+
+    #[tokio::test]
+    async fn zero_capacity_constructor_creates_usable_bus() {
+        let bus = AppEventBus::new(0);
+        let mut rx = bus.subscribe();
+
+        bus.publish(AppEvent::CommandFailed {
+            command: "zero".to_string(),
+            message: "capacity".to_string(),
+        });
+
+        let event = rx.recv().await.unwrap();
+        match event {
+            AppEvent::CommandFailed { command, message } => {
+                assert_eq!(command, "zero");
+                assert_eq!(message, "capacity");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[tokio::test]
