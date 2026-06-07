@@ -8,7 +8,7 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [x] **Phase 1: LV1 Protocol Discovery Prototype** — discovery, TCP connection, MyFOH-style handshake, keepalive, message logging, fader set commands, rate testing, and hardware findings are implemented in the CLI/core.
 - [x] **Phase 2: Core State Mirror** — `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, events, reconnect behavior, and snapshots.
 - [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, final target send, abort, finish-now, replacement behavior, and manual override detection are implemented and tested.
-- [x] **Phase 4: Capture Engine And Listen Mode** — in-memory scene fade configs, selected-scene editing, Listen Mode direct-write capture, target enable/remove behavior, scene-list reconciliation, and split Scene tab UI are implemented and tested.
+- [x] **Phase 4: Scene Store And Scope Workflow** — in-memory scene configs, selected-scene editing, store/scope controls, scene-list reconciliation, and split Scene tab UI are implemented and tested.
 - [x] **Phase 5: Storage And Show Files** — JSON `.lv1show` save/load, native Open/Save dialogs, platform-aware default show folder, internal backup-on-save, exact-match load validation, deletion of missing/renamed scene or channel configs on load, duration storage, captured channel names, and dirty state are implemented and tested. Remapping, scene rename handling, channel rename handling, autosave, and durable rename/reorder matching remain deferred.
 - [~] **Phase 6: MVP Desktop UI** — partially implemented ahead of Phases 4–5. A durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, and LV1 connection commands. Capture/save UI is still deferred.
 - [ ] **Phase 7: Scene Recall Automation** — not implemented yet. Automatic fade triggering on LV1 scene recall, scene matching, safety blocks, and overlap policy remain to build.
@@ -195,19 +195,17 @@ The app should never assume stored state is current if the LV1 connection is uns
 
 ---
 
-## Phase 4: Capture Engine And Listen Mode
+## Phase 4: Scene Store And Scope Workflow
 
-**Goal:** Implement the preferred capture workflow.
+**Goal:** Implement the preferred scene store and scope workflow.
 
 **Workflow To Build:**
 
 1. User selects or confirms the current LV1 scene.
-2. User starts **Capture Faders For This Scene**.
-3. App records the current fader state of all known channels.
-4. App watches fader gain notifications.
-5. Any fader moving beyond the capture threshold is added to the capture list.
-6. App stores only the final target value for each moved fader.
-7. User confirms, removes accidental touches, and saves.
+2. User stores the current channel snapshot for that scene.
+3. App records channel values and scoped channels.
+4. User toggles channel scope as needed.
+5. User confirms and saves.
 
 **Capture Rules:**
 
@@ -225,10 +223,9 @@ The app should never assume stored state is current if the LV1 connection is uns
 
 **Deliverables:**
 
-- Listen Mode state machine.
-- Captured fader target table.
-- Confirm/remove accidental touch behavior.
-- Save fade config for current LV1 scene.
+- Scene store controls.
+- Scope toggle grid.
+- Save scene config for current LV1 scene.
 
 **Exit Criteria:**
 
@@ -296,13 +293,13 @@ Remapping, scene rename handling, channel rename handling, duplicate-name handli
    - Current sample/session info if available.
 
 2. **Current Scene Screen**
-   - Current LV1 scene index/name.
-   - Fade enabled status.
-   - Fade time.
-   - Fade curve.
-   - Captured target list.
-   - Capture button.
-   - Save button.
+    - Current LV1 scene index/name.
+    - Scene config scope status.
+    - Fade time.
+    - Fade curve.
+    - Stored channel list.
+    - Store button.
+    - Scope toggle grid.
 
 3. **Capture Confirmation Screen**
    - Include checkbox.
@@ -396,26 +393,26 @@ Recommended MVP policy: recalling a new fade-enabled scene while a fade is runni
 - Expose app status.
 - Expose LV1 connection status.
 - Expose current scene.
-- Expose whether current scene has fade enabled.
+- Expose current scene config and scope status.
 - Trigger fade actions.
 - Abort all fades.
 - Finish current fade.
 - Toggle lockout.
-- Toggle fade enable for current scene.
+- Toggle channel scope for current scene.
 - Emit live events over WebSocket.
 
 **Suggested MVP Endpoints:**
 
 | Method | Endpoint | Purpose |
 |---|---|---|
-| GET | `/api/status` | App, LV1, fade, and lockout status |
+| GET | `/api/status` | App, LV1, scene config, and lockout status |
 | GET | `/api/current-scene` | Current LV1 scene info |
 | POST | `/api/fades/current/recall` | Recall fade for current scene |
 | POST | `/api/fades/{id}/recall` | Recall specific fade config |
 | POST | `/api/fades/abort` | Abort all fades |
 | POST | `/api/fades/finish` | Finish current fade immediately |
 | POST | `/api/lockout/toggle` | Toggle lockout |
-| POST | `/api/current-scene/fade-enabled/toggle` | Toggle fade enable |
+| POST | `/api/current-scene/scope/toggle` | Toggle scene scope |
 | WS | `/ws/events` | Status, scene, fade, and warning events |
 
 **Exit Criteria:**
@@ -445,7 +442,7 @@ Recommended MVP policy: recalling a new fade-enabled scene while a fade is runni
 - LV1 connected.
 - App connected.
 - Fade running.
-- Current scene has fade enabled.
+- Current scene scope is available.
 - Lockout enabled.
 - Manual override detected.
 - Scene mismatch warning.
@@ -555,8 +552,8 @@ For the first useful version, include only:
 - LV1 connection.
 - Scene index/name mirror.
 - Channel names and fader value mirror.
-- Listen Mode capture.
-- Confirmation table.
+- Scene store and scope grid.
+- Confirmation panel.
 - Fade duration.
 - Ease-in-out dB and linear dB curves.
 - Scene recall detection.
@@ -593,4 +590,4 @@ The project should begin by resolving these before any major UI investment:
 6. Whether all desired fader types use stable group/channel addressing.
 7. Whether scene index/name matching is reliable enough for automatic fades.
 
-The core product is feasible as designed, but its success depends on validating the LV1 protocol behavior early. The safest build order is: **protocol logger first, fade engine second, capture workflow third, polished UI last.**
+The core product is feasible as designed, but its success depends on validating the LV1 protocol behavior early. The safest build order is: **protocol logger first, fade engine second, scene store/scope workflow third, polished UI last.**
