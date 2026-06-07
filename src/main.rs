@@ -1,6 +1,9 @@
 use clap::{Parser, Subcommand};
 use lv1_scene_fade_utility::lv1::discovery::{DiscoverOptions, discover, resolve_target};
+use lv1_scene_fade_utility::lv1::messages::Lv1Event;
+use lv1_scene_fade_utility::lv1::model::ChannelInfo;
 use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
+use lv1_scene_fade_utility::lv1::state::{Lv1ActorHandle, spawn_actor};
 use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
 use lv1_scene_fade_utility::osc::OscArg;
 use std::path::PathBuf;
@@ -307,8 +310,6 @@ async fn run_set_gain(
 }
 
 async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
-    use lv1_scene_fade_utility::lv1::state::{Lv1Event, spawn_actor};
-
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
 
@@ -466,8 +467,8 @@ async fn run_fade_test(
     curve: CurveArg,
 ) -> AppResult<()> {
     use lv1_scene_fade_utility::fade::curve::FadeCurve;
-    use lv1_scene_fade_utility::fade::engine::{FadeConfig, FadeEvent, FadeTarget, spawn_engine};
-    use lv1_scene_fade_utility::lv1::state::spawn_actor;
+    use lv1_scene_fade_utility::fade::engine::spawn_engine;
+    use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeTarget};
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
@@ -484,7 +485,7 @@ async fn run_fade_test(
     // Wait for LV1 connection
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while let Some(e) = lv1_events.recv().await {
-            if matches!(e, lv1_scene_fade_utility::lv1::state::Lv1Event::Connected) {
+            if matches!(e, Lv1Event::Connected) {
                 println!("[connected] {host}:{port}");
                 break;
             }
@@ -552,9 +553,9 @@ async fn run_fade_test(
 }
 
 async fn wait_for_channels_until(
-    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    lv1: &Lv1ActorHandle,
     deadline: Instant,
-) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
+) -> AppResult<Vec<ChannelInfo>> {
     loop {
         let snapshot = lv1.get_state().await;
         if !snapshot.channels.is_empty() {
@@ -573,12 +574,10 @@ async fn wait_for_channels_until(
 const INITIAL_MUTE_SETTLE_MS: u64 = 150;
 
 async fn wait_for_channels_with_mute_settle(
-    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
-    events: &mut tokio::sync::mpsc::Receiver<lv1_scene_fade_utility::lv1::state::Lv1Event>,
+    lv1: &Lv1ActorHandle,
+    events: &mut tokio::sync::mpsc::Receiver<Lv1Event>,
     timeout_ms: u64,
-) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
-    use lv1_scene_fade_utility::lv1::state::Lv1Event;
-
+) -> AppResult<Vec<ChannelInfo>> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);
     let mut snapshot = wait_for_channels_until(lv1, deadline).await?;
     let settle_window = Duration::from_millis(INITIAL_MUTE_SETTLE_MS);
@@ -625,10 +624,7 @@ fn summarize_vegas_restore_failures(failures: &[String]) -> String {
     format!("failed to restore Vegas snapshot: {}", failures.join("; "))
 }
 
-async fn restore_vegas_snapshot(
-    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
-    original: &[lv1_scene_fade_utility::lv1::state::ChannelInfo],
-) -> AppResult<()> {
+async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) -> AppResult<()> {
     let mut failures = Vec::new();
 
     for ch in original {
@@ -663,7 +659,6 @@ async fn restore_vegas_snapshot(
 }
 
 async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
-    use lv1_scene_fade_utility::lv1::state::{ChannelInfo, Lv1Event, spawn_actor};
     use lv1_scene_fade_utility::vegas::gain_db_at;
 
     const VEGAS_TICK_HZ: u64 = 25;
@@ -973,15 +968,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
 
-        let handle = lv1_scene_fade_utility::lv1::state::spawn_actor("127.0.0.1".to_string(), port);
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
         let mut events = handle.subscribe().await;
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(event) = events.recv().await {
-                if matches!(
-                    event,
-                    lv1_scene_fade_utility::lv1::state::Lv1Event::Connected
-                ) {
+                if matches!(event, Lv1Event::Connected) {
                     break;
                 }
             }
@@ -1058,15 +1050,12 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
 
-        let handle = lv1_scene_fade_utility::lv1::state::spawn_actor("127.0.0.1".to_string(), port);
+        let handle = spawn_actor("127.0.0.1".to_string(), port);
         let mut events = handle.subscribe().await;
 
         tokio::time::timeout(Duration::from_secs(2), async {
             while let Some(event) = events.recv().await {
-                if matches!(
-                    event,
-                    lv1_scene_fade_utility::lv1::state::Lv1Event::Connected
-                ) {
+                if matches!(event, Lv1Event::Connected) {
                     break;
                 }
             }

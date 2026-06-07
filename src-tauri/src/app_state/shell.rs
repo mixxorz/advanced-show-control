@@ -2,119 +2,15 @@ use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lv1_scene_fade_utility::lv1::state::{
-    ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry,
-};
-use serde::Serialize;
+use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
 use tokio::sync::Mutex;
 
-use crate::show_file::{
-    DEFAULT_DURATION_MS, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileFadeTarget, ShowFileSafety,
-    ShowFileSceneFadeConfig, validate_show_file,
+use super::view::{
+    AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, FadeTarget,
+    LogSeverity, LogSource, SceneFadeConfig, SceneSummary,
 };
 
-const MAX_LOGS: usize = 200;
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct SceneSummary {
-    pub index: i32,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelSummary {
-    pub group: i32,
-    pub channel: i32,
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct FadeTarget {
-    pub group: i32,
-    pub channel: i32,
-    pub channel_name: String,
-    pub target_db: f64,
-    pub enabled: bool,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SceneFadeConfig {
-    pub scene_id: String,
-    pub scene_index: i32,
-    pub scene_name: String,
-    pub fade_enabled: bool,
-    pub duration_ms: u64,
-    pub fade_targets: Vec<FadeTarget>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppLogEntry {
-    pub id: u64,
-    pub timestamp: String,
-    pub source: LogSource,
-    pub severity: LogSeverity,
-    pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum LogSource {
-    App,
-    Lv1,
-    Fade,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum LogSeverity {
-    Info,
-    Warning,
-    Error,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AppConnectionState {
-    Disconnected,
-    Connecting,
-    Connected,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum AppFadeState {
-    Idle,
-    Running,
-    Blocked,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AppViewState {
-    pub connection: AppConnectionState,
-    pub current_scene: Option<SceneSummary>,
-    pub scenes: Vec<SceneSummary>,
-    pub scene_count: usize,
-    pub channel_count: usize,
-    pub channels: Vec<ChannelSummary>,
-    pub fade_state: AppFadeState,
-    pub lockout: bool,
-    pub scene_fade_configs: Vec<SceneFadeConfig>,
-    pub selected_scene_id: Option<String>,
-    pub listen_mode_active: bool,
-    pub show_file_name: String,
-    pub show_file_path: Option<String>,
-    pub show_file_dirty: bool,
-    pub show_file_last_saved_at: Option<String>,
-    pub logs: Vec<AppLogEntry>,
-    pub last_event_at: Option<String>,
-}
+pub(super) const MAX_LOGS: usize = 200;
 
 #[derive(Default)]
 pub struct RuntimeHandles {
@@ -125,40 +21,25 @@ pub struct RuntimeHandles {
 #[derive(Clone)]
 pub struct ShellState {
     pub handles: Arc<Mutex<RuntimeHandles>>,
-    inner: Arc<Mutex<ShellInner>>,
+    pub(super) inner: Arc<Mutex<ShellInner>>,
 }
 
 #[derive(Default)]
-struct ShellInner {
-    generation: u64,
-    lv1_snapshot: Option<Lv1StateSnapshot>,
-    fade_state: AppFadeState,
-    lockout: bool,
-    scene_fade_configs: Vec<SceneFadeConfig>,
-    selected_scene_id: Option<String>,
-    listen_mode_active: bool,
-    show_file_path: Option<PathBuf>,
-    show_file_dirty: bool,
-    show_file_last_saved_at: Option<String>,
-    unknown_fader_warnings: HashSet<(i32, i32)>,
-    logs: VecDeque<AppLogEntry>,
-    next_log_id: u64,
-    last_event_at: Option<String>,
-}
-
-impl Default for AppFadeState {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
-
-fn cover_state_variants() {
-    let _ = (
-        LogSource::Fade,
-        LogSeverity::Error,
-        AppFadeState::Running,
-        AppFadeState::Blocked,
-    );
+pub(super) struct ShellInner {
+    pub(super) generation: u64,
+    pub(super) lv1_snapshot: Option<Lv1StateSnapshot>,
+    pub(super) fade_state: AppFadeState,
+    pub(super) lockout: bool,
+    pub(super) scene_fade_configs: Vec<SceneFadeConfig>,
+    pub(super) selected_scene_id: Option<String>,
+    pub(super) listen_mode_active: bool,
+    pub(super) show_file_path: Option<PathBuf>,
+    pub(super) show_file_dirty: bool,
+    pub(super) show_file_last_saved_at: Option<String>,
+    pub(super) unknown_fader_warnings: HashSet<(i32, i32)>,
+    pub(super) logs: VecDeque<AppLogEntry>,
+    pub(super) next_log_id: u64,
+    pub(super) last_event_at: Option<String>,
 }
 
 impl Default for ShellState {
@@ -176,581 +57,22 @@ impl ShellState {
         let inner = self.inner.lock().await;
         snapshot_from_inner(&inner)
     }
-
-    #[allow(dead_code)]
-    pub async fn select_scene_config(&self, scene_id: String) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-
-        if inner.listen_mode_active {
-            return Err("Stop Listen Mode before selecting another scene".to_string());
-        }
-
-        if !inner
-            .scene_fade_configs
-            .iter()
-            .any(|config| config.scene_id == scene_id)
-        {
-            return Err("Scene config not found".to_string());
-        }
-
-        inner.selected_scene_id = Some(scene_id);
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    #[allow(dead_code)]
-    pub async fn set_scene_fade_enabled(
-        &self,
-        scene_id: String,
-        enabled: bool,
-    ) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-        let config = inner
-            .scene_fade_configs
-            .iter_mut()
-            .find(|config| config.scene_id == scene_id)
-            .ok_or_else(|| "Scene config not found".to_string())?;
-
-        config.fade_enabled = enabled;
-        inner.show_file_dirty = true;
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    pub async fn set_listen_mode(&self, active: bool) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-
-        if active {
-            if inner.selected_scene_id.is_none() {
-                return Err("Select a scene before starting Listen Mode".to_string());
-            }
-
-            if inner
-                .lv1_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.channels.is_empty())
-                .unwrap_or(true)
-            {
-                return Err("LV1 channel list is empty".to_string());
-            }
-        }
-
-        inner.listen_mode_active = active;
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    pub async fn set_scene_duration_ms(
-        &self,
-        scene_id: String,
-        duration_ms: u64,
-    ) -> Result<AppViewState, String> {
-        if !(100..=120_000).contains(&duration_ms) {
-            return Err("Fade duration must be between 100 ms and 120000 ms".to_string());
-        }
-
-        let mut inner = self.inner.lock().await;
-        let config = inner
-            .scene_fade_configs
-            .iter_mut()
-            .find(|config| config.scene_id == scene_id)
-            .ok_or_else(|| "Scene config not found".to_string())?;
-
-        config.duration_ms = duration_ms;
-        inner.show_file_dirty = true;
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    #[cfg(test)]
-    pub async fn export_show_file(&self, saved_at: String) -> ShowFile {
-        let inner = self.inner.lock().await;
-        show_file_from_inner(&inner, saved_at)
-    }
-
-    pub async fn export_show_file_for_save(&self, saved_at: String) -> Result<ShowFile, String> {
-        let inner = self.inner.lock().await;
-        if inner.listen_mode_active {
-            return Err("Stop Listen Mode before saving a show file".to_string());
-        }
-
-        Ok(show_file_from_inner(&inner, saved_at))
-    }
-
-    pub async fn current_show_file_path(&self) -> Option<PathBuf> {
-        let inner = self.inner.lock().await;
-        inner.show_file_path.clone()
-    }
-
-    pub async fn new_show_file(&self) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-
-        if inner.listen_mode_active {
-            return Err("Stop Listen Mode before creating a new show file".to_string());
-        }
-
-        inner.lockout = false;
-        inner.scene_fade_configs.clear();
-        inner.selected_scene_id = None;
-        inner.show_file_path = None;
-        inner.show_file_dirty = false;
-        inner.show_file_last_saved_at = None;
-        inner.unknown_fader_warnings.clear();
-
-        if let Some(scenes) = inner
-            .lv1_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.scene_list.clone())
-        {
-            inner.reconcile_scene_fade_configs(&scenes);
-        }
-
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Info,
-            "New show file created".to_string(),
-        );
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    pub async fn mark_show_file_saved(&self, path: PathBuf, saved_at: String) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        inner.show_file_path = Some(path);
-        inner.show_file_last_saved_at = Some(saved_at);
-        inner.show_file_dirty = false;
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Info,
-            "Show file saved".to_string(),
-        );
-        snapshot_from_inner(&inner)
-    }
-
-    pub async fn load_show_file_from_dto(
-        &self,
-        path: PathBuf,
-        file: &mut ShowFile,
-    ) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-
-        if inner.listen_mode_active {
-            return Err("Stop Listen Mode before opening a show file".to_string());
-        }
-
-        let lv1 = inner.lv1_snapshot.clone().ok_or_else(|| {
-            "Open a show file after LV1 scenes and channels are loaded".to_string()
-        })?;
-        let report = validate_show_file(file, &lv1)?;
-
-        inner.lockout = file.safety.lockout;
-        inner.scene_fade_configs = file
-            .scene_fade_configs
-            .iter()
-            .map(scene_config_from_show_file)
-            .collect();
-        inner.unknown_fader_warnings.clear();
-        inner.selected_scene_id = inner
-            .scene_fade_configs
-            .first()
-            .map(|config| config.scene_id.clone());
-        inner.show_file_path = Some(path);
-        inner.show_file_last_saved_at = Some(file.saved_at.clone());
-        inner.show_file_dirty = report.removed_anything();
-
-        for scene in report.removed_scenes {
-            inner.push_log(
-                LogSource::App,
-                LogSeverity::Warning,
-                format!("Deleted saved scene config during load: {scene}"),
-            );
-        }
-
-        for target in report.removed_targets {
-            inner.push_log(
-                LogSource::App,
-                LogSeverity::Warning,
-                format!("Deleted saved fader target during load: {target}"),
-            );
-        }
-
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Info,
-            "Show file loaded".to_string(),
-        );
-
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    #[allow(dead_code)]
-    pub async fn set_fade_target_enabled(
-        &self,
-        scene_id: String,
-        group: i32,
-        channel: i32,
-        enabled: bool,
-    ) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-        let target = find_target_mut(&mut inner, &scene_id, group, channel)?;
-
-        target.enabled = enabled;
-        inner.show_file_dirty = true;
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    pub async fn remove_fade_target(
-        &self,
-        scene_id: &str,
-        group: i32,
-        channel: i32,
-    ) -> Result<AppViewState, String> {
-        let mut inner = self.inner.lock().await;
-        let config = inner
-            .scene_fade_configs
-            .iter_mut()
-            .find(|config| config.scene_id == scene_id)
-            .ok_or_else(|| "Scene config not found".to_string())?;
-        let before = config.fade_targets.len();
-        config
-            .fade_targets
-            .retain(|target| !(target.group == group && target.channel == channel));
-
-        if config.fade_targets.len() == before {
-            return Err("Fade target not found".to_string());
-        }
-
-        inner.show_file_dirty = true;
-        Ok(snapshot_from_inner(&inner))
-    }
-
-    pub async fn begin_connecting(&self) -> (u64, AppViewState) {
-        let mut inner = self.inner.lock().await;
-        inner.generation = inner.generation.saturating_add(1);
-        inner.lv1_snapshot = Some(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connecting,
-            scene: None,
-            scene_list: Vec::new(),
-            channels: Vec::new(),
-        });
-        inner.push_log(
-            LogSource::Lv1,
-            LogSeverity::Info,
-            "Connecting to LV1".to_string(),
-        );
-        let generation = inner.generation;
-        (generation, snapshot_from_inner(&inner))
-    }
-
-    pub async fn set_lockout(&self, enabled: bool) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        inner.lockout = enabled;
-        inner.show_file_dirty = true;
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Info,
-            format!("Lockout {}", if enabled { "enabled" } else { "disabled" }),
-        );
-        snapshot_from_inner(&inner)
-    }
-
-    pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        inner.lv1_snapshot = Some(snapshot);
-        let scenes = inner
-            .lv1_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.scene_list.clone())
-            .unwrap_or_default();
-        inner.reconcile_scene_fade_configs(&scenes);
-        let message = match inner
-            .lv1_snapshot
-            .as_ref()
-            .map(|snapshot| &snapshot.connection)
-        {
-            Some(ConnectionStatus::Connecting) => "Connecting to LV1",
-            Some(ConnectionStatus::Connected) => "LV1 connected",
-            Some(ConnectionStatus::Disconnected) => "LV1 disconnected",
-            None => "LV1 disconnected",
-        };
-        inner.push_log(LogSource::Lv1, LogSeverity::Info, message.to_string());
-        snapshot_from_inner(&inner)
-    }
-
-    pub async fn disconnect(&self) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        inner.generation = inner.generation.saturating_add(1);
-        inner.lv1_snapshot = None;
-        inner.listen_mode_active = false;
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Info,
-            "Disconnected from LV1".to_string(),
-        );
-        snapshot_from_inner(&inner)
-    }
-
-    pub async fn apply_lv1_event_for_generation(
-        &self,
-        generation: u64,
-        event: &Lv1Event,
-    ) -> Option<AppViewState> {
-        let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
-            return None;
-        }
-
-        match event {
-            Lv1Event::Connected => {
-                ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    "LV1 connected".to_string(),
-                );
-            }
-            Lv1Event::Disconnected => {
-                inner.lv1_snapshot = None;
-                inner.listen_mode_active = false;
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Warning,
-                    "LV1 disconnected".to_string(),
-                );
-            }
-            Lv1Event::SceneChanged(scene) => {
-                ensure_lv1_snapshot(&mut inner).scene = Some(scene.clone());
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    format!("Scene changed to {}: {}", scene.index, scene.name),
-                );
-            }
-            Lv1Event::SceneListChanged(scenes) => {
-                ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
-                inner.reconcile_scene_fade_configs(scenes);
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    format!("Scene list updated: {} scenes", scenes.len()),
-                );
-            }
-            Lv1Event::FaderChanged {
-                group,
-                channel,
-                gain_db,
-            } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
-                    existing.gain_db = *gain_db;
-                }
-
-                inner.record_fader_target(*group, *channel, *gain_db);
-            }
-            Lv1Event::MuteChanged {
-                group,
-                channel,
-                muted,
-            } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
-                    existing.muted = *muted;
-                }
-            }
-            Lv1Event::ChannelTopologyChanged(channels) => {
-                ensure_lv1_snapshot(&mut inner).channels = channels.clone();
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    format!("Channel topology updated: {} channels", channels.len()),
-                );
-            }
-        }
-
-        Some(snapshot_from_inner(&inner))
-    }
 }
 
-impl ShellInner {
-    fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) {
-        let previous_scene_ids: HashSet<_> = self
-            .scene_fade_configs
-            .iter()
-            .map(|config| config.scene_id.clone())
-            .collect();
-        let mut next = Vec::with_capacity(scenes.len());
-
-        for scene in scenes {
-            let id = scene_id(scene.index, &scene.name);
-            if let Some(mut existing) = self
-                .scene_fade_configs
-                .iter()
-                .find(|config| config.scene_id == id)
-                .cloned()
-            {
-                existing.scene_index = scene.index;
-                existing.scene_name = scene.name.clone();
-                next.push(existing);
-            } else {
-                next.push(SceneFadeConfig {
-                    scene_id: id,
-                    scene_index: scene.index,
-                    scene_name: scene.name.clone(),
-                    fade_enabled: false,
-                    duration_ms: DEFAULT_DURATION_MS,
-                    fade_targets: Vec::new(),
-                });
-            }
-        }
-
-        let had_selected_scene = self.selected_scene_id.is_some();
-        let selected_still_exists = self
-            .selected_scene_id
-            .as_ref()
-            .is_some_and(|selected| next.iter().any(|config| &config.scene_id == selected));
-
-        if !selected_still_exists {
-            if had_selected_scene && self.listen_mode_active {
-                self.listen_mode_active = false;
-                self.push_log(
-                    LogSource::App,
-                    LogSeverity::Warning,
-                    "Listen Mode stopped because selected scene is no longer available".to_string(),
-                );
-            }
-            self.selected_scene_id = next.first().map(|config| config.scene_id.clone());
-        }
-
-        let next_scene_ids: HashSet<_> =
-            next.iter().map(|config| config.scene_id.clone()).collect();
-        let scene_set_changed = previous_scene_ids != next_scene_ids;
-
-        self.scene_fade_configs = next;
-
-        if scene_set_changed && (self.show_file_path.is_some() || self.show_file_dirty) {
-            self.show_file_dirty = true;
-        }
-    }
-
-    fn push_log(&mut self, source: LogSource, severity: LogSeverity, message: String) {
-        self.next_log_id += 1;
-        let timestamp = current_timestamp();
-        self.last_event_at = Some(timestamp.clone());
-        self.logs.push_back(AppLogEntry {
-            id: self.next_log_id,
-            timestamp,
-            source,
-            severity,
-            message,
-        });
-        while self.logs.len() > MAX_LOGS {
-            self.logs.pop_front();
-        }
-    }
-
-    fn record_fader_target(&mut self, group: i32, channel: i32, gain_db: f64) {
-        if !self.listen_mode_active {
-            return;
-        }
-
-        let Some(selected_scene_id) = self.selected_scene_id.clone() else {
-            return;
-        };
-
-        let channel_known = self.lv1_snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .channels
-                .iter()
-                .any(|ch| ch.group == group && ch.channel == channel)
-        });
-
-        if !channel_known {
-            if self.unknown_fader_warnings.insert((group, channel)) {
-                self.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Warning,
-                    format!("Ignored fader target for unknown channel {group}/{channel}"),
-                );
-            }
-            return;
-        }
-
-        let timestamp = current_timestamp();
-        let channel_name = self
-            .lv1_snapshot
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot
-                    .channels
-                    .iter()
-                    .find(|ch| ch.group == group && ch.channel == channel)
-            })
-            .map(|channel| channel.name.clone())
-            .unwrap_or_default();
-
-        if let Some(config) = self
-            .scene_fade_configs
-            .iter_mut()
-            .find(|config| config.scene_id == selected_scene_id)
-        {
-            if let Some(target) = config
-                .fade_targets
-                .iter_mut()
-                .find(|target| target.group == group && target.channel == channel)
-            {
-                target.target_db = gain_db;
-                target.updated_at = timestamp;
-                target.channel_name = channel_name;
-            } else {
-                config.fade_targets.push(FadeTarget {
-                    group,
-                    channel,
-                    channel_name,
-                    target_db: gain_db,
-                    enabled: true,
-                    updated_at: timestamp,
-                });
-            }
-            self.show_file_dirty = true;
-        }
-    }
+fn cover_state_variants() {
+    let _ = (
+        LogSource::Fade,
+        LogSeverity::Error,
+        AppFadeState::Running,
+        AppFadeState::Blocked,
+    );
 }
 
-fn scene_id(index: i32, name: &str) -> String {
+pub(super) fn scene_id(index: i32, name: &str) -> String {
     format!("{index}::{name}")
 }
 
-#[allow(dead_code)]
-fn find_target_mut<'a>(
-    inner: &'a mut ShellInner,
-    scene_id: &str,
-    group: i32,
-    channel: i32,
-) -> Result<&'a mut FadeTarget, String> {
-    let config = inner
-        .scene_fade_configs
-        .iter_mut()
-        .find(|config| config.scene_id == scene_id)
-        .ok_or_else(|| "Scene config not found".to_string())?;
-
-    config
-        .fade_targets
-        .iter_mut()
-        .find(|target| target.group == group && target.channel == channel)
-        .ok_or_else(|| "Fade target not found".to_string())
-}
-
-fn ensure_lv1_snapshot(inner: &mut ShellInner) -> &mut Lv1StateSnapshot {
-    inner.lv1_snapshot.get_or_insert_with(|| Lv1StateSnapshot {
-        connection: ConnectionStatus::Connected,
-        scene: None,
-        scene_list: Vec::new(),
-        channels: Vec::new(),
-    })
-}
-
-fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
+pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
     let connection = inner
         .lv1_snapshot
         .as_ref()
@@ -835,62 +157,7 @@ fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
     }
 }
 
-fn show_file_from_inner(inner: &ShellInner, saved_at: String) -> ShowFile {
-    ShowFile {
-        schema_version: SHOW_FILE_SCHEMA_VERSION,
-        app_version: env!("CARGO_PKG_VERSION").to_string(),
-        saved_at,
-        safety: ShowFileSafety {
-            lockout: inner.lockout,
-        },
-        scene_fade_configs: inner
-            .scene_fade_configs
-            .iter()
-            .map(|config| ShowFileSceneFadeConfig {
-                scene_index: config.scene_index,
-                scene_name: config.scene_name.clone(),
-                fade_enabled: config.fade_enabled,
-                duration_ms: config.duration_ms,
-                fade_targets: config
-                    .fade_targets
-                    .iter()
-                    .map(|target| ShowFileFadeTarget {
-                        group: target.group,
-                        channel: target.channel,
-                        channel_name: target.channel_name.clone(),
-                        target_db: target.target_db,
-                        enabled: target.enabled,
-                        updated_at: target.updated_at.clone(),
-                    })
-                    .collect(),
-            })
-            .collect(),
-    }
-}
-
-fn scene_config_from_show_file(config: &ShowFileSceneFadeConfig) -> SceneFadeConfig {
-    SceneFadeConfig {
-        scene_id: scene_id(config.scene_index, &config.scene_name),
-        scene_index: config.scene_index,
-        scene_name: config.scene_name.clone(),
-        fade_enabled: config.fade_enabled,
-        duration_ms: config.duration_ms,
-        fade_targets: config
-            .fade_targets
-            .iter()
-            .map(|target| FadeTarget {
-                group: target.group,
-                channel: target.channel,
-                channel_name: target.channel_name.clone(),
-                target_db: target.target_db,
-                enabled: target.enabled,
-                updated_at: target.updated_at.clone(),
-            })
-            .collect(),
-    }
-}
-
-fn current_timestamp() -> String {
+pub(super) fn current_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let millis = SystemTime::now()
@@ -904,7 +171,8 @@ fn current_timestamp() -> String {
 mod tests {
     use super::*;
     use crate::show_file::DEFAULT_DURATION_MS;
-    use lv1_scene_fade_utility::lv1::state::{ChannelInfo, SceneListEntry, SceneState};
+    use lv1_scene_fade_utility::lv1::messages::Lv1Event;
+    use lv1_scene_fade_utility::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
 
     fn connected_snapshot() -> Lv1StateSnapshot {
         Lv1StateSnapshot {
@@ -1178,7 +446,10 @@ mod tests {
         state.set_listen_mode(true).await.unwrap();
 
         assert_eq!(
-            state.export_show_file_for_save("saved".to_string()).await.unwrap_err(),
+            state
+                .export_show_file_for_save("saved".to_string())
+                .await
+                .unwrap_err(),
             "Stop Listen Mode before saving a show file"
         );
     }

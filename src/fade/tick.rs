@@ -1,0 +1,201 @@
+use std::time::{Duration, Instant};
+
+use crate::fade::curve::{FadeCurve, interpolate};
+use crate::fade::fader_law::db_to_pos;
+
+pub const TICK_HZ: u64 = 25;
+/// Minimum fader position change (0.0–1.0) required to send a SetGain command.
+pub const MIN_SEND_DELTA_POS: f64 = 0.002;
+/// Fader position deviation (0.0–1.0) required to declare a manual override.
+/// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
+pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
+
+pub(crate) struct ActiveChannel {
+    pub(crate) group: i32,
+    pub(crate) channel: i32,
+    pub(crate) start_db: f64,
+    pub(crate) target_db: f64,
+    /// Last dB value sent — for override detection and min-delta suppression.
+    pub(crate) expected_db: f64,
+    pub(crate) curve: FadeCurve,
+    pub(crate) duration: Duration,
+    pub(crate) started_at: Instant,
+}
+
+impl ActiveChannel {
+    pub(crate) fn new(
+        group: i32,
+        channel: i32,
+        start_db: f64,
+        target_db: f64,
+        curve: FadeCurve,
+        duration: Duration,
+        started_at: Instant,
+    ) -> Self {
+        Self {
+            group,
+            channel,
+            start_db,
+            target_db,
+            expected_db: start_db,
+            curve,
+            duration,
+            started_at,
+        }
+    }
+
+    /// Returns the interpolated dB value at `now`.
+    pub(crate) fn value_at(&self, now: Instant) -> f64 {
+        let elapsed = now.duration_since(self.started_at).as_secs_f64();
+        let t = elapsed / self.duration.as_secs_f64();
+        interpolate(self.start_db, self.target_db, t, self.curve)
+    }
+
+    /// Returns true if the fade has completed (t >= 1.0).
+    pub(crate) fn is_done(&self, now: Instant) -> bool {
+        now.duration_since(self.started_at) >= self.duration
+    }
+
+    /// Returns true if `reported_db` deviates from `expected_db` by more than
+    /// OVERRIDE_THRESHOLD_POS in fader position space. Using position space means
+    /// the threshold is proportionally tighter at loud levels and wider at quiet
+    /// levels, matching the physical fader resolution.
+    pub(crate) fn is_override(&self, reported_db: f64) -> bool {
+        let reported_pos = db_to_pos(reported_db);
+        let expected_pos = db_to_pos(self.expected_db);
+        (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+    }
+
+    /// Returns Some(new_db) if the fader position has moved enough to warrant sending.
+    pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
+        let new_db = if self.is_done(now) {
+            self.target_db
+        } else {
+            self.value_at(now)
+        };
+
+        let new_pos = db_to_pos(new_db);
+        let expected_pos = db_to_pos(self.expected_db);
+        if (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS {
+            self.expected_db = new_db;
+            Some(new_db)
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
+        ActiveChannel::new(
+            0,
+            0,
+            start_db,
+            target_db,
+            FadeCurve::Linear,
+            Duration::from_millis(duration_ms),
+            Instant::now(),
+        )
+    }
+
+    #[test]
+    fn value_at_start_is_start_db() {
+        let ch = make_channel(-20.0, -10.0, 4000);
+        let v = ch.value_at(ch.started_at);
+        assert!((v - -20.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn value_at_end_is_target_db() {
+        let ch = make_channel(-20.0, -10.0, 4000);
+        let end = ch.started_at + Duration::from_millis(4000);
+        let v = ch.value_at(end);
+        assert!((v - -10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn is_done_false_before_duration() {
+        let ch = make_channel(-20.0, -10.0, 4000);
+        let mid = ch.started_at + Duration::from_millis(2000);
+        assert!(!ch.is_done(mid));
+    }
+
+    #[test]
+    fn is_done_true_at_duration() {
+        let ch = make_channel(-20.0, -10.0, 4000);
+        let end = ch.started_at + Duration::from_millis(4000);
+        assert!(ch.is_done(end));
+    }
+
+    #[test]
+    fn is_override_true_when_position_deviation_exceeds_threshold() {
+        use crate::fade::fader_law::{db_to_pos, pos_to_db};
+        let ch = make_channel(-20.0, -10.0, 4000);
+        // expected_db = start_db = -20.0; compute a reported_db far enough in position space
+        let expected_pos = db_to_pos(-20.0);
+        let over_pos = expected_pos + OVERRIDE_THRESHOLD_POS + 0.001;
+        let reported_db = pos_to_db(over_pos);
+        assert!(ch.is_override(reported_db));
+    }
+
+    #[test]
+    fn is_override_false_when_position_deviation_below_threshold() {
+        use crate::fade::fader_law::{db_to_pos, pos_to_db};
+        let ch = make_channel(-20.0, -10.0, 4000);
+        let expected_pos = db_to_pos(-20.0);
+        let under_pos = expected_pos + OVERRIDE_THRESHOLD_POS - 0.001;
+        let reported_db = pos_to_db(under_pos);
+        assert!(!ch.is_override(reported_db));
+    }
+
+    #[test]
+    fn override_uses_position_space_so_wide_range_is_not_false_positive() {
+        use crate::fade::fader_law::db_to_pos;
+        let ch = make_channel(-144.0, 0.0, 4000);
+        // At -144 dB, the fader law maps large dB gaps to small position gaps.
+        // A 5 dB deviation near the bottom should NOT be an override in position space.
+        let reported_db = -139.0; // 5 dB above start
+        let pos_deviation = (db_to_pos(reported_db) - db_to_pos(-144.0)).abs();
+        // Verify position deviation is well below threshold
+        assert!(pos_deviation < OVERRIDE_THRESHOLD_POS);
+        assert!(!ch.is_override(reported_db));
+    }
+
+    #[test]
+    fn next_send_returns_none_when_below_min_delta() {
+        let mut ch = make_channel(-20.0, -10.0, 4000);
+        // At t=0, value is -20.0 = expected_db, delta is 0 — no send
+        let now = ch.started_at;
+        assert!(ch.next_send(now).is_none());
+    }
+
+    #[test]
+    fn next_send_returns_some_when_above_min_delta() {
+        let mut ch = make_channel(-20.0, -10.0, 4000);
+        // At t=1.0 (end), value is -10.0; position delta from -20→-10 is well above MIN_SEND_DELTA_POS
+        let end = ch.started_at + Duration::from_millis(4000);
+        let result = ch.next_send(end);
+        assert!(result.is_some());
+        assert!((result.unwrap() - -10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn next_send_updates_expected_db() {
+        let mut ch = make_channel(-20.0, -10.0, 4000);
+        let end = ch.started_at + Duration::from_millis(4000);
+        ch.next_send(end);
+        assert!((ch.expected_db - -10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn next_send_at_done_returns_exact_target() {
+        let mut ch = make_channel(-20.0, -10.0, 4000);
+        let end = ch.started_at + Duration::from_millis(5000);
+        let result = ch.next_send(end).unwrap();
+        assert!((result - -10.0).abs() < 1e-10);
+    }
+}

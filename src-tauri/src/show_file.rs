@@ -1,6 +1,6 @@
-use lv1_scene_fade_utility::lv1::state::Lv1StateSnapshot;
-#[cfg(test)]
-use lv1_scene_fade_utility::lv1::state::{ChannelInfo, SceneListEntry};
+use lv1_scene_fade_utility::lv1::model::{
+    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
+};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;
@@ -320,7 +320,7 @@ mod tests {
 
     fn lv1_snapshot() -> Lv1StateSnapshot {
         Lv1StateSnapshot {
-            connection: lv1_scene_fade_utility::lv1::state::ConnectionStatus::Connected,
+            connection: ConnectionStatus::Connected,
             scene: None,
             scene_list: vec![
                 SceneListEntry {

@@ -1,6 +1,6 @@
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::lv1::discovery::resolve_target;
-use lv1_scene_fade_utility::lv1::state::Lv1Event;
+use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use serde::Serialize;
 use std::path::PathBuf;
