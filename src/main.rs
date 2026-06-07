@@ -577,7 +577,11 @@ async fn run_fade_test(
                 println!("[cancelled] group={group} ch={channel}");
             }
             Ok(_) => {}
-            Err(_) => break,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                log_lagged_subscriber("fade-test", count);
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
     }
 
