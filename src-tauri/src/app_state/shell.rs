@@ -23,6 +23,7 @@ pub struct RuntimeHandles {
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
+    pub scene_recall_fader: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -126,6 +127,9 @@ impl RuntimeHandles {
         }
         if let Some(projector) = self.projector.take() {
             projector.abort();
+        }
+        if let Some(scene_recall_fader) = self.scene_recall_fader.take() {
+            scene_recall_fader.abort();
         }
         self.active_generation = 0;
         self.lv1 = None;
@@ -287,6 +291,7 @@ mod tests {
             fade: None,
             command_bus: None,
             projector: Some(tokio::spawn(async {})),
+            scene_recall_fader: None,
         };
 
         let active_command_bus = crate::commands::ActiveCommandBus::default();
@@ -309,6 +314,7 @@ mod tests {
             fade: None,
             command_bus: None,
             projector: Some(tokio::spawn(async {})),
+            scene_recall_fader: None,
         };
 
         let rejected = state

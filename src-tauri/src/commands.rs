@@ -12,6 +12,7 @@ use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
 use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
+use crate::scene_recall_fader::spawn_scene_recall_fader;
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 #[derive(Clone, Default)]
@@ -244,8 +245,14 @@ pub async fn connect_lv1(
         active_generation: 0,
         lv1: Some(lv1.clone()),
         fade: Some(fade),
-        command_bus: Some(fade_command_bus),
+        command_bus: Some(fade_command_bus.clone()),
         projector: None,
+        scene_recall_fader: Some(spawn_scene_recall_fader(
+            shell_state.clone(),
+            generation,
+            fade_command_bus.clone(),
+            event_bus.clone(),
+        )),
     };
 
     let initial_snapshot = lv1.get_state().await;
@@ -523,6 +530,57 @@ mod tests {
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[0]["fadeState"], "idle");
         assert_eq!(observed[1]["fadeState"], "running");
+    }
+
+    #[tokio::test]
+    async fn connected_runtime_installs_scene_recall_fader_handle() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+
+        let initial_snapshot = state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let scene_recall_fader = tokio::spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let active_command_bus = ActiveCommandBus::default();
+
+        install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            generation,
+            initial_snapshot,
+            event_bus.subscribe(),
+            RuntimeHandles {
+                active_generation: 0,
+                lv1: None,
+                fade: None,
+                command_bus: None,
+                projector: None,
+                scene_recall_fader: Some(scene_recall_fader),
+            },
+            &active_command_bus,
+        )
+        .await
+        .expect("connected runtime should install successfully");
+
+        let mut handles = state.handles.lock().await;
+        assert!(handles.scene_recall_fader.is_some());
+        handles.abort_all().await;
     }
 
     #[tokio::test]
