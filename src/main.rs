@@ -484,8 +484,6 @@ async fn run_fade_test(
     use lv1_scene_fade_utility::fade::engine::spawn_engine;
     use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeTarget};
     use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-    use lv1_scene_fade_utility::runtime::dispatcher::RuntimeDispatcher;
-    use tokio::sync::mpsc;
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
@@ -497,12 +495,10 @@ async fn run_fade_test(
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
-    let (command_tx, command_rx) = mpsc::channel(32);
-    let command_bus = AppCommandBus::new(command_tx);
-    let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
-    dispatcher.set_lv1(Some(lv1.clone()));
-    tokio::spawn(async move { dispatcher.run().await });
-    let engine = spawn_engine(command_bus, event_bus.clone());
+    let command_bus = AppCommandBus::new(event_bus.clone());
+    command_bus.set_lv1(Some(lv1.clone())).await;
+    let engine = spawn_engine(command_bus.clone(), event_bus.clone());
+    command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = engine.subscribe().await;
 
     // Wait for LV1 connection

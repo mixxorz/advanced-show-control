@@ -1,62 +1,61 @@
-use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
 
+use thiserror::Error;
+use tokio::sync::Mutex;
+
+use crate::fade::engine::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
+use crate::lv1::messages::Lv1ActorError;
+use crate::lv1::state::Lv1ActorHandle;
 use crate::lv1::model::Lv1StateSnapshot;
+use crate::runtime::events::{AppEvent, AppEventBus};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AppCommandError {
-    #[error("app command dispatcher is closed")]
-    DispatcherClosed,
-    #[error("app command reply channel is closed")]
-    ReplyChannelClosed,
     #[error("LV1 actor is unavailable")]
     Lv1Unavailable,
     #[error("fade engine is unavailable")]
     FadeUnavailable,
+    #[error("app command reply channel is closed")]
+    ReplyChannelClosed,
     #[error("command failed: {0}")]
     CommandFailed(String),
 }
 
-pub enum AppCommand {
-    GetLv1State {
-        reply: oneshot::Sender<Result<Lv1StateSnapshot, AppCommandError>>,
-    },
-    SetGain {
-        group: i32,
-        channel: i32,
-        gain_db: f64,
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
-    },
-    StartFade {
-        config: FadeConfig,
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
-    },
-    AbortAllFades {
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
-    },
-    FinishFadeNow {
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
-    },
+#[derive(Clone, Default)]
+struct AppCommandTargets {
+    lv1: Option<Lv1ActorHandle>,
+    fade: Option<FadeEngineHandle>,
 }
 
 #[derive(Clone)]
 pub struct AppCommandBus {
-    tx: mpsc::Sender<AppCommand>,
+    targets: Arc<Mutex<AppCommandTargets>>,
+    event_bus: AppEventBus,
 }
 
 impl AppCommandBus {
-    pub fn new(tx: mpsc::Sender<AppCommand>) -> Self {
-        Self { tx }
+    pub fn new(event_bus: AppEventBus) -> Self {
+        Self {
+            targets: Arc::new(Mutex::new(AppCommandTargets::default())),
+            event_bus,
+        }
+    }
+
+    pub async fn set_lv1(&self, lv1: Option<Lv1ActorHandle>) {
+        self.targets.lock().await.lv1 = lv1;
+    }
+
+    pub async fn set_fade(&self, fade: Option<FadeEngineHandle>) {
+        self.targets.lock().await.fade = fade;
     }
 
     pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(AppCommand::GetLv1State { reply })
-            .await
-            .map_err(|_| AppCommandError::DispatcherClosed)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+        let lv1 = self.targets.lock().await.lv1.clone();
+        match lv1 {
+            Some(lv1) => Ok(lv1.get_state().await),
+            None => Err(AppCommandError::Lv1Unavailable),
+        }
     }
 
     pub async fn set_gain(
@@ -65,44 +64,59 @@ impl AppCommandBus {
         channel: i32,
         gain_db: f64,
     ) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(AppCommand::SetGain {
-                group,
-                channel,
-                gain_db,
-                reply,
-            })
-            .await
-            .map_err(|_| AppCommandError::DispatcherClosed)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+        let lv1 = self.targets.lock().await.lv1.clone();
+        let result = match lv1 {
+            Some(lv1) => lv1
+                .set_gain(group, channel, gain_db)
+                .await
+                .map_err(map_lv1_error),
+            None => Err(AppCommandError::Lv1Unavailable),
+        };
+        publish_failure(&self.event_bus, "set_gain", &result);
+        result
     }
 
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(AppCommand::StartFade { config, reply })
-            .await
-            .map_err(|_| AppCommandError::DispatcherClosed)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+        let fade = self.targets.lock().await.fade.clone();
+        let result = match fade {
+            Some(fade) => fade.start_fade(config).await,
+            None => Err(AppCommandError::FadeUnavailable),
+        };
+        publish_failure(&self.event_bus, "start_fade", &result);
+        result
     }
 
     pub async fn abort_all_fades(&self) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(AppCommand::AbortAllFades { reply })
-            .await
-            .map_err(|_| AppCommandError::DispatcherClosed)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+        let fade = self.targets.lock().await.fade.clone();
+        let result = match fade {
+            Some(fade) => fade.abort_all().await,
+            None => Err(AppCommandError::FadeUnavailable),
+        };
+        publish_failure(&self.event_bus, "abort_all_fades", &result);
+        result
     }
 
     pub async fn finish_fade_now(&self) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(AppCommand::FinishFadeNow { reply })
-            .await
-            .map_err(|_| AppCommandError::DispatcherClosed)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+        let fade = self.targets.lock().await.fade.clone();
+        let result = match fade {
+            Some(fade) => fade.finish_now().await,
+            None => Err(AppCommandError::FadeUnavailable),
+        };
+        publish_failure(&self.event_bus, "finish_fade_now", &result);
+        result
+    }
+}
+
+fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
+    AppCommandError::CommandFailed(error.to_string())
+}
+
+fn publish_failure(event_bus: &AppEventBus, command: &str, result: &Result<(), AppCommandError>) {
+    if let Err(error) = result {
+        event_bus.publish(AppEvent::CommandFailed {
+            command: command.to_string(),
+            message: error.to_string(),
+        });
     }
 }
 
@@ -111,22 +125,23 @@ mod tests {
     use super::*;
     use crate::fade::curve::FadeCurve;
     use crate::fade::types::{FadeConfig, FadeTarget};
+    use crate::runtime::events::{AppEvent, AppEventBus};
 
     #[tokio::test]
-    async fn closed_dispatcher_returns_error() {
-        let (tx, rx) = mpsc::channel(1);
-        drop(rx);
-        let bus = AppCommandBus::new(tx);
+    async fn missing_lv1_returns_lv1_unavailable() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
 
-        let err = bus.abort_all_fades().await.unwrap_err();
+        let err = bus.get_lv1_state().await.unwrap_err();
 
-        assert_eq!(err, AppCommandError::DispatcherClosed);
+        assert_eq!(err, AppCommandError::Lv1Unavailable);
     }
 
     #[tokio::test]
-    async fn start_fade_sends_acknowledged_command() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let bus = AppCommandBus::new(tx);
+    async fn missing_fade_returns_fade_unavailable_and_publishes_failure() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let bus = AppCommandBus::new(event_bus.clone());
         let config = FadeConfig {
             targets: vec![FadeTarget {
                 group: 0,
@@ -137,16 +152,16 @@ mod tests {
             curve: FadeCurve::Linear,
         };
 
-        let task = tokio::spawn(async move { bus.start_fade(config).await });
+        let err = bus.start_fade(config).await.unwrap_err();
 
-        match rx.recv().await.unwrap() {
-            AppCommand::StartFade { config, reply } => {
-                assert_eq!(config.targets[0].channel, 1);
-                reply.send(Ok(())).unwrap();
+        assert_eq!(err, AppCommandError::FadeUnavailable);
+
+        match events.recv().await.unwrap() {
+            AppEvent::CommandFailed { command, message } => {
+                assert_eq!(command, "start_fade");
+                assert_eq!(message, AppCommandError::FadeUnavailable.to_string());
             }
-            _ => panic!("unexpected command"),
+            other => panic!("unexpected event: {other:?}"),
         }
-
-        assert_eq!(task.await.unwrap(), Ok(()));
     }
 }

@@ -22,7 +22,6 @@ pub struct RuntimeHandles {
     pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
-    pub dispatcher: Option<JoinHandle<()>>,
     pub projector: Option<JoinHandle<()>>,
 }
 
@@ -111,9 +110,6 @@ fn cover_state_variants() {
 
 impl RuntimeHandles {
     pub fn abort_all(&mut self) {
-        if let Some(dispatcher) = self.dispatcher.take() {
-            dispatcher.abort();
-        }
         if let Some(projector) = self.projector.take() {
             projector.abort();
         }
@@ -276,7 +272,6 @@ mod tests {
             lv1: None,
             fade: None,
             command_bus: None,
-            dispatcher: Some(tokio::spawn(async {})),
             projector: Some(tokio::spawn(async {})),
         };
 
@@ -295,7 +290,6 @@ mod tests {
             lv1: None,
             fade: None,
             command_bus: None,
-            dispatcher: Some(tokio::spawn(async {})),
             projector: Some(tokio::spawn(async {})),
         };
 

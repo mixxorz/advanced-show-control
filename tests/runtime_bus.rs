@@ -5,11 +5,9 @@ use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::encode_frame;
 use lv1_scene_fade_utility::osc::OscArg;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::dispatcher::RuntimeDispatcher;
 use lv1_scene_fade_utility::runtime::events::AppEventBus;
 use std::io::Write;
 use std::net::TcpListener;
-use tokio::sync::mpsc;
 
 fn channels_args() -> Vec<OscArg> {
     let mut args = vec![OscArg::Int(1)];
@@ -41,13 +39,10 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
 
     let event_bus = AppEventBus::default();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
-    let (command_tx, command_rx) = mpsc::channel(32);
-    let command_bus = AppCommandBus::new(command_tx);
-    let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
-    dispatcher.set_lv1(Some(lv1));
+    let command_bus = AppCommandBus::new(event_bus.clone());
+    command_bus.set_lv1(Some(lv1)).await;
     let fade = spawn_engine(command_bus.clone(), event_bus);
-    dispatcher.set_fade(Some(fade.clone()));
-    tokio::spawn(async move { dispatcher.run().await });
+    command_bus.set_fade(Some(fade.clone())).await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 

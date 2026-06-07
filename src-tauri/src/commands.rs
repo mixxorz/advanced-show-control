@@ -3,14 +3,13 @@ use lv1_scene_fade_utility::lv1::discovery::resolve_target;
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::dispatcher::RuntimeDispatcher;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::spawn_blocking;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::Mutex;
 
 use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
@@ -225,14 +224,11 @@ pub async fn connect_lv1(
     let shell_state = (*state).clone();
 
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
-    let (command_tx, command_rx) = mpsc::channel(32);
-    let command_bus = AppCommandBus::new(command_tx);
-    let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
-    dispatcher.set_lv1(Some(lv1.clone()));
+    let command_bus = AppCommandBus::new(event_bus.clone());
+    command_bus.set_lv1(Some(lv1.clone())).await;
     let fade_command_bus = command_bus.clone();
     let fade = spawn_engine(command_bus, event_bus.clone());
-    dispatcher.set_fade(Some(fade.clone()));
-    let dispatcher_task = tokio::spawn(async move { dispatcher.run().await });
+    fade_command_bus.set_fade(Some(fade.clone())).await;
     let projector_task = spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
     let runtime_handles = RuntimeHandles {
@@ -240,7 +236,6 @@ pub async fn connect_lv1(
         lv1: Some(lv1.clone()),
         fade: Some(fade),
         command_bus: Some(fade_command_bus),
-        dispatcher: Some(dispatcher_task),
         projector: Some(projector_task),
     };
 
@@ -394,8 +389,7 @@ mod tests {
         let holder = ActiveCommandBus::default();
         assert!(holder.current().await.is_none());
 
-        let (tx, _rx) = mpsc::channel(1);
-        let bus = AppCommandBus::new(tx);
+        let bus = AppCommandBus::new(AppEventBus::default());
         holder.set(Some(bus.clone())).await;
 
         assert!(holder.current().await.is_some());
