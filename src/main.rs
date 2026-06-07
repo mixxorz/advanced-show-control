@@ -1016,17 +1016,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
 
-        let handle = spawn_actor(
-            "127.0.0.1".to_string(),
-            port,
-            lv1_scene_fade_utility::runtime::events::AppEventBus::default(),
-        );
-        let mut events = handle.subscribe().await;
+        let event_bus = AppEventBus::default();
+        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+        let mut events = event_bus.subscribe();
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(event) = events.recv().await {
-                if matches!(event, Lv1Event::Connected) {
-                    break;
+            loop {
+                match events.recv().await {
+                    Ok(app_event) => {
+                        let AppEvent::Lv1(event) = app_event else {
+                            continue;
+                        };
+
+                        if matches!(event, Lv1Event::Connected) {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("vegas-test", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         })
@@ -1102,17 +1111,26 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
 
-        let handle = spawn_actor(
-            "127.0.0.1".to_string(),
-            port,
-            lv1_scene_fade_utility::runtime::events::AppEventBus::default(),
-        );
-        let mut events = handle.subscribe().await;
+        let event_bus = AppEventBus::default();
+        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+        let mut events = event_bus.subscribe();
 
         tokio::time::timeout(Duration::from_secs(2), async {
-            while let Some(event) = events.recv().await {
-                if matches!(event, Lv1Event::Connected) {
-                    break;
+            loop {
+                match events.recv().await {
+                    Ok(app_event) => {
+                        let AppEvent::Lv1(event) = app_event else {
+                            continue;
+                        };
+
+                        if matches!(event, Lv1Event::Connected) {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("vegas-test", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         })
