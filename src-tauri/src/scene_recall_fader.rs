@@ -5,7 +5,7 @@ use lv1_scene_fade_utility::runtime::events::{
 };
 use tokio::task::JoinHandle;
 
-use crate::app_state::{SceneRecallDecision, ShellState};
+use crate::app_state::{SceneRecallDecision, SceneRecallFadeRequest, ShellState};
 
 pub fn spawn_scene_recall_fader(
     state: ShellState,
@@ -49,74 +49,14 @@ pub fn spawn_scene_recall_fader(
                         .await
                     {
                         SceneRecallDecision::Start(request) => {
-                            if !state.is_generation_current(generation).await {
-                                continue;
-                            }
-
-                            if state
-                                .log_scene_recall_fader_info_for_generation(
-                                    generation,
-                                    format!(
-                                    "Previous fade abort requested before auto fade for scene {}",
-                                    request.scene_label
-                                    ),
-                                )
-                                .await
-                            {
-                                publish_log_refresh(&event_bus);
-                            } else {
-                                continue;
-                            }
-
-                            if let Err(err) = command_bus.abort_all_fades().await {
-                                if state
-                                    .log_scene_recall_fader_warning_for_generation(
-                                        generation,
-                                        format!(
-                                        "Auto fade blocked for scene {}: failed to abort previous fade: {err}",
-                                        request.scene_label
-                                        ),
-                                    )
-                                    .await
-                                {
-                                    publish_log_refresh(&event_bus);
-                                }
-                                continue;
-                            }
-
-                            if !state.is_generation_current(generation).await {
-                                continue;
-                            }
-
-                            if state
-                                .log_scene_recall_fader_info_for_generation(
-                                    generation,
-                                    format!(
-                                        "Auto fade start requested for scene {}",
-                                        request.scene_label
-                                    ),
-                                )
-                                .await
-                            {
-                                publish_log_refresh(&event_bus);
-                            } else {
-                                continue;
-                            }
-
-                            if let Err(err) = command_bus.start_fade(request.fade_config).await {
-                                if state
-                                    .log_scene_recall_fader_warning_for_generation(
-                                        generation,
-                                        format!(
-                                            "Auto fade failed for scene {}: {err}",
-                                            request.scene_label
-                                        ),
-                                    )
-                                    .await
-                                {
-                                    publish_log_refresh(&event_bus);
-                                }
-                            }
+                            start_scene_recall_fade(
+                                &state,
+                                generation,
+                                &command_bus,
+                                &event_bus,
+                                request,
+                            )
+                            .await;
                         }
                         decision @ (SceneRecallDecision::Skip
                         | SceneRecallDecision::Blocked
@@ -133,6 +73,108 @@ pub fn spawn_scene_recall_fader(
             }
         }
     })
+}
+
+async fn start_scene_recall_fade(
+    state: &ShellState,
+    generation: u64,
+    command_bus: &AppCommandBus,
+    event_bus: &AppEventBus,
+    request: SceneRecallFadeRequest,
+) {
+    start_scene_recall_fade_with_hook(
+        state,
+        generation,
+        command_bus,
+        event_bus,
+        request,
+        || async {},
+    )
+    .await;
+}
+
+async fn start_scene_recall_fade_with_hook<F, Fut>(
+    state: &ShellState,
+    generation: u64,
+    command_bus: &AppCommandBus,
+    event_bus: &AppEventBus,
+    request: SceneRecallFadeRequest,
+    after_start_log: F,
+) where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    if !state.is_generation_current(generation).await {
+        return;
+    }
+
+    if state
+        .log_scene_recall_fader_info_for_generation(
+            generation,
+            format!(
+                "Previous fade abort requested before auto fade for scene {}",
+                request.scene_label
+            ),
+        )
+        .await
+    {
+        publish_log_refresh(event_bus);
+    } else {
+        return;
+    }
+
+    if let Err(err) = command_bus.abort_all_fades().await {
+        if state
+            .log_scene_recall_fader_warning_for_generation(
+                generation,
+                format!(
+                    "Auto fade blocked for scene {}: failed to abort previous fade: {err}",
+                    request.scene_label
+                ),
+            )
+            .await
+        {
+            publish_log_refresh(event_bus);
+        }
+        return;
+    }
+
+    if !state.is_generation_current(generation).await {
+        return;
+    }
+
+    if state
+        .log_scene_recall_fader_info_for_generation(
+            generation,
+            format!(
+                "Auto fade start requested for scene {}",
+                request.scene_label
+            ),
+        )
+        .await
+    {
+        publish_log_refresh(event_bus);
+    } else {
+        return;
+    }
+
+    after_start_log().await;
+
+    if !state.is_generation_current(generation).await {
+        return;
+    }
+
+    if let Err(err) = command_bus.start_fade(request.fade_config).await {
+        if state
+            .log_scene_recall_fader_warning_for_generation(
+                generation,
+                format!("Auto fade failed for scene {}: {err}", request.scene_label),
+            )
+            .await
+        {
+            publish_log_refresh(event_bus);
+        }
+    }
 }
 
 fn publish_log_refresh(event_bus: &AppEventBus) {
@@ -228,6 +270,50 @@ mod tests {
 
         handle.abort();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_generation_after_start_log_does_not_start_fade() {
+        let event_bus = AppEventBus::default();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+        let request = intro_fade_request();
+
+        let fade_replies = tokio::spawn(async move {
+            let abort = fade_rx.recv().await.expect("expected AbortAll command");
+            match abort {
+                FadeCommand::AbortAll { reply } => {
+                    let _ = reply.send(Ok(()));
+                }
+                other => panic!("expected AbortAll before stale generation, got {other:?}"),
+            }
+
+            tokio::time::timeout(Duration::from_millis(100), fade_rx.recv())
+                .await
+                .expect_err("stale generation should not send StartFade after start log");
+        });
+
+        start_scene_recall_fade_with_hook(
+            &state,
+            generation,
+            &command_bus,
+            &event_bus,
+            request,
+            || {
+                let state = state.clone();
+                async move {
+                    let _ = state.disconnect().await;
+                }
+            },
+        )
+        .await;
+
+        fade_replies.await.unwrap();
     }
 
     #[tokio::test]
@@ -489,6 +575,22 @@ mod tests {
         SceneState {
             index: 1,
             name: "Intro".to_string(),
+        }
+    }
+
+    fn intro_fade_request() -> SceneRecallFadeRequest {
+        SceneRecallFadeRequest {
+            scene_id: "1::Intro".to_string(),
+            scene_label: "1: Intro".to_string(),
+            fade_config: lv1_scene_fade_utility::fade::types::FadeConfig {
+                targets: vec![lv1_scene_fade_utility::fade::types::FadeTarget {
+                    group: 0,
+                    channel: 2,
+                    target_db: -12.5,
+                }],
+                duration_ms: 4_000,
+                curve: FadeCurve::Linear,
+            },
         }
     }
 }
