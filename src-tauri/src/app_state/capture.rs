@@ -166,7 +166,17 @@ impl ShellState {
             Vec::new()
         };
 
-        if config.scoped_channels == desired_scoped_channels {
+        let current_scoped_set = config
+            .scoped_channels
+            .iter()
+            .map(|entry| (entry.group, entry.channel))
+            .collect::<HashSet<_>>();
+        let desired_scoped_set = desired_scoped_channels
+            .iter()
+            .map(|entry| (entry.group, entry.channel))
+            .collect::<HashSet<_>>();
+
+        if current_scoped_set == desired_scoped_set {
             return Ok(snapshot_from_inner(&inner));
         }
 

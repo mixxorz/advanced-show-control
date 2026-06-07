@@ -191,6 +191,31 @@ async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
     assert_eq!(snapshot.scene_configs[0].scoped_channels[1].channel, 3);
 }
 
+#[tokio::test]
+async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() {
+    let state = ShellState::default();
+    state.begin_connection(connected_state_with_two_channels()).await;
+    state.store_scene_config("1::Intro".to_string()).await.unwrap();
+
+    {
+        let mut inner = state.inner.lock().await;
+        inner.scene_configs[0].scoped_channels = vec![
+            super::view::ChannelRef { group: 0, channel: 3 },
+            super::view::ChannelRef { group: 0, channel: 2 },
+        ];
+        inner.show_file_dirty = false;
+    }
+
+    let snapshot = state
+        .set_all_channels_scoped("1::Intro".to_string(), true)
+        .await
+        .unwrap();
+
+    assert!(!snapshot.show_file_dirty);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 3);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels[1].channel, 2);
+}
+
 fn connected_state_with_two_channels() -> Lv1StateSnapshot {
     Lv1StateSnapshot {
         connection: ConnectionStatus::Connected,
