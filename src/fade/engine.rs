@@ -18,6 +18,10 @@ pub struct FadeEngineHandle {
 }
 
 impl FadeEngineHandle {
+    pub(crate) fn new(tx: mpsc::Sender<FadeCommand>) -> Self {
+        Self { tx }
+    }
+
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -55,7 +59,7 @@ impl FadeEngineHandle {
 pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     tokio::spawn(run_engine(command_bus, event_bus, cmd_rx));
-    FadeEngineHandle { tx: cmd_tx }
+    FadeEngineHandle::new(cmd_tx)
 }
 
 // ---------------------------------------------------------------------------
