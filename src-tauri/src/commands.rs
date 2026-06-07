@@ -7,7 +7,7 @@ use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
@@ -262,6 +262,32 @@ pub async fn connect_lv1(
         }
     };
 
+    install_connected_runtime(
+        &app,
+        &state,
+        shell_state,
+        generation,
+        snapshot,
+        events,
+        runtime_handles,
+        &active_command_bus,
+    )
+    .await
+}
+
+async fn install_connected_runtime<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &ShellState,
+    shell_state: ShellState,
+    generation: u64,
+    snapshot: AppViewState,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    mut runtime_handles: RuntimeHandles,
+    active_command_bus: &ActiveCommandBus,
+) -> Result<AppViewState, String> {
+    // Emit the initial snapshot before any buffered bus events can be projected.
+    emit_snapshot(app, &snapshot);
+
     runtime_handles.projector = Some(spawn_shell_state_projector(
         app.clone(),
         shell_state,
@@ -270,27 +296,26 @@ pub async fn connect_lv1(
     ));
 
     if let Err(mut stale_handles) = state
-        .install_runtime_handles_for_generation(generation, runtime_handles, &active_command_bus)
+        .install_runtime_handles_for_generation(generation, runtime_handles, active_command_bus)
         .await
     {
         stale_handles.abort_all().await;
         let snapshot = state.snapshot().await;
-        emit_snapshot(&app, &snapshot);
+        emit_snapshot(app, &snapshot);
         return Ok(snapshot);
-    };
-    emit_snapshot(&app, &snapshot);
+    }
 
     Ok(snapshot)
 }
 
-fn emit_snapshot(app: &AppHandle, snapshot: &AppViewState) {
+fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         eprintln!("failed to emit app-status-changed: {err}");
     }
 }
 
-fn spawn_shell_state_projector(
-    app: AppHandle,
+fn spawn_shell_state_projector<R: Runtime>(
+    app: AppHandle<R>,
     state: ShellState,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -372,8 +397,12 @@ fn current_timestamp_millis() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lv1_scene_fade_utility::fade::types::FadeEvent;
+    use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
     use std::fs;
+    use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tauri::{test::mock_app, Listener};
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
@@ -421,6 +450,72 @@ mod tests {
 
         holder.set(None).await;
         assert!(holder.current().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn initial_connection_snapshot_is_emitted_before_projector_events() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+
+        let initial_snapshot = state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let events = event_bus.subscribe();
+        event_bus.publish(AppEvent::Fade(FadeEvent::FadeStarted));
+
+        let active_command_bus = ActiveCommandBus::default();
+        let snapshot = install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            generation,
+            initial_snapshot,
+            events,
+            RuntimeHandles::default(),
+            &active_command_bus,
+        )
+        .await
+        .expect("connected runtime should install successfully");
+
+        assert_eq!(format!("{:?}", snapshot.connection), "Connected");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if observed.lock().unwrap().len() >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("projector should emit the buffered event");
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[0]["fadeState"], "idle");
+        assert_eq!(observed[1]["fadeState"], "running");
     }
 }
 
