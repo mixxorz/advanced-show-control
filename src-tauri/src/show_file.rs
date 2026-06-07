@@ -8,8 +8,6 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
-#[allow(dead_code)]
-pub const DEFAULT_DURATION_MS: u64 = 4000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -18,7 +16,7 @@ pub struct ShowFile {
     pub app_version: String,
     pub saved_at: String,
     pub safety: ShowFileSafety,
-    pub scene_fade_configs: Vec<ShowFileSceneFadeConfig>,
+    pub scene_configs: Vec<ShowFileSceneConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,35 +27,38 @@ pub struct ShowFileSafety {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ShowFileSceneFadeConfig {
+pub struct ShowFileSceneConfig {
     pub scene_index: i32,
     pub scene_name: String,
-    pub fade_enabled: bool,
     pub duration_ms: u64,
-    pub fade_targets: Vec<ShowFileFadeTarget>,
+    pub channel_configs: Vec<ShowFileChannelConfig>,
+    pub scoped_channels: Vec<ShowFileChannelRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ShowFileFadeTarget {
+pub struct ShowFileChannelConfig {
     pub group: i32,
     pub channel: i32,
-    pub channel_name: String,
-    pub target_db: f64,
-    pub enabled: bool,
-    pub updated_at: String,
+    pub fader_db: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowFileChannelRef {
+    pub group: i32,
+    pub channel: i32,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LoadValidationReport {
     pub removed_scenes: Vec<String>,
-    pub removed_targets: Vec<String>,
 }
 
 impl LoadValidationReport {
     #[allow(dead_code)]
     pub fn removed_anything(&self) -> bool {
-        !self.removed_scenes.is_empty() || !self.removed_targets.is_empty()
+        !self.removed_scenes.is_empty()
     }
 }
 
@@ -78,7 +79,7 @@ pub fn validate_show_file(
 
     let mut report = LoadValidationReport::default();
 
-    file.scene_fade_configs.retain_mut(|config| {
+    file.scene_configs.retain(|config| {
         let scene_matches = lv1
             .scene_list
             .iter()
@@ -88,27 +89,9 @@ pub fn validate_show_file(
             report
                 .removed_scenes
                 .push(format!("{}: {}", config.scene_index, config.scene_name));
-            return false;
         }
 
-        config.fade_targets.retain(|target| {
-            let target_matches = lv1.channels.iter().any(|channel| {
-                channel.group == target.group
-                    && channel.channel == target.channel
-                    && channel.name == target.channel_name
-            });
-
-            if !target_matches {
-                report.removed_targets.push(format!(
-                    "{} {}/{} {}",
-                    config.scene_name, target.group, target.channel, target.channel_name
-                ));
-            }
-
-            target_matches
-        });
-
-        true
+        scene_matches
     });
 
     Ok(report)
@@ -357,19 +340,16 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
-            scene_fade_configs: vec![ShowFileSceneFadeConfig {
+            scene_configs: vec![ShowFileSceneConfig {
                 scene_index: 1,
                 scene_name: "Intro".to_string(),
-                fade_enabled: true,
                 duration_ms: 4000,
-                fade_targets: vec![ShowFileFadeTarget {
+                channel_configs: vec![ShowFileChannelConfig {
                     group: 0,
                     channel: 2,
-                    channel_name: "Lead".to_string(),
-                    target_db: -12.5,
-                    enabled: true,
-                    updated_at: "456".to_string(),
+                    fader_db: Some(-12.5),
                 }],
+                scoped_channels: vec![ShowFileChannelRef { group: 0, channel: 2 }],
             }],
         }
     }
@@ -423,7 +403,7 @@ mod tests {
         write_show_file(&show_path, &file, &backup_dir).unwrap();
 
         let json = fs::read_to_string(&show_path).unwrap();
-        assert!(json.contains("\"sceneFadeConfigs\""));
+        assert!(json.contains("\"sceneConfigs\""));
 
         let backups = fs::read_dir(&backup_dir).unwrap().count();
         assert_eq!(backups, 1);
@@ -483,39 +463,42 @@ mod tests {
         let json = serde_json::to_string_pretty(&show_file()).unwrap();
 
         assert!(json.contains("\"schemaVersion\": 1"));
-        assert!(json.contains("\"sceneFadeConfigs\""));
+        assert!(json.contains("\"sceneConfigs\""));
         assert!(json.contains("\"durationMs\": 4000"));
-        assert!(json.contains("\"channelName\": \"Lead\""));
+        assert!(json.contains("\"channelConfigs\""));
+        assert!(json.contains("\"scopedChannels\""));
+        assert!(json.contains("\"faderDb\": -12.5"));
     }
 
     #[test]
-    fn validation_keeps_exact_scene_and_target_matches() {
+    fn validation_keeps_exact_scene_matches() {
         let report = validate_show_file(&mut show_file(), &lv1_snapshot()).unwrap();
 
         assert_eq!(report.removed_scenes.len(), 0);
-        assert_eq!(report.removed_targets.len(), 0);
     }
 
     #[test]
     fn validation_deletes_scene_when_name_differs() {
         let mut file = show_file();
-        file.scene_fade_configs[0].scene_name = "Renamed Intro".to_string();
+        file.scene_configs[0].scene_name = "Renamed Intro".to_string();
 
         let report = validate_show_file(&mut file, &lv1_snapshot()).unwrap();
 
-        assert!(file.scene_fade_configs.is_empty());
+        assert!(file.scene_configs.is_empty());
         assert_eq!(report.removed_scenes, vec!["1: Renamed Intro".to_string()]);
     }
 
     #[test]
-    fn validation_deletes_target_when_channel_name_differs() {
+    fn validation_does_not_remove_channel_configs_or_scope() {
         let mut file = show_file();
-        file.scene_fade_configs[0].fade_targets[0].channel_name = "Vocal".to_string();
+        file.scene_configs[0].channel_configs[0].group = 99;
+        file.scene_configs[0].scoped_channels[0].group = 99;
 
         let report = validate_show_file(&mut file, &lv1_snapshot()).unwrap();
 
-        assert!(file.scene_fade_configs[0].fade_targets.is_empty());
-        assert_eq!(report.removed_targets, vec!["Intro 0/2 Vocal".to_string()]);
+        assert!(!report.removed_anything());
+        assert_eq!(file.scene_configs[0].channel_configs.len(), 1);
+        assert_eq!(file.scene_configs[0].scoped_channels.len(), 1);
     }
 
     #[test]

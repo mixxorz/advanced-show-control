@@ -1,7 +1,6 @@
 use super::shell::ShellState;
 use super::test_support::connected_state_with_scene_and_channel;
-use super::view::SceneFadeConfig;
-use crate::show_file::DEFAULT_DURATION_MS;
+use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
 
 #[tokio::test]
 async fn export_show_file_contains_current_configs() {
@@ -9,34 +8,26 @@ async fn export_show_file_contains_current_configs() {
     state
         .begin_connection(connected_state_with_scene_and_channel())
         .await;
-    state
-        .set_scene_fade_enabled("1::Intro".to_string(), true)
-        .await
-        .unwrap();
+    state.store_scene_config("1::Intro".to_string()).await.unwrap();
 
     let file = state.export_show_file("saved".to_string()).await;
 
     assert_eq!(file.schema_version, 1);
     assert!(!file.safety.lockout);
     assert_eq!(file.saved_at, "saved");
-    assert_eq!(file.scene_fade_configs[0].scene_index, 1);
-    assert_eq!(file.scene_fade_configs[0].duration_ms, 4000);
-}
-
-#[tokio::test]
-async fn export_show_file_for_save_rejects_listen_mode() {
-    let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
-    state.set_listen_mode(true).await.unwrap();
-
+    assert_eq!(file.scene_configs[0].scene_index, 1);
+    assert_eq!(file.scene_configs[0].duration_ms, 0);
     assert_eq!(
-        state
-            .export_show_file_for_save("saved".to_string())
-            .await
-            .unwrap_err(),
-        "Stop Listen Mode before saving a show file"
+        file.scene_configs[0].channel_configs,
+        vec![ShowFileChannelConfig {
+            group: 0,
+            channel: 2,
+            fader_db: Some(-8.0),
+        }]
+    );
+    assert_eq!(
+        file.scene_configs[0].scoped_channels,
+        vec![ShowFileChannelRef { group: 0, channel: 2 }]
     );
 }
 
@@ -49,7 +40,14 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
 
     {
         let mut inner = state.inner.lock().await;
-        inner.scene_fade_configs[0].fade_enabled = true;
+        inner.scene_configs[0].channel_configs.push(super::view::ChannelConfig {
+            group: 0,
+            channel: 2,
+            fader_db: Some(-8.0),
+        });
+        inner.scene_configs[0]
+            .scoped_channels
+            .push(super::view::ChannelRef { group: 0, channel: 2 });
         inner.show_file_path = Some(std::path::PathBuf::from("/tmp/existing.lv1show"));
         inner.show_file_last_saved_at = Some("123".to_string());
         inner.show_file_dirty = true;
@@ -62,8 +60,10 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
     assert_eq!(snapshot.show_file_last_saved_at, None);
     assert!(!snapshot.show_file_dirty);
     assert!(!snapshot.lockout);
-    assert_eq!(snapshot.scene_fade_configs.len(), 1);
-    assert!(!snapshot.scene_fade_configs[0].fade_enabled);
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].duration_ms, 0);
+    assert!(snapshot.scene_configs[0].channel_configs.is_empty());
+    assert!(snapshot.scene_configs[0].scoped_channels.is_empty());
     assert_eq!(
         snapshot.logs.last().unwrap().message,
         "New show file created"
@@ -89,34 +89,20 @@ async fn new_show_file_clears_stale_selection_when_disconnected() {
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("stale::scene".to_string());
-        inner.scene_fade_configs = vec![SceneFadeConfig {
+        inner.scene_configs = vec![super::view::SceneConfig {
             scene_id: "stale::scene".to_string(),
             scene_index: 99,
             scene_name: "Stale".to_string(),
-            fade_enabled: true,
-            duration_ms: DEFAULT_DURATION_MS,
-            fade_targets: Vec::new(),
+            duration_ms: 0,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
         }];
     }
 
     let snapshot = state.new_show_file().await.unwrap();
 
     assert_eq!(snapshot.selected_scene_id, None);
-    assert!(snapshot.scene_fade_configs.is_empty());
-}
-
-#[tokio::test]
-async fn new_show_file_rejects_listen_mode() {
-    let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
-    state.set_listen_mode(true).await.unwrap();
-
-    assert_eq!(
-        state.new_show_file().await.unwrap_err(),
-        "Stop Listen Mode before creating a new show file"
-    );
+    assert!(snapshot.scene_configs.is_empty());
 }
 
 #[tokio::test]
@@ -145,32 +131,29 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
     state
         .begin_connection(connected_state_with_scene_and_channel())
         .await;
-    let mut file = crate::show_file::ShowFile {
+    let mut file = ShowFile {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
         safety: crate::show_file::ShowFileSafety { lockout: true },
-        scene_fade_configs: vec![
-            crate::show_file::ShowFileSceneFadeConfig {
+        scene_configs: vec![
+            ShowFileSceneConfig {
                 scene_index: 1,
                 scene_name: "Intro".to_string(),
-                fade_enabled: true,
                 duration_ms: 5000,
-                fade_targets: vec![crate::show_file::ShowFileFadeTarget {
+                channel_configs: vec![ShowFileChannelConfig {
                     group: 0,
                     channel: 2,
-                    channel_name: "Lead".to_string(),
-                    target_db: -9.0,
-                    enabled: true,
-                    updated_at: "999".to_string(),
+                    fader_db: Some(-9.0),
                 }],
+                scoped_channels: vec![ShowFileChannelRef { group: 0, channel: 2 }],
             },
-            crate::show_file::ShowFileSceneFadeConfig {
+            ShowFileSceneConfig {
                 scene_index: 2,
                 scene_name: "Missing".to_string(),
-                fade_enabled: true,
                 duration_ms: 5000,
-                fade_targets: Vec::new(),
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
             },
         ],
     };
@@ -181,12 +164,10 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
         .unwrap();
 
     assert!(snapshot.lockout);
-    assert_eq!(snapshot.scene_fade_configs.len(), 1);
-    assert_eq!(snapshot.scene_fade_configs[0].duration_ms, 5000);
-    assert_eq!(
-        snapshot.scene_fade_configs[0].fade_targets[0].channel_name,
-        "Lead"
-    );
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].duration_ms, 5000);
+    assert_eq!(snapshot.scene_configs[0].channel_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 1);
     assert!(snapshot.show_file_dirty);
     assert!(
         snapshot
@@ -194,38 +175,4 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
             .iter()
             .any(|entry| { entry.message == "Deleted saved scene config during load: 2: Missing" })
     );
-}
-
-#[tokio::test]
-async fn load_show_file_clears_unknown_fader_warnings() {
-    let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
-    {
-        let mut inner = state.inner.lock().await;
-        inner.unknown_fader_warnings.insert((0, 99));
-    }
-
-    let mut file = crate::show_file::ShowFile {
-        schema_version: 1,
-        app_version: "0.1.0".to_string(),
-        saved_at: "123".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: false },
-        scene_fade_configs: vec![crate::show_file::ShowFileSceneFadeConfig {
-            scene_index: 1,
-            scene_name: "Intro".to_string(),
-            fade_enabled: false,
-            duration_ms: 4000,
-            fade_targets: Vec::new(),
-        }],
-    };
-
-    state
-        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
-        .await
-        .unwrap();
-
-    let inner = state.inner.lock().await;
-    assert!(inner.unknown_fader_warnings.is_empty());
 }
