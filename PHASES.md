@@ -9,8 +9,8 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [x] **Phase 2: Core State Mirror** — `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, events, reconnect behavior, and snapshots.
 - [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, final target send, abort, finish-now, replacement behavior, and manual override detection are implemented and tested.
 - [x] **Phase 4: Scene Store And Scope Workflow** — in-memory scene configs, selected-scene editing, store/scope controls, scene-list reconciliation, and split Scene tab UI are implemented and tested.
-- [x] **Phase 5: Storage And Show Files** — JSON `.lv1show` save/load, native Open/Save dialogs, platform-aware default show folder, internal backup-on-save, exact-match load validation, deletion of missing/renamed scene or channel configs on load, duration storage, captured channel names, and dirty state are implemented and tested. Remapping, scene rename handling, channel rename handling, autosave, and durable rename/reorder matching remain deferred.
-- [~] **Phase 6: MVP Desktop UI** — partially implemented ahead of Phases 4–5. A durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, and LV1 connection commands. Capture/save UI is still deferred.
+- [x] **Phase 5: Storage And Show Files** — JSON `.lv1show` save/load, native Open/Save dialogs, platform-aware default show folder, internal backup-on-save, exact-match scene validation, duration storage, full stored channel configs, scoped channel lists, and dirty state are implemented and tested. Remapping, scene rename handling, autosave, and durable rename/reorder matching remain deferred.
+- [x] **Phase 6: MVP Desktop UI** — durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, LV1 connection commands, show-file controls, Store workflow, duration editing, and grouped scoped-channel toggle grid.
 - [ ] **Phase 7: Scene Recall Automation** — not implemented yet. Automatic fade triggering on LV1 scene recall, scene matching, safety blocks, and overlap policy remain to build.
 - [ ] **Phase 8: HTTP And WebSocket Control API** — not implemented yet.
 - [ ] **Phase 9: Bitfocus Companion Integration** — not implemented yet.
@@ -31,8 +31,8 @@ This document outlines a practical phased plan for building a timed fader fade o
 
 - Confirm that LV1 remains the source of truth for scene creation and scene recall.
 - Define the app as a fader-fade overlay, not a scene manager.
-- Define the app’s own fade scope as captured fader targets only.
-- Document the operating rule that LV1 scene fader scope should be excluded for fade-enabled scenes.
+- Define the app’s own scene scope as stored channel configs selected by the engineer.
+- Document the operating rule that LV1 scene fader scope should be excluded for app-managed scenes.
 - Decide the first supported platforms: likely macOS and Windows.
 - Decide whether the first implementation is:
   - **Electron + TypeScript** for fastest protocol prototyping, or
@@ -207,19 +207,14 @@ The app should never assume stored state is current if the LV1 connection is uns
 4. User toggles channel scope as needed.
 5. User confirms and saves.
 
-**Capture Rules:**
+**Store And Scope Rules:**
 
-- Capture should use a threshold of 0.2–0.5 dB.
-- Captured targets should include:
-  - Group.
-  - Channel.
-  - Channel name at capture.
-  - Starting dB before capture.
-  - Final target dB.
-  - Delta.
-  - Timestamp.
-  - Enabled flag.
-- Recall fades should always start from the current live value, not the capture start value.
+- Store reads the current LV1 channel snapshot for the selected scene.
+- Stored channel configs currently include group, channel, and fader dB value.
+- Scope is stored at the scene level as channel references.
+- Channel names are live display data only and are not persisted.
+- Duration `0` means the scene config is disabled for app-managed fader apply/fade behavior.
+- Recall fades should always start from the current live value, not from any previously stored start value.
 
 **Deliverables:**
 
@@ -229,10 +224,10 @@ The app should never assume stored state is current if the LV1 connection is uns
 
 **Exit Criteria:**
 
-- The engineer can capture faders without preselecting channels.
-- Accidental touches can be removed before save.
-- Saved target values match final fader positions.
-- Capture works across the channel types selected for MVP.
+- The engineer can store the full current mixer state for a selected scene.
+- The engineer can include or exclude channels from scope after storing.
+- Stored fader values match the current mixer state at Store time.
+- Scope editing works across the channel groups selected for MVP.
 
 ---
 
@@ -248,34 +243,33 @@ Use a human-readable show file first, such as JSON with an app-specific extensio
 
 - App version.
 - LV1 system/profile identifier, if available.
-- Scene fade configs.
+- Scene configs.
 - Scene index.
 - Scene name.
-- Enabled state.
 - Duration.
-- Curve.
-- Captured fader targets.
+- Stored channel configs.
+- Scoped channel references.
 - Safety preferences.
 - Last modified timestamp.
 
 **Important Matching Behavior For MVP:**
 
-Phase 5 should use strict exact matching when loading a show file. If a saved scene config does not exactly match a current LV1 scene by both index and name, delete that scene config during load and make the deletion visible in logs/warnings. If a saved fader target does not exactly match a current LV1 channel by group, channel, and captured channel name, delete that target during load and make the deletion visible in logs/warnings.
+Phase 5 should use strict exact scene matching when loading a show file. If a saved scene config does not exactly match a current LV1 scene by both index and name, delete that scene config during load and make the deletion visible in logs/warnings. Stored channel configs and scoped channel references are preserved by group/channel identity and are not deleted because channel names changed or the live channel list is temporarily unavailable.
 
-Remapping, scene rename handling, channel rename handling, duplicate-name handling, scene reorder handling, and durable identity matching are intentionally out of scope for Phase 5 and should be covered in a later phase.
+Remapping, scene rename handling, duplicate-name handling, scene reorder handling, and durable identity matching are intentionally out of scope for Phase 5 and should be covered in a later phase.
 
 **Deliverables:**
 
 - Save/load show files.
 - Import/export.
-- Exact scene and channel validation on load.
-- Visible deletion warnings for non-exact saved scenes and targets.
+- Exact scene validation on load.
+- Visible deletion warnings for non-exact saved scenes.
 - Basic backup-on-save strategy.
 
 **Exit Criteria:**
 
 - Configurations survive app restart.
-- Non-exact saved scene and channel entries are removed safely and visibly on load.
+- Non-exact saved scene entries are removed safely and visibly on load.
 - User can export and move a show file.
 
 ---
@@ -301,16 +295,7 @@ Remapping, scene rename handling, channel rename handling, duplicate-name handli
     - Store button.
     - Scope toggle grid.
 
-3. **Capture Confirmation Screen**
-   - Include checkbox.
-   - Channel name.
-   - Before value.
-   - Target value.
-   - Delta.
-   - Remove accidental touch.
-   - Confirm capture.
-
-4. **Fade Status Screen**
+3. **Fade Status Screen**
    - Current fade running/not running.
    - Per-channel progress.
    - Manual override indicators.
@@ -318,7 +303,7 @@ Remapping, scene rename handling, channel rename handling, duplicate-name handli
    - Finish now.
    - Lockout toggle.
 
-5. **Logs Screen**
+4. **Logs Screen**
    - Scene recalls.
    - Fade starts.
    - Fade completions.
@@ -344,19 +329,19 @@ Remapping, scene rename handling, channel rename handling, duplicate-name handli
 
 ## Phase 7: Scene Recall Automation
 
-**Goal:** Make fade-enabled scenes respond automatically to LV1 scene recalls.
+**Goal:** Make app-managed scenes with nonzero duration respond automatically to LV1 scene recalls.
 
 **Behavior:**
 
 When LV1 scene recall is detected:
 
 1. Identify current scene index/name.
-2. Check whether a fade config exists and is enabled.
+2. Check whether a scene config exists and has a nonzero duration.
 3. Validate scene match.
 4. Check lockout mode.
 5. Check connection stability.
 6. Read current live fader values.
-7. Start fade for enabled captured targets.
+7. Start fade for scoped stored channel configs with fader values.
 8. Send progress/status events to UI and API.
 9. Log completion or cancellation.
 
@@ -373,12 +358,12 @@ Do not auto-fade if:
 
 **Overlap Policy To Decide:**
 
-Recommended MVP policy: recalling a new fade-enabled scene while a fade is running should cancel the previous fade and start the new one only after validation.
+Recommended MVP policy: recalling a new app-managed scene while a fade is running should cancel the previous fade and start the new one only after validation.
 
 **Exit Criteria:**
 
 - Normal LV1 scene recall triggers the correct fade.
-- Non-fade-enabled scenes do not trigger fades.
+- Scenes with duration `0` do not trigger fades.
 - Ambiguous scene matches do not trigger unsafe behavior.
 - Fade status remains clear.
 
@@ -433,7 +418,7 @@ Recommended MVP policy: recalling a new fade-enabled scene while a fade is runni
 - Recall specific fade config.
 - Abort all fades.
 - Finish current fade immediately.
-- Toggle fade enable for current scene.
+- Set duration for current scene.
 - Toggle lockout mode.
 - Next/previous app snapshot or fade config.
 
@@ -519,8 +504,8 @@ Create a small Companion module that talks only to the app’s HTTP/WebSocket AP
 **Documentation Should Emphasize:**
 
 - LV1 scenes still own normal scene recall.
-- Faders should be scoped out of LV1 scenes for fade-enabled scenes.
-- The app owns only captured fader movement.
+- Faders should be scoped out of LV1 scenes for app-managed scenes.
+- The app owns only scoped stored channel fader movement.
 - Manual override behavior.
 - Emergency abort workflow.
 - Scene index/name mismatch behavior.
@@ -528,7 +513,7 @@ Create a small Companion module that talks only to the app’s HTTP/WebSocket AP
 
 **Exit Criteria:**
 
-- A new engineer can install, connect, capture, save, recall, abort, and troubleshoot using documentation alone.
+- A new engineer can install, connect, store, scope, save, recall, abort, and troubleshoot using documentation alone.
 - The release has been tested on the target LV1 variants.
 
 ---
@@ -539,7 +524,7 @@ Create a small Companion module that talks only to the app’s HTTP/WebSocket AP
 |---|---:|---|
 | Technical Feasibility | 0–1 | Confirm LV1 protocol viability |
 | Headless Core | 2–3 | Mirror LV1 and fade faders safely |
-| Workflow MVP | 4–7 | Capture and auto-fade scenes |
+| Workflow MVP | 4–7 | Store, scope, and auto-fade scenes |
 | External Control | 8–9 | Companion and Stream Deck support |
 | Production Hardening | 10–11 | Rehearsal-ready and release-ready app |
 
@@ -553,11 +538,10 @@ For the first useful version, include only:
 - Scene index/name mirror.
 - Channel names and fader value mirror.
 - Scene store and scope grid.
-- Confirmation panel.
 - Fade duration.
 - Ease-in-out dB and linear dB curves.
 - Scene recall detection.
-- Fade captured faders from current live values.
+- Fade scoped stored faders from current live values.
 - Touch Cancels Channel.
 - Abort All.
 - Finish Now.
