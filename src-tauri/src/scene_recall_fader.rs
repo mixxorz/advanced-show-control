@@ -154,6 +154,7 @@ fn publish_refresh_after_scene_recall_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lv1_scene_fade_utility::fade::curve::FadeCurve;
     use lv1_scene_fade_utility::fade::engine::FadeEngineHandle;
     use lv1_scene_fade_utility::fade::types::FadeCommand;
     use lv1_scene_fade_utility::lv1::model::{
@@ -201,7 +202,10 @@ mod tests {
         match start {
             FadeCommand::StartFade { config, reply } => {
                 assert_eq!(config.duration_ms, 4_000);
+                assert_eq!(config.curve, FadeCurve::Linear);
                 assert_eq!(config.targets.len(), 1);
+                assert_eq!(config.targets[0].group, 0);
+                assert_eq!(config.targets[0].channel, 2);
                 assert_eq!(config.targets[0].target_db, -12.5);
                 let _ = reply.send(Ok(()));
             }
