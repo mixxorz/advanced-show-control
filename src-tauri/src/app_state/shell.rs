@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
-    LogSource, SceneFadeConfig, SceneSummary,
+    LogSource, SceneConfig, SceneFadeConfig, SceneSummary,
 };
 
 pub(super) const MAX_LOGS: usize = 200;
@@ -30,8 +30,9 @@ pub(super) struct ShellInner {
     pub(super) lv1_snapshot: Option<Lv1StateSnapshot>,
     pub(super) fade_state: AppFadeState,
     pub(super) lockout: bool,
-    pub(super) scene_fade_configs: Vec<SceneFadeConfig>,
+    pub(super) scene_configs: Vec<SceneConfig>,
     pub(super) selected_scene_id: Option<String>,
+    pub(super) scene_fade_configs: Vec<SceneFadeConfig>,
     pub(super) listen_mode_active: bool,
     pub(super) show_file_path: Option<PathBuf>,
     pub(super) show_file_dirty: bool,
@@ -136,8 +137,9 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         channels,
         fade_state: inner.fade_state.clone(),
         lockout: inner.lockout,
-        scene_fade_configs: inner.scene_fade_configs.clone(),
+        scene_configs: inner.scene_configs.clone(),
         selected_scene_id: inner.selected_scene_id.clone(),
+        scene_fade_configs: inner.scene_fade_configs.clone(),
         listen_mode_active: inner.listen_mode_active,
         show_file_name: inner
             .show_file_path
@@ -184,6 +186,8 @@ mod tests {
         assert!(snapshot.channels.is_empty());
         assert_eq!(snapshot.fade_state, AppFadeState::Idle);
         assert!(!snapshot.lockout);
+        assert!(snapshot.scene_configs.is_empty());
+        assert_eq!(snapshot.selected_scene_id, None);
         assert_eq!(snapshot.show_file_name, "Untitled Show");
         assert_eq!(snapshot.show_file_path, None);
         assert!(!snapshot.show_file_dirty);
@@ -241,6 +245,8 @@ mod tests {
         assert_eq!(snapshot.channels[0].group, 0);
         assert_eq!(snapshot.channels[0].channel, 0);
         assert_eq!(snapshot.channels[0].name, "Lead");
+        assert_eq!(snapshot.scene_configs.len(), 0);
+        assert_eq!(snapshot.selected_scene_id, None);
     }
 
     #[test]
