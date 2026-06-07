@@ -164,6 +164,7 @@ mod tests {
     use lv1_scene_fade_utility::osc::OscArg;
     use std::io::Write;
     use std::net::TcpListener;
+    use std::sync::mpsc as std_mpsc;
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -178,11 +179,12 @@ mod tests {
             .set_fade(Some(FadeEngineHandle::new(fade_tx)))
             .await;
 
-        let (lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         command_bus.set_lv1(Some(lv1)).await;
 
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+        release_lv1.send(()).unwrap();
 
         let abort = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
             .await
@@ -240,11 +242,12 @@ mod tests {
             .set_fade(Some(FadeEngineHandle::new(fade_tx)))
             .await;
 
-        let (lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         command_bus.set_lv1(Some(lv1)).await;
 
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+        release_lv1.send(()).unwrap();
 
         wait_for_log(
             &state,
@@ -406,12 +409,15 @@ mod tests {
         event_bus: AppEventBus,
     ) -> (
         lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+        std_mpsc::Sender<()>,
         tokio::task::JoinHandle<()>,
     ) {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
+        let (release_tx, release_rx) = std_mpsc::channel();
         let server = tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            release_rx.recv().unwrap();
             stream.write_all(&channels_frame()).unwrap();
             stream.write_all(&scene_index_frame()).unwrap();
             stream.write_all(&scene_name_frame()).unwrap();
@@ -419,7 +425,7 @@ mod tests {
         });
 
         let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus);
-        (lv1, server)
+        (lv1, release_tx, server)
     }
 
     fn channels_frame() -> Vec<u8> {
