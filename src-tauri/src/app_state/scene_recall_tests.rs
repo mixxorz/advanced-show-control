@@ -276,6 +276,95 @@ async fn missing_live_channel_snapshot_blocks() {
 }
 
 #[tokio::test]
+async fn supplied_fresh_lv1_snapshot_is_used_for_scene_recall_validation() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .begin_connection(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(SceneState {
+                index: 0,
+                name: "Old".to_string(),
+            }),
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+        })
+        .await;
+
+    {
+        let mut inner = state.inner.lock().await;
+        let mut config = scene_config(
+            1,
+            "Intro",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-12.5),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+        );
+        config.duration_ms = 4_000;
+        inner.scene_configs = vec![config];
+    }
+
+    let decision = state
+        .prepare_scene_recall_fade_with_lv1_snapshot_for_generation(
+            generation,
+            &SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            snapshot_for_intro(),
+        )
+        .await;
+
+    match decision {
+        SceneRecallDecision::Start(request) => {
+            assert_eq!(request.scene_id, "1::Intro");
+            assert_eq!(request.fade_config.targets.len(), 1);
+            assert_eq!(request.fade_config.targets[0].channel, 2);
+        }
+        other => panic!("unexpected decision: {other:?}"),
+    }
+
+    let snapshot = state.snapshot().await;
+    assert_eq!(snapshot.channel_count, 1);
+}
+
+#[tokio::test]
+async fn scene_recall_fader_logs_are_ignored_for_stale_generation() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    let (_next_generation, _) = state.disconnect().await;
+
+    assert!(
+        !state
+            .log_scene_recall_fader_info_for_generation(
+                generation,
+                "Auto fade start requested for scene 1: Intro".to_string(),
+            )
+            .await
+    );
+    assert!(
+        !state
+            .log_scene_recall_fader_warning_for_generation(
+                generation,
+                "Auto fade failed for scene 1: Intro".to_string(),
+            )
+            .await
+    );
+
+    let snapshot = state.snapshot().await;
+    assert!(snapshot.logs.iter().all(|log| {
+        !log.message.contains("Auto fade start requested")
+            && !log.message.contains("Auto fade failed")
+    }));
+}
+
+#[tokio::test]
 async fn scoped_channel_without_stored_fader_value_blocks() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;

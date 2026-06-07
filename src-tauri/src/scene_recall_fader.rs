@@ -19,46 +19,103 @@ pub fn spawn_scene_recall_fader(
         loop {
             match events.recv().await {
                 Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
+                    if !state.is_generation_current(generation).await {
+                        continue;
+                    }
+
+                    let snapshot = match command_bus.get_lv1_state().await {
+                        Ok(snapshot) => snapshot,
+                        Err(err) => {
+                            if state
+                                .log_scene_recall_fader_warning_for_generation(
+                                    generation,
+                                    format!(
+                                        "Auto fade blocked for scene {}: {}: failed to fetch LV1 state: {err}",
+                                        scene.index, scene.name
+                                    ),
+                                )
+                                .await
+                            {
+                                publish_log_refresh(&event_bus);
+                            }
+                            continue;
+                        }
+                    };
+
                     match state
-                        .prepare_scene_recall_fade_for_generation(generation, &scene)
+                        .prepare_scene_recall_fade_with_lv1_snapshot_for_generation(
+                            generation, &scene, snapshot,
+                        )
                         .await
                     {
                         SceneRecallDecision::Start(request) => {
-                            state
-                                .log_scene_recall_fader_info(format!(
-                                    "Previous fade abort requested before auto fade for scene {}",
-                                    request.scene_label
-                                ))
-                                .await;
-                            publish_log_refresh(&event_bus);
-
-                            if let Err(err) = command_bus.abort_all_fades().await {
-                                state
-                                    .log_scene_recall_fader_warning(format!(
-                                        "Auto fade blocked for scene {}: failed to abort previous fade: {err}",
-                                        request.scene_label
-                                    ))
-                                    .await;
-                                publish_log_refresh(&event_bus);
+                            if !state.is_generation_current(generation).await {
                                 continue;
                             }
 
-                            state
-                                .log_scene_recall_fader_info(format!(
-                                    "Auto fade start requested for scene {}",
+                            if state
+                                .log_scene_recall_fader_info_for_generation(
+                                    generation,
+                                    format!(
+                                    "Previous fade abort requested before auto fade for scene {}",
                                     request.scene_label
-                                ))
-                                .await;
-                            publish_log_refresh(&event_bus);
+                                    ),
+                                )
+                                .await
+                            {
+                                publish_log_refresh(&event_bus);
+                            } else {
+                                continue;
+                            }
+
+                            if let Err(err) = command_bus.abort_all_fades().await {
+                                if state
+                                    .log_scene_recall_fader_warning_for_generation(
+                                        generation,
+                                        format!(
+                                        "Auto fade blocked for scene {}: failed to abort previous fade: {err}",
+                                        request.scene_label
+                                        ),
+                                    )
+                                    .await
+                                {
+                                    publish_log_refresh(&event_bus);
+                                }
+                                continue;
+                            }
+
+                            if !state.is_generation_current(generation).await {
+                                continue;
+                            }
+
+                            if state
+                                .log_scene_recall_fader_info_for_generation(
+                                    generation,
+                                    format!(
+                                        "Auto fade start requested for scene {}",
+                                        request.scene_label
+                                    ),
+                                )
+                                .await
+                            {
+                                publish_log_refresh(&event_bus);
+                            } else {
+                                continue;
+                            }
 
                             if let Err(err) = command_bus.start_fade(request.fade_config).await {
-                                state
-                                    .log_scene_recall_fader_warning(format!(
-                                        "Auto fade failed for scene {}: {err}",
-                                        request.scene_label
-                                    ))
-                                    .await;
-                                publish_log_refresh(&event_bus);
+                                if state
+                                    .log_scene_recall_fader_warning_for_generation(
+                                        generation,
+                                        format!(
+                                            "Auto fade failed for scene {}: {err}",
+                                            request.scene_label
+                                        ),
+                                    )
+                                    .await
+                                {
+                                    publish_log_refresh(&event_bus);
+                                }
                             }
                         }
                         SceneRecallDecision::Skip
@@ -85,13 +142,12 @@ fn publish_log_refresh(event_bus: &AppEventBus) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lv1_scene_fade_utility::fade::engine::spawn_engine;
     use lv1_scene_fade_utility::lv1::model::{
         ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
     };
 
     #[tokio::test]
-    async fn abort_failure_blocks_start_and_logs_warning() {
+    async fn unavailable_lv1_state_blocks_before_abort_or_start() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
         let state = ShellState::default();
@@ -104,19 +160,22 @@ mod tests {
 
         wait_for_log(
             &state,
-            "Auto fade blocked for scene 1: Intro: failed to abort previous fade: fade engine is unavailable",
+            "Auto fade blocked for scene 1: Intro: failed to fetch LV1 state: LV1 actor is unavailable",
         )
         .await;
 
         let snapshot = state.snapshot().await;
-        assert!(snapshot.logs.iter().any(|log| {
-            log.message == "Previous fade abort requested before auto fade for scene 1: Intro"
-        }));
         assert!(
             !snapshot
                 .logs
                 .iter()
-                .any(|log| log.message == "Auto fade start requested for scene 1: Intro")
+                .any(|log| log.message.contains("Previous fade abort requested"))
+        );
+        assert!(
+            !snapshot
+                .logs
+                .iter()
+                .any(|log| log.message.contains("Auto fade start requested"))
         );
 
         handle.abort();
@@ -152,12 +211,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn start_failure_logs_warning_after_start_request() {
+    async fn unavailable_lv1_state_does_not_log_start_request() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
-        let fade_command_bus = AppCommandBus::new(event_bus.clone());
-        let fade = spawn_engine(fade_command_bus, event_bus.clone());
-        command_bus.set_fade(Some(fade)).await;
         let state = ShellState::default();
         let generation = configure_intro_recall(&state).await;
 
@@ -168,13 +224,13 @@ mod tests {
 
         wait_for_log(
             &state,
-            "Auto fade failed for scene 1: Intro: LV1 actor is unavailable",
+            "Auto fade blocked for scene 1: Intro: failed to fetch LV1 state: LV1 actor is unavailable",
         )
         .await;
 
         let snapshot = state.snapshot().await;
         assert!(
-            snapshot
+            !snapshot
                 .logs
                 .iter()
                 .any(|log| log.message == "Auto fade start requested for scene 1: Intro")
