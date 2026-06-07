@@ -58,7 +58,7 @@ impl ShellState {
         Some(apply_begin_connection(&mut inner, snapshot))
     }
 
-    pub async fn disconnect(&self) -> AppViewState {
+    pub async fn disconnect(&self) -> (u64, AppViewState) {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
         inner.lv1_snapshot = None;
@@ -67,7 +67,8 @@ impl ShellState {
             LogSeverity::Info,
             "Disconnected from LV1".to_string(),
         );
-        snapshot_from_inner(&inner)
+        let generation = inner.generation;
+        (generation, snapshot_from_inner(&inner))
     }
 
     pub async fn apply_lv1_event_for_generation(

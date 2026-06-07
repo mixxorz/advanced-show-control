@@ -15,6 +15,7 @@ pub(super) const MAX_LOGS: usize = 200;
 
 #[derive(Default)]
 pub struct RuntimeHandles {
+    pub active_generation: u64,
     pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
     pub dispatcher: Option<JoinHandle<()>>,
@@ -59,9 +60,33 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
-    pub async fn abort_runtime_handles(&self) {
+    pub async fn abort_runtime_handles_for_generation(&self, generation: u64) {
+        let inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return;
+        }
+
         let mut handles = self.handles.lock().await;
         handles.abort_all();
+    }
+
+    pub async fn install_runtime_handles_for_generation(
+        &self,
+        generation: u64,
+        mut next: RuntimeHandles,
+    ) -> Result<(), RuntimeHandles> {
+        let inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return Err(next);
+        }
+        drop(inner);
+
+        next.active_generation = generation;
+
+        let mut handles = self.handles.lock().await;
+        handles.abort_all();
+        *handles = next;
+        Ok(())
     }
 }
 
@@ -82,6 +107,7 @@ impl RuntimeHandles {
         if let Some(projector) = self.projector.take() {
             projector.abort();
         }
+        self.active_generation = 0;
         self.lv1 = None;
         self.fade = None;
     }
@@ -227,6 +253,44 @@ mod tests {
         let snapshot = state.set_lockout(true).await;
 
         assert!(snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_handle_installation_is_rejected() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+
+        let current_handles = RuntimeHandles {
+            active_generation: 0,
+            lv1: None,
+            fade: None,
+            dispatcher: Some(tokio::spawn(async {})),
+            projector: Some(tokio::spawn(async {})),
+        };
+
+        match state
+            .install_runtime_handles_for_generation(generation, current_handles)
+            .await
+        {
+            Ok(()) => {}
+            Err(_) => panic!("expected current generation install to succeed"),
+        }
+
+        let stale_handles = RuntimeHandles {
+            active_generation: 0,
+            lv1: None,
+            fade: None,
+            dispatcher: Some(tokio::spawn(async {})),
+            projector: Some(tokio::spawn(async {})),
+        };
+
+        let rejected = state
+            .install_runtime_handles_for_generation(generation.saturating_sub(1), stale_handles)
+            .await;
+
+        assert!(rejected.is_err());
+        let handles = state.handles.lock().await;
+        assert_eq!(handles.active_generation, generation);
     }
 
     #[test]

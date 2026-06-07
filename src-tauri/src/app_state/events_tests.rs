@@ -309,7 +309,7 @@ async fn disconnect_increments_generation_and_ignores_old_events() {
     let snapshot = state.begin_connection(connected_snapshot()).await;
     assert_eq!(snapshot.connection, AppConnectionState::Connected);
 
-    let disconnected = state.disconnect().await;
+    let (_, disconnected) = state.disconnect().await;
     assert_eq!(disconnected.connection, AppConnectionState::Disconnected);
 
     let stale = state

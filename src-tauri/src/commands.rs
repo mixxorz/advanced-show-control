@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, State};
 use tokio::task::spawn_blocking;
 use tokio::sync::mpsc;
 
-use crate::app_state::{AppViewState, ShellState};
+use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 #[tauri::command]
@@ -169,8 +169,8 @@ pub async fn disconnect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.disconnect().await;
-    state.abort_runtime_handles().await;
+    let (generation, snapshot) = state.disconnect().await;
+    state.abort_runtime_handles_for_generation(generation).await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -202,7 +202,6 @@ pub async fn connect_lv1(
     let event_bus = AppEventBus::default();
     let (generation, connecting_snapshot) = state.begin_connecting().await;
     emit_snapshot(&app, &connecting_snapshot);
-    state.abort_runtime_handles().await;
     let events = event_bus.subscribe();
 
     let shell_state = (*state).clone();
@@ -216,12 +215,22 @@ pub async fn connect_lv1(
     let fade = spawn_engine(command_bus, event_bus.clone());
     let projector_task = spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
+    let runtime_handles = RuntimeHandles {
+        active_generation: 0,
+        lv1: Some(lv1.clone()),
+        fade: Some(fade),
+        dispatcher: Some(dispatcher_task),
+        projector: Some(projector_task),
+    };
+
+    if let Err(mut stale_handles) = state
+        .install_runtime_handles_for_generation(generation, runtime_handles)
+        .await
     {
-        let mut handles = state.handles.lock().await;
-        handles.lv1 = Some(lv1.clone());
-        handles.fade = Some(fade);
-        handles.dispatcher = Some(dispatcher_task);
-        handles.projector = Some(projector_task);
+        stale_handles.abort_all();
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&app, &snapshot);
+        return Ok(snapshot);
     }
 
     let initial_snapshot = lv1.get_state().await;
