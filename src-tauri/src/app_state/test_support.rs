@@ -2,6 +2,8 @@ use lv1_scene_fade_utility::lv1::model::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
 };
 
+use super::view::{ChannelConfig, ChannelRef, SceneConfig};
+
 pub(super) fn connected_snapshot() -> Lv1StateSnapshot {
     Lv1StateSnapshot {
         connection: ConnectionStatus::Connected,
@@ -26,5 +28,21 @@ pub(super) fn connected_state_with_scene_and_channel() -> Lv1StateSnapshot {
             gain_db: -8.0,
             muted: false,
         }],
+    }
+}
+
+pub(super) fn scene_config(
+    scene_index: i32,
+    scene_name: &str,
+    channel_configs: Vec<ChannelConfig>,
+    scoped_channels: Vec<ChannelRef>,
+) -> SceneConfig {
+    SceneConfig {
+        scene_id: format!("{scene_index}::{scene_name}"),
+        scene_index,
+        scene_name: scene_name.to_string(),
+        duration_ms: 0,
+        channel_configs,
+        scoped_channels,
     }
 }

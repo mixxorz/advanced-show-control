@@ -6,8 +6,7 @@ use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, Sce
 use super::shell::{
     MAX_LOGS, ShellInner, ShellState, current_timestamp, scene_id, snapshot_from_inner,
 };
-use super::view::{AppLogEntry, AppViewState, FadeTarget, LogSeverity, LogSource, SceneFadeConfig};
-use crate::show_file::DEFAULT_DURATION_MS;
+use super::view::{AppLogEntry, AppViewState, LogSeverity, LogSource, SceneConfig};
 
 impl ShellState {
     pub async fn begin_connecting(&self) -> (u64, AppViewState) {
@@ -67,7 +66,6 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
         inner.lv1_snapshot = None;
-        inner.listen_mode_active = false;
         inner.push_log(
             LogSource::App,
             LogSeverity::Info,
@@ -97,7 +95,6 @@ impl ShellState {
             }
             Lv1Event::Disconnected => {
                 inner.lv1_snapshot = None;
-                inner.listen_mode_active = false;
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Warning,
@@ -133,8 +130,6 @@ impl ShellState {
                 {
                     existing.gain_db = *gain_db;
                 }
-
-                inner.record_fader_target(*group, *channel, *gain_db);
             }
             Lv1Event::MuteChanged {
                 group,
@@ -166,7 +161,7 @@ impl ShellState {
 impl ShellInner {
     pub(super) fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) {
         let previous_scene_ids: HashSet<_> = self
-            .scene_fade_configs
+            .scene_configs
             .iter()
             .map(|config| config.scene_id.clone())
             .collect();
@@ -175,7 +170,7 @@ impl ShellInner {
         for scene in scenes {
             let id = scene_id(scene.index, &scene.name);
             if let Some(mut existing) = self
-                .scene_fade_configs
+                .scene_configs
                 .iter()
                 .find(|config| config.scene_id == id)
                 .cloned()
@@ -184,32 +179,23 @@ impl ShellInner {
                 existing.scene_name = scene.name.clone();
                 next.push(existing);
             } else {
-                next.push(SceneFadeConfig {
+                next.push(SceneConfig {
                     scene_id: id,
                     scene_index: scene.index,
                     scene_name: scene.name.clone(),
-                    fade_enabled: false,
-                    duration_ms: DEFAULT_DURATION_MS,
-                    fade_targets: Vec::new(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
                 });
             }
         }
 
-        let had_selected_scene = self.selected_scene_id.is_some();
         let selected_still_exists = self
             .selected_scene_id
             .as_ref()
             .is_some_and(|selected| next.iter().any(|config| &config.scene_id == selected));
 
         if !selected_still_exists {
-            if had_selected_scene && self.listen_mode_active {
-                self.listen_mode_active = false;
-                self.push_log(
-                    LogSource::App,
-                    LogSeverity::Warning,
-                    "Listen Mode stopped because selected scene is no longer available".to_string(),
-                );
-            }
             self.selected_scene_id = next.first().map(|config| config.scene_id.clone());
         }
 
@@ -217,7 +203,7 @@ impl ShellInner {
             next.iter().map(|config| config.scene_id.clone()).collect();
         let scene_set_changed = previous_scene_ids != next_scene_ids;
 
-        self.scene_fade_configs = next;
+        self.scene_configs = next;
 
         if scene_set_changed && (self.show_file_path.is_some() || self.show_file_dirty) {
             self.show_file_dirty = true;
@@ -237,73 +223,6 @@ impl ShellInner {
         });
         while self.logs.len() > MAX_LOGS {
             self.logs.pop_front();
-        }
-    }
-
-    pub(super) fn record_fader_target(&mut self, group: i32, channel: i32, gain_db: f64) {
-        if !self.listen_mode_active {
-            return;
-        }
-
-        let Some(selected_scene_id) = self.selected_scene_id.clone() else {
-            return;
-        };
-
-        let channel_known = self.lv1_snapshot.as_ref().is_some_and(|snapshot| {
-            snapshot
-                .channels
-                .iter()
-                .any(|ch| ch.group == group && ch.channel == channel)
-        });
-
-        if !channel_known {
-            if self.unknown_fader_warnings.insert((group, channel)) {
-                self.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Warning,
-                    format!("Ignored fader target for unknown channel {group}/{channel}"),
-                );
-            }
-            return;
-        }
-
-        let timestamp = current_timestamp();
-        let channel_name = self
-            .lv1_snapshot
-            .as_ref()
-            .and_then(|snapshot| {
-                snapshot
-                    .channels
-                    .iter()
-                    .find(|ch| ch.group == group && ch.channel == channel)
-            })
-            .map(|channel| channel.name.clone())
-            .unwrap_or_default();
-
-        if let Some(config) = self
-            .scene_fade_configs
-            .iter_mut()
-            .find(|config| config.scene_id == selected_scene_id)
-        {
-            if let Some(target) = config
-                .fade_targets
-                .iter_mut()
-                .find(|target| target.group == group && target.channel == channel)
-            {
-                target.target_db = gain_db;
-                target.updated_at = timestamp;
-                target.channel_name = channel_name;
-            } else {
-                config.fade_targets.push(FadeTarget {
-                    group,
-                    channel,
-                    channel_name,
-                    target_db: gain_db,
-                    enabled: true,
-                    updated_at: timestamp,
-                });
-            }
-            self.show_file_dirty = true;
         }
     }
 }
