@@ -1,6 +1,8 @@
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use lv1_scene_fade_utility::runtime::events::{
+    AppEvent, AppEventBus, AutomationEvent, log_lagged_subscriber,
+};
 use tokio::task::JoinHandle;
 
 use crate::app_state::{SceneRecallDecision, ShellState};
@@ -28,6 +30,7 @@ pub fn spawn_scene_recall_fader(
                                     request.scene_label
                                 ))
                                 .await;
+                            publish_log_refresh(&event_bus);
 
                             if let Err(err) = command_bus.abort_all_fades().await {
                                 state
@@ -36,6 +39,7 @@ pub fn spawn_scene_recall_fader(
                                         request.scene_label
                                     ))
                                     .await;
+                                publish_log_refresh(&event_bus);
                                 continue;
                             }
 
@@ -45,6 +49,7 @@ pub fn spawn_scene_recall_fader(
                                     request.scene_label
                                 ))
                                 .await;
+                            publish_log_refresh(&event_bus);
 
                             if let Err(err) = command_bus.start_fade(request.fade_config).await {
                                 state
@@ -53,6 +58,7 @@ pub fn spawn_scene_recall_fader(
                                         request.scene_label
                                     ))
                                     .await;
+                                publish_log_refresh(&event_bus);
                             }
                         }
                         SceneRecallDecision::Skip
@@ -68,6 +74,12 @@ pub fn spawn_scene_recall_fader(
             }
         }
     })
+}
+
+fn publish_log_refresh(event_bus: &AppEventBus) {
+    event_bus.publish(AppEvent::Automation(AutomationEvent::RuleTriggered {
+        rule_id: "scene-recall-fader".to_string(),
+    }));
 }
 
 #[cfg(test)]
@@ -106,6 +118,35 @@ mod tests {
                 .iter()
                 .any(|log| log.message == "Auto fade start requested for scene 1: Intro")
         );
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn fader_log_writes_publish_automation_refresh() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+
+        let handle =
+            spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        tokio::time::timeout(std::time::Duration::from_millis(250), async {
+            loop {
+                if let AppEvent::Automation(AutomationEvent::RuleTriggered { rule_id }) =
+                    events.recv().await.unwrap()
+                {
+                    assert_eq!(rule_id, "scene-recall-fader");
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("scene recall fader log should publish automation refresh");
 
         handle.abort();
     }

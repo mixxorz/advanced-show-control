@@ -64,6 +64,15 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    pub async fn snapshot_for_generation(&self, generation: u64) -> Option<AppViewState> {
+        let inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        Some(snapshot_from_inner(&inner))
+    }
+
     pub async fn clear_runtime_handles_for_generation(
         &self,
         generation: u64,
