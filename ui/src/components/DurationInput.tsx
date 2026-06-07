@@ -30,8 +30,12 @@ export function DurationInput(props: {
       return;
     }
 
-    const clamped = Math.min(120, Math.max(0.1, seconds));
-    const nextDurationMs = Math.round(clamped * 1000);
+    if (seconds < 0) {
+      resetDraft();
+      return;
+    }
+
+    const nextDurationMs = seconds === 0 ? 0 : Math.round(Math.min(120, Math.max(0.1, seconds)) * 1000);
     if (nextDurationMs === props.durationMs) {
       setDraft(formatDurationSeconds(nextDurationMs));
       return;
@@ -75,12 +79,12 @@ export function DurationInput(props: {
     <label className="mt-4 flex w-full max-w-xs flex-col gap-1 text-sm text-slate-300">
       Fade duration (seconds)
       <input
-        className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
-        max={120}
-        min={0.1}
-        onBlur={handleBlur}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={handleKeyDown}
+      className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+      max={120}
+      min={0}
+      onBlur={handleBlur}
+      onChange={(event) => setDraft(event.target.value)}
+      onKeyDown={handleKeyDown}
         step={0.1}
         type="number"
         value={draft}
