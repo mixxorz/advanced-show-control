@@ -3,6 +3,7 @@ use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeTarget};
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::encode_frame;
+use lv1_scene_fade_utility::runtime::events::AppEventBus;
 use lv1_scene_fade_utility::osc::OscArg;
 use std::io::Write;
 use std::net::TcpListener;
@@ -56,13 +57,13 @@ async fn engine_emits_fade_started_and_completed() {
         std::thread::sleep(std::time::Duration::from_secs(3));
     });
 
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port);
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let engine = spawn_engine(lv1);
     let mut fade_events = engine.subscribe().await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
+    let _ = engine
         .start_fade(FadeConfig {
             targets: vec![FadeTarget {
                 group: 0,
@@ -103,13 +104,13 @@ async fn engine_abort_all_stops_fade() {
         std::thread::sleep(std::time::Duration::from_secs(5));
     });
 
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port);
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let engine = spawn_engine(lv1);
     let mut fade_events = engine.subscribe().await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
+    let _ = engine
         .start_fade(FadeConfig {
             targets: vec![FadeTarget {
                 group: 0,
@@ -128,7 +129,7 @@ async fn engine_abort_all_stops_fade() {
     )
     .await;
 
-    engine.abort_all().await;
+    let _ = engine.abort_all().await;
 
     wait_for_fade_event(&mut fade_events, std::time::Duration::from_secs(2), |e| {
         matches!(e, FadeEvent::FadeAborted)
@@ -164,13 +165,13 @@ async fn engine_detects_manual_override() {
         std::thread::sleep(std::time::Duration::from_secs(3));
     });
 
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port);
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let engine = spawn_engine(lv1);
     let mut fade_events = engine.subscribe().await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
+    let _ = engine
         .start_fade(FadeConfig {
             targets: vec![FadeTarget {
                 group: 0,
@@ -211,13 +212,13 @@ async fn start_fade_while_running_replaces_previous() {
         std::thread::sleep(std::time::Duration::from_secs(5));
     });
 
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port);
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let engine = spawn_engine(lv1);
     let mut fade_events = engine.subscribe().await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
+    let _ = engine
         .start_fade(FadeConfig {
             targets: vec![FadeTarget {
                 group: 0,
@@ -236,7 +237,7 @@ async fn start_fade_while_running_replaces_previous() {
     )
     .await;
 
-    engine
+    let _ = engine
         .start_fade(FadeConfig {
             targets: vec![FadeTarget {
                 group: 0,

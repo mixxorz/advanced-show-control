@@ -6,6 +6,7 @@ use super::messages::{Lv1ActorError, Lv1Command, Lv1Event};
 use super::model::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
 use super::parsers::{parse_channels_batch, parse_scene_list};
 use crate::osc::OscArg;
+use crate::runtime::events::{AppEvent, AppEventBus};
 
 // ---------------------------------------------------------------------------
 // Group constants (confirmed from hardware logs)
@@ -186,10 +187,11 @@ struct ActorState {
     scene_buf: SceneBuffer,
     last_ping: Instant,
     subscribers: Vec<mpsc::Sender<Lv1Event>>,
+    event_bus: AppEventBus,
 }
 
 impl ActorState {
-    fn new() -> Self {
+    fn new(event_bus: AppEventBus) -> Self {
         Self {
             connection: ConnectionStatus::Connecting,
             scene: None,
@@ -198,6 +200,7 @@ impl ActorState {
             scene_buf: SceneBuffer::default(),
             last_ping: Instant::now(),
             subscribers: Vec::new(),
+            event_bus,
         }
     }
 
@@ -211,15 +214,16 @@ impl ActorState {
     }
 
     fn fan_out(&mut self, event: Lv1Event) {
+        self.event_bus.publish(AppEvent::Lv1(event.clone()));
         self.subscribers
             .retain(|tx| tx.try_send(event.clone()).is_ok());
     }
 }
 
 /// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
-pub fn spawn_actor(host: String, port: u16) -> Lv1ActorHandle {
+pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_actor(host, port, cmd_rx));
+    tokio::spawn(run_actor(host, port, event_bus, cmd_rx));
     Lv1ActorHandle { tx: cmd_tx }
 }
 
@@ -257,8 +261,13 @@ async fn drain_commands_for(
     }
 }
 
-async fn run_actor(host: String, port: u16, mut cmd_rx: mpsc::Receiver<Lv1Command>) {
-    let mut state = ActorState::new();
+async fn run_actor(
+    host: String,
+    port: u16,
+    event_bus: AppEventBus,
+    mut cmd_rx: mpsc::Receiver<Lv1Command>,
+) {
+    let mut state = ActorState::new(event_bus);
 
     loop {
         // --- Connect (drain commands during reconnect sleeps) ---
@@ -491,6 +500,40 @@ fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn actor_publishes_scene_changes_to_event_bus() {
+        use crate::lv1::messages::Lv1Event;
+        use crate::runtime::events::{AppEvent, AppEventBus};
+
+        let bus = AppEventBus::new(16);
+        let mut rx = bus.subscribe();
+        let mut state = ActorState::new(bus.clone());
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/CurSceneIndex".to_string(),
+                args: vec![crate::osc::OscArg::Int(3)],
+            },
+        );
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/Scene/Name".to_string(),
+                args: vec![crate::osc::OscArg::String("Bridge".to_string())],
+            },
+        );
+
+        let event = rx.recv().await.unwrap();
+        match event {
+            AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
+                assert_eq!(scene.index, 3);
+                assert_eq!(scene.name, "Bridge");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
 
     #[test]
     fn scene_buffer_emits_when_name_arrives_first() {

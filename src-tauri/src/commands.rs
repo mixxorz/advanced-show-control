@@ -2,6 +2,7 @@ use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::lv1::discovery::resolve_target;
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
+use lv1_scene_fade_utility::runtime::events::AppEventBus;
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -205,7 +206,7 @@ pub async fn connect_lv1(
     let timeout = timeout_ms.unwrap_or(6000);
     let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
 
-    let lv1 = spawn_actor(host.clone(), port);
+    let lv1 = spawn_actor(host.clone(), port, AppEventBus::default());
     let fade = spawn_engine(lv1.clone());
 
     {

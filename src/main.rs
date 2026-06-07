@@ -5,6 +5,7 @@ use lv1_scene_fade_utility::lv1::model::ChannelInfo;
 use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use lv1_scene_fade_utility::lv1::state::{Lv1ActorHandle, spawn_actor};
 use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
+use lv1_scene_fade_utility::runtime::events::AppEventBus;
 use lv1_scene_fade_utility::osc::OscArg;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -313,7 +314,8 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
 
-    let handle = spawn_actor(host.clone(), port);
+    let event_bus = AppEventBus::default();
+    let handle = spawn_actor(host.clone(), port, event_bus);
     let mut events = handle.subscribe().await;
 
     while let Some(event) = events.recv().await {
@@ -477,7 +479,8 @@ async fn run_fade_test(
         CurveArg::Linear => FadeCurve::Linear,
     };
 
-    let lv1 = spawn_actor(host.clone(), port);
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor(host.clone(), port, event_bus);
     let engine = spawn_engine(lv1.clone());
     let mut lv1_events = lv1.subscribe().await;
     let mut fade_events = engine.subscribe().await;
@@ -514,7 +517,7 @@ async fn run_fade_test(
         ),
     }
 
-    engine
+    let _ = engine
         .start_fade(FadeConfig {
             targets: vec![FadeTarget {
                 group,
@@ -666,7 +669,8 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
 
-    let lv1 = spawn_actor(host.clone(), port);
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor(host.clone(), port, event_bus);
     let mut events = lv1.subscribe().await;
 
     tokio::time::timeout(Duration::from_millis(timeout_ms), async {
@@ -968,7 +972,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
 
-        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let handle = spawn_actor(
+            "127.0.0.1".to_string(),
+            port,
+            lv1_scene_fade_utility::runtime::events::AppEventBus::default(),
+        );
         let mut events = handle.subscribe().await;
 
         tokio::time::timeout(Duration::from_secs(2), async {
@@ -1050,7 +1058,11 @@ mod tests {
             std::thread::sleep(Duration::from_millis(250));
         });
 
-        let handle = spawn_actor("127.0.0.1".to_string(), port);
+        let handle = spawn_actor(
+            "127.0.0.1".to_string(),
+            port,
+            lv1_scene_fade_utility::runtime::events::AppEventBus::default(),
+        );
         let mut events = handle.subscribe().await;
 
         tokio::time::timeout(Duration::from_secs(2), async {

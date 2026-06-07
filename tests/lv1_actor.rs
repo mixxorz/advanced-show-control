@@ -2,6 +2,7 @@ use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::ConnectionStatus;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
+use lv1_scene_fade_utility::runtime::events::AppEventBus;
 use lv1_scene_fade_utility::osc::OscArg;
 use std::io::Write;
 use std::net::TcpListener;
@@ -32,7 +33,7 @@ async fn actor_connects_and_emits_connected_event() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
@@ -67,7 +68,7 @@ async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     let mut got_disconnect = false;
@@ -112,7 +113,7 @@ async fn actor_parses_and_emits_scene_changed() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     let mut scene_event = None;
@@ -145,7 +146,7 @@ async fn get_state_returns_snapshot_with_current_values() {
         std::thread::sleep(std::time::Duration::from_millis(500));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     wait_for_connected(&mut events).await;
@@ -177,7 +178,7 @@ async fn actor_handles_set_gain_command() {
         std::thread::sleep(std::time::Duration::from_millis(500));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     wait_for_connected(&mut events).await;
@@ -219,7 +220,7 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     wait_for_connected(&mut events).await;
@@ -276,7 +277,7 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     wait_for_connected(&mut events).await;
@@ -305,7 +306,7 @@ async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
@@ -331,7 +332,7 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
         drop(stream);
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     wait_for_connected(&mut events).await;
@@ -384,7 +385,7 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port);
+    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
     let mut events = handle.subscribe().await;
 
     wait_for_connected(&mut events).await;
