@@ -177,16 +177,16 @@ pub async fn disconnect_lv1(
 
 #[tauri::command]
 pub async fn abort_all_fades(state: State<'_, ShellState>) -> Result<(), String> {
-    let fade = { state.handles.lock().await.fade.clone() };
-    let fade = fade.ok_or_else(|| "Fade runtime unavailable".to_string())?;
-    fade.abort_all().await.map_err(|err| err.to_string())
+    let command_bus = { state.handles.lock().await.command_bus.clone() };
+    let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
+    command_bus.abort_all_fades().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn finish_fade_now(state: State<'_, ShellState>) -> Result<(), String> {
-    let fade = { state.handles.lock().await.fade.clone() };
-    let fade = fade.ok_or_else(|| "Fade runtime unavailable".to_string())?;
-    fade.finish_now().await.map_err(|err| err.to_string())
+    let command_bus = { state.handles.lock().await.command_bus.clone() };
+    let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
+    command_bus.finish_fade_now().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -212,6 +212,7 @@ pub async fn connect_lv1(
     let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
     dispatcher.set_lv1(Some(lv1.clone()));
     let dispatcher_task = tokio::spawn(async move { dispatcher.run().await });
+    let fade_command_bus = command_bus.clone();
     let fade = spawn_engine(command_bus, event_bus.clone());
     let projector_task = spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
@@ -219,6 +220,7 @@ pub async fn connect_lv1(
         active_generation: 0,
         lv1: Some(lv1.clone()),
         fade: Some(fade),
+        command_bus: Some(fade_command_bus),
         dispatcher: Some(dispatcher_task),
         projector: Some(projector_task),
     };

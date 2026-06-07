@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
+use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -18,6 +19,7 @@ pub struct RuntimeHandles {
     pub active_generation: u64,
     pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
+    pub command_bus: Option<AppCommandBus>,
     pub dispatcher: Option<JoinHandle<()>>,
     pub projector: Option<JoinHandle<()>>,
 }
@@ -79,13 +81,12 @@ impl ShellState {
         if inner.generation != generation {
             return Err(next);
         }
-        drop(inner);
-
-        next.active_generation = generation;
 
         let mut handles = self.handles.lock().await;
         handles.abort_all();
+        next.active_generation = generation;
         *handles = next;
+        drop(inner);
         Ok(())
     }
 }
@@ -110,6 +111,7 @@ impl RuntimeHandles {
         self.active_generation = 0;
         self.lv1 = None;
         self.fade = None;
+        self.command_bus = None;
     }
 }
 
@@ -215,6 +217,8 @@ pub(super) fn current_timestamp() -> String {
 mod tests {
     use super::*;
     use lv1_scene_fade_utility::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
+    use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn default_snapshot_exposes_untitled_show_and_is_not_dirty() {
@@ -264,6 +268,7 @@ mod tests {
             active_generation: 0,
             lv1: None,
             fade: None,
+            command_bus: Some(AppCommandBus::new(mpsc::channel(1).0)),
             dispatcher: Some(tokio::spawn(async {})),
             projector: Some(tokio::spawn(async {})),
         };
@@ -280,6 +285,7 @@ mod tests {
             active_generation: 0,
             lv1: None,
             fade: None,
+            command_bus: Some(AppCommandBus::new(mpsc::channel(1).0)),
             dispatcher: Some(tokio::spawn(async {})),
             projector: Some(tokio::spawn(async {})),
         };
