@@ -239,15 +239,35 @@ pub async fn connect_lv1(
     let fade_command_bus = command_bus.clone();
     let fade = spawn_engine(command_bus, event_bus.clone());
     fade_command_bus.set_fade(Some(fade.clone())).await;
-    let projector_task = spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
-    let runtime_handles = RuntimeHandles {
+    let mut runtime_handles = RuntimeHandles {
         active_generation: 0,
         lv1: Some(lv1.clone()),
         fade: Some(fade),
         command_bus: Some(fade_command_bus),
-        projector: Some(projector_task),
+        projector: None,
     };
+
+    let initial_snapshot = lv1.get_state().await;
+    let snapshot = match state
+        .begin_connection_for_generation(generation, initial_snapshot)
+        .await
+    {
+        Some(snapshot) => snapshot,
+        None => {
+            runtime_handles.abort_all().await;
+            let snapshot = state.snapshot().await;
+            emit_snapshot(&app, &snapshot);
+            return Ok(snapshot);
+        }
+    };
+
+    runtime_handles.projector = Some(spawn_shell_state_projector(
+        app.clone(),
+        shell_state,
+        generation,
+        events,
+    ));
 
     if let Err(mut stale_handles) = state
         .install_runtime_handles_for_generation(generation, runtime_handles, &active_command_bus)
@@ -257,15 +277,6 @@ pub async fn connect_lv1(
         let snapshot = state.snapshot().await;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
-    }
-
-    let initial_snapshot = lv1.get_state().await;
-    let snapshot = match state
-        .begin_connection_for_generation(generation, initial_snapshot)
-        .await
-    {
-        Some(snapshot) => snapshot,
-        None => state.snapshot().await,
     };
     emit_snapshot(&app, &snapshot);
 
@@ -303,9 +314,13 @@ fn spawn_shell_state_projector(
                         }
                     }
                     AppEvent::Fade(event) => {
-                        let snapshot = state.apply_fade_event(&event).await;
-                        if let Err(err) = app.emit("app-status-changed", &snapshot) {
-                            eprintln!("failed to emit app-status-changed: {err}");
+                        if let Some(snapshot) = state
+                            .apply_fade_event_for_generation(generation, &event)
+                            .await
+                        {
+                            if let Err(err) = app.emit("app-status-changed", &snapshot) {
+                                eprintln!("failed to emit app-status-changed: {err}");
+                            }
                         }
                     }
                     AppEvent::CommandFailed { command, message } => {

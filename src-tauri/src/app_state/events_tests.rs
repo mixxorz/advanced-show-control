@@ -306,6 +306,29 @@ async fn stale_lv1_events_are_ignored_after_generation_change() {
 }
 
 #[tokio::test]
+async fn stale_fade_events_are_ignored_after_generation_change() {
+    use super::view::AppFadeState;
+    use lv1_scene_fade_utility::fade::types::FadeEvent;
+
+    let state = ShellState::default();
+    let (first_generation, _) = state.begin_connecting().await;
+    let _ = state.begin_connecting().await;
+
+    let before = state.snapshot().await;
+
+    let stale = state
+        .apply_fade_event_for_generation(first_generation, &FadeEvent::FadeStarted)
+        .await;
+
+    assert!(stale.is_none());
+
+    let after = state.snapshot().await;
+    assert_eq!(after.fade_state, before.fade_state);
+    assert_eq!(after.fade_state, AppFadeState::Idle);
+    assert_eq!(after.logs.len(), before.logs.len());
+}
+
+#[tokio::test]
 async fn disconnect_increments_generation_and_ignores_old_events() {
     let state = ShellState::default();
     let (generation, snapshot) = state.begin_connecting().await;

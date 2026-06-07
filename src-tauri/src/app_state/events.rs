@@ -156,51 +156,67 @@ impl ShellState {
 
     pub async fn apply_fade_event(&self, event: &FadeEvent) -> AppViewState {
         let mut inner = self.inner.lock().await;
+        apply_fade_event_locked(&mut inner, event)
+    }
 
-        match event {
-            FadeEvent::FadeStarted => {
-                inner.fade_state = AppFadeState::Running;
-                inner.push_log(
-                    LogSource::Fade,
-                    LogSeverity::Info,
-                    "Fade started".to_string(),
-                );
-            }
-            FadeEvent::FadeCompleted => {
-                inner.fade_state = AppFadeState::Idle;
-                inner.push_log(
-                    LogSource::Fade,
-                    LogSeverity::Info,
-                    "Fade completed".to_string(),
-                );
-            }
-            FadeEvent::FadeAborted => {
-                inner.fade_state = AppFadeState::Idle;
-                inner.push_log(
-                    LogSource::Fade,
-                    LogSeverity::Warning,
-                    "Fade aborted".to_string(),
-                );
-            }
-            FadeEvent::ChannelOverride { group, channel } => {
-                inner.fade_state = AppFadeState::Blocked;
-                inner.push_log(
-                    LogSource::Fade,
-                    LogSeverity::Warning,
-                    format!("Fade channel override detected: group={group} channel={channel}"),
-                );
-            }
-            FadeEvent::ChannelCancelled { group, channel } => {
-                inner.push_log(
-                    LogSource::Fade,
-                    LogSeverity::Warning,
-                    format!("Fade channel cancelled: group {group}, channel {channel}"),
-                );
-            }
+    pub async fn apply_fade_event_for_generation(
+        &self,
+        generation: u64,
+        event: &FadeEvent,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
         }
 
-        snapshot_from_inner(&inner)
+        Some(apply_fade_event_locked(&mut inner, event))
     }
+}
+
+fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) -> AppViewState {
+    match event {
+        FadeEvent::FadeStarted => {
+            inner.fade_state = AppFadeState::Running;
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Info,
+                "Fade started".to_string(),
+            );
+        }
+        FadeEvent::FadeCompleted => {
+            inner.fade_state = AppFadeState::Idle;
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Info,
+                "Fade completed".to_string(),
+            );
+        }
+        FadeEvent::FadeAborted => {
+            inner.fade_state = AppFadeState::Idle;
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Warning,
+                "Fade aborted".to_string(),
+            );
+        }
+        FadeEvent::ChannelOverride { group, channel } => {
+            inner.fade_state = AppFadeState::Blocked;
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Warning,
+                format!("Fade channel override detected: group={group} channel={channel}"),
+            );
+        }
+        FadeEvent::ChannelCancelled { group, channel } => {
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Warning,
+                format!("Fade channel cancelled: group {group}, channel {channel}"),
+            );
+        }
+    }
+
+    snapshot_from_inner(inner)
 }
 
 impl ShellInner {
