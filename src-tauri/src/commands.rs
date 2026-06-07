@@ -184,7 +184,7 @@ pub async fn disconnect_lv1(
 pub async fn abort_all_fades(state: State<'_, ShellState>) -> Result<(), String> {
     let fade = { state.handles.lock().await.fade.clone() };
     if let Some(fade) = fade {
-        fade.abort_all().await;
+        fade.abort_all().await.map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -193,7 +193,7 @@ pub async fn abort_all_fades(state: State<'_, ShellState>) -> Result<(), String>
 pub async fn finish_fade_now(state: State<'_, ShellState>) -> Result<(), String> {
     let fade = { state.handles.lock().await.fade.clone() };
     if let Some(fade) = fade {
-        fade.finish_now().await;
+        fade.finish_now().await.map_err(|err| err.to_string())?;
     }
     Ok(())
 }

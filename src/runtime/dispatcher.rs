@@ -63,28 +63,58 @@ impl RuntimeDispatcher {
                 let _ = reply.send(result);
             }
             AppCommand::StartFade { config, reply } => {
-                let result = match &self.fade {
-                    Some(fade) => fade.start_fade(config).await,
-                    None => Err(AppCommandError::FadeUnavailable),
-                };
-                publish_failure(&self.event_bus, "start_fade", &result);
-                let _ = reply.send(result);
+                match &self.fade {
+                    Some(fade) => {
+                        let fade = fade.clone();
+                        let event_bus = self.event_bus.clone();
+                        tokio::spawn(async move {
+                            let result = fade.start_fade(config).await;
+                            publish_failure(&event_bus, "start_fade", &result);
+                            let _ = reply.send(result);
+                        });
+                    }
+                    None => {
+                        let result = Err(AppCommandError::FadeUnavailable);
+                        publish_failure(&self.event_bus, "start_fade", &result);
+                        let _ = reply.send(result);
+                    }
+                }
             }
             AppCommand::AbortAllFades { reply } => {
-                let result = match &self.fade {
-                    Some(fade) => fade.abort_all().await,
-                    None => Err(AppCommandError::FadeUnavailable),
-                };
-                publish_failure(&self.event_bus, "abort_all_fades", &result);
-                let _ = reply.send(result);
+                match &self.fade {
+                    Some(fade) => {
+                        let fade = fade.clone();
+                        let event_bus = self.event_bus.clone();
+                        tokio::spawn(async move {
+                            let result = fade.abort_all().await;
+                            publish_failure(&event_bus, "abort_all_fades", &result);
+                            let _ = reply.send(result);
+                        });
+                    }
+                    None => {
+                        let result = Err(AppCommandError::FadeUnavailable);
+                        publish_failure(&self.event_bus, "abort_all_fades", &result);
+                        let _ = reply.send(result);
+                    }
+                }
             }
             AppCommand::FinishFadeNow { reply } => {
-                let result = match &self.fade {
-                    Some(fade) => fade.finish_now().await,
-                    None => Err(AppCommandError::FadeUnavailable),
-                };
-                publish_failure(&self.event_bus, "finish_fade_now", &result);
-                let _ = reply.send(result);
+                match &self.fade {
+                    Some(fade) => {
+                        let fade = fade.clone();
+                        let event_bus = self.event_bus.clone();
+                        tokio::spawn(async move {
+                            let result = fade.finish_now().await;
+                            publish_failure(&event_bus, "finish_fade_now", &result);
+                            let _ = reply.send(result);
+                        });
+                    }
+                    None => {
+                        let result = Err(AppCommandError::FadeUnavailable);
+                        publish_failure(&self.event_bus, "finish_fade_now", &result);
+                        let _ = reply.send(result);
+                    }
+                }
             }
         }
     }
