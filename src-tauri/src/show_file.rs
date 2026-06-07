@@ -1,6 +1,4 @@
-use lv1_scene_fade_utility::lv1::model::{
-    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
-};
+use lv1_scene_fade_utility::lv1::model::Lv1StateSnapshot;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;
@@ -298,6 +296,7 @@ fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lv1_scene_fade_utility::lv1::model::{ChannelInfo, ConnectionStatus, SceneListEntry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
