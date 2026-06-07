@@ -335,6 +335,51 @@ async fn supplied_fresh_lv1_snapshot_is_used_for_scene_recall_validation() {
 }
 
 #[tokio::test]
+async fn supplied_fresh_lv1_snapshot_scene_mismatch_blocks_stale_recall() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state.begin_connection(snapshot_for_intro()).await;
+
+    {
+        let mut inner = state.inner.lock().await;
+        let mut config = scene_config(
+            1,
+            "Intro",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-12.5),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+        );
+        config.duration_ms = 4_000;
+        inner.scene_configs = vec![config];
+    }
+
+    let mut fresh_snapshot = snapshot_for_intro();
+    fresh_snapshot.scene = Some(SceneState {
+        index: 2,
+        name: "Outro".to_string(),
+    });
+
+    let decision = state
+        .prepare_scene_recall_fade_with_lv1_snapshot_for_generation(
+            generation,
+            &SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            fresh_snapshot,
+        )
+        .await;
+
+    assert_eq!(decision, SceneRecallDecision::Blocked);
+}
+
+#[tokio::test]
 async fn scene_recall_fader_logs_are_ignored_for_stale_generation() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;

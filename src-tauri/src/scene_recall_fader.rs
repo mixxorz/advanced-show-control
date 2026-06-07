@@ -118,9 +118,11 @@ pub fn spawn_scene_recall_fader(
                                 }
                             }
                         }
-                        SceneRecallDecision::Skip
+                        decision @ (SceneRecallDecision::Skip
                         | SceneRecallDecision::Blocked
-                        | SceneRecallDecision::StaleGeneration => {}
+                        | SceneRecallDecision::StaleGeneration) => {
+                            publish_refresh_after_scene_recall_decision(&event_bus, &decision);
+                        }
                     }
                 }
                 Ok(_) => {}
@@ -137,6 +139,16 @@ fn publish_log_refresh(event_bus: &AppEventBus) {
     event_bus.publish(AppEvent::Automation(AutomationEvent::RuleTriggered {
         rule_id: "scene-recall-fader".to_string(),
     }));
+}
+
+fn publish_refresh_after_scene_recall_decision(
+    event_bus: &AppEventBus,
+    decision: &SceneRecallDecision,
+) {
+    match decision {
+        SceneRecallDecision::Skip | SceneRecallDecision::Blocked => publish_log_refresh(event_bus),
+        SceneRecallDecision::Start(_) | SceneRecallDecision::StaleGeneration => {}
+    }
 }
 
 #[cfg(test)]
@@ -237,6 +249,42 @@ mod tests {
         );
 
         handle.abort();
+    }
+
+    #[tokio::test]
+    async fn blocked_or_skip_decision_publishes_automation_refresh() {
+        for decision in [SceneRecallDecision::Blocked, SceneRecallDecision::Skip] {
+            let event_bus = AppEventBus::default();
+            let mut events = event_bus.subscribe();
+
+            publish_refresh_after_scene_recall_decision(&event_bus, &decision);
+
+            match tokio::time::timeout(std::time::Duration::from_millis(250), events.recv())
+                .await
+                .expect("non-stale decision should publish refresh")
+                .expect("event bus should be open")
+            {
+                AppEvent::Automation(AutomationEvent::RuleTriggered { rule_id }) => {
+                    assert_eq!(rule_id, "scene-recall-fader");
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_generation_decision_does_not_publish_automation_refresh() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+
+        publish_refresh_after_scene_recall_decision(
+            &event_bus,
+            &SceneRecallDecision::StaleGeneration,
+        );
+
+        tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
+            .await
+            .expect_err("stale generation should not publish refresh");
     }
 
     async fn configure_intro_recall(state: &ShellState) -> u64 {

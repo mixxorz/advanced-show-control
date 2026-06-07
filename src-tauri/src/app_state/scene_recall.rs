@@ -29,7 +29,7 @@ impl ShellState {
         recalled_scene: &SceneState,
     ) -> SceneRecallDecision {
         let mut inner = self.inner.lock().await;
-        prepare_scene_recall_fade_locked(&mut inner, generation, recalled_scene)
+        prepare_scene_recall_fade_locked(&mut inner, generation, recalled_scene, true)
     }
 
     pub async fn prepare_scene_recall_fade_with_lv1_snapshot_for_generation(
@@ -44,7 +44,7 @@ impl ShellState {
         }
 
         inner.lv1_snapshot = Some(snapshot);
-        prepare_scene_recall_fade_locked(&mut inner, generation, recalled_scene)
+        prepare_scene_recall_fade_locked(&mut inner, generation, recalled_scene, false)
     }
 
     pub async fn is_generation_current(&self, generation: u64) -> bool {
@@ -84,6 +84,7 @@ fn prepare_scene_recall_fade_locked(
     inner: &mut ShellInner,
     generation: u64,
     recalled_scene: &SceneState,
+    overwrite_snapshot_scene: bool,
 ) -> SceneRecallDecision {
     if inner.generation != generation {
         return SceneRecallDecision::StaleGeneration;
@@ -100,7 +101,9 @@ fn prepare_scene_recall_fade_locked(
         );
         return SceneRecallDecision::Blocked;
     };
-    snapshot.scene = Some(recalled_scene.clone());
+    if overwrite_snapshot_scene {
+        snapshot.scene = Some(recalled_scene.clone());
+    }
     let snapshot = snapshot.clone();
 
     if snapshot.connection != ConnectionStatus::Connected {
