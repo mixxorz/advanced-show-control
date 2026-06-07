@@ -1,6 +1,7 @@
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::curve::FadeCurve;
+use crate::runtime::commands::AppCommandError;
 
 #[derive(Debug, Clone)]
 pub struct FadeTarget {
@@ -16,10 +17,18 @@ pub struct FadeConfig {
     pub curve: FadeCurve,
 }
 
+#[derive(Debug)]
 pub enum FadeCommand {
-    StartFade { config: FadeConfig },
-    AbortAll,
-    FinishNow,
+    StartFade {
+        config: FadeConfig,
+        reply: oneshot::Sender<Result<(), AppCommandError>>,
+    },
+    AbortAll {
+        reply: oneshot::Sender<Result<(), AppCommandError>>,
+    },
+    FinishNow {
+        reply: oneshot::Sender<Result<(), AppCommandError>>,
+    },
     Subscribe { tx: mpsc::Sender<FadeEvent> },
 }
 

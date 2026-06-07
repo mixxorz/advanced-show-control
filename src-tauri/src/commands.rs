@@ -2,11 +2,14 @@ use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::lv1::discovery::resolve_target;
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
+use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
+use lv1_scene_fade_utility::runtime::dispatcher::RuntimeDispatcher;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::task::spawn_blocking;
+use tokio::sync::mpsc;
 
 use crate::app_state::{AppViewState, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
@@ -209,7 +212,12 @@ pub async fn connect_lv1(
     let mut events = event_bus.subscribe();
 
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
-    let fade = spawn_engine(lv1.clone());
+    let (command_tx, command_rx) = mpsc::channel(32);
+    let command_bus = AppCommandBus::new(command_tx);
+    let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
+    dispatcher.set_lv1(Some(lv1.clone()));
+    tauri::async_runtime::spawn(async move { dispatcher.run().await });
+    let fade = spawn_engine(command_bus, event_bus.clone());
 
     {
         let mut handles = state.handles.lock().await;

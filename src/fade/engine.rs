@@ -1,13 +1,12 @@
 //! Fade engine actor — animates LV1 faders over time.
 
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::tick::{ActiveChannel, TICK_HZ};
 use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent};
-use crate::lv1::messages::Lv1Event;
-use crate::lv1::state::Lv1ActorHandle;
-use crate::runtime::commands::AppCommandError;
+use crate::runtime::commands::{AppCommandBus, AppCommandError};
+use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
 // ---------------------------------------------------------------------------
 // Handle
@@ -20,24 +19,30 @@ pub struct FadeEngineHandle {
 
 impl FadeEngineHandle {
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
+        let (reply, rx) = oneshot::channel();
         self.tx
-            .send(FadeCommand::StartFade { config })
+            .send(FadeCommand::StartFade { config, reply })
             .await
-            .map_err(|_| AppCommandError::FadeUnavailable)
+            .map_err(|_| AppCommandError::FadeUnavailable)?;
+        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
     }
 
     pub async fn abort_all(&self) -> Result<(), AppCommandError> {
+        let (reply, rx) = oneshot::channel();
         self.tx
-            .send(FadeCommand::AbortAll)
+            .send(FadeCommand::AbortAll { reply })
             .await
-            .map_err(|_| AppCommandError::FadeUnavailable)
+            .map_err(|_| AppCommandError::FadeUnavailable)?;
+        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
     }
 
     pub async fn finish_now(&self) -> Result<(), AppCommandError> {
+        let (reply, rx) = oneshot::channel();
         self.tx
-            .send(FadeCommand::FinishNow)
+            .send(FadeCommand::FinishNow { reply })
             .await
-            .map_err(|_| AppCommandError::FadeUnavailable)
+            .map_err(|_| AppCommandError::FadeUnavailable)?;
+        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
     }
 
     pub async fn subscribe(&self) -> mpsc::Receiver<FadeEvent> {
@@ -47,9 +52,9 @@ impl FadeEngineHandle {
     }
 }
 
-pub fn spawn_engine(lv1: Lv1ActorHandle) -> FadeEngineHandle {
+pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_engine(lv1, cmd_rx));
+    tokio::spawn(run_engine(command_bus, event_bus, cmd_rx));
     FadeEngineHandle { tx: cmd_tx }
 }
 
@@ -60,17 +65,20 @@ pub fn spawn_engine(lv1: Lv1ActorHandle) -> FadeEngineHandle {
 struct EngineState {
     channels: Vec<ActiveChannel>,
     subscribers: Vec<mpsc::Sender<FadeEvent>>,
+    event_bus: AppEventBus,
 }
 
 impl EngineState {
-    fn new() -> Self {
+    fn new(event_bus: AppEventBus) -> Self {
         Self {
             channels: Vec::new(),
             subscribers: Vec::new(),
+            event_bus,
         }
     }
 
     fn fan_out(&mut self, event: FadeEvent) {
+        self.event_bus.publish(AppEvent::Fade(event.clone()));
         self.subscribers
             .retain(|tx| tx.try_send(event.clone()).is_ok());
     }
@@ -84,9 +92,13 @@ impl EngineState {
     }
 }
 
-async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>) {
-    let mut lv1_events = lv1.subscribe().await;
-    let mut state = EngineState::new();
+async fn run_engine(
+    command_bus: AppCommandBus,
+    event_bus: AppEventBus,
+    mut cmd_rx: mpsc::Receiver<FadeCommand>,
+) {
+    let mut app_events = event_bus.subscribe();
+    let mut state = EngineState::new(event_bus);
     let mut tick_interval: Option<tokio::time::Interval> = None;
 
     loop {
@@ -108,10 +120,15 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                     Some(FadeCommand::Subscribe { tx }) => {
                         state.subscribers.push(tx);
                     }
-                    Some(FadeCommand::StartFade { config }) => {
+                    Some(FadeCommand::StartFade { config, reply }) => {
+                        let snapshot = match command_bus.get_lv1_state().await {
+                            Ok(snapshot) => snapshot,
+                            Err(err) => {
+                                let _ = reply.send(Err(err));
+                                continue;
+                            }
+                        };
                         state.cancel_all_in_place();
-
-                        let snapshot = lv1.get_state().await;
                         let now = Instant::now();
                         let duration = Duration::from_millis(config.duration_ms);
 
@@ -137,19 +154,22 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                         tick_interval = Some(interval);
 
                         state.fan_out(FadeEvent::FadeStarted);
+                        let _ = reply.send(Ok(()));
                     }
-                    Some(FadeCommand::AbortAll) => {
+                    Some(FadeCommand::AbortAll { reply }) => {
                         state.cancel_all_in_place();
                         tick_interval = None;
                         state.fan_out(FadeEvent::FadeAborted);
+                        let _ = reply.send(Ok(()));
                     }
-                    Some(FadeCommand::FinishNow) => {
+                    Some(FadeCommand::FinishNow { reply }) => {
                         for ch in &state.channels {
-                            let _ = lv1.set_gain(ch.group, ch.channel, ch.target_db).await;
+                            let _ = command_bus.set_gain(ch.group, ch.channel, ch.target_db).await;
                         }
                         state.cancel_all_in_place();
                         tick_interval = None;
                         state.fan_out(FadeEvent::FadeCompleted);
+                        let _ = reply.send(Ok(()));
                     }
                 }
             }
@@ -160,7 +180,7 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
                     if let Some(new_db) = ch.next_send(now) {
-                        let _ = lv1.set_gain(ch.group, ch.channel, new_db).await;
+                        let _ = command_bus.set_gain(ch.group, ch.channel, new_db).await;
                     }
                     if ch.is_done(now) {
                         done_indices.push(i);
@@ -178,9 +198,9 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                 }
             }
 
-            lv1_event = lv1_events.recv() => {
-                match lv1_event {
-                    Some(Lv1Event::FaderChanged { group, channel, gain_db }) => {
+            app_event = app_events.recv() => {
+                match app_event {
+                    Ok(AppEvent::Lv1(crate::lv1::messages::Lv1Event::FaderChanged { group, channel, gain_db })) => {
                         if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel) {
                             if state.channels[pos].is_override(gain_db) {
                                 state.fan_out(FadeEvent::ChannelOverride { group, channel });
@@ -193,14 +213,18 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                             }
                         }
                     }
-                    Some(Lv1Event::Disconnected) => {
+                    Ok(AppEvent::Lv1(crate::lv1::messages::Lv1Event::Disconnected)) => {
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
                             state.fan_out(FadeEvent::FadeAborted);
                         }
                     }
-                    _ => {}
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("fade-engine", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
@@ -211,7 +235,8 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
 mod tests {
     use super::*;
     use crate::fade::curve::FadeCurve;
-    use crate::fade::types::FadeTarget;
+    use crate::fade::types::{FadeCommand, FadeTarget};
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn closed_command_channel_returns_fade_unavailable() {
@@ -232,5 +257,32 @@ mod tests {
             .await;
 
         assert_eq!(result, Err(AppCommandError::FadeUnavailable));
+    }
+
+    #[tokio::test]
+    async fn dropped_reply_channel_returns_reply_channel_closed() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let handle = FadeEngineHandle { tx };
+
+        let task = tokio::spawn(async move {
+            handle
+                .start_fade(FadeConfig {
+                    targets: vec![FadeTarget {
+                        group: 0,
+                        channel: 1,
+                        target_db: -12.0,
+                    }],
+                    duration_ms: 100,
+                    curve: FadeCurve::Linear,
+                })
+                .await
+        });
+
+        match rx.recv().await.unwrap() {
+            FadeCommand::StartFade { reply, .. } => drop(reply),
+            _ => panic!("unexpected command"),
+        }
+
+        assert_eq!(task.await.unwrap(), Err(AppCommandError::ReplyChannelClosed));
     }
 }
