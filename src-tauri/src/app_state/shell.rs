@@ -282,7 +282,11 @@ mod tests {
         let active_command_bus = crate::commands::ActiveCommandBus::default();
 
         match state
-            .install_runtime_handles_for_generation(generation, current_handles, &active_command_bus)
+            .install_runtime_handles_for_generation(
+                generation,
+                current_handles,
+                &active_command_bus,
+            )
             .await
         {
             Ok(()) => {}

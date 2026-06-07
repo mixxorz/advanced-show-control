@@ -6,8 +6,8 @@ use tokio::sync::Mutex;
 use crate::fade::engine::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
 use crate::lv1::messages::Lv1ActorError;
-use crate::lv1::state::Lv1ActorHandle;
 use crate::lv1::model::Lv1StateSnapshot;
+use crate::lv1::state::Lv1ActorHandle;
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -179,7 +179,8 @@ mod tests {
         let fade = FadeEngineHandle::new(fade_tx);
 
         tokio::spawn(async move {
-            if let Some(crate::fade::types::FadeCommand::StartFade { reply, .. }) = fade_rx.recv().await
+            if let Some(crate::fade::types::FadeCommand::StartFade { reply, .. }) =
+                fade_rx.recv().await
             {
                 let _ = reply.send(Ok(()));
             }
@@ -202,6 +203,9 @@ mod tests {
 
         bus.clear_targets().await;
 
-        assert_eq!(cloned_bus.start_fade(config).await, Err(AppCommandError::FadeUnavailable));
+        assert_eq!(
+            cloned_bus.start_fade(config).await,
+            Err(AppCommandError::FadeUnavailable)
+        );
     }
 }

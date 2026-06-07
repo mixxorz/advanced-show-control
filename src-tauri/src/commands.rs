@@ -8,8 +8,8 @@ use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
-use tokio::task::spawn_blocking;
 use tokio::sync::Mutex;
+use tokio::task::spawn_blocking;
 
 use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
@@ -192,17 +192,27 @@ pub async fn disconnect_lv1(
 }
 
 #[tauri::command]
-pub async fn abort_all_fades(active_command_bus: State<'_, ActiveCommandBus>) -> Result<(), String> {
+pub async fn abort_all_fades(
+    active_command_bus: State<'_, ActiveCommandBus>,
+) -> Result<(), String> {
     let command_bus = active_command_bus.current().await;
     let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
-    command_bus.abort_all_fades().await.map_err(|err| err.to_string())
+    command_bus
+        .abort_all_fades()
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub async fn finish_fade_now(active_command_bus: State<'_, ActiveCommandBus>) -> Result<(), String> {
+pub async fn finish_fade_now(
+    active_command_bus: State<'_, ActiveCommandBus>,
+) -> Result<(), String> {
     let command_bus = active_command_bus.current().await;
     let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
-    command_bus.finish_fade_now().await.map_err(|err| err.to_string())
+    command_bus
+        .finish_fade_now()
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]

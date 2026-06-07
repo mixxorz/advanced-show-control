@@ -5,8 +5,8 @@ use lv1_scene_fade_utility::lv1::model::ChannelInfo;
 use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use lv1_scene_fade_utility::lv1::state::{Lv1ActorHandle, spawn_actor};
 use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
-use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use lv1_scene_fade_utility::osc::OscArg;
+use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -503,24 +503,24 @@ async fn run_fade_test(
 
     // Wait for LV1 connection
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-    loop {
-        match lv1_events.recv().await {
-            Ok(app_event) => {
-                let AppEvent::Lv1(event) = app_event else {
-                    continue;
-                };
+        loop {
+            match lv1_events.recv().await {
+                Ok(app_event) => {
+                    let AppEvent::Lv1(event) = app_event else {
+                        continue;
+                    };
 
-                if matches!(event, Lv1Event::Connected) {
-                    println!("[connected] {host}:{port}");
-                    break;
+                    if matches!(event, Lv1Event::Connected) {
+                        println!("[connected] {host}:{port}");
+                        break;
+                    }
                 }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    log_lagged_subscriber("fade-test", count);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                log_lagged_subscriber("fade-test", count);
-            }
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
-    }
     })
     .await
     .map_err(|_| "timed out waiting for LV1 connection")?;

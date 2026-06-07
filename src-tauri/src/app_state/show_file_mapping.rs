@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use super::shell::{ShellInner, ShellState, scene_id, snapshot_from_inner};
 use super::view::{AppViewState, ChannelConfig, ChannelRef, LogSeverity, LogSource, SceneConfig};
 use crate::show_file::{
-    SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig, ShowFileChannelRef,
-    ShowFileSafety, ShowFileSceneConfig, validate_show_file,
+    SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety,
+    ShowFileSceneConfig, validate_show_file,
 };
 
 impl ShellState {
@@ -52,9 +52,10 @@ impl ShellState {
     ) -> Result<AppViewState, String> {
         let mut inner = self.inner.lock().await;
 
-        let lv1 = inner.lv1_snapshot.clone().ok_or_else(|| {
-            "Open a show file after LV1 scenes are loaded".to_string()
-        })?;
+        let lv1 = inner
+            .lv1_snapshot
+            .clone()
+            .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
         let report = validate_show_file(file, &lv1)?;
 
         inner.lockout = file.safety.lockout;

@@ -3,9 +3,9 @@ use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeTarget};
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::encode_frame;
+use lv1_scene_fade_utility::osc::OscArg;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
-use lv1_scene_fade_utility::osc::OscArg;
 use std::io::Write;
 use std::net::TcpListener;
 
@@ -49,7 +49,10 @@ async fn wait_for_app_fade_event(
 async fn spawn_runtime_for_test(
     lv1: lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
     event_bus: AppEventBus,
-) -> (AppCommandBus, lv1_scene_fade_utility::fade::engine::FadeEngineHandle) {
+) -> (
+    AppCommandBus,
+    lv1_scene_fade_utility::fade::engine::FadeEngineHandle,
+) {
     let bus = AppCommandBus::new(event_bus.clone());
     bus.set_lv1(Some(lv1)).await;
     let engine = spawn_engine(bus.clone(), event_bus);

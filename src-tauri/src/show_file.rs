@@ -348,7 +348,10 @@ mod tests {
                     channel: 2,
                     fader_db: Some(-12.5),
                 }],
-                scoped_channels: vec![ShowFileChannelRef { group: 0, channel: 2 }],
+                scoped_channels: vec![ShowFileChannelRef {
+                    group: 0,
+                    channel: 2,
+                }],
             }],
         }
     }

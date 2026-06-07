@@ -1,5 +1,7 @@
 use super::shell::{ShellInner, ShellState};
-use super::test_support::{connected_snapshot, connected_state_with_scene_and_channel, scene_config};
+use super::test_support::{
+    connected_snapshot, connected_state_with_scene_and_channel, scene_config,
+};
 use super::view::{AppConnectionState, ChannelConfig, ChannelRef};
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::{
@@ -8,8 +10,8 @@ use lv1_scene_fade_utility::lv1::model::{
 
 #[tokio::test]
 async fn fade_events_update_fade_state() {
-    use lv1_scene_fade_utility::fade::types::FadeEvent;
     use super::view::AppFadeState;
+    use lv1_scene_fade_utility::fade::types::FadeEvent;
 
     let state = ShellState::default();
 
@@ -28,7 +30,10 @@ async fn fade_events_update_fade_state() {
             channel: 7,
         })
         .await;
-    assert_eq!(overridden.logs.last().unwrap().message, "Fade channel override detected: group=3 channel=7");
+    assert_eq!(
+        overridden.logs.last().unwrap().message,
+        "Fade channel override detected: group=3 channel=7"
+    );
 }
 
 #[tokio::test]
@@ -361,9 +366,15 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
         .expect("event should apply to current generation");
 
     assert_eq!(snapshot.connection, AppConnectionState::Connected);
-    assert_eq!(snapshot.scene_configs[0].channel_configs[0].fader_db, Some(-8.0));
+    assert_eq!(
+        snapshot.scene_configs[0].channel_configs[0].fader_db,
+        Some(-8.0)
+    );
     assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 1);
 
     let inner = state.inner.lock().await;
-    assert_eq!(inner.lv1_snapshot.as_ref().unwrap().channels[0].gain_db, -6.5);
+    assert_eq!(
+        inner.lv1_snapshot.as_ref().unwrap().channels[0].gain_db,
+        -6.5
+    );
 }

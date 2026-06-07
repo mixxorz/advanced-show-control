@@ -274,6 +274,9 @@ mod tests {
             _ => panic!("unexpected command"),
         }
 
-        assert_eq!(task.await.unwrap(), Err(AppCommandError::ReplyChannelClosed));
+        assert_eq!(
+            task.await.unwrap(),
+            Err(AppCommandError::ReplyChannelClosed)
+        );
     }
 }
