@@ -41,28 +41,6 @@ pub struct SceneConfig {
     pub scoped_channels: Vec<ChannelRef>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct FadeTarget {
-    pub group: i32,
-    pub channel: i32,
-    pub channel_name: String,
-    pub target_db: f64,
-    pub enabled: bool,
-    pub updated_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SceneFadeConfig {
-    pub scene_id: String,
-    pub scene_index: i32,
-    pub scene_name: String,
-    pub fade_enabled: bool,
-    pub duration_ms: u64,
-    pub fade_targets: Vec<FadeTarget>,
-}
-
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppLogEntry {
@@ -124,8 +102,6 @@ pub struct AppViewState {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
     pub selected_scene_id: Option<String>,
-    pub scene_fade_configs: Vec<SceneFadeConfig>,
-    pub listen_mode_active: bool,
     pub show_file_name: String,
     pub show_file_path: Option<String>,
     pub show_file_dirty: bool,

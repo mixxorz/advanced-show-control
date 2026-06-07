@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -7,7 +7,7 @@ use tokio::sync::Mutex;
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
-    LogSource, SceneConfig, SceneFadeConfig, SceneSummary,
+    LogSource, SceneConfig, SceneSummary,
 };
 
 pub(super) const MAX_LOGS: usize = 200;
@@ -32,12 +32,9 @@ pub(super) struct ShellInner {
     pub(super) lockout: bool,
     pub(super) scene_configs: Vec<SceneConfig>,
     pub(super) selected_scene_id: Option<String>,
-    pub(super) scene_fade_configs: Vec<SceneFadeConfig>,
-    pub(super) listen_mode_active: bool,
     pub(super) show_file_path: Option<PathBuf>,
     pub(super) show_file_dirty: bool,
     pub(super) show_file_last_saved_at: Option<String>,
-    pub(super) unknown_fader_warnings: HashSet<(i32, i32)>,
     pub(super) logs: VecDeque<AppLogEntry>,
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
@@ -139,8 +136,6 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         lockout: inner.lockout,
         scene_configs: inner.scene_configs.clone(),
         selected_scene_id: inner.selected_scene_id.clone(),
-        scene_fade_configs: inner.scene_fade_configs.clone(),
-        listen_mode_active: inner.listen_mode_active,
         show_file_name: inner
             .show_file_path
             .as_ref()
