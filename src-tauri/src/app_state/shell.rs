@@ -73,9 +73,9 @@ impl ShellState {
             return;
         }
 
-        active_command_bus.set(None).await;
         let mut handles = self.handles.lock().await;
-        handles.abort_all();
+        handles.abort_all().await;
+        active_command_bus.set(None).await;
     }
 
     pub async fn install_runtime_handles_for_generation(
@@ -86,12 +86,13 @@ impl ShellState {
     ) -> Result<(), RuntimeHandles> {
         let inner = self.inner.lock().await;
         if inner.generation != generation {
+            next.abort_all().await;
             return Err(next);
         }
 
         active_command_bus.set(next.command_bus.clone()).await;
         let mut handles = self.handles.lock().await;
-        handles.abort_all();
+        handles.abort_all().await;
         next.active_generation = generation;
         *handles = next;
         drop(inner);
@@ -109,7 +110,10 @@ fn cover_state_variants() {
 }
 
 impl RuntimeHandles {
-    pub fn abort_all(&mut self) {
+    pub async fn abort_all(&mut self) {
+        if let Some(command_bus) = self.command_bus.clone() {
+            command_bus.clear_targets().await;
+        }
         if let Some(projector) = self.projector.take() {
             projector.abort();
         }

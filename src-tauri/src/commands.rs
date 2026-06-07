@@ -243,7 +243,7 @@ pub async fn connect_lv1(
         .install_runtime_handles_for_generation(generation, runtime_handles, &active_command_bus)
         .await
     {
-        stale_handles.abort_all();
+        stale_handles.abort_all().await;
         let snapshot = state.snapshot().await;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);

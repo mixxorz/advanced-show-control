@@ -50,6 +50,12 @@ impl AppCommandBus {
         self.targets.lock().await.fade = fade;
     }
 
+    pub async fn clear_targets(&self) {
+        let mut targets = self.targets.lock().await;
+        targets.lv1 = None;
+        targets.fade = None;
+    }
+
     pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
         let lv1 = self.targets.lock().await.lv1.clone();
         match lv1 {
@@ -163,5 +169,39 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn clearing_targets_invalidates_cloned_bus_handles() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus.clone());
+        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        tokio::spawn(async move {
+            if let Some(crate::fade::types::FadeCommand::StartFade { reply, .. }) = fade_rx.recv().await
+            {
+                let _ = reply.send(Ok(()));
+            }
+        });
+
+        bus.set_fade(Some(fade)).await;
+        let cloned_bus = bus.clone();
+
+        let config = FadeConfig {
+            targets: vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                target_db: -12.0,
+            }],
+            duration_ms: 1_000,
+            curve: FadeCurve::Linear,
+        };
+
+        assert_eq!(cloned_bus.start_fade(config.clone()).await, Ok(()));
+
+        bus.clear_targets().await;
+
+        assert_eq!(cloned_bus.start_fade(config).await, Err(AppCommandError::FadeUnavailable));
     }
 }
