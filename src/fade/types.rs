@@ -1,4 +1,4 @@
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use crate::fade::curve::FadeCurve;
 use crate::runtime::commands::AppCommandError;
@@ -29,7 +29,6 @@ pub enum FadeCommand {
     FinishNow {
         reply: oneshot::Sender<Result<(), AppCommandError>>,
     },
-    Subscribe { tx: mpsc::Sender<FadeEvent> },
 }
 
 #[derive(Debug, Clone)]

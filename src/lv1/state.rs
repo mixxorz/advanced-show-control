@@ -110,13 +110,6 @@ impl Lv1ActorHandle {
             .expect("actor dropped before responding to GetState")
     }
 
-    /// Subscribe to all future events. Returns a receiver for `Lv1Event`.
-    pub async fn subscribe(&self) -> mpsc::Receiver<Lv1Event> {
-        let (event_tx, event_rx) = mpsc::channel(64);
-        let _ = self.tx.send(Lv1Command::Subscribe { tx: event_tx }).await;
-        event_rx
-    }
-
     /// Send a `/Set/Track/Out/Gain` command to LV1. Fire and forget.
     pub async fn set_gain(
         &self,
@@ -186,7 +179,6 @@ struct ActorState {
     channels: Vec<ChannelInfo>,
     scene_buf: SceneBuffer,
     last_ping: Instant,
-    subscribers: Vec<mpsc::Sender<Lv1Event>>,
     event_bus: AppEventBus,
 }
 
@@ -199,7 +191,6 @@ impl ActorState {
             channels: Vec::new(),
             scene_buf: SceneBuffer::default(),
             last_ping: Instant::now(),
-            subscribers: Vec::new(),
             event_bus,
         }
     }
@@ -214,9 +205,7 @@ impl ActorState {
     }
 
     fn fan_out(&mut self, event: Lv1Event) {
-        self.event_bus.publish(AppEvent::Lv1(event.clone()));
-        self.subscribers
-            .retain(|tx| tx.try_send(event.clone()).is_ok());
+        self.event_bus.publish(AppEvent::Lv1(event));
     }
 }
 
@@ -243,9 +232,6 @@ async fn drain_commands_for(
                 None => break,
                 Some(Lv1Command::GetState { reply }) => {
                     let _ = reply.send(state.snapshot());
-                }
-                Some(Lv1Command::Subscribe { tx }) => {
-                    state.subscribers.push(tx);
                 }
                 Some(Lv1Command::SetGain { reply, .. }) => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
@@ -290,16 +276,11 @@ async fn run_actor(
         state.connection = ConnectionStatus::Connected;
         state.last_ping = Instant::now();
 
-        // Yield to let any pending Subscribe commands arrive before we emit Connected.
         tokio::task::yield_now().await;
-        // Drain any commands that arrived during connection setup.
         while let Ok(cmd) = cmd_rx.try_recv() {
             match cmd {
                 Lv1Command::GetState { reply } => {
                     let _ = reply.send(state.snapshot());
-                }
-                Lv1Command::Subscribe { tx } => {
-                    state.subscribers.push(tx);
                 }
                 Lv1Command::SetGain { reply, .. } => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
@@ -380,9 +361,6 @@ async fn run_connected(
                     None => return DisconnectReason::CommandChannelClosed,
                     Some(Lv1Command::GetState { reply }) => {
                         let _ = reply.send(state.snapshot());
-                    }
-                    Some(Lv1Command::Subscribe { tx }) => {
-                        state.subscribers.push(tx);
                     }
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
                         let result = send_async(

@@ -1,5 +1,5 @@
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::model::{ChannelInfo, Lv1StateSnapshot, SceneListEntry, SceneState};
 
@@ -18,9 +18,6 @@ pub enum Lv1ActorError {
 pub enum Lv1Command {
     GetState {
         reply: oneshot::Sender<Lv1StateSnapshot>,
-    },
-    Subscribe {
-        tx: mpsc::Sender<Lv1Event>,
     },
     SetGain {
         group: i32,

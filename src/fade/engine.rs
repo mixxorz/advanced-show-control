@@ -48,12 +48,6 @@ impl FadeEngineHandle {
             .map_err(|_| AppCommandError::FadeUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
     }
-
-    pub async fn subscribe(&self) -> mpsc::Receiver<FadeEvent> {
-        let (tx, rx) = mpsc::channel(64);
-        let _ = self.tx.send(FadeCommand::Subscribe { tx }).await;
-        rx
-    }
 }
 
 pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
@@ -68,7 +62,6 @@ pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeE
 
 struct EngineState {
     channels: Vec<ActiveChannel>,
-    subscribers: Vec<mpsc::Sender<FadeEvent>>,
     event_bus: AppEventBus,
 }
 
@@ -76,15 +69,12 @@ impl EngineState {
     fn new(event_bus: AppEventBus) -> Self {
         Self {
             channels: Vec::new(),
-            subscribers: Vec::new(),
             event_bus,
         }
     }
 
     fn fan_out(&mut self, event: FadeEvent) {
-        self.event_bus.publish(AppEvent::Fade(event.clone()));
-        self.subscribers
-            .retain(|tx| tx.try_send(event.clone()).is_ok());
+        self.event_bus.publish(AppEvent::Fade(event));
     }
 
     fn is_active(&self) -> bool {
@@ -120,10 +110,7 @@ async fn run_engine(
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 match cmd {
-                    None => break,
-                    Some(FadeCommand::Subscribe { tx }) => {
-                        state.subscribers.push(tx);
-                    }
+                None => break,
                     Some(FadeCommand::StartFade { config, reply }) => {
                         let snapshot = match command_bus.get_lv1_state().await {
                             Ok(snapshot) => snapshot,

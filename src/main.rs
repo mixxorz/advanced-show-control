@@ -499,7 +499,7 @@ async fn run_fade_test(
     command_bus.set_lv1(Some(lv1.clone())).await;
     let engine = spawn_engine(command_bus.clone(), event_bus.clone());
     command_bus.set_fade(Some(engine.clone())).await;
-    let mut fade_events = engine.subscribe().await;
+    let mut fade_events = event_bus.subscribe();
 
     // Wait for LV1 connection
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -559,24 +559,25 @@ async fn run_fade_test(
 
     loop {
         match fade_events.recv().await {
-            Some(FadeEvent::FadeStarted) => println!("[fade-started]"),
-            Some(FadeEvent::FadeCompleted) => {
+            Ok(AppEvent::Fade(FadeEvent::FadeStarted)) => println!("[fade-started]"),
+            Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => {
                 println!("[fade-complete] reached {target_db:.1} dB");
                 break;
             }
-            Some(FadeEvent::FadeAborted) => {
+            Ok(AppEvent::Fade(FadeEvent::FadeAborted)) => {
                 println!("[fade-aborted]");
                 break;
             }
-            Some(FadeEvent::ChannelOverride { group, channel }) => {
+            Ok(AppEvent::Fade(FadeEvent::ChannelOverride { group, channel })) => {
                 println!(
                     "[override] group={group} ch={channel} — manual move detected, channel cancelled"
                 );
             }
-            Some(FadeEvent::ChannelCancelled { group, channel }) => {
+            Ok(AppEvent::Fade(FadeEvent::ChannelCancelled { group, channel })) => {
                 println!("[cancelled] group={group} ch={channel}");
             }
-            None => break,
+            Ok(_) => {}
+            Err(_) => break,
         }
     }
 

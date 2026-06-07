@@ -2,7 +2,7 @@ use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::ConnectionStatus;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
-use lv1_scene_fade_utility::runtime::events::AppEventBus;
+use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
 use lv1_scene_fade_utility::osc::OscArg;
 use std::io::Write;
 use std::net::TcpListener;
@@ -11,11 +11,11 @@ fn make_lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
     encode_frame(address, args).unwrap()
 }
 
-async fn wait_for_connected(events: &mut tokio::sync::mpsc::Receiver<Lv1Event>) {
+async fn wait_for_connected(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Some(e) = events.recv().await {
-            if matches!(e, Lv1Event::Connected) {
-                break;
+        while let Ok(event) = events.recv().await {
+            if matches!(event, AppEvent::Lv1(Lv1Event::Connected)) {
+                return;
             }
         }
     })
@@ -33,15 +33,16 @@ async fn actor_connects_and_emits_connected_event() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
         .unwrap()
         .unwrap();
 
-    assert!(matches!(event, Lv1Event::Connected));
+    assert!(matches!(event, AppEvent::Lv1(Lv1Event::Connected)));
     server.await.unwrap();
 }
 
@@ -68,16 +69,17 @@ async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     let mut got_disconnect = false;
     let mut got_reconnect = false;
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        while let Some(event) = events.recv().await {
+        while let Ok(event) = events.recv().await {
             match event {
-                Lv1Event::Disconnected => got_disconnect = true,
-                Lv1Event::Connected if got_disconnect => {
+                AppEvent::Lv1(Lv1Event::Disconnected) => got_disconnect = true,
+                AppEvent::Lv1(Lv1Event::Connected) if got_disconnect => {
                     got_reconnect = true;
                     break;
                 }
@@ -113,13 +115,14 @@ async fn actor_parses_and_emits_scene_changed() {
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     let mut scene_event = None;
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while let Some(event) = events.recv().await {
-            if let Lv1Event::SceneChanged(s) = event {
+        while let Ok(event) = events.recv().await {
+            if let AppEvent::Lv1(Lv1Event::SceneChanged(s)) = event {
                 scene_event = Some(s);
                 break;
             }
@@ -146,8 +149,9 @@ async fn get_state_returns_snapshot_with_current_values() {
         std::thread::sleep(std::time::Duration::from_millis(500));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     wait_for_connected(&mut events).await;
 
@@ -178,8 +182,9 @@ async fn actor_handles_set_gain_command() {
         std::thread::sleep(std::time::Duration::from_millis(500));
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     wait_for_connected(&mut events).await;
 
@@ -220,8 +225,9 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     wait_for_connected(&mut events).await;
 
@@ -277,8 +283,9 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     wait_for_connected(&mut events).await;
 
@@ -332,14 +339,15 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
         drop(stream);
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     wait_for_connected(&mut events).await;
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Some(e) = events.recv().await {
-            if matches!(e, Lv1Event::Disconnected) {
+        while let Ok(event) = events.recv().await {
+            if matches!(event, AppEvent::Lv1(Lv1Event::Disconnected)) {
                 break;
             }
         }
@@ -385,8 +393,9 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
         }
     });
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default());
-    let mut events = handle.subscribe().await;
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
 
     wait_for_connected(&mut events).await;
 

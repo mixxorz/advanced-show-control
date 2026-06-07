@@ -1,13 +1,35 @@
 use lv1_scene_fade_utility::fade::curve::FadeCurve;
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeTarget};
+use lv1_scene_fade_utility::lv1::messages::Lv1Event;
+use lv1_scene_fade_utility::lv1::model::SceneState;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::encode_frame;
 use lv1_scene_fade_utility::osc::OscArg;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::events::AppEventBus;
+use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
 use std::net::TcpListener;
+
+#[tokio::test]
+async fn app_event_bus_carries_lv1_events_without_actor_subscriber_api() {
+    let bus = AppEventBus::new(16);
+    let mut rx = bus.subscribe();
+
+    bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(SceneState {
+        index: 4,
+        name: "Outro".to_string(),
+    })));
+
+    let event = rx.recv().await.unwrap();
+    match event {
+        AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
+            assert_eq!(scene.index, 4);
+            assert_eq!(scene.name, "Outro");
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
 
 fn channels_args() -> Vec<OscArg> {
     let mut args = vec![OscArg::Int(1)];
