@@ -66,8 +66,8 @@ pub fn validate_show_file(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
 ) -> Result<LoadValidationReport, String> {
-    if lv1.scene_list.is_empty() || lv1.channels.is_empty() {
-        return Err("Open a show file after LV1 scenes and channels are loaded".to_string());
+    if lv1.scene_list.is_empty() {
+        return Err("Open a show file after LV1 scenes are loaded".to_string());
     }
 
     if file.schema_version != SHOW_FILE_SCHEMA_VERSION {
@@ -502,14 +502,25 @@ mod tests {
     }
 
     #[test]
-    fn validation_requires_scene_and_channel_lists() {
+    fn validation_requires_scene_list_but_allows_empty_channels() {
+        let mut file = show_file();
+        let mut snapshot = lv1_snapshot();
+        snapshot.channels.clear();
+
+        let report = validate_show_file(&mut file, &snapshot).unwrap();
+
+        assert_eq!(report.removed_scenes.len(), 0);
+    }
+
+    #[test]
+    fn validation_still_requires_scene_list() {
         let mut file = show_file();
         let mut snapshot = lv1_snapshot();
         snapshot.scene_list.clear();
 
         assert_eq!(
             validate_show_file(&mut file, &snapshot).unwrap_err(),
-            "Open a show file after LV1 scenes and channels are loaded"
+            "Open a show file after LV1 scenes are loaded"
         );
     }
 }

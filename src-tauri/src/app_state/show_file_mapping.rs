@@ -53,7 +53,7 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
 
         let lv1 = inner.lv1_snapshot.clone().ok_or_else(|| {
-            "Open a show file after LV1 scenes and channels are loaded".to_string()
+            "Open a show file after LV1 scenes are loaded".to_string()
         })?;
         let report = validate_show_file(file, &lv1)?;
 

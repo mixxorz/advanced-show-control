@@ -31,12 +31,22 @@ async fn export_show_file_contains_current_configs() {
     );
 }
 
+fn lv1_scene_only_snapshot() -> lv1_scene_fade_utility::lv1::model::Lv1StateSnapshot {
+    lv1_scene_fade_utility::lv1::model::Lv1StateSnapshot {
+        connection: lv1_scene_fade_utility::lv1::model::ConnectionStatus::Connected,
+        scene: None,
+        scene_list: vec![lv1_scene_fade_utility::lv1::model::SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }],
+        channels: Vec::new(),
+    }
+}
+
 #[tokio::test]
 async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
     let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    state.begin_connection(lv1_scene_only_snapshot()).await;
 
     {
         let mut inner = state.inner.lock().await;
@@ -175,4 +185,38 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
             .iter()
             .any(|entry| { entry.message == "Deleted saved scene config during load: 2: Missing" })
     );
+}
+
+#[tokio::test]
+async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
+    let state = ShellState::default();
+    state.begin_connection(lv1_scene_only_snapshot()).await;
+
+    let mut file = ShowFile {
+        schema_version: 1,
+        app_version: "0.1.0".to_string(),
+        saved_at: "123".to_string(),
+        safety: crate::show_file::ShowFileSafety { lockout: false },
+        scene_configs: vec![ShowFileSceneConfig {
+            scene_index: 1,
+            scene_name: "Intro".to_string(),
+            duration_ms: 5000,
+            channel_configs: vec![ShowFileChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-9.0),
+            }],
+            scoped_channels: vec![ShowFileChannelRef { group: 0, channel: 2 }],
+        }],
+    };
+
+    let snapshot = state
+        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
+        .await
+        .unwrap();
+
+    assert!(!snapshot.show_file_dirty);
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].channel_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 1);
 }
