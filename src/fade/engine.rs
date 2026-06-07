@@ -18,7 +18,7 @@ pub struct FadeEngineHandle {
 }
 
 impl FadeEngineHandle {
-    pub(crate) fn new(tx: mpsc::Sender<FadeCommand>) -> Self {
+    pub fn new(tx: mpsc::Sender<FadeCommand>) -> Self {
         Self { tx }
     }
 

@@ -154,9 +154,106 @@ fn publish_refresh_after_scene_recall_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lv1_scene_fade_utility::fade::engine::FadeEngineHandle;
+    use lv1_scene_fade_utility::fade::types::FadeCommand;
     use lv1_scene_fade_utility::lv1::model::{
         ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
     };
+    use lv1_scene_fade_utility::lv1::state::spawn_actor;
+    use lv1_scene_fade_utility::osc::OscArg;
+    use std::io::Write;
+    use std::net::TcpListener;
+    use std::time::Duration;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn valid_scene_recall_aborts_existing_fade_then_starts_new_fade() {
+        let event_bus = AppEventBus::default();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+
+        let (lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        command_bus.set_lv1(Some(lv1)).await;
+
+        let handle =
+            spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+
+        let abort = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("timed out waiting for AbortAll")
+            .expect("fade command channel should be open");
+        match abort {
+            FadeCommand::AbortAll { reply } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected AbortAll before StartFade, got {other:?}"),
+        }
+
+        let start = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("timed out waiting for StartFade")
+            .expect("fade command channel should be open");
+        match start {
+            FadeCommand::StartFade { config, reply } => {
+                assert_eq!(config.duration_ms, 4_000);
+                assert_eq!(config.targets.len(), 1);
+                assert_eq!(config.targets[0].target_db, -12.5);
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected StartFade after AbortAll, got {other:?}"),
+        }
+
+        wait_for_log(&state, "Auto fade start requested for scene 1: Intro").await;
+        let snapshot = state.snapshot().await;
+        assert!(snapshot.logs.iter().any(|log| {
+            log.message == "Previous fade abort requested before auto fade for scene 1: Intro"
+        }));
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .any(|log| log.message == "Auto fade start requested for scene 1: Intro")
+        );
+
+        handle.abort();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn blocked_recall_does_not_abort_existing_fade() {
+        let event_bus = AppEventBus::default();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+        state.set_lockout(true).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+
+        let (lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        command_bus.set_lv1(Some(lv1)).await;
+
+        let handle =
+            spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+
+        wait_for_log(
+            &state,
+            "Auto fade blocked for scene 1: Intro: lockout is enabled",
+        )
+        .await;
+        tokio::time::timeout(Duration::from_millis(100), fade_rx.recv())
+            .await
+            .expect_err("blocked recall should not send fade commands");
+
+        handle.abort();
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn unavailable_lv1_state_blocks_before_abort_or_start() {
@@ -299,6 +396,51 @@ mod tests {
             .await
             .unwrap();
         generation
+    }
+
+    async fn spawn_fake_lv1_with_intro(
+        event_bus: AppEventBus,
+    ) -> (
+        lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream.write_all(&channels_frame()).unwrap();
+            stream.write_all(&scene_index_frame()).unwrap();
+            stream.write_all(&scene_name_frame()).unwrap();
+            std::thread::sleep(Duration::from_millis(250));
+        });
+
+        let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus);
+        (lv1, server)
+    }
+
+    fn channels_frame() -> Vec<u8> {
+        let mut args = vec![OscArg::Int(1)];
+        args.push(OscArg::String("Lead".to_string()));
+        args.push(OscArg::Int(0));
+        args.push(OscArg::Int(2));
+        args.push(OscArg::Double(-8.0));
+        for _ in 0..15 {
+            args.push(OscArg::Int(0));
+        }
+        lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &args).unwrap()
+    }
+
+    fn scene_index_frame() -> Vec<u8> {
+        lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/CurSceneIndex", &[OscArg::Int(1)])
+            .unwrap()
+    }
+
+    fn scene_name_frame() -> Vec<u8> {
+        lv1_scene_fade_utility::lv1::tcp::encode_frame(
+            "/Notify/Scene/Name",
+            &[OscArg::String("Intro".to_string())],
+        )
+        .unwrap()
     }
 
     async fn wait_for_log(state: &ShellState, message: &str) {
