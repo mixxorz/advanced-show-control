@@ -169,13 +169,8 @@ pub async fn disconnect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
 ) -> Result<AppViewState, String> {
-    {
-        let mut handles = state.handles.lock().await;
-        handles.lv1 = None;
-        handles.fade = None;
-    }
-
     let snapshot = state.disconnect().await;
+    state.abort_runtime_handles().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -207,6 +202,7 @@ pub async fn connect_lv1(
     let event_bus = AppEventBus::default();
     let (generation, connecting_snapshot) = state.begin_connecting().await;
     emit_snapshot(&app, &connecting_snapshot);
+    state.abort_runtime_handles().await;
     let events = event_bus.subscribe();
 
     let shell_state = (*state).clone();
@@ -216,20 +212,21 @@ pub async fn connect_lv1(
     let command_bus = AppCommandBus::new(command_tx);
     let mut dispatcher = RuntimeDispatcher::new(command_rx, event_bus.clone());
     dispatcher.set_lv1(Some(lv1.clone()));
-    tauri::async_runtime::spawn(async move { dispatcher.run().await });
+    let dispatcher_task = tokio::spawn(async move { dispatcher.run().await });
     let fade = spawn_engine(command_bus, event_bus.clone());
+    let projector_task = spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
     {
         let mut handles = state.handles.lock().await;
         handles.lv1 = Some(lv1.clone());
         handles.fade = Some(fade);
+        handles.dispatcher = Some(dispatcher_task);
+        handles.projector = Some(projector_task);
     }
 
     let initial_snapshot = lv1.get_state().await;
     let snapshot = state.begin_connection(initial_snapshot).await;
     emit_snapshot(&app, &snapshot);
-
-    spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
     Ok(snapshot)
 }
@@ -245,8 +242,8 @@ fn spawn_shell_state_projector(
     state: ShellState,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
-) {
-    tauri::async_runtime::spawn(async move {
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
         loop {
             match events.recv().await {
                 Ok(app_event) => match app_event {
@@ -281,7 +278,7 @@ fn spawn_shell_state_projector(
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    });
+    })
 }
 
 async fn save_show_file_to_path(

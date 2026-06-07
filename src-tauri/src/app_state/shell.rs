@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
@@ -16,6 +17,8 @@ pub(super) const MAX_LOGS: usize = 200;
 pub struct RuntimeHandles {
     pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
+    pub dispatcher: Option<JoinHandle<()>>,
+    pub projector: Option<JoinHandle<()>>,
 }
 
 #[derive(Clone)]
@@ -55,6 +58,11 @@ impl ShellState {
         let inner = self.inner.lock().await;
         snapshot_from_inner(&inner)
     }
+
+    pub async fn abort_runtime_handles(&self) {
+        let mut handles = self.handles.lock().await;
+        handles.abort_all();
+    }
 }
 
 fn cover_state_variants() {
@@ -64,6 +72,19 @@ fn cover_state_variants() {
         AppFadeState::Running,
         AppFadeState::Blocked,
     );
+}
+
+impl RuntimeHandles {
+    pub fn abort_all(&mut self) {
+        if let Some(dispatcher) = self.dispatcher.take() {
+            dispatcher.abort();
+        }
+        if let Some(projector) = self.projector.take() {
+            projector.abort();
+        }
+        self.lv1 = None;
+        self.fade = None;
+    }
 }
 
 pub(super) fn scene_id(index: i32, name: &str) -> String {

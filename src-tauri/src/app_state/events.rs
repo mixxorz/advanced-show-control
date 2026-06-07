@@ -48,7 +48,9 @@ impl ShellState {
             .as_ref()
             .map(|snapshot| snapshot.scene_list.clone())
             .unwrap_or_default();
-        inner.reconcile_scene_fade_configs(&scenes);
+        if !scenes.is_empty() {
+            inner.reconcile_scene_fade_configs(&scenes);
+        }
         let message = match inner
             .lv1_snapshot
             .as_ref()

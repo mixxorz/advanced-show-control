@@ -31,6 +31,29 @@ async fn fade_events_update_fade_state() {
     assert_eq!(overridden.logs.last().unwrap().message, "Fade channel override detected: group=3 channel=7");
 }
 
+#[tokio::test]
+async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_empty() {
+    let state = ShellState::default();
+    {
+        let mut inner = state.inner.lock().await;
+        inner.scene_configs = vec![scene_config(1, "Intro", Vec::new(), Vec::new())];
+        inner.selected_scene_id = Some("1::Intro".to_string());
+    }
+
+    let snapshot = state
+        .begin_connection(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+        })
+        .await;
+
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
+    assert_eq!(snapshot.selected_scene_id.as_deref(), Some("1::Intro"));
+}
+
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
     let mut inner = ShellInner::default();
