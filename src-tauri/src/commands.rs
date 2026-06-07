@@ -225,7 +225,13 @@ pub async fn connect_lv1(
     }
 
     let initial_snapshot = lv1.get_state().await;
-    let snapshot = state.begin_connection(initial_snapshot).await;
+    let snapshot = match state
+        .begin_connection_for_generation(generation, initial_snapshot)
+        .await
+    {
+        Some(snapshot) => snapshot,
+        None => state.snapshot().await,
+    };
     emit_snapshot(&app, &snapshot);
 
     Ok(snapshot)

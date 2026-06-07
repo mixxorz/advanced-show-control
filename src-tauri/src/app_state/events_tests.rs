@@ -54,6 +54,40 @@ async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_emp
     assert_eq!(snapshot.selected_scene_id.as_deref(), Some("1::Intro"));
 }
 
+#[tokio::test]
+async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+
+    {
+        let mut inner = state.inner.lock().await;
+        inner.scene_configs = vec![scene_config(2, "Verse", Vec::new(), Vec::new())];
+        inner.selected_scene_id = Some("2::Verse".to_string());
+    }
+
+    let _ = state.disconnect().await;
+
+    let snapshot = state
+        .begin_connection_for_generation(
+            generation,
+            Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+            },
+        )
+        .await;
+
+    assert!(snapshot.is_none());
+
+    let current = state.snapshot().await;
+    assert_eq!(current.connection, AppConnectionState::Disconnected);
+    assert_eq!(current.scene_configs.len(), 1);
+    assert_eq!(current.scene_configs[0].scene_id, "2::Verse");
+    assert_eq!(current.selected_scene_id.as_deref(), Some("2::Verse"));
+}
+
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
     let mut inner = ShellInner::default();

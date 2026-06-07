@@ -42,27 +42,20 @@ impl ShellState {
 
     pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppViewState {
         let mut inner = self.inner.lock().await;
-        inner.lv1_snapshot = Some(snapshot);
-        let scenes = inner
-            .lv1_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.scene_list.clone())
-            .unwrap_or_default();
-        if !scenes.is_empty() {
-            inner.reconcile_scene_fade_configs(&scenes);
+        apply_begin_connection(&mut inner, snapshot)
+    }
+
+    pub async fn begin_connection_for_generation(
+        &self,
+        generation: u64,
+        snapshot: Lv1StateSnapshot,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
         }
-        let message = match inner
-            .lv1_snapshot
-            .as_ref()
-            .map(|snapshot| &snapshot.connection)
-        {
-            Some(ConnectionStatus::Connecting) => "Connecting to LV1",
-            Some(ConnectionStatus::Connected) => "LV1 connected",
-            Some(ConnectionStatus::Disconnected) => "LV1 disconnected",
-            None => "LV1 disconnected",
-        };
-        inner.push_log(LogSource::Lv1, LogSeverity::Info, message.to_string());
-        snapshot_from_inner(&inner)
+
+        Some(apply_begin_connection(&mut inner, snapshot))
     }
 
     pub async fn disconnect(&self) -> AppViewState {
@@ -285,4 +278,28 @@ fn ensure_lv1_snapshot(inner: &mut ShellInner) -> &mut Lv1StateSnapshot {
         scene_list: Vec::new(),
         channels: Vec::new(),
     })
+}
+
+fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) -> AppViewState {
+    inner.lv1_snapshot = Some(snapshot);
+    let scenes = inner
+        .lv1_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.scene_list.clone())
+        .unwrap_or_default();
+    if !scenes.is_empty() {
+        inner.reconcile_scene_fade_configs(&scenes);
+    }
+    let message = match inner
+        .lv1_snapshot
+        .as_ref()
+        .map(|snapshot| &snapshot.connection)
+    {
+        Some(ConnectionStatus::Connecting) => "Connecting to LV1",
+        Some(ConnectionStatus::Connected) => "LV1 connected",
+        Some(ConnectionStatus::Disconnected) => "LV1 disconnected",
+        None => "LV1 disconnected",
+    };
+    inner.push_log(LogSource::Lv1, LogSeverity::Info, message.to_string());
+    snapshot_from_inner(inner)
 }
