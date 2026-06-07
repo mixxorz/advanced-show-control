@@ -402,7 +402,7 @@ mod tests {
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
-    use tauri::{test::mock_app, Listener};
+    use tauri::{Listener, test::mock_app};
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
