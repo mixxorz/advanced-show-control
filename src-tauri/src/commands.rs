@@ -72,53 +72,40 @@ pub async fn select_scene_config(
 }
 
 #[tauri::command]
-pub async fn set_scene_fade_enabled(
+pub async fn store_scene_config(
     app: AppHandle,
     state: State<'_, ShellState>,
     scene_id: String,
-    enabled: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.set_scene_fade_enabled(scene_id, enabled).await?;
+    let snapshot = state.store_scene_config(scene_id).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 #[tauri::command]
-pub async fn set_listen_mode(
-    app: AppHandle,
-    state: State<'_, ShellState>,
-    active: bool,
-) -> Result<AppViewState, String> {
-    let snapshot = state.set_listen_mode(active).await?;
-    emit_snapshot(&app, &snapshot);
-    Ok(snapshot)
-}
-
-#[tauri::command]
-pub async fn set_fade_target_enabled(
+pub async fn set_channel_scoped(
     app: AppHandle,
     state: State<'_, ShellState>,
     scene_id: String,
     group: i32,
     channel: i32,
-    enabled: bool,
+    scoped: bool,
 ) -> Result<AppViewState, String> {
     let snapshot = state
-        .set_fade_target_enabled(scene_id, group, channel, enabled)
+        .set_channel_scoped(scene_id, group, channel, scoped)
         .await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 #[tauri::command]
-pub async fn remove_fade_target(
+pub async fn set_all_channels_scoped(
     app: AppHandle,
     state: State<'_, ShellState>,
     scene_id: String,
-    group: i32,
-    channel: i32,
+    scoped: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.remove_fade_target(&scene_id, group, channel).await?;
+    let snapshot = state.set_all_channels_scoped(scene_id, scoped).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -325,6 +312,13 @@ mod tests {
         assert!(folder.exists());
 
         let _ = fs::remove_dir_all(created.parent().unwrap());
+    }
+
+    #[test]
+    fn scene_store_commands_are_exposed() {
+        let _ = store_scene_config;
+        let _ = set_channel_scoped;
+        let _ = set_all_channels_scoped;
     }
 }
 

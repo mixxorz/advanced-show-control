@@ -19,10 +19,9 @@ fn main() {
             commands::disconnect_lv1,
             commands::abort_all_fades,
             commands::finish_fade_now,
-            commands::set_scene_fade_enabled,
-            commands::set_listen_mode,
-            commands::set_fade_target_enabled,
-            commands::remove_fade_target,
+            commands::store_scene_config,
+            commands::set_channel_scoped,
+            commands::set_all_channels_scoped,
             commands::set_lockout,
         ])
         .run(tauri::generate_context!())
