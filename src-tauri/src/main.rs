@@ -3,10 +3,12 @@ mod commands;
 mod show_file;
 
 use app_state::ShellState;
+use commands::ActiveCommandBus;
 
 fn main() {
     tauri::Builder::default()
         .manage(ShellState::default())
+        .manage(ActiveCommandBus::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_status,
             commands::new_show_file,

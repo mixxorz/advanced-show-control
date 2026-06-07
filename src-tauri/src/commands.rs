@@ -7,12 +7,26 @@ use lv1_scene_fade_utility::runtime::dispatcher::RuntimeDispatcher;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::spawn_blocking;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
+
+#[derive(Clone, Default)]
+pub struct ActiveCommandBus(pub Arc<Mutex<Option<AppCommandBus>>>);
+
+impl ActiveCommandBus {
+    pub async fn set(&self, command_bus: Option<AppCommandBus>) {
+        *self.0.lock().await = command_bus;
+    }
+
+    pub async fn current(&self) -> Option<AppCommandBus> {
+        self.0.lock().await.clone()
+    }
+}
 
 #[tauri::command]
 pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppViewState, String> {
@@ -168,23 +182,26 @@ pub async fn set_lockout(
 pub async fn disconnect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
 ) -> Result<AppViewState, String> {
     let (generation, snapshot) = state.disconnect().await;
-    state.abort_runtime_handles_for_generation(generation).await;
+    state
+        .clear_runtime_handles_for_generation(generation, &active_command_bus)
+        .await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 #[tauri::command]
-pub async fn abort_all_fades(state: State<'_, ShellState>) -> Result<(), String> {
-    let command_bus = { state.handles.lock().await.command_bus.clone() };
+pub async fn abort_all_fades(active_command_bus: State<'_, ActiveCommandBus>) -> Result<(), String> {
+    let command_bus = active_command_bus.current().await;
     let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
     command_bus.abort_all_fades().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub async fn finish_fade_now(state: State<'_, ShellState>) -> Result<(), String> {
-    let command_bus = { state.handles.lock().await.command_bus.clone() };
+pub async fn finish_fade_now(active_command_bus: State<'_, ActiveCommandBus>) -> Result<(), String> {
+    let command_bus = active_command_bus.current().await;
     let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
     command_bus.finish_fade_now().await.map_err(|err| err.to_string())
 }
@@ -193,6 +210,7 @@ pub async fn finish_fade_now(state: State<'_, ShellState>) -> Result<(), String>
 pub async fn connect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: Option<u64>,
@@ -227,7 +245,7 @@ pub async fn connect_lv1(
     };
 
     if let Err(mut stale_handles) = state
-        .install_runtime_handles_for_generation(generation, runtime_handles)
+        .install_runtime_handles_for_generation(generation, runtime_handles, &active_command_bus)
         .await
     {
         stale_handles.abort_all();
@@ -369,6 +387,21 @@ mod tests {
         let _ = store_scene_config;
         let _ = set_channel_scoped;
         let _ = set_all_channels_scoped;
+    }
+
+    #[tokio::test]
+    async fn active_command_bus_tracks_current_bus() {
+        let holder = ActiveCommandBus::default();
+        assert!(holder.current().await.is_none());
+
+        let (tx, _rx) = mpsc::channel(1);
+        let bus = AppCommandBus::new(tx);
+        holder.set(Some(bus.clone())).await;
+
+        assert!(holder.current().await.is_some());
+
+        holder.set(None).await;
+        assert!(holder.current().await.is_none());
     }
 }
 

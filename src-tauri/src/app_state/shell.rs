@@ -7,6 +7,8 @@ use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
+use crate::commands::ActiveCommandBus;
+
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
     LogSource, SceneConfig, SceneSummary,
@@ -62,12 +64,17 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
-    pub async fn abort_runtime_handles_for_generation(&self, generation: u64) {
+    pub async fn clear_runtime_handles_for_generation(
+        &self,
+        generation: u64,
+        active_command_bus: &ActiveCommandBus,
+    ) {
         let inner = self.inner.lock().await;
         if inner.generation != generation {
             return;
         }
 
+        active_command_bus.set(None).await;
         let mut handles = self.handles.lock().await;
         handles.abort_all();
     }
@@ -76,12 +83,14 @@ impl ShellState {
         &self,
         generation: u64,
         mut next: RuntimeHandles,
+        active_command_bus: &ActiveCommandBus,
     ) -> Result<(), RuntimeHandles> {
         let inner = self.inner.lock().await;
         if inner.generation != generation {
             return Err(next);
         }
 
+        active_command_bus.set(next.command_bus.clone()).await;
         let mut handles = self.handles.lock().await;
         handles.abort_all();
         next.active_generation = generation;
@@ -217,8 +226,6 @@ pub(super) fn current_timestamp() -> String {
 mod tests {
     use super::*;
     use lv1_scene_fade_utility::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
-    use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn default_snapshot_exposes_untitled_show_and_is_not_dirty() {
@@ -268,13 +275,15 @@ mod tests {
             active_generation: 0,
             lv1: None,
             fade: None,
-            command_bus: Some(AppCommandBus::new(mpsc::channel(1).0)),
+            command_bus: None,
             dispatcher: Some(tokio::spawn(async {})),
             projector: Some(tokio::spawn(async {})),
         };
 
+        let active_command_bus = crate::commands::ActiveCommandBus::default();
+
         match state
-            .install_runtime_handles_for_generation(generation, current_handles)
+            .install_runtime_handles_for_generation(generation, current_handles, &active_command_bus)
             .await
         {
             Ok(()) => {}
@@ -285,13 +294,17 @@ mod tests {
             active_generation: 0,
             lv1: None,
             fade: None,
-            command_bus: Some(AppCommandBus::new(mpsc::channel(1).0)),
+            command_bus: None,
             dispatcher: Some(tokio::spawn(async {})),
             projector: Some(tokio::spawn(async {})),
         };
 
         let rejected = state
-            .install_runtime_handles_for_generation(generation.saturating_sub(1), stale_handles)
+            .install_runtime_handles_for_generation(
+                generation.saturating_sub(1),
+                stale_handles,
+                &active_command_bus,
+            )
             .await;
 
         assert!(rejected.is_err());
