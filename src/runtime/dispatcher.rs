@@ -64,10 +64,7 @@ impl RuntimeDispatcher {
             }
             AppCommand::StartFade { config, reply } => {
                 let result = match &self.fade {
-                    Some(fade) => {
-                        fade.start_fade(config).await;
-                        Ok(())
-                    }
+                    Some(fade) => fade.start_fade(config).await,
                     None => Err(AppCommandError::FadeUnavailable),
                 };
                 publish_failure(&self.event_bus, "start_fade", &result);
@@ -75,10 +72,7 @@ impl RuntimeDispatcher {
             }
             AppCommand::AbortAllFades { reply } => {
                 let result = match &self.fade {
-                    Some(fade) => {
-                        fade.abort_all().await;
-                        Ok(())
-                    }
+                    Some(fade) => fade.abort_all().await,
                     None => Err(AppCommandError::FadeUnavailable),
                 };
                 publish_failure(&self.event_bus, "abort_all_fades", &result);
@@ -86,10 +80,7 @@ impl RuntimeDispatcher {
             }
             AppCommand::FinishFadeNow { reply } => {
                 let result = match &self.fade {
-                    Some(fade) => {
-                        fade.finish_now().await;
-                        Ok(())
-                    }
+                    Some(fade) => fade.finish_now().await,
                     None => Err(AppCommandError::FadeUnavailable),
                 };
                 publish_failure(&self.event_bus, "finish_fade_now", &result);

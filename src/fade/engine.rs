@@ -7,6 +7,7 @@ use crate::fade::tick::{ActiveChannel, TICK_HZ};
 use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent};
 use crate::lv1::messages::Lv1Event;
 use crate::lv1::state::Lv1ActorHandle;
+use crate::runtime::commands::AppCommandError;
 
 // ---------------------------------------------------------------------------
 // Handle
@@ -18,16 +19,25 @@ pub struct FadeEngineHandle {
 }
 
 impl FadeEngineHandle {
-    pub async fn start_fade(&self, config: FadeConfig) {
-        let _ = self.tx.send(FadeCommand::StartFade { config }).await;
+    pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
+        self.tx
+            .send(FadeCommand::StartFade { config })
+            .await
+            .map_err(|_| AppCommandError::FadeUnavailable)
     }
 
-    pub async fn abort_all(&self) {
-        let _ = self.tx.send(FadeCommand::AbortAll).await;
+    pub async fn abort_all(&self) -> Result<(), AppCommandError> {
+        self.tx
+            .send(FadeCommand::AbortAll)
+            .await
+            .map_err(|_| AppCommandError::FadeUnavailable)
     }
 
-    pub async fn finish_now(&self) {
-        let _ = self.tx.send(FadeCommand::FinishNow).await;
+    pub async fn finish_now(&self) -> Result<(), AppCommandError> {
+        self.tx
+            .send(FadeCommand::FinishNow)
+            .await
+            .map_err(|_| AppCommandError::FadeUnavailable)
     }
 
     pub async fn subscribe(&self) -> mpsc::Receiver<FadeEvent> {
@@ -194,5 +204,33 @@ async fn run_engine(lv1: Lv1ActorHandle, mut cmd_rx: mpsc::Receiver<FadeCommand>
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fade::curve::FadeCurve;
+    use crate::fade::types::FadeTarget;
+
+    #[tokio::test]
+    async fn closed_command_channel_returns_fade_unavailable() {
+        let (tx, rx) = mpsc::channel(1);
+        drop(rx);
+        let handle = FadeEngineHandle { tx };
+
+        let result = handle
+            .start_fade(FadeConfig {
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 1,
+                    target_db: -12.0,
+                }],
+                duration_ms: 100,
+                curve: FadeCurve::Linear,
+            })
+            .await;
+
+        assert_eq!(result, Err(AppCommandError::FadeUnavailable));
     }
 }
