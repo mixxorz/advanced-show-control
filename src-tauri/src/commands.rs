@@ -7,7 +7,7 @@ use lv1_scene_fade_utility::runtime::dispatcher::RuntimeDispatcher;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
 use std::path::PathBuf;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 use tokio::task::spawn_blocking;
 use tokio::sync::mpsc;
 
@@ -183,19 +183,15 @@ pub async fn disconnect_lv1(
 #[tauri::command]
 pub async fn abort_all_fades(state: State<'_, ShellState>) -> Result<(), String> {
     let fade = { state.handles.lock().await.fade.clone() };
-    if let Some(fade) = fade {
-        fade.abort_all().await.map_err(|err| err.to_string())?;
-    }
-    Ok(())
+    let fade = fade.ok_or_else(|| "Fade runtime unavailable".to_string())?;
+    fade.abort_all().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub async fn finish_fade_now(state: State<'_, ShellState>) -> Result<(), String> {
     let fade = { state.handles.lock().await.fade.clone() };
-    if let Some(fade) = fade {
-        fade.finish_now().await.map_err(|err| err.to_string())?;
-    }
-    Ok(())
+    let fade = fade.ok_or_else(|| "Fade runtime unavailable".to_string())?;
+    fade.finish_now().await.map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -209,7 +205,11 @@ pub async fn connect_lv1(
     let timeout = timeout_ms.unwrap_or(6000);
     let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
     let event_bus = AppEventBus::default();
-    let mut events = event_bus.subscribe();
+    let (generation, connecting_snapshot) = state.begin_connecting().await;
+    emit_snapshot(&app, &connecting_snapshot);
+    let events = event_bus.subscribe();
+
+    let shell_state = (*state).clone();
 
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
     let (command_tx, command_rx) = mpsc::channel(32);
@@ -225,41 +225,11 @@ pub async fn connect_lv1(
         handles.fade = Some(fade);
     }
 
-    let (generation, connecting_snapshot) = state.begin_connecting().await;
-    emit_snapshot(&app, &connecting_snapshot);
-
     let initial_snapshot = lv1.get_state().await;
     let snapshot = state.begin_connection(initial_snapshot).await;
     emit_snapshot(&app, &snapshot);
 
-    let app_for_task = app.clone();
-    tauri::async_runtime::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(app_event) => {
-                    let AppEvent::Lv1(event) = app_event else {
-                        continue;
-                    };
-                    let state_for_task = app_for_task.state::<ShellState>();
-                    if let Some(snapshot) = state_for_task
-                        .apply_lv1_event_for_generation(generation, &event)
-                        .await
-                    {
-                        if let Err(err) = app_for_task.emit("lv1-event", &Lv1EventPayload::from(&event)) {
-                            eprintln!("failed to emit lv1-event: {err}");
-                        }
-                        if let Err(err) = app_for_task.emit("app-status-changed", &snapshot) {
-                            eprintln!("failed to emit app-status-changed: {err}");
-                        }
-                    }
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("lv1-bridge", count);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    });
+    spawn_shell_state_projector(app.clone(), shell_state, generation, events);
 
     Ok(snapshot)
 }
@@ -268,6 +238,50 @@ fn emit_snapshot(app: &AppHandle, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         eprintln!("failed to emit app-status-changed: {err}");
     }
+}
+
+fn spawn_shell_state_projector(
+    app: AppHandle,
+    state: ShellState,
+    generation: u64,
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(app_event) => match app_event {
+                    AppEvent::Lv1(event) => {
+                        if let Some(snapshot) = state
+                            .apply_lv1_event_for_generation(generation, &event)
+                            .await
+                        {
+                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(&event))
+                            {
+                                eprintln!("failed to emit lv1-event: {err}");
+                            }
+                            if let Err(err) = app.emit("app-status-changed", &snapshot) {
+                                eprintln!("failed to emit app-status-changed: {err}");
+                            }
+                        }
+                    }
+                    AppEvent::Fade(event) => {
+                        let snapshot = state.apply_fade_event(&event).await;
+                        if let Err(err) = app.emit("app-status-changed", &snapshot) {
+                            eprintln!("failed to emit app-status-changed: {err}");
+                        }
+                    }
+                    AppEvent::CommandFailed { command, message } => {
+                        eprintln!("command failed: {command}: {message}");
+                    }
+                    AppEvent::Automation(_) => {}
+                },
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    log_lagged_subscriber("shell-state-projector", count);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
 }
 
 async fn save_show_file_to_path(

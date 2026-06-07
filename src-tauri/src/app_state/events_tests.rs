@@ -6,6 +6,23 @@ use lv1_scene_fade_utility::lv1::model::{
     ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
 
+#[tokio::test]
+async fn fade_events_update_fade_state() {
+    use lv1_scene_fade_utility::fade::types::FadeEvent;
+    use super::view::AppFadeState;
+
+    let state = ShellState::default();
+
+    let started = state.apply_fade_event(&FadeEvent::FadeStarted).await;
+    assert_eq!(started.fade_state, AppFadeState::Running);
+
+    let completed = state.apply_fade_event(&FadeEvent::FadeCompleted).await;
+    assert_eq!(completed.fade_state, AppFadeState::Idle);
+
+    let aborted = state.apply_fade_event(&FadeEvent::FadeAborted).await;
+    assert_eq!(aborted.fade_state, AppFadeState::Idle);
+}
+
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
     let mut inner = ShellInner::default();

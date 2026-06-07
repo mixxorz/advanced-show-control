@@ -1,12 +1,13 @@
 use std::collections::HashSet;
 
+use lv1_scene_fade_utility::fade::types::FadeEvent;
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
 
 use super::shell::{
     MAX_LOGS, ShellInner, ShellState, current_timestamp, scene_id, snapshot_from_inner,
 };
-use super::view::{AppLogEntry, AppViewState, LogSeverity, LogSource, SceneConfig};
+use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource, SceneConfig};
 
 impl ShellState {
     pub async fn begin_connecting(&self) -> (u64, AppViewState) {
@@ -155,6 +156,54 @@ impl ShellState {
         }
 
         Some(snapshot_from_inner(&inner))
+    }
+
+    pub async fn apply_fade_event(&self, event: &FadeEvent) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+
+        match event {
+            FadeEvent::FadeStarted => {
+                inner.fade_state = AppFadeState::Running;
+                inner.push_log(
+                    LogSource::Fade,
+                    LogSeverity::Info,
+                    "Fade started".to_string(),
+                );
+            }
+            FadeEvent::FadeCompleted => {
+                inner.fade_state = AppFadeState::Idle;
+                inner.push_log(
+                    LogSource::Fade,
+                    LogSeverity::Info,
+                    "Fade completed".to_string(),
+                );
+            }
+            FadeEvent::FadeAborted => {
+                inner.fade_state = AppFadeState::Idle;
+                inner.push_log(
+                    LogSource::Fade,
+                    LogSeverity::Warning,
+                    "Fade aborted".to_string(),
+                );
+            }
+            FadeEvent::ChannelOverride { group, channel } => {
+                inner.fade_state = AppFadeState::Blocked;
+                inner.push_log(
+                    LogSource::Fade,
+                    LogSeverity::Warning,
+                    format!("Fade blocked by channel override: group {group}, channel {channel}"),
+                );
+            }
+            FadeEvent::ChannelCancelled { group, channel } => {
+                inner.push_log(
+                    LogSource::Fade,
+                    LogSeverity::Warning,
+                    format!("Fade channel cancelled: group {group}, channel {channel}"),
+                );
+            }
+        }
+
+        snapshot_from_inner(&inner)
     }
 }
 
