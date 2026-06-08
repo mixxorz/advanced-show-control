@@ -1,107 +1,15 @@
 use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::SceneState;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{
     AppEvent, AppEventBus, AutomationEvent, log_lagged_subscriber,
 };
 use tokio::task::JoinHandle;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 
 use crate::app_state::{SceneRecallDecision, SceneRecallFadeRequest, ShellState};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
 const SAME_SCENE_REPEAT_DELAY: Duration = Duration::from_millis(500);
-
-#[derive(Clone, PartialEq, Eq)]
-struct RecallSceneIdentity {
-    index: i32,
-    name: String,
-}
-
-impl From<&SceneState> for RecallSceneIdentity {
-    fn from(scene: &SceneState) -> Self {
-        Self {
-            index: scene.index,
-            name: scene.name.clone(),
-        }
-    }
-}
-
-enum RecallTriggerGate {
-    Priming {
-        baseline: Option<RecallSceneIdentity>,
-        baseline_at: Option<Instant>,
-        arm_after: Option<Instant>,
-    },
-    Armed {
-        last_scene: Option<RecallSceneIdentity>,
-        last_triggered_at: Option<Instant>,
-    },
-}
-
-impl Default for RecallTriggerGate {
-    fn default() -> Self {
-        Self::Priming {
-            baseline: None,
-            baseline_at: None,
-            arm_after: None,
-        }
-    }
-}
-
-impl RecallTriggerGate {
-    fn accepts(&mut self, current_scene: &SceneState) -> bool {
-        let now = Instant::now();
-        let scene_identity = RecallSceneIdentity::from(current_scene);
-
-        match self {
-            Self::Priming {
-                baseline,
-                baseline_at,
-                arm_after,
-            } => match arm_after {
-                Some(deadline) if now >= *deadline => {
-                    let baseline_scene = baseline.clone().unwrap_or_else(|| scene_identity.clone());
-                    let last_triggered_at = baseline_at.unwrap_or(now);
-                    *self = Self::Armed {
-                        last_scene: Some(baseline_scene),
-                        last_triggered_at: Some(last_triggered_at),
-                    };
-                    self.accepts(current_scene)
-                }
-                Some(_) => {
-                    *baseline = Some(scene_identity);
-                    *baseline_at = Some(now);
-                    false
-                }
-                None => {
-                    *baseline = Some(scene_identity);
-                    *baseline_at = Some(now);
-                    *arm_after = Some(now + RECALL_ARMING_DELAY);
-                    false
-                }
-            },
-            Self::Armed {
-                last_scene,
-                last_triggered_at,
-            } => {
-                if last_scene.as_ref() == Some(&scene_identity)
-                    && last_triggered_at
-                        .map(|triggered_at| {
-                            now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY
-                        })
-                        .unwrap_or(false)
-                {
-                    return false;
-                }
-
-                *last_scene = Some(scene_identity);
-                *last_triggered_at = Some(now);
-                true
-            }
-        }
-    }
-}
 
 pub fn spawn_scene_recall_fader(
     state: ShellState,
@@ -112,8 +20,6 @@ pub fn spawn_scene_recall_fader(
     let mut events = event_bus.subscribe();
 
     tokio::spawn(async move {
-        let mut trigger_gate = RecallTriggerGate::default();
-
         loop {
             match events.recv().await {
                 Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
@@ -121,7 +27,7 @@ pub fn spawn_scene_recall_fader(
                         continue;
                     }
 
-                    if !trigger_gate.accepts(&scene) {
+                    if !state.scene_recall_state_accepts_for_generation(generation, &scene).await {
                         continue;
                     }
 
@@ -536,54 +442,54 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn same_scene_at_arming_deadline_is_actionable_when_baseline_is_old_enough() {
-        let mut gate = RecallTriggerGate::default();
+        let state = ShellState::default();
         let scene = intro_scene();
 
-        assert!(!gate.accepts(&scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &scene).await);
         tokio::time::advance(RECALL_ARMING_DELAY).await;
 
-        assert!(gate.accepts(&scene));
+        assert!(state.scene_recall_state_accepts_for_generation(0, &scene).await);
     }
 
     #[tokio::test(start_paused = true)]
     async fn different_scene_after_arming_boundary_is_accepted_immediately() {
-        let mut gate = RecallTriggerGate::default();
+        let state = ShellState::default();
         let scene = intro_scene();
         let next_scene = SceneState {
             index: 2,
             name: "Verse".to_string(),
         };
 
-        assert!(!gate.accepts(&scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &scene).await);
         tokio::time::advance(RECALL_ARMING_DELAY).await;
 
-        assert!(gate.accepts(&next_scene));
+        assert!(state.scene_recall_state_accepts_for_generation(0, &next_scene).await);
     }
 
     #[tokio::test(start_paused = true)]
     async fn latest_pre_arming_scene_observation_controls_repeat_delay() {
-        let mut gate = RecallTriggerGate::default();
+        let state = ShellState::default();
         let scene = intro_scene();
         let next_scene = SceneState {
             index: 2,
             name: "Verse".to_string(),
         };
 
-        assert!(!gate.accepts(&scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &scene).await);
         tokio::time::advance(RECALL_ARMING_DELAY - Duration::from_millis(100)).await;
 
-        assert!(!gate.accepts(&next_scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &next_scene).await);
         tokio::time::advance(Duration::from_millis(100)).await;
 
-        assert!(!gate.accepts(&next_scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &next_scene).await);
         tokio::time::advance(SAME_SCENE_REPEAT_DELAY - Duration::from_millis(100)).await;
 
-        assert!(gate.accepts(&next_scene));
+        assert!(state.scene_recall_state_accepts_for_generation(0, &next_scene).await);
     }
 
     #[tokio::test(start_paused = true)]
     async fn pre_arming_baseline_update_does_not_extend_arm_deadline() {
-        let mut gate = RecallTriggerGate::default();
+        let state = ShellState::default();
         let scene = intro_scene();
         let next_scene = SceneState {
             index: 2,
@@ -594,13 +500,13 @@ mod tests {
             name: "Bridge".to_string(),
         };
 
-        assert!(!gate.accepts(&scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &scene).await);
         tokio::time::advance(Duration::from_millis(100)).await;
 
-        assert!(!gate.accepts(&next_scene));
+        assert!(!state.scene_recall_state_accepts_for_generation(0, &next_scene).await);
         tokio::time::advance(RECALL_ARMING_DELAY - Duration::from_millis(100)).await;
 
-        assert!(gate.accepts(&third_scene));
+        assert!(state.scene_recall_state_accepts_for_generation(0, &third_scene).await);
     }
 
     #[tokio::test(start_paused = true)]

@@ -13,6 +13,7 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
         self.scene_recall_logs.lock().await.clear_for_generation(inner.generation);
+        self.scene_recall_state.lock().await.reset_for_generation();
         inner.lv1_snapshot = Some(Lv1StateSnapshot {
             connection: ConnectionStatus::Connecting,
             scene: None,
@@ -114,6 +115,7 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
         self.scene_recall_logs.lock().await.clear_for_generation(inner.generation);
+        self.scene_recall_state.lock().await.reset_for_generation();
         inner.lv1_snapshot = None;
         inner.connected_lv1_identity = None;
         inner.pending_lv1_identity = None;

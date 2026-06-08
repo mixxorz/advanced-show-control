@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::scene_recall::SceneRecallState;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::show::actor::spawn_show_state;
 use advanced_show_control::show::handle::ShowStateHandle;
@@ -35,6 +36,7 @@ pub struct ShellState {
     pub handles: Arc<Mutex<RuntimeHandles>>,
     pub show: ShowStateHandle,
     pub(super) scene_recall_logs: Arc<Mutex<super::scene_recall::SceneRecallLogState>>,
+    pub(super) scene_recall_state: Arc<Mutex<SceneRecallState>>,
     pub(super) inner: Arc<Mutex<ShellInner>>,
 }
 
@@ -64,6 +66,7 @@ impl Default for ShellState {
             handles: Arc::new(Mutex::new(RuntimeHandles::default())),
             show,
             scene_recall_logs: Arc::new(Mutex::new(super::scene_recall::SceneRecallLogState::default())),
+            scene_recall_state: Arc::new(Mutex::new(SceneRecallState::default())),
             inner: Arc::new(Mutex::new(ShellInner::default())),
         }
     }
@@ -297,6 +300,7 @@ impl ShellState {
 
         if let Some(generation) = generation_to_clear {
             self.scene_recall_logs.lock().await.clear_for_generation(generation);
+            self.scene_recall_state.lock().await.reset_for_generation();
         }
 
         let show = self.show.get_snapshot().await.unwrap_or_else(|_| ShowSnapshot::empty());
@@ -345,6 +349,20 @@ impl ShellState {
 
         handles.abort_all().await;
         active_command_bus.set(None).await;
+    }
+
+    pub async fn scene_recall_state_accepts_for_generation(
+        &self,
+        generation: u64,
+        current_scene: &advanced_show_control::lv1::types::SceneState,
+    ) -> bool {
+        let inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return false;
+        }
+
+        drop(inner);
+        self.scene_recall_state.lock().await.accepts(current_scene)
     }
 
     pub async fn install_runtime_handles_for_generation(

@@ -1,7 +1,7 @@
 use crate::fade::curve::FadeCurve;
 use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneState};
-use crate::show::types::{scene_id, SceneConfig};
+use crate::show::types::SceneConfig;
 
 pub struct RecallPolicyInput {
     pub recalled_scene: SceneState,
@@ -43,7 +43,6 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
         return blocked("live channel snapshot is empty");
     }
 
-    let scene_id = scene_id(recalled_scene.index, &recalled_scene.name);
     let live_channels = lv1_snapshot.channels.iter().map(|c| (c.group, c.channel)).collect::<std::collections::HashSet<_>>();
     let mut targets = Vec::with_capacity(config.scoped_channels.len());
 
@@ -63,8 +62,6 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
     if targets.is_empty() {
         return blocked("no scoped targets");
     }
-
-    let _ = scene_id;
     RecallPolicyDecision::Start(FadeConfig {
         scene: FadeSceneIdentity { index: recalled_scene.index, name: recalled_scene.name },
         targets,

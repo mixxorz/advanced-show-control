@@ -1,5 +1,7 @@
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+use tokio::time::Instant;
 
 use crate::lv1::types::SceneState;
 
@@ -20,7 +22,8 @@ impl From<&SceneState> for RecallSceneIdentity {
 
 #[derive(Debug, Default)]
 pub struct SceneRecallState {
-    armed_at: Option<Instant>,
+    baseline: Option<RecallSceneIdentity>,
+    baseline_at: Option<Instant>,
     arm_after: Option<Instant>,
     last_scene: Option<RecallSceneIdentity>,
     last_triggered_at: Option<Instant>,
@@ -36,29 +39,44 @@ impl SceneRecallState {
         let now = Instant::now();
         let scene_identity = RecallSceneIdentity::from(current_scene);
 
-        if self.arm_after.is_none() {
-            self.armed_at = Some(now);
-            self.arm_after = Some(now + RECALL_ARMING_DELAY);
-            return false;
-        }
+        match self.arm_after {
+            None => {
+                self.baseline = Some(scene_identity);
+                self.baseline_at = Some(now);
+                self.arm_after = Some(now + RECALL_ARMING_DELAY);
+                false
+            }
+            Some(deadline) if now < deadline => {
+                self.baseline = Some(scene_identity);
+                self.baseline_at = Some(now);
+                false
+            }
+            Some(_) => {
+                if self.last_scene.as_ref() == Some(&scene_identity)
+                    && self
+                        .last_triggered_at
+                        .map(|triggered_at| now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY)
+                        .unwrap_or(false)
+                {
+                    return false;
+                }
 
-        if now < self.arm_after.expect("arm_after set above") {
-            self.armed_at.get_or_insert(now);
-            return false;
-        }
+                let baseline_scene = self.baseline.clone().unwrap_or_else(|| scene_identity.clone());
+                let triggered_at = self.baseline_at.unwrap_or(now);
+                self.last_scene = Some(baseline_scene);
+                self.last_triggered_at = Some(triggered_at);
 
-        if self.last_scene.as_ref() == Some(&scene_identity)
-            && self
-                .last_triggered_at
-                .map(|triggered_at| now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY)
-                .unwrap_or(false)
-        {
-            return false;
-        }
+                if self.last_scene.as_ref() == Some(&scene_identity)
+                    && now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY
+                {
+                    return false;
+                }
 
-        self.last_scene = Some(scene_identity);
-        self.last_triggered_at = Some(now);
-        true
+                self.last_scene = Some(scene_identity);
+                self.last_triggered_at = Some(now);
+                true
+            }
+        }
     }
 
     pub fn should_log_duration_zero_skip(&mut self, scene_id: &str) -> bool {
