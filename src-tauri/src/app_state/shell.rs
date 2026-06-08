@@ -190,6 +190,12 @@ impl ShellState {
         active_command_bus.set(None).await;
     }
 
+    pub async fn abort_current_runtime(&self, active_command_bus: &ActiveCommandBus) {
+        let mut handles = self.handles.lock().await;
+        handles.abort_all().await;
+        active_command_bus.set(None).await;
+    }
+
     pub async fn clear_runtime_handles_with_active_generation(
         &self,
         generation: u64,
@@ -474,6 +480,46 @@ mod tests {
         assert!(rejected.is_err());
         let handles = state.handles.lock().await;
         assert_eq!(handles.active_generation, generation);
+    }
+
+    #[tokio::test]
+    async fn replacement_connect_cleanup_aborts_existing_runtime_and_clears_command_bus() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let active_command_bus = crate::commands::ActiveCommandBus::default();
+        let command_bus =
+            AppCommandBus::new(lv1_scene_fade_utility::runtime::events::AppEventBus::default());
+
+        let installed = state
+            .install_runtime_handles_for_generation(
+                generation,
+                RuntimeHandles {
+                    active_generation: 0,
+                    lv1: None,
+                    fade: None,
+                    command_bus: Some(command_bus),
+                    projector: Some(tokio::spawn(async {
+                        std::future::pending::<()>().await;
+                    })),
+                    scene_recall_fader: Some(tokio::spawn(async {
+                        std::future::pending::<()>().await;
+                    })),
+                },
+                &active_command_bus,
+            )
+            .await;
+        assert!(installed.is_ok());
+        assert!(active_command_bus.current().await.is_some());
+
+        let _ = state.begin_connecting().await;
+        state.abort_current_runtime(&active_command_bus).await;
+
+        assert!(active_command_bus.current().await.is_none());
+        let handles = state.handles.lock().await;
+        assert_eq!(handles.active_generation, 0);
+        assert!(handles.command_bus.is_none());
+        assert!(handles.projector.is_none());
+        assert!(handles.scene_recall_fader.is_none());
     }
 
     #[test]

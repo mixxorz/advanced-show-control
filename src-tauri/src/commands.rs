@@ -337,6 +337,7 @@ async fn connect_to_target<R: Runtime>(
 ) -> Result<AppViewState, String> {
     let event_bus = AppEventBus::default();
     let (generation, connecting_snapshot) = state.begin_connecting().await;
+    state.abort_current_runtime(&active_command_bus).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
         .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
