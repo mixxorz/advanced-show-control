@@ -209,6 +209,9 @@ export default function App() {
                 setSceneDurationMs={(sceneId: string, durationMs: number) =>
                   runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, setAppState, setCommandError)
                 }
+                setSceneScopeFadersEnabled={(sceneId: string, enabled: boolean) =>
+                  runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, setAppState, setCommandError)
+                }
                 storeSceneConfig={(sceneId: string) =>
                   runSnapshotCommand("store_scene_config", { sceneId }, setAppState, setCommandError)
                 }

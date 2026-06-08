@@ -33,3 +33,7 @@ export function channelButtonLabel(group: number, channel: number) {
 export function formatDurationSeconds(durationMs: number) {
   return (durationMs / 1000).toFixed(1);
 }
+
+export function formatSceneDurationSummary(durationMs: number) {
+  return durationMs === 0 ? "Immediate" : `${durationMs} ms`;
+}

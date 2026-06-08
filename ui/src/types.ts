@@ -44,11 +44,16 @@ export type ChannelConfig = {
   faderDb: number | null;
 };
 
+export type SceneScopeToggles = {
+  faders: boolean;
+};
+
 export type SceneConfig = {
   sceneId: string;
   sceneIndex: number;
   sceneName: string;
   durationMs: number;
+  scopeToggles: SceneScopeToggles;
   channelConfigs: ChannelConfig[];
   scopedChannels: ChannelRef[];
 };

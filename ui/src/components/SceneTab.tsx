@@ -5,6 +5,7 @@ import {
   channelDisplayGroupOrder,
   channelName,
   formatDb,
+  formatSceneDurationSummary,
 } from "../format";
 import { DurationInput } from "./DurationInput";
 
@@ -12,6 +13,7 @@ export function SceneTab(props: {
   appState: AppViewState;
   selectScene: (sceneId: string) => void;
   setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
+  setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => void;
   storeSceneConfig: (sceneId: string) => Promise<boolean>;
   setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => void;
   setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
@@ -41,16 +43,16 @@ export function SceneTab(props: {
                   }
                   key={scene.sceneId}
                   onClick={() => props.selectScene(scene.sceneId)}
-                >
-                  <span className="block text-sm font-semibold text-slate-100">
-                    {scene.sceneIndex}: {scene.sceneName}
-                  </span>
-                  <span className="mt-1 block text-xs text-slate-400">
-                    {scene.durationMs > 0 ? `${scene.durationMs} ms` : "Disabled"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
-                  </span>
-                </button>
-              );
-            })
+                  >
+                    <span className="block text-sm font-semibold text-slate-100">
+                      {scene.sceneIndex}: {scene.sceneName}
+                    </span>
+                    <span className="mt-1 block text-xs text-slate-400">
+                      {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
+                    </span>
+                  </button>
+                );
+              })
           )}
         </div>
       </section>
@@ -78,6 +80,27 @@ export function SceneTab(props: {
               sceneId={selected.sceneId}
               setSceneDurationMs={props.setSceneDurationMs}
             />
+
+            <div className="mt-4 rounded-lg border border-slate-800 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold text-slate-100">Scene Scope</h3>
+                  <p className="mt-1 text-sm text-slate-400">
+                    FADERS controls whether scoped faders move when this LV1 scene is recalled.
+                  </p>
+                </div>
+                <button
+                  className={
+                    selected.scopeToggles.faders
+                      ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
+                      : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
+                  }
+                  onClick={() => props.setSceneScopeFadersEnabled(selected.sceneId, !selected.scopeToggles.faders)}
+                >
+                  FADERS {selected.scopeToggles.faders ? "ON" : "OFF"}
+                </button>
+              </div>
+            </div>
 
             <ScopeGrid
               channels={props.appState.channels}

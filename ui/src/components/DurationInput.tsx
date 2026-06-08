@@ -89,6 +89,7 @@ export function DurationInput(props: {
         type="number"
         value={draft}
       />
+      <span className="text-xs text-slate-500">Use 0 for an immediate move. Values above 0 are clamped from 0.1 to 120 seconds.</span>
     </label>
   );
 }
