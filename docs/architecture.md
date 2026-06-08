@@ -2,182 +2,145 @@
 
 ## Overview
 
-The backend is a local actor-based runtime built around two shared abstractions:
+The runtime is split into six boundary pieces:
 
-- `AppEventBus` for broadcast facts and events.
-- `AppCommandBus` for acknowledged commands routed directly to the current LV1 and fade targets.
+- `Lv1Actor`
+- `FadeEngine`
+- `ShowState`
+- `SceneRecallFader`
+- `Tauri Shell`
+- `AppEventBus`
+- `AppCommandBus`
 
-Actors own their own state and communicate through these buses instead of reaching into each other through concrete handles.
+The rule is simple: no module reaches into another module's state directly. Modules publish facts on `AppEventBus` and send requests through `AppCommandBus`.
 
-## Core Actors
+## Bus Contracts
 
-- `Lv1Actor` owns the TCP connection and the LV1 state mirror. It publishes LV1 events onto `AppEventBus`.
-- `FadeEngine` owns active fade timing. It receives fade commands, consumes LV1 events from `AppEventBus`, sends LV1 commands through `AppCommandBus`, and publishes fade events.
-- `ShellState` owns the UI projection and show-file/editing state. It is updated by the shell-state projector, which consumes `AppEventBus`.
-- `SceneRecallFader` listens for LV1 scene recall events and starts app-managed scoped fader fades after safety validation.
+- `AppEventBus = facts`
+- `AppCommandBus = commands and queries`
 
-## Events And Commands
+`AppEventBus` carries broadcast facts only.
 
-Events are broadcast facts:
+- Non-blocking publish.
+- Independent subscribers.
+- No replay.
+- Missed events are tolerated and surfaced as lag, not hidden state coupling.
 
-- Publishing is non-blocking.
-- Subscribers receive events independently.
-- Subscribers may lag and log missed counts.
-- Events are not replayed.
+`AppCommandBus` carries acknowledged requests only.
 
-Commands are acknowledged requests:
+- Commands and queries are routed to the current live target.
+- Requests are not broadcast.
+- If the target is unavailable, the caller gets a clear failure.
 
-- They are not broadcast.
-- They are routed to the current target actor handle.
-- If the target is unavailable, callers get a clear error and a `CommandFailed` event is published for logging/UI.
+## Core Ownership
+
+- `Lv1Actor` owns the LV1 TCP connection and the mirrored LV1 state.
+- `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
+- `ShowState` owns show data only: scene configs, scoped faders, stored target values, and show-file persistence.
+- `SceneRecallFader` owns scene recall policy and decision-making.
+- `Tauri Shell` owns UI projection, shell commands, and user-facing state derived from the runtime.
+
+`ShellState` is the Tauri-side view of the runtime, not the owner of show logic or recall policy.
 
 ## Event Flow
 
-`LV1 TCP -> Lv1Actor -> AppEventBus -> ShellState / FadeEngine / SceneRecallFader`
+`LV1 TCP -> Lv1Actor -> AppEventBus -> ShowState / FadeEngine / SceneRecallFader / Tauri Shell`
 
 ```text
 ┌─────────┐     ┌──────────┐     ┌─────────────┐
 │ LV1 TCP │ ──▶ │ Lv1Actor │ ──▶ │ AppEventBus │
 └─────────┘     └──────────┘     └──────┬──────┘
                                         │
-                    ┌───────────────────┼───────────────────┐
-                    │                   │                   │
-                    ▼                   ▼                   ▼
-          ┌──────────────────┐   ┌────────────┐   ┌──────────────────┐
-          │ ShellState       │   │ FadeEngine │   │ SceneRecallFader │
-          │ projector        │   │            │   │                  │
-          └────────┬─────────┘   └─────┬──────┘   └────────┬─────────┘
-                   │                   │                   │
-                   ▼                   ▼                   ▼
-          ┌──────────────────┐   ┌────────────┐   ┌──────────────────┐
-          │ UI snapshots     │   │ Override + │   │ Scene recall     │
-          │ and logs         │   │ disconnect │   │ automation       │
-          └──────────────────┘   └────────────┘   └──────────────────┘
+                    ┌───────────────────┼────────────────────┐
+                    │                   │                    │
+                    ▼                   ▼                    ▼
+          ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
+          │ ShowState      │   │ FadeEngine │   │ SceneRecallFader │
+          └────────┬───────┘   └─────┬──────┘   └────────┬─────────┘
+                   │                │                   │
+                   ▼                ▼                   ▼
+          ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
+          │ Tauri Shell    │   │ LV1 writes │   │ recall policy    │
+          │ projection     │   │ / overlap  │   │ / decisions      │
+          └────────────────┘   └────────────┘   └──────────────────┘
 ```
 
-`Lv1Actor` translates incoming LV1 traffic into LV1 events. Those events are broadcast to the rest of the runtime. `ShellState` projects them into UI state, `FadeEngine` reacts to relevant LV1 changes, and `SceneRecallFader` reacts to scene recall events.
-
-Broadcast subscribers receive events independently. A subscriber must not assume another subscriber has already processed the same event. For scene recall automation, `SceneRecallFader` asks `AppCommandBus` for a fresh LV1 state snapshot before validating the recall so it is not dependent on shell projector ordering.
+`Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on Tauri projection ordering; it reads fresh LV1 state through `AppCommandBus` before it decides whether a recall should start, skip, or continue.
 
 ## Command Flow
 
-`Tauri / FadeEngine / SceneRecallFader / future automation -> AppCommandBus -> current LV1 / fade handles`
+`Tauri Shell / FadeEngine / SceneRecallFader -> AppCommandBus -> current LV1 / fade targets`
 
 ```text
-┌────────────────┐   ┌────────────┐   ┌──────────────────┐
-│ Tauri commands │   │ FadeEngine │   │ SceneRecallFader │
-└───────┬────────┘   └─────┬──────┘   └────────┬─────────┘
-        │                  │                   │
-        └──────────────────┼───────────────────┘
-                           │
-                           ▼
-                   ┌───────────────┐
-                   │ AppCommandBus │
-                   └───────┬───────┘
-                           │
-              ┌─────────────┴─────────────┐
-              │                           │
-              ▼                           ▼
-       ┌─────────────┐             ┌────────────────────┐
-       │ Current LV1 │             │ Current FadeEngine │
-       │ set/state   │             │ recall/abort       │
-       └─────────────┘             └────────────────────┘
+┌──────────────┐   ┌────────────┐   ┌──────────────────┐
+│ Tauri Shell  │   │ FadeEngine │   │ SceneRecallFader │
+└──────┬───────┘   └─────┬──────┘   └────────┬─────────┘
+       │                 │                   │
+       └─────────────────┼───────────────────┘
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │ AppCommandBus │
+                 └───────┬───────┘
+                         │
+            ┌────────────┴────────────┐
+            │                         │
+            ▼                         ▼
+       ┌──────────┐            ┌──────────────┐
+       │ Lv1Actor │            │ FadeEngine   │
+       └──────────┘            └──────────────┘
 ```
 
-`AppCommandBus` keeps the current LV1 and fade targets and sends commands directly to them. Tauri commands use the bus, `FadeEngine` uses it for LV1 writes, and `SceneRecallFader` uses it to read fresh LV1 state and dispatch validated scene recall fades. The fade engine owns overlap decisions: different scene fades can overlap on unrelated faders, incoming recalls take over only overlapping faders, and repeating the same exact scene recall finishes that scene's active channels.
+`FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is handled inside fade ownership and overlap rules.
+
+## Scene Recall Ownership
+
+`SceneRecallFader` owns recall policy.
+
+- It listens for LV1 scene recall facts.
+- It asks for a fresh LV1 snapshot before deciding.
+- It validates exact scene identity, lockout state, connection state, stored scene config, scoped targets, stored fader values, and live topology.
+- It treats duration `0` scenes as disabled.
+- It starts validated fades through the command bus.
+- It does not reach into `ShowState` internals.
+
+`ShowState` owns show data only.
+
+- It stores and projects the app's show configuration.
+- It does not decide recall policy.
+- It does not own validation rules for scene recall.
+
+`FadeEngine` owns overlap behavior.
+
+- It starts fades from live values.
+- It overlaps on unrelated faders.
+- It takes over only overlapping channels for a new recall.
+- It does not expose a finish-now command.
 
 ## Runtime Lifecycle
 
-- `connect` installs the current command targets and starts the actor, fade, scene recall fader, and projector tasks.
-- `disconnect` and reconnect clear command targets and abort the old runtime tasks.
+- `connect` installs the current command targets and starts the actor, fade, recall, and shell projection tasks.
+- `disconnect` and reconnect clear command targets and abort old runtime tasks.
 - Generation guards prevent stale events, snapshots, or handles from mutating current state.
 
-The shell-state projector only applies events for the active generation, and stale runtime handles are rejected instead of being installed. `SceneRecallFader` also checks the active generation before validation, before logging automation status, and immediately before dispatching a fade start so a stale recall task cannot send after disconnect or reconnect.
+The Tauri shell projection only applies events for the active generation, and stale runtime handles are rejected instead of being installed. `SceneRecallFader` also checks the active generation before validation, before logging automation status, and immediately before dispatching a fade start so a stale recall task cannot send after disconnect or reconnect.
 
-## Generation Guards
+## File Structure
 
-A generation is a monotonically increasing token for the currently active LV1 runtime. Starting a connection creates a generation, and disconnect/reconnect moves the app to a new generation. Any task, event subscriber, runtime handle, or async operation that was created for an older generation is stale once the active generation changes.
+Core runtime modules live under `src/`:
 
-Generation guards exist because runtime cleanup is asynchronous. Disconnect and reconnect abort old tasks and clear command targets, but an old task may still wake, receive a late event, complete an awaited command, or try to publish a UI update after the app has moved on. The generation check is the last line of defense that lets the task prove it still belongs to the active runtime before it changes anything visible or sends anything to LV1.
+- `src/lv1/` for LV1 connection, events, commands, handles, and state.
+- `src/fade/` for fade engine commands, events, state, timing, and fader law.
+- `src/show/` for show state, show commands, event handling, capture, and shared scene/channel types.
+- `src/scene_recall/` for recall policy, recall state, events, and the scene recall fader actor.
+- `src/runtime/` for bus-level commands and events.
+- `src/osc.rs` and `src/vegas.rs` for transport or protocol helpers.
 
-Contributors should treat generation checks as safety boundaries, not as incidental bookkeeping. Stale generation work must not:
+The Tauri shell lives under `src-tauri/src/`:
 
-- Mutate `ShellState` or produce current-looking UI snapshots.
-- Install LV1 or fade command targets.
-- Write automation logs that imply a stale decision belongs to the current connection.
-- Abort, start, finish, or otherwise control current fades.
-- Send fader commands to LV1.
-
-Place generation checks at async boundaries where stale work can cross back into current state:
-
-- Before applying LV1 events to shell state.
-- Before installing runtime handles or command-bus targets.
-- Before validating scene recall automation.
-- Before logging automation outcomes after an `await`.
-- Immediately before dispatching a fade start or any LV1 write that could move faders.
-
-Generation guards complement task aborts; they do not replace cleanup. Runtime owners should still abort old tasks and clear targets on disconnect/reconnect, while generation-aware code rejects any stale work that survives long enough to run again.
-
-## Automation Boundary
-
-Automation should depend on `AppEventBus` and `AppCommandBus`, not on concrete actor internals. That keeps automation aligned with the same runtime contract used by LV1, fading, and the Tauri shell.
-
-`SceneRecallFader` is the first automation runtime. It owns the LV1-scene-recall-to-fade bridge only:
-
-```text
-┌────────────────────────┐
-│ Lv1Event::SceneChanged │
-└───────────┬────────────┘
-            │
-            ▼
-┌──────────────────┐
-│ SceneRecallFader │
-└──────────┬───────┘
-           │
-           ▼
-┌──────────────────────────────┐
-│ Get fresh LV1 snapshot       │
-│ through AppCommandBus        │
-└──────────┬───────────────────┘
-           │
-           ▼
-┌───────────────────────┐
-│ ShellState validation │
-└──────────┬────────────┘
-           │
-     ┌─────┴─────┐
-     │           │
-     ▼           ▼
-┌────────────┐  ┌──────────────┐
-│ Block/skip │  │ Valid recall │
-└─────┬──────┘  └──────┬───────┘
-      │                │
-      ▼                ▼
-┌───────────────┐  ┌─────────────────────┐
-│ Log + refresh │  │ Recall scene fade   │
-└───────────────┘  └──────────┬──────────┘
-                              │
-                              ▼
-                       ┌───────────────────┐
-                       │ Start, overlap, or│
-                       │ same-scene finish │
-                       └─────────┬─────────┘
-                                 │
-                                 ▼
-                       ┌───────────────────┐
-                       │ Logs + UI refresh │
-                       └───────────────────┘
-```
-
-- It listens for `Lv1Event::SceneChanged`.
-- It validates exact scene identity, lockout state, connection state, stored scene config, scoped targets, stored fader values, and live topology through `ShellState`.
-- It treats duration `0` scenes as disabled for automatic fades.
-- It starts validated scene recall fades without aborting unrelated active fades first.
-- It lets `FadeEngine` finish that scene's owned channels when the same exact scene is recalled again while active.
-- It starts fades from current live fader values through `FadeEngine`.
-- It publishes automation refresh events after automation logs so the UI receives an updated snapshot even when no fade event follows.
-
-Future HTTP, WebSocket, and Companion automation should reuse the same command and validation boundaries instead of bypassing safety checks.
+- `src-tauri/src/app_state/` for `ShellState`, projections, logs, show-file mapping, and view models.
+- `src-tauri/src/commands.rs` for shell commands.
+- `src-tauri/src/connection_state.rs` and `src-tauri/src/connection_preferences.rs` for shell-facing connection state.
 
 ## Non-Goals
 

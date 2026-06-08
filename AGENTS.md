@@ -4,6 +4,14 @@
 
 This project is a Tauri/Rust/React desktop app that adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows.
 
+Project layout:
+
+- `src/` contains the core Rust crate, `advanced-show-control`.
+- `src-tauri/` contains the Tauri desktop shell crate, `advanced-show-control-tauri`, which depends on the core Rust crate.
+- `ui/` contains the React/TypeScript frontend.
+
+Do not assume `src/` is the frontend; this project does not use the default Tauri template layout.
+
 LV1 remains the source of truth for scene creation and scene recall. The app is a fader-fade overlay. It stores fade metadata for LV1 scenes and moves only the scoped faders that the engineer has configured.
 
 The app owns:
@@ -24,8 +32,9 @@ Current architecture is actor-oriented:
 
 - `Lv1Actor` owns the LV1 TCP connection and mirrored LV1 state.
 - `FadeEngine` owns active fade timing and fader writes.
-- `ShellState` owns UI projection, show-file state, scene configs, logs, lockout, and generation state.
-- `SceneRecallFader` listens for LV1 scene recall events and starts validated scene fades.
+- `ShowState` owns show data and show-file state.
+- `SceneRecallFader` owns scene recall policy and starts validated scene fades.
+- `ShellState` is the Tauri-side projection and command surface for UI state.
 - `AppEventBus` broadcasts facts/events.
 - `AppCommandBus` routes acknowledged commands to the current LV1 and fade targets.
 
