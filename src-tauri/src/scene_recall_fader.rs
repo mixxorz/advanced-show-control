@@ -662,9 +662,10 @@ mod tests {
         fade_replies.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn blocked_recall_does_not_abort_existing_fade() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let command_bus = AppCommandBus::new(event_bus.clone());
         let state = ShellState::default();
         let generation = configure_intro_recall(&state).await;
@@ -680,6 +681,10 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
         release_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut events).await;
+
+        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
             &state,
@@ -694,7 +699,7 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unavailable_lv1_state_blocks_before_abort_or_start() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
@@ -704,6 +709,9 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
 
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::task::yield_now().await;
+        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
@@ -729,7 +737,7 @@ mod tests {
         handle.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn fader_log_writes_publish_automation_refresh() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
@@ -740,6 +748,9 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
 
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::task::yield_now().await;
+        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         tokio::time::timeout(std::time::Duration::from_millis(250), async {
@@ -758,7 +769,7 @@ mod tests {
         handle.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unavailable_lv1_state_does_not_log_start_request() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
@@ -768,6 +779,9 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
 
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::task::yield_now().await;
+        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
