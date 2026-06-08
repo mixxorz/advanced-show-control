@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::tick::{ActiveChannel, TICK_HZ};
-use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent};
+use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent, FadeSceneIdentity};
 use crate::runtime::commands::{AppCommandBus, AppCommandError};
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -72,8 +72,32 @@ impl EngineState {
         !self.channels.is_empty()
     }
 
+    fn has_active_scene(&self, scene: &FadeSceneIdentity) -> bool {
+        self.channels.iter().any(|ch| &ch.scene == scene)
+    }
+
     fn cancel_all_in_place(&mut self) {
         self.channels.clear();
+    }
+}
+
+async fn finish_scene_channels(
+    state: &mut EngineState,
+    command_bus: &AppCommandBus,
+    scene: &FadeSceneIdentity,
+) {
+    let mut completed = Vec::new();
+    for ch in &mut state.channels {
+        if &ch.scene == scene {
+            let target_db = ch.exact_final_send();
+            let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
+            completed.push((ch.group, ch.channel));
+        }
+    }
+
+    state.channels.retain(|ch| &ch.scene != scene);
+    for (group, channel) in completed {
+        state.fan_out(FadeEvent::ChannelCompleted { group, channel });
     }
 }
 
@@ -103,6 +127,16 @@ async fn run_engine(
                 match cmd {
                 None => break,
                     Some(FadeCommand::RecallSceneFade { config, reply }) => {
+                        if state.has_active_scene(&config.scene) {
+                            finish_scene_channels(&mut state, &command_bus, &config.scene).await;
+                            if !state.is_active() {
+                                tick_interval = None;
+                                state.fan_out(FadeEvent::FadeCompleted);
+                            }
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+
                         let snapshot = match command_bus.get_lv1_state().await {
                             Ok(snapshot) => snapshot,
                             Err(err) => {

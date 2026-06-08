@@ -281,7 +281,7 @@ async fn engine_detects_manual_override() {
 }
 
 #[tokio::test]
-async fn start_fade_while_running_replaces_previous() {
+async fn different_scene_fade_while_running_replaces_previous_channel() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -329,8 +329,8 @@ async fn start_fade_while_running_replaces_previous() {
     let _ = engine
         .start_fade(FadeConfig {
             scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
+                index: 2,
+                name: "Verse".to_string(),
             },
             targets: vec![FadeTarget {
                 group: 0,
@@ -428,6 +428,93 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
     .await;
 
     no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(150)).await;
+}
+
+#[tokio::test]
+async fn recalling_same_scene_finishes_only_that_scene_channels() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &two_channels_args()))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let _ = engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                target_db: -30.0,
+            }],
+            30_000,
+        ))
+        .await;
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |e| matches!(e, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    let _ = engine
+        .start_fade(fade_config(
+            scene(2, "Verse"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                target_db: -10.0,
+            }],
+            30_000,
+        ))
+        .await;
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |e| matches!(e, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    let _ = engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                target_db: -30.0,
+            }],
+            30_000,
+        ))
+        .await;
+
+    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(2), |e| {
+        matches!(
+            e,
+            FadeEvent::ChannelCompleted {
+                group: 0,
+                channel: 0
+            }
+        )
+    })
+    .await;
+
+    no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(500)).await;
 }
 
 #[tokio::test]
