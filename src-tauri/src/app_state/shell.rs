@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::commands::ActiveCommandBus;
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
@@ -36,6 +37,10 @@ pub struct ShellState {
 pub(super) struct ShellInner {
     pub(super) generation: u64,
     pub(super) lv1_snapshot: Option<Lv1StateSnapshot>,
+    pub(super) discovered_lv1_systems: Vec<DiscoveredLv1System>,
+    pub(super) connected_lv1_identity: Option<Lv1SystemIdentity>,
+    pub(super) pending_lv1_identity: Option<Lv1SystemIdentity>,
+    pub(super) reconnect_state: ReconnectState,
     pub(super) fade_state: AppFadeState,
     pub(super) lockout: bool,
     pub(super) scene_configs: Vec<SceneConfig>,
@@ -112,11 +117,25 @@ impl ShellState {
 }
 
 fn cover_state_variants() {
+    let discovery_entry = lv1_scene_fade_utility::lv1::discovery::DiscoveryEntry {
+        service: "_waveslv113._tcp".to_string(),
+        uuid: Some("uuid".to_string()),
+        host: Some("LV1".to_string()),
+        port: Some(50000),
+        addresses: vec!["192.168.1.35".to_string()],
+        ipv6: Vec::new(),
+        source: "192.168.1.35".to_string(),
+    };
+
     let _ = (
         LogSource::Fade,
         LogSeverity::Error,
         AppFadeState::Running,
         AppFadeState::Blocked,
+        crate::connection_state::DiscoveredLv1Status::Available,
+        crate::connection_state::DiscoveredLv1Status::Connecting,
+        crate::connection_state::DiscoveredLv1Status::Unavailable,
+        crate::connection_state::identity_from_discovery(&discovery_entry),
     );
 }
 
@@ -199,6 +218,10 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
 
     AppViewState {
         connection,
+        discovered_lv1_systems: inner.discovered_lv1_systems.clone(),
+        connected_lv1_identity: inner.connected_lv1_identity.clone(),
+        pending_lv1_identity: inner.pending_lv1_identity.clone(),
+        reconnect: inner.reconnect_state.clone(),
         current_scene,
         scene_count: scenes.len(),
         scenes,
@@ -364,6 +387,41 @@ mod tests {
         assert_eq!(snapshot.channels[0].name, "Lead");
         assert_eq!(snapshot.scene_configs.len(), 0);
         assert_eq!(snapshot.selected_scene_id, None);
+    }
+
+    #[test]
+    fn snapshot_includes_discovered_lv1_systems_and_reconnect_state() {
+        let mut inner = ShellInner::default();
+        inner.discovered_lv1_systems = vec![crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(12),
+            status: crate::connection_state::DiscoveredLv1Status::Connected,
+        }];
+        inner.connected_lv1_identity = Some(crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        });
+        inner.reconnect_state = crate::connection_state::ReconnectState { active: true };
+
+        let snapshot = snapshot_from_inner(&inner);
+
+        assert_eq!(snapshot.discovered_lv1_systems.len(), 1);
+        assert_eq!(
+            snapshot.discovered_lv1_systems[0].identity.address,
+            "192.168.1.35"
+        );
+        assert_eq!(
+            snapshot.connected_lv1_identity.unwrap().address,
+            "192.168.1.35"
+        );
+        assert!(snapshot.reconnect.active);
     }
 
     #[test]
