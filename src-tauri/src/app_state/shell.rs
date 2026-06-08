@@ -98,6 +98,15 @@ impl ShellState {
         if inner.generation != generation {
             return None;
         }
+        if !matches!(
+            inner
+                .lv1_snapshot
+                .as_ref()
+                .map(|snapshot| &snapshot.connection),
+            Some(ConnectionStatus::Connected)
+        ) {
+            return None;
+        }
 
         inner.connected_lv1_identity = Some(identity);
         inner.pending_lv1_identity = None;
@@ -603,6 +612,25 @@ mod tests {
         assert!(stale_clear.is_none());
         assert_eq!(snapshot.connected_lv1_identity, None);
         assert_eq!(snapshot.pending_lv1_identity, Some(current_identity));
+    }
+
+    #[tokio::test]
+    async fn cannot_establish_connected_identity_until_lv1_snapshot_is_connected() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let (generation, _) = state.begin_connecting().await;
+
+        let snapshot = state
+            .establish_connected_lv1_identity_for_generation(generation, identity)
+            .await;
+
+        assert!(snapshot.is_none());
+        assert_eq!(state.snapshot().await.connected_lv1_identity, None);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
+use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
 use crate::scene_recall_fader::spawn_scene_recall_fader;
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
@@ -299,7 +299,7 @@ pub async fn connect_lv1_system(
     )
     .await?;
 
-    if snapshot.connected_lv1_identity.as_ref() == Some(&identity) {
+    if should_save_connection_preferences(&snapshot, &identity) {
         let preferences = crate::connection_preferences::ConnectionPreferences {
             last_connected_lv1: Some(crate::connection_preferences::LastConnectedLv1 {
                 uuid: identity.uuid.clone(),
@@ -370,6 +370,21 @@ async fn connect_to_target<R: Runtime>(
     };
 
     let initial_snapshot = lv1.get_state().await;
+    if initial_snapshot.connection
+        != lv1_scene_fade_utility::lv1::model::ConnectionStatus::Connected
+    {
+        runtime_handles.abort_all().await;
+        if let Some(snapshot) = state
+            .clear_pending_lv1_identity_for_generation(generation)
+            .await
+        {
+            emit_snapshot(&app, &snapshot);
+        }
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&app, &snapshot);
+        return Err("LV1 did not connect".to_string());
+    }
+
     let snapshot = match state
         .begin_connection_for_generation(generation, initial_snapshot)
         .await
@@ -415,6 +430,14 @@ async fn connect_to_target<R: Runtime>(
 
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
+}
+
+fn should_save_connection_preferences(
+    snapshot: &AppViewState,
+    identity: &crate::connection_state::Lv1SystemIdentity,
+) -> bool {
+    snapshot.connection == AppConnectionState::Connected
+        && snapshot.connected_lv1_identity.as_ref() == Some(identity)
 }
 
 async fn install_connected_runtime<R: Runtime>(
@@ -592,6 +615,46 @@ mod tests {
         let _ = refresh_lv1_discovery;
         let _ = connect_lv1_system;
         let _ = startup_auto_connect_lv1;
+    }
+
+    #[tokio::test]
+    async fn preferences_are_saved_only_for_connected_matching_identity() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+
+        let disconnected = state
+            .set_connected_lv1_identity(Some(identity.clone()))
+            .await;
+
+        assert!(!should_save_connection_preferences(
+            &disconnected,
+            &identity
+        ));
+
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should accept connected snapshot");
+        let connected = state
+            .establish_connected_lv1_identity_for_generation(generation, identity.clone())
+            .await
+            .expect("connected snapshot should allow identity establishment");
+
+        assert!(should_save_connection_preferences(&connected, &identity));
     }
 
     #[tokio::test]
