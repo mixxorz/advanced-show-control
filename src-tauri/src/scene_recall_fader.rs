@@ -404,7 +404,7 @@ mod tests {
             .set_fade(Some(FadeEngineHandle::new(fade_tx)))
             .await;
 
-        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (lv1, release_lv1, first_server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         command_bus.set_lv1(Some(lv1)).await;
 
         let first_handle = spawn_scene_recall_fader(
@@ -432,23 +432,50 @@ mod tests {
 
         let _ = state.disconnect().await;
         let (second_generation, _) = state.begin_connecting().await;
-        state.begin_connection(snapshot_for_intro()).await;
+        state
+            .begin_connection_for_generation(second_generation, snapshot_for_intro())
+            .await
+            .expect("second generation should accept reconnect snapshot");
+        let mut second_events = event_bus.subscribe();
+        let (second_lv1, release_second_lv1, close_second_lv1, second_server) =
+            spawn_fake_lv1_with_intro_until_close(event_bus.clone()).await;
+        command_bus.set_lv1(Some(second_lv1)).await;
         let second_handle = spawn_scene_recall_fader(
             state.clone(),
             second_generation,
             command_bus,
             event_bus.clone(),
         );
+        release_second_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut second_events).await;
 
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            matches!(fade_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "new generation should prime before sending same-scene fade commands"
+        );
+
+        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
-        tokio::task::yield_now().await;
-        tokio::time::timeout(Duration::from_millis(1), fade_rx.recv())
+
+        let second = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
             .await
-            .expect_err("new generation should prime before sending same-scene fade commands");
+            .expect("second generation recall after priming should send a fade command")
+            .expect("fade command channel should be open");
+        match second {
+            FadeCommand::RecallSceneFade { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected second RecallSceneFade, got {other:?}"),
+        }
 
         first_handle.abort();
         second_handle.abort();
-        server.await.unwrap();
+        close_second_lv1.send(()).unwrap();
+        first_server.await.unwrap();
+        second_server.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -831,6 +858,31 @@ mod tests {
 
         let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus);
         (lv1, release_tx, server)
+    }
+
+    async fn spawn_fake_lv1_with_intro_until_close(
+        event_bus: AppEventBus,
+    ) -> (
+        lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+        std_mpsc::Sender<()>,
+        std_mpsc::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (close_tx, close_rx) = std_mpsc::channel();
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            release_rx.recv().unwrap();
+            stream.write_all(&channels_frame()).unwrap();
+            stream.write_all(&scene_index_frame()).unwrap();
+            stream.write_all(&scene_name_frame()).unwrap();
+            let _ = close_rx.recv_timeout(Duration::from_secs(2));
+        });
+
+        let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus);
+        (lv1, release_tx, close_tx, server)
     }
 
     fn channels_frame() -> Vec<u8> {
