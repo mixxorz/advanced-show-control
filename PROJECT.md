@@ -407,7 +407,7 @@ These should be included early:
 - Manual override detection.
 - Connection watchdog.
 - No sending if LV1 connection is unstable.
-- Final target confirmation after fade completion.
+- Exact final target send for completed owned channels.
 - Logs of recalled scenes and fade actions.
 - Clear warning if the current LV1 scene name/index no longer matches the saved fade config.
 
