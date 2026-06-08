@@ -375,13 +375,14 @@ async fn connect_to_target<R: Runtime>(
     {
         runtime_handles.abort_all().await;
         if let Some(snapshot) = state
-            .clear_pending_lv1_identity_for_generation(generation)
+            .fail_connect_for_generation(generation, "LV1 did not connect")
             .await
         {
             emit_snapshot(&app, &snapshot);
+        } else {
+            let snapshot = state.snapshot().await;
+            emit_snapshot(&app, &snapshot);
         }
-        let snapshot = state.snapshot().await;
-        emit_snapshot(&app, &snapshot);
         return Err("LV1 did not connect".to_string());
     }
 

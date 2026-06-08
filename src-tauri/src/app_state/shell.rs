@@ -147,6 +147,24 @@ impl ShellState {
             .await
     }
 
+    pub async fn fail_connect_for_generation(
+        &self,
+        generation: u64,
+        message: impl Into<String>,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.lv1_snapshot = None;
+        inner.pending_lv1_identity = None;
+        inner.connected_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
+        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
+        Some(snapshot_from_inner(&inner))
+    }
+
     pub async fn set_discovered_lv1_systems(
         &self,
         systems: Vec<DiscoveredLv1System>,
@@ -631,6 +649,63 @@ mod tests {
 
         assert!(snapshot.is_none());
         assert_eq!(state.snapshot().await.connected_lv1_identity, None);
+    }
+
+    #[tokio::test]
+    async fn current_generation_connect_failure_clears_connecting_state_and_pending_identity() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(generation, Some(identity))
+            .await
+            .expect("current generation should set pending identity");
+
+        let snapshot = state
+            .fail_connect_for_generation(generation, "LV1 did not connect")
+            .await
+            .expect("current generation failure should apply");
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.pending_lv1_identity, None);
+        assert_eq!(snapshot.connected_lv1_identity, None);
+        assert_eq!(snapshot.logs.last().unwrap().severity, LogSeverity::Warning);
+        assert_eq!(snapshot.logs.last().unwrap().message, "LV1 did not connect");
+    }
+
+    #[tokio::test]
+    async fn stale_generation_connect_failure_does_not_clear_newer_pending_identity() {
+        let state = ShellState::default();
+        let current_identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-2".to_string()),
+            host: Some("LV1-MON".to_string()),
+            address: "192.168.1.36".to_string(),
+            port: 50000,
+        };
+
+        let (stale_generation, _) = state.begin_connecting().await;
+        let (current_generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(
+                current_generation,
+                Some(current_identity.clone()),
+            )
+            .await
+            .expect("current generation should set pending identity");
+
+        let stale = state
+            .fail_connect_for_generation(stale_generation, "LV1 did not connect")
+            .await;
+        let snapshot = state.snapshot().await;
+
+        assert!(stale.is_none());
+        assert_eq!(snapshot.connection, AppConnectionState::Connecting);
+        assert_eq!(snapshot.pending_lv1_identity, Some(current_identity));
     }
 
     #[test]
