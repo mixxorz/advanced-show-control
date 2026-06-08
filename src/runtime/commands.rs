@@ -31,6 +31,7 @@ struct AppCommandTargets {
     lv1: Option<Lv1ActorHandle>,
     fade: Option<FadeEngineHandle>,
     show: Option<ShowStateHandle>,
+    generation: u64,
 }
 
 #[derive(Clone)]
@@ -57,6 +58,14 @@ impl AppCommandBus {
 
     pub async fn set_show(&self, show: Option<ShowStateHandle>) {
         self.targets.lock().await.show = show;
+    }
+
+    pub async fn set_generation(&self, generation: u64) {
+        self.targets.lock().await.generation = generation;
+    }
+
+    pub async fn get_generation(&self) -> u64 {
+        self.targets.lock().await.generation
     }
 
     pub async fn clear_targets(&self) {

@@ -2,7 +2,6 @@ mod app_state;
 mod commands;
 mod connection_preferences;
 mod connection_state;
-mod scene_recall_fader;
 mod show_file;
 
 use app_state::ShellState;

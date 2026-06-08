@@ -4,6 +4,7 @@ use advanced_show_control::lv1::discovery::resolve_target;
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use advanced_show_control::scene_recall::spawn_scene_recall_fader;
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +13,6 @@ use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
 use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
-use crate::scene_recall_fader::spawn_scene_recall_fader;
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
@@ -234,6 +234,9 @@ pub async fn disconnect_lv1(
     active_command_bus: State<'_, ActiveCommandBus>,
 ) -> Result<AppViewState, String> {
     let (generation, snapshot) = state.disconnect().await;
+    if let Some(command_bus) = active_command_bus.current().await {
+        command_bus.set_generation(generation).await;
+    }
     state
         .clear_runtime_handles_for_generation(generation, &active_command_bus)
         .await;
@@ -466,6 +469,7 @@ async fn connect_to_target<R: Runtime>(
 
     let lv1 = spawn_actor(identity.address.clone(), identity.port, event_bus.clone());
     let command_bus = AppCommandBus::new(event_bus.clone());
+    command_bus.set_generation(generation).await;
     command_bus.set_lv1(Some(lv1.clone())).await;
     command_bus.set_show(Some(shell_state.show.clone())).await;
     let fade_command_bus = command_bus.clone();
@@ -479,7 +483,6 @@ async fn connect_to_target<R: Runtime>(
         command_bus: Some(fade_command_bus.clone()),
         projector: None,
         scene_recall_fader: Some(spawn_scene_recall_fader(
-            shell_state.clone(),
             generation,
             fade_command_bus.clone(),
             event_bus.clone(),
