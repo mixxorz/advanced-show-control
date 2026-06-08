@@ -13,8 +13,6 @@ pub enum ShowCommand {
     SetChannelScoped { scene_id: String, group: i32, channel: i32, scoped: bool, reply: oneshot::Sender<Result<bool, String>> },
     SetAllChannelsScoped { scene_id: String, scoped: bool, reply: oneshot::Sender<Result<bool, String>> },
     StoreSceneConfig { scene_id: String, channels: Vec<crate::lv1::types::ChannelInfo>, reply: oneshot::Sender<Result<bool, String>> },
-    LoadShowData { reply: oneshot::Sender<Result<(), String>> },
-    ExportShowData { reply: oneshot::Sender<Result<(), String>> },
     ReconcileSceneList { scenes: Vec<SceneListEntry>, reply: oneshot::Sender<bool> },
     ReplaceSnapshot { snapshot: ShowSnapshot, reply: oneshot::Sender<()> },
     Clear { reply: oneshot::Sender<()> },

@@ -284,14 +284,23 @@ impl ShellState {
     }
 
     pub async fn reconnect_timed_out(&self, attempt: u64) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
-            inner.generation = inner.generation.saturating_add(1);
-            inner.reconnect_state.active = false;
-            self.scene_recall_logs.lock().await.clear_for_generation(inner.generation);
+        let mut generation_to_clear = None;
+        let snapshot = {
+            let mut inner = self.inner.lock().await;
+            if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+                inner.generation = inner.generation.saturating_add(1);
+                inner.reconnect_state.active = false;
+                generation_to_clear = Some(inner.generation);
+            }
+            snapshot_inner(&inner)
+        };
+
+        if let Some(generation) = generation_to_clear {
+            self.scene_recall_logs.lock().await.clear_for_generation(generation);
         }
+
         let show = self.show.get_snapshot().await.unwrap_or_else(|_| ShowSnapshot::empty());
-        snapshot_from_parts(snapshot_inner(&inner), show)
+        snapshot_from_parts(snapshot, show)
     }
 
     pub async fn reconnect_timeout_generation(&self, attempt: u64) -> Option<u64> {

@@ -69,16 +69,6 @@ impl ShowStateHandle {
         self.request(ShowCommand::StoreSceneConfig { scene_id, channels, reply }, reply_rx).await
     }
 
-    pub async fn load_show_data(&self) -> Result<Result<(), String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::LoadShowData { reply }, reply_rx).await
-    }
-
-    pub async fn export_show_data(&self) -> Result<Result<(), String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::ExportShowData { reply }, reply_rx).await
-    }
-
     pub async fn reconcile_scene_list(&self, scenes: Vec<SceneListEntry>) -> Result<bool, ShowActorError> {
         let (reply, reply_rx) = oneshot::channel();
         self.request(ShowCommand::ReconcileSceneList { scenes, reply }, reply_rx).await

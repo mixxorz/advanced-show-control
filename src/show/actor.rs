@@ -22,8 +22,6 @@ pub fn spawn_show_state(event_bus: AppEventBus) -> ShowStateHandle {
                 ShowCommand::SetChannelScoped { scene_id, group, channel, scoped, reply } => { let result = state.set_channel_scoped(&scene_id, group, channel, scoped); if matches!(result, Ok(true)) { event_bus.publish(AppEvent::Show(ShowEvent::SceneConfigChanged { scene_id })); } let _ = reply.send(result); }
                 ShowCommand::SetAllChannelsScoped { scene_id, scoped, reply } => { let result = state.set_all_channels_scoped(&scene_id, scoped); if matches!(result, Ok(true)) { event_bus.publish(AppEvent::Show(ShowEvent::SceneConfigChanged { scene_id })); } let _ = reply.send(result); }
                 ShowCommand::StoreSceneConfig { scene_id, channels, reply } => { let result = state.store_scene_config(&scene_id, &channels); if matches!(result, Ok(true)) { event_bus.publish(AppEvent::Show(ShowEvent::SceneConfigChanged { scene_id })); } let _ = reply.send(result); }
-                ShowCommand::LoadShowData { reply } => { let _ = reply.send(Ok(())); }
-                ShowCommand::ExportShowData { reply } => { let _ = reply.send(Ok(())); }
                 ShowCommand::ReconcileSceneList { scenes, reply } => { let changed = state.reconcile_scene_fade_configs(&scenes); let _ = reply.send(changed); if changed { event_bus.publish(AppEvent::Show(ShowEvent::StateChanged)); } }
                 ShowCommand::ReplaceSnapshot { snapshot, reply } => { state.replace_snapshot(snapshot); let _ = reply.send(()); }
                 ShowCommand::Clear { reply } => { state.clear(); let _ = reply.send(()); }
