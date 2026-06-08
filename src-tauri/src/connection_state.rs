@@ -1,5 +1,5 @@
 use lv1_scene_fade_utility::lv1::discovery::DiscoveryEntry;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -10,7 +10,7 @@ pub enum DiscoveredLv1Status {
     Unavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lv1SystemIdentity {
     pub uuid: Option<String>,

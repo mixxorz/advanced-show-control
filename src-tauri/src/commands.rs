@@ -7,7 +7,7 @@ use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime, State};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
@@ -268,14 +268,77 @@ pub async fn connect_lv1(
 ) -> Result<AppViewState, String> {
     let timeout = timeout_ms.unwrap_or(6000);
     let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
+    let identity = crate::connection_state::Lv1SystemIdentity {
+        uuid: None,
+        host: None,
+        address: host,
+        port,
+    };
+
+    connect_to_target(app, (*state).clone(), (*active_command_bus).clone(), identity).await
+}
+
+#[tauri::command]
+pub async fn connect_lv1_system(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
+    identity: crate::connection_state::Lv1SystemIdentity,
+) -> Result<AppViewState, String> {
+    let snapshot = connect_to_target(
+        app.clone(),
+        (*state).clone(),
+        (*active_command_bus).clone(),
+        identity.clone(),
+    )
+    .await?;
+
+    if snapshot.connected_lv1_identity.as_ref() == Some(&identity) {
+        let preferences = crate::connection_preferences::ConnectionPreferences {
+            last_connected_lv1: Some(crate::connection_preferences::LastConnectedLv1 {
+                uuid: identity.uuid.clone(),
+                host: identity.host.clone(),
+                address: identity.address.clone(),
+                port: identity.port,
+            }),
+        };
+        let preferences_path = app
+            .path()
+            .app_config_dir()
+            .map_err(|err| format!("Failed to resolve app config dir: {err}"))?
+            .join("preferences.json");
+        crate::connection_preferences::write_connection_preferences(
+            &preferences_path,
+            &preferences,
+        )?;
+    }
+
+    Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn startup_auto_connect_lv1(
+    state: State<'_, ShellState>,
+) -> Result<AppViewState, String> {
+    Ok(state.snapshot().await)
+}
+
+async fn connect_to_target<R: Runtime>(
+    app: AppHandle<R>,
+    state: ShellState,
+    active_command_bus: ActiveCommandBus,
+    identity: crate::connection_state::Lv1SystemIdentity,
+) -> Result<AppViewState, String> {
     let event_bus = AppEventBus::default();
     let (generation, connecting_snapshot) = state.begin_connecting().await;
     emit_snapshot(&app, &connecting_snapshot);
+    let pending_snapshot = state.set_pending_lv1_identity(Some(identity.clone())).await;
+    emit_snapshot(&app, &pending_snapshot);
     let events = event_bus.subscribe();
 
-    let shell_state = (*state).clone();
+    let shell_state = state.clone();
 
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
+    let lv1 = spawn_actor(identity.address.clone(), identity.port, event_bus.clone());
     let command_bus = AppCommandBus::new(event_bus.clone());
     command_bus.set_lv1(Some(lv1.clone())).await;
     let fade_command_bus = command_bus.clone();
@@ -304,13 +367,14 @@ pub async fn connect_lv1(
         Some(snapshot) => snapshot,
         None => {
             runtime_handles.abort_all().await;
+            state.set_pending_lv1_identity(None).await;
             let snapshot = state.snapshot().await;
             emit_snapshot(&app, &snapshot);
             return Ok(snapshot);
         }
     };
 
-    install_connected_runtime(
+    let installed_snapshot = install_connected_runtime(
         &app,
         &state,
         shell_state,
@@ -320,7 +384,16 @@ pub async fn connect_lv1(
         runtime_handles,
         &active_command_bus,
     )
-    .await
+    .await?;
+
+    if state.snapshot_for_generation(generation).await.is_none() {
+        return Ok(installed_snapshot);
+    }
+
+    state.set_connected_lv1_identity(Some(identity)).await;
+    let snapshot = state.set_pending_lv1_identity(None).await;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
 }
 
 async fn install_connected_runtime<R: Runtime>(
@@ -491,6 +564,13 @@ mod tests {
         let _ = store_scene_config;
         let _ = set_channel_scoped;
         let _ = set_all_channels_scoped;
+    }
+
+    #[test]
+    fn connection_chooser_commands_are_exposed() {
+        let _ = refresh_lv1_discovery;
+        let _ = connect_lv1_system;
+        let _ = startup_auto_connect_lv1;
     }
 
     #[tokio::test]

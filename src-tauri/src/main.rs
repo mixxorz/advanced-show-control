@@ -22,6 +22,8 @@ fn main() {
             commands::set_scene_duration_ms,
             commands::select_scene_config,
             commands::connect_lv1,
+            commands::connect_lv1_system,
+            commands::startup_auto_connect_lv1,
             commands::disconnect_lv1,
             commands::abort_all_fades,
             commands::finish_fade_now,
