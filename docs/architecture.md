@@ -2,7 +2,7 @@
 
 ## Overview
 
-The runtime is split into six boundary pieces:
+The runtime is split into seven boundary pieces:
 
 - `Lv1Actor`
 - `FadeEngine`
@@ -91,7 +91,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
        └──────────┘            └──────────────┘
 ```
 
-`FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is handled inside fade ownership and overlap rules.
+`FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
 
 ## Scene Recall Ownership
 

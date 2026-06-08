@@ -67,7 +67,7 @@ Read these files before substantial work:
 - Blocked, skipped, or disabled recalls must not abort an existing fade.
 - Use fresh LV1 state for recall automation where event subscriber ordering could otherwise create stale decisions.
 - Make safety blocks visible through logs or UI state.
-- Preserve manual override, abort, finish-now, and disconnect safety behavior.
+- Preserve manual override, abort, overlap/same-scene, and disconnect safety behavior.
 
 ## Verification Commands
 
