@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::tick::{ActiveChannel, TICK_HZ};
-use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent};
+use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent, FadeSceneIdentity};
 use crate::runtime::commands::{AppCommandBus, AppCommandError};
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -25,7 +25,7 @@ impl FadeEngineHandle {
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(FadeCommand::StartFade { config, reply })
+            .send(FadeCommand::RecallSceneFade { config, reply })
             .await
             .map_err(|_| AppCommandError::FadeUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
@@ -35,15 +35,6 @@ impl FadeEngineHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(FadeCommand::AbortAll { reply })
-            .await
-            .map_err(|_| AppCommandError::FadeUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
-    }
-
-    pub async fn finish_now(&self) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(FadeCommand::FinishNow { reply })
             .await
             .map_err(|_| AppCommandError::FadeUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
@@ -81,8 +72,32 @@ impl EngineState {
         !self.channels.is_empty()
     }
 
+    fn has_active_scene(&self, scene: &FadeSceneIdentity) -> bool {
+        self.channels.iter().any(|ch| &ch.scene == scene)
+    }
+
     fn cancel_all_in_place(&mut self) {
         self.channels.clear();
+    }
+}
+
+async fn finish_scene_channels(
+    state: &mut EngineState,
+    command_bus: &AppCommandBus,
+    scene: &FadeSceneIdentity,
+) {
+    let mut completed = Vec::new();
+    for ch in &mut state.channels {
+        if &ch.scene == scene {
+            let target_db = ch.exact_final_send();
+            let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
+            completed.push((ch.group, ch.channel));
+        }
+    }
+
+    state.channels.retain(|ch| &ch.scene != scene);
+    for (group, channel) in completed {
+        state.fan_out(FadeEvent::ChannelCompleted { group, channel });
     }
 }
 
@@ -111,7 +126,17 @@ async fn run_engine(
             cmd = cmd_rx.recv() => {
                 match cmd {
                 None => break,
-                    Some(FadeCommand::StartFade { config, reply }) => {
+                    Some(FadeCommand::RecallSceneFade { config, reply }) => {
+                        if state.has_active_scene(&config.scene) {
+                            finish_scene_channels(&mut state, &command_bus, &config.scene).await;
+                            if !state.is_active() {
+                                tick_interval = None;
+                                state.fan_out(FadeEvent::FadeCompleted);
+                            }
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+
                         let snapshot = match command_bus.get_lv1_state().await {
                             Ok(snapshot) => snapshot,
                             Err(err) => {
@@ -119,17 +144,37 @@ async fn run_engine(
                                 continue;
                             }
                         };
-                        state.cancel_all_in_place();
                         let now = Instant::now();
                         let duration = Duration::from_millis(config.duration_ms);
 
                         for target in &config.targets {
-                            let start_db = snapshot.channels.iter()
+                            let start_db = state
+                                .channels
+                                .iter()
                                 .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                                .map(|ch| ch.gain_db)
+                                .map(|ch| {
+                                    if ch.is_done(now) {
+                                        ch.target_db
+                                    } else {
+                                        ch.value_at(now)
+                                    }
+                                })
+                                .or_else(|| {
+                                    snapshot
+                                        .channels
+                                        .iter()
+                                        .find(|ch| {
+                                            ch.group == target.group && ch.channel == target.channel
+                                        })
+                                        .map(|ch| ch.gain_db)
+                                })
                                 .unwrap_or(target.target_db);
 
+                            state
+                                .channels
+                                .retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
                             state.channels.push(ActiveChannel::new(
+                                config.scene.clone(),
                                 target.group,
                                 target.channel,
                                 start_db,
@@ -153,34 +198,38 @@ async fn run_engine(
                         state.fan_out(FadeEvent::FadeAborted);
                         let _ = reply.send(Ok(()));
                     }
-                    Some(FadeCommand::FinishNow { reply }) => {
-                        for ch in &state.channels {
-                            let _ = command_bus.set_gain(ch.group, ch.channel, ch.target_db).await;
-                        }
-                        state.cancel_all_in_place();
-                        tick_interval = None;
-                        state.fan_out(FadeEvent::FadeCompleted);
-                        let _ = reply.send(Ok(()));
-                    }
                 }
             }
 
             _ = tick_fut => {
                 let now = Instant::now();
                 let mut done_indices = Vec::new();
+                let mut completed_events = Vec::new();
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
+                    if ch.is_done(now) {
+                        let target_db = ch.exact_final_send();
+                        let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
+                        completed_events.push(FadeEvent::ChannelCompleted {
+                            group: ch.group,
+                            channel: ch.channel,
+                        });
+                        done_indices.push(i);
+                        continue;
+                    }
+
                     if let Some(new_db) = ch.next_send(now) {
                         let _ = command_bus.set_gain(ch.group, ch.channel, new_db).await;
-                    }
-                    if ch.is_done(now) {
-                        done_indices.push(i);
                     }
                 }
 
                 // Remove completed channels (reverse order to preserve indices)
                 for i in done_indices.into_iter().rev() {
                     state.channels.remove(i);
+                }
+
+                for event in completed_events {
+                    state.fan_out(event);
                 }
 
                 if !state.is_active() {
@@ -226,7 +275,7 @@ async fn run_engine(
 mod tests {
     use super::*;
     use crate::fade::curve::FadeCurve;
-    use crate::fade::types::{FadeCommand, FadeTarget};
+    use crate::fade::types::{FadeCommand, FadeSceneIdentity, FadeTarget};
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -237,6 +286,10 @@ mod tests {
 
         let result = handle
             .start_fade(FadeConfig {
+                scene: FadeSceneIdentity {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
                 targets: vec![FadeTarget {
                     group: 0,
                     channel: 1,
@@ -258,6 +311,10 @@ mod tests {
         let task = tokio::spawn(async move {
             handle
                 .start_fade(FadeConfig {
+                    scene: FadeSceneIdentity {
+                        index: 1,
+                        name: "Intro".to_string(),
+                    },
                     targets: vec![FadeTarget {
                         group: 0,
                         channel: 1,
@@ -270,7 +327,7 @@ mod tests {
         });
 
         match rx.recv().await.unwrap() {
-            FadeCommand::StartFade { reply, .. } => drop(reply),
+            FadeCommand::RecallSceneFade { reply, .. } => drop(reply),
             _ => panic!("unexpected command"),
         }
 

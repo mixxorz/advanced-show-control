@@ -201,7 +201,7 @@ When a fade-enabled LV1 scene is recalled, the app should:
 1. Read the current fader values for all captured targets.
 2. Compute interpolated gain values over the configured fade time.
 3. Send repeated `/Set/Track/Out/Gain` messages until each target is reached.
-4. Force-send the exact final target value at the end.
+4. Send the exact target value as the final send for each completed channel.
 
 ### Suggested Defaults
 
@@ -277,7 +277,6 @@ Useful actions:
 - Recall fade for current LV1 scene.
 - Recall a specific fade config.
 - Abort all fades.
-- Finish current fade immediately.
 - Toggle fade enable for current scene.
 - Toggle lockout mode.
 - Next/previous app snapshot.
@@ -366,8 +365,8 @@ LV1 Fade App
 │   ├── Scheduler
 │   ├── Curves
 │   ├── Manual override detection
-│   ├── Abort all
-│   └── Finish now
+│   ├── Scene-owned overlapping fades
+│   └── Abort all
 │
 ├── Storage
 │   ├── Scene fade configs
@@ -404,12 +403,11 @@ The first useful version should include:
 These should be included early:
 
 - Global **Abort All Fades** button.
-- **Finish Now** button.
 - Lockout mode to prevent accidental recalls.
 - Manual override detection.
 - Connection watchdog.
 - No sending if LV1 connection is unstable.
-- Final target confirmation after fade completion.
+- Exact final target send for completed owned channels.
 - Logs of recalled scenes and fade actions.
 - Clear warning if the current LV1 scene name/index no longer matches the saved fade config.
 

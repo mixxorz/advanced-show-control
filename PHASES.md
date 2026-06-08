@@ -7,11 +7,11 @@ This document outlines a practical phased plan for building a timed fader fade o
 - [x] **Phase 0: Product Definition And Risk Framing** — product model, safety defaults, MVP direction, and Rust/Tauri direction are established in `PROJECT.md` and design notes.
 - [x] **Phase 1: LV1 Protocol Discovery Prototype** — discovery, TCP connection, MyFOH-style handshake, keepalive, message logging, fader set commands, rate testing, and hardware findings are implemented in the CLI/core.
 - [x] **Phase 2: Core State Mirror** — `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, events, reconnect behavior, and snapshots.
-- [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, final target send, abort, finish-now, replacement behavior, and manual override detection are implemented and tested.
+- [x] **Phase 3: Fade Engine Prototype** — fade engine, curves, measured fader law, 25 Hz scheduler, minimum send delta, exact final channel sends, abort, scene-owned overlap behavior, and manual override detection are implemented and tested.
 - [x] **Phase 4: Scene Store And Scope Workflow** — in-memory scene configs, selected-scene editing, store/scope controls, scene-list reconciliation, and split Scene tab UI are implemented and tested.
 - [x] **Phase 5: Storage And Show Files** — JSON `.lv1show` save/load, native Open/Save dialogs, platform-aware default show folder, internal backup-on-save, exact-match scene validation, duration storage, full stored channel configs, scoped channel lists, and dirty state are implemented and tested. Remapping, scene rename handling, autosave, and durable rename/reorder matching remain deferred.
-- [x] **Phase 6: MVP Desktop UI** — durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort/finish controls, LV1 connection commands, show-file controls, Store workflow, duration editing, and grouped scoped-channel toggle grid.
-- [x] **Phase 7: Scene Recall Automation** — `SceneRecallFader` automatically validates LV1 scene recall events, blocks unsafe recalls, skips duration `0` scenes, aborts overlapping fades only after a valid new recall, and starts scoped stored fader fades.
+- [x] **Phase 6: MVP Desktop UI** — durable Tauri + React + TypeScript + Tailwind shell exists with `Connection`, `Scene`, and `Logs` tabs, Rust-owned app snapshots, global lockout/abort controls, LV1 connection commands, show-file controls, Store workflow, duration editing, and grouped scoped-channel toggle grid.
+- [x] **Phase 7: Scene Recall Automation** — `SceneRecallFader` automatically validates LV1 scene recall events, blocks unsafe recalls, skips duration `0` scenes, starts scene-owned scoped stored fader fades without aborting unrelated active fades, and repeats the same validated scene recall to finish that scene's owned channels.
 - [ ] **Phase 8: HTTP And WebSocket Control API** — not implemented yet.
 - [ ] **Phase 9: Bitfocus Companion Integration** — not implemented yet.
 - [ ] **Phase 10: Beta Hardening** — not implemented yet.
@@ -149,14 +149,15 @@ The app should never assume stored state is current if the LV1 connection is uns
 - Fade from current live value to stored target value.
 - 20–30 Hz update scheduler.
 - Minimum send delta, such as 0.1 dB.
-- Final exact target send.
+- Exact target send as the final channel send.
 - Fade curves:
   - Linear dB.
   - Ease-in-out dB.
   - Linear amplitude.
   - Ease-in-out amplitude.
 - Abort all fades.
-- Finish current fade immediately.
+- Scene-owned overlap for validated scene recall fades.
+- Repeat same-scene recall finishes that scene's active channels.
 - Per-channel fade cancellation.
 - Manual override detection.
 
@@ -300,7 +301,6 @@ Remapping, scene rename handling, duplicate-name handling, scene reorder handlin
    - Per-channel progress.
    - Manual override indicators.
    - Abort all.
-   - Finish now.
    - Lockout toggle.
 
 4. **Logs Screen**
@@ -352,13 +352,13 @@ Do not auto-fade if:
 - LV1 connection is unstable.
 - Scene identity is ambiguous.
 - Lockout is enabled.
-- Another fade is running and overlap is disallowed.
+- LV1 state is unavailable, disconnected, stale, or unsafe.
 - No current fader values are available.
 - Target channel topology no longer matches safely.
 
-**Overlap Policy To Decide:**
+**Overlap Policy:**
 
-Recommended MVP policy: recalling a new app-managed scene while a fade is running should cancel the previous fade and start the new one only after validation.
+Validated scene recalls use scene-owned overlapping fades. A different app-managed scene can start without aborting unrelated active faders. If the incoming scene scopes a fader already owned by another active scene fade, the incoming scene takes over that channel from its current live value. Recalling the same exact validated scene while it owns active channels finishes only that scene's active channels.
 
 **Exit Criteria:**
 
@@ -381,7 +381,6 @@ Recommended MVP policy: recalling a new app-managed scene while a fade is runnin
 - Expose current scene config and scope status.
 - Trigger fade actions.
 - Abort all fades.
-- Finish current fade.
 - Toggle lockout.
 - Toggle channel scope for current scene.
 - Emit live events over WebSocket.
@@ -395,7 +394,6 @@ Recommended MVP policy: recalling a new app-managed scene while a fade is runnin
 | POST | `/api/fades/current/recall` | Recall fade for current scene |
 | POST | `/api/fades/{id}/recall` | Recall specific fade config |
 | POST | `/api/fades/abort` | Abort all fades |
-| POST | `/api/fades/finish` | Finish current fade immediately |
 | POST | `/api/lockout/toggle` | Toggle lockout |
 | POST | `/api/current-scene/scope/toggle` | Toggle scene scope |
 | WS | `/ws/events` | Status, scene, fade, and warning events |
@@ -417,7 +415,6 @@ Recommended MVP policy: recalling a new app-managed scene while a fade is runnin
 - Recall fade for current LV1 scene.
 - Recall specific fade config.
 - Abort all fades.
-- Finish current fade immediately.
 - Set duration for current scene.
 - Toggle lockout mode.
 - Next/previous app snapshot or fade config.
@@ -544,7 +541,6 @@ For the first useful version, include only:
 - Fade scoped stored faders from current live values.
 - Touch Cancels Channel.
 - Abort All.
-- Finish Now.
 - Lockout.
 - Logs.
 - JSON project save/load.

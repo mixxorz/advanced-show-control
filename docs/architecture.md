@@ -75,16 +75,16 @@ Broadcast subscribers receive events independently. A subscriber must not assume
                    │ AppCommandBus │
                    └───────┬───────┘
                            │
-             ┌─────────────┴─────────────┐
-             │                           │
-             ▼                           ▼
-      ┌─────────────┐             ┌────────────────────┐
-      │ Current LV1 │             │ Current FadeEngine │
-      │ set/state   │             │ start/abort/finish │
-      └─────────────┘             └────────────────────┘
+              ┌─────────────┴─────────────┐
+              │                           │
+              ▼                           ▼
+       ┌─────────────┐             ┌────────────────────┐
+       │ Current LV1 │             │ Current FadeEngine │
+       │ set/state   │             │ recall/abort       │
+       └─────────────┘             └────────────────────┘
 ```
 
-`AppCommandBus` keeps the current LV1 and fade targets and sends commands directly to them. Tauri commands use the bus, `FadeEngine` uses it for LV1 writes, and `SceneRecallFader` uses it to read fresh LV1 state, abort the previous fade after a valid recall, and start the new scene fade.
+`AppCommandBus` keeps the current LV1 and fade targets and sends commands directly to them. Tauri commands use the bus, `FadeEngine` uses it for LV1 writes, and `SceneRecallFader` uses it to read fresh LV1 state and dispatch validated scene recall fades. The fade engine owns overlap decisions: different scene fades can overlap on unrelated faders, incoming recalls take over only overlapping faders, and repeating the same exact scene recall finishes that scene's active channels.
 
 ## Runtime Lifecycle
 
@@ -154,12 +154,13 @@ Automation should depend on `AppEventBus` and `AppCommandBus`, not on concrete a
       │                │
       ▼                ▼
 ┌───────────────┐  ┌─────────────────────┐
-│ Log + refresh │  │ Abort previous fade │
+│ Log + refresh │  │ Recall scene fade   │
 └───────────────┘  └──────────┬──────────┘
                               │
                               ▼
                        ┌───────────────────┐
-                       │ Start scoped fade │
+                       │ Start, overlap, or│
+                       │ same-scene finish │
                        └─────────┬─────────┘
                                  │
                                  ▼
@@ -171,7 +172,8 @@ Automation should depend on `AppEventBus` and `AppCommandBus`, not on concrete a
 - It listens for `Lv1Event::SceneChanged`.
 - It validates exact scene identity, lockout state, connection state, stored scene config, scoped targets, stored fader values, and live topology through `ShellState`.
 - It treats duration `0` scenes as disabled for automatic fades.
-- It aborts the previous fade only after the incoming recall validates.
+- It starts validated scene recall fades without aborting unrelated active fades first.
+- It lets `FadeEngine` finish that scene's owned channels when the same exact scene is recalled again while active.
 - It starts fades from current live fader values through `FadeEngine`.
 - It publishes automation refresh events after automation logs so the UI receives an updated snapshot even when no fade event follows.
 

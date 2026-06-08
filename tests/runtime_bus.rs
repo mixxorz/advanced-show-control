@@ -1,6 +1,6 @@
 use lv1_scene_fade_utility::fade::curve::FadeCurve;
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
-use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeTarget};
+use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::SceneState;
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
@@ -71,6 +71,10 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(2),
         command_bus.start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,

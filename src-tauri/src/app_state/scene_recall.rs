@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use lv1_scene_fade_utility::fade::curve::FadeCurve;
-use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeTarget};
+use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneState};
 
 use super::shell::{ShellInner, ShellState, scene_id};
@@ -273,6 +273,10 @@ fn prepare_scene_recall_fade_locked(
         scene_id: id,
         scene_label,
         fade_config: FadeConfig {
+            scene: FadeSceneIdentity {
+                index: recalled_scene.index,
+                name: recalled_scene.name.clone(),
+            },
             targets,
             duration_ms: config.duration_ms,
             curve: FadeCurve::Linear,

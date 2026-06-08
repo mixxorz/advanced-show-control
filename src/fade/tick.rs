@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
+use crate::fade::types::FadeSceneIdentity;
 
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
@@ -11,6 +12,8 @@ pub const MIN_SEND_DELTA_POS: f64 = 0.002;
 pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
 
 pub(crate) struct ActiveChannel {
+    #[allow(dead_code)]
+    pub(crate) scene: FadeSceneIdentity,
     pub(crate) group: i32,
     pub(crate) channel: i32,
     pub(crate) start_db: f64,
@@ -24,6 +27,7 @@ pub(crate) struct ActiveChannel {
 
 impl ActiveChannel {
     pub(crate) fn new(
+        scene: FadeSceneIdentity,
         group: i32,
         channel: i32,
         start_db: f64,
@@ -33,6 +37,7 @@ impl ActiveChannel {
         started_at: Instant,
     ) -> Self {
         Self {
+            scene,
             group,
             channel,
             start_db,
@@ -83,6 +88,12 @@ impl ActiveChannel {
             None
         }
     }
+
+    #[allow(dead_code)]
+    pub(crate) fn exact_final_send(&mut self) -> f64 {
+        self.expected_db = self.target_db;
+        self.target_db
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +103,10 @@ mod tests {
 
     fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
         ActiveChannel::new(
+            FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             0,
             0,
             start_db,
@@ -100,6 +115,27 @@ mod tests {
             Duration::from_millis(duration_ms),
             Instant::now(),
         )
+    }
+
+    #[test]
+    fn active_channel_records_scene_identity() {
+        let scene = crate::fade::types::FadeSceneIdentity {
+            index: 7,
+            name: "Bridge".to_string(),
+        };
+        let ch = ActiveChannel::new(
+            scene.clone(),
+            0,
+            3,
+            -20.0,
+            -10.0,
+            FadeCurve::Linear,
+            Duration::from_millis(4000),
+            Instant::now(),
+        );
+        assert_eq!(ch.scene, scene);
+        assert_eq!(ch.group, 0);
+        assert_eq!(ch.channel, 3);
     }
 
     #[test]

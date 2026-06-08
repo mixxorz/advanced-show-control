@@ -28,7 +28,6 @@ fn main() {
             commands::disconnect_lv1,
             commands::reconnect_timed_out,
             commands::abort_all_fades,
-            commands::finish_fade_now,
             commands::store_scene_config,
             commands::set_channel_scoped,
             commands::set_all_channels_scoped,

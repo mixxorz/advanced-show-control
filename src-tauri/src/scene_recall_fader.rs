@@ -1,11 +1,107 @@
 use lv1_scene_fade_utility::lv1::messages::Lv1Event;
+use lv1_scene_fade_utility::lv1::model::SceneState;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
 use lv1_scene_fade_utility::runtime::events::{
     AppEvent, AppEventBus, AutomationEvent, log_lagged_subscriber,
 };
 use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant};
 
 use crate::app_state::{SceneRecallDecision, SceneRecallFadeRequest, ShellState};
+
+const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
+const SAME_SCENE_REPEAT_DELAY: Duration = Duration::from_millis(500);
+
+#[derive(Clone, PartialEq, Eq)]
+struct RecallSceneIdentity {
+    index: i32,
+    name: String,
+}
+
+impl From<&SceneState> for RecallSceneIdentity {
+    fn from(scene: &SceneState) -> Self {
+        Self {
+            index: scene.index,
+            name: scene.name.clone(),
+        }
+    }
+}
+
+enum RecallTriggerGate {
+    Priming {
+        baseline: Option<RecallSceneIdentity>,
+        baseline_at: Option<Instant>,
+        arm_after: Option<Instant>,
+    },
+    Armed {
+        last_scene: Option<RecallSceneIdentity>,
+        last_triggered_at: Option<Instant>,
+    },
+}
+
+impl Default for RecallTriggerGate {
+    fn default() -> Self {
+        Self::Priming {
+            baseline: None,
+            baseline_at: None,
+            arm_after: None,
+        }
+    }
+}
+
+impl RecallTriggerGate {
+    fn accepts(&mut self, current_scene: &SceneState) -> bool {
+        let now = Instant::now();
+        let scene_identity = RecallSceneIdentity::from(current_scene);
+
+        match self {
+            Self::Priming {
+                baseline,
+                baseline_at,
+                arm_after,
+            } => match arm_after {
+                Some(deadline) if now >= *deadline => {
+                    let baseline_scene = baseline.clone().unwrap_or_else(|| scene_identity.clone());
+                    let last_triggered_at = baseline_at.unwrap_or(now);
+                    *self = Self::Armed {
+                        last_scene: Some(baseline_scene),
+                        last_triggered_at: Some(last_triggered_at),
+                    };
+                    self.accepts(current_scene)
+                }
+                Some(_) => {
+                    *baseline = Some(scene_identity);
+                    *baseline_at = Some(now);
+                    false
+                }
+                None => {
+                    *baseline = Some(scene_identity);
+                    *baseline_at = Some(now);
+                    *arm_after = Some(now + RECALL_ARMING_DELAY);
+                    false
+                }
+            },
+            Self::Armed {
+                last_scene,
+                last_triggered_at,
+            } => {
+                if last_scene.as_ref() == Some(&scene_identity)
+                    && last_triggered_at
+                        .map(|triggered_at| {
+                            now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY
+                        })
+                        .unwrap_or(false)
+                {
+                    return false;
+                }
+
+                *last_scene = Some(scene_identity);
+                *last_triggered_at = Some(now);
+                true
+            }
+        }
+    }
+}
 
 pub fn spawn_scene_recall_fader(
     state: ShellState,
@@ -16,10 +112,16 @@ pub fn spawn_scene_recall_fader(
     let mut events = event_bus.subscribe();
 
     tokio::spawn(async move {
+        let mut trigger_gate = RecallTriggerGate::default();
+
         loop {
             match events.recv().await {
                 Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
                     if !state.is_generation_current(generation).await {
+                        continue;
+                    }
+
+                    if !trigger_gate.accepts(&scene) {
                         continue;
                     }
 
@@ -108,37 +210,6 @@ async fn start_scene_recall_fade_with_hook<F, Fut>(
         return;
     }
 
-    if state
-        .log_scene_recall_fader_info_for_generation(
-            generation,
-            format!(
-                "Previous fade abort requested before auto fade for scene {}",
-                request.scene_label
-            ),
-        )
-        .await
-    {
-        publish_log_refresh(event_bus);
-    } else {
-        return;
-    }
-
-    if let Err(err) = command_bus.abort_all_fades().await {
-        if state
-            .log_scene_recall_fader_warning_for_generation(
-                generation,
-                format!(
-                    "Auto fade blocked for scene {}: failed to abort previous fade: {err}",
-                    request.scene_label
-                ),
-            )
-            .await
-        {
-            publish_log_refresh(event_bus);
-        }
-        return;
-    }
-
     if !state.is_generation_current(generation).await {
         return;
     }
@@ -210,9 +281,10 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::mpsc;
 
-    #[tokio::test]
-    async fn valid_scene_recall_aborts_existing_fade_then_starts_new_fade() {
+    #[tokio::test(start_paused = true)]
+    async fn valid_scene_recall_starts_scene_fade_without_global_abort() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let command_bus = AppCommandBus::new(event_bus.clone());
         let state = ShellState::default();
         let generation = configure_intro_recall(&state).await;
@@ -228,41 +300,347 @@ mod tests {
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
         release_lv1.send(()).unwrap();
 
-        let abort = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
-            .await
-            .expect("timed out waiting for AbortAll")
-            .expect("fade command channel should be open");
-        match abort {
-            FadeCommand::AbortAll { reply } => {
-                let _ = reply.send(Ok(()));
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let AppEvent::Lv1(Lv1Event::SceneChanged(scene)) = events.recv().await.unwrap() {
+                    if scene == intro_scene() {
+                        break;
+                    }
+                }
             }
-            other => panic!("expected AbortAll before StartFade, got {other:?}"),
-        }
+        })
+        .await
+        .expect("timed out waiting for initial scene sync");
+
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         let start = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
             .await
-            .expect("timed out waiting for StartFade")
+            .expect("timed out waiting for RecallSceneFade")
             .expect("fade command channel should be open");
         match start {
-            FadeCommand::StartFade { config, reply } => {
+            FadeCommand::RecallSceneFade { config, reply } => {
                 assert_eq!(config.duration_ms, 4_000);
                 assert_eq!(config.curve, FadeCurve::Linear);
+                assert_eq!(config.scene.index, 1);
+                assert_eq!(config.scene.name, "Intro");
                 assert_eq!(config.targets.len(), 1);
                 assert_eq!(config.targets[0].group, 0);
                 assert_eq!(config.targets[0].channel, 2);
                 assert_eq!(config.targets[0].target_db, -12.5);
                 let _ = reply.send(Ok(()));
             }
-            other => panic!("expected StartFade after AbortAll, got {other:?}"),
+            other => panic!("expected RecallSceneFade without preceding AbortAll, got {other:?}"),
         }
 
         wait_for_log(&state, "Auto fade start requested for scene 1: Intro").await;
         let snapshot = state.snapshot().await;
-        assert!(snapshot.logs.iter().any(|log| {
+        assert!(!snapshot.logs.iter().any(|log| {
             log.message == "Previous fade abort requested before auto fade for scene 1: Intro"
         }));
         assert!(
             snapshot
+                .logs
+                .iter()
+                .any(|log| log.message == "Auto fade start requested for scene 1: Intro")
+        );
+
+        handle.abort();
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn duplicate_same_scene_notifications_inside_repeat_delay_send_one_fade_command() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        command_bus.set_lv1(Some(lv1)).await;
+
+        let handle =
+            spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+        release_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut events).await;
+
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::time::advance(Duration::from_millis(100)).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::time::advance(Duration::from_millis(100)).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        let start = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("first actionable recall should send a fade command")
+            .expect("fade command channel should be open");
+        match start {
+            FadeCommand::RecallSceneFade { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected RecallSceneFade, got {other:?}"),
+        }
+
+        tokio::task::yield_now().await;
+        tokio::time::timeout(Duration::from_millis(1), fade_rx.recv())
+            .await
+            .expect_err("duplicate same-scene notifications should be suppressed");
+
+        handle.abort();
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn reconnect_generation_primes_again_without_carrying_repeat_history() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let first_generation = configure_intro_recall(&state).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+
+        let (lv1, release_lv1, first_server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        command_bus.set_lv1(Some(lv1)).await;
+
+        let first_handle = spawn_scene_recall_fader(
+            state.clone(),
+            first_generation,
+            command_bus.clone(),
+            event_bus.clone(),
+        );
+        release_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut events).await;
+
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        let first = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("first generation recall should send a fade command")
+            .expect("fade command channel should be open");
+        match first {
+            FadeCommand::RecallSceneFade { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected first RecallSceneFade, got {other:?}"),
+        }
+
+        let _ = state.disconnect().await;
+        let (second_generation, _) = state.begin_connecting().await;
+        state
+            .begin_connection_for_generation(second_generation, snapshot_for_intro())
+            .await
+            .expect("second generation should accept reconnect snapshot");
+        let mut second_events = event_bus.subscribe();
+        let (second_lv1, release_second_lv1, close_second_lv1, second_server) =
+            spawn_fake_lv1_with_intro_until_close(event_bus.clone()).await;
+        command_bus.set_lv1(Some(second_lv1)).await;
+        let second_handle = spawn_scene_recall_fader(
+            state.clone(),
+            second_generation,
+            command_bus,
+            event_bus.clone(),
+        );
+        release_second_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut second_events).await;
+
+        for _ in 0..3 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            matches!(fade_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            "new generation should prime before sending same-scene fade commands"
+        );
+
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        let second = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("second generation recall after priming should send a fade command")
+            .expect("fade command channel should be open");
+        match second {
+            FadeCommand::RecallSceneFade { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected second RecallSceneFade, got {other:?}"),
+        }
+
+        first_handle.abort();
+        second_handle.abort();
+        close_second_lv1.send(()).unwrap();
+        first_server.await.unwrap();
+        second_server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn same_scene_repeat_after_repeat_delay_is_actionable() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        command_bus.set_lv1(Some(lv1)).await;
+
+        let handle =
+            spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+        release_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut events).await;
+
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        let first = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("first recall should send a fade command")
+            .expect("fade command channel should be open");
+        match first {
+            FadeCommand::RecallSceneFade { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected first RecallSceneFade, got {other:?}"),
+        }
+
+        tokio::time::advance(SAME_SCENE_REPEAT_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        let second = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
+            .await
+            .expect("same-scene repeat after delay should send a fade command")
+            .expect("fade command channel should be open");
+        match second {
+            FadeCommand::RecallSceneFade { reply, .. } => {
+                let _ = reply.send(Ok(()));
+            }
+            other => panic!("expected second RecallSceneFade, got {other:?}"),
+        }
+
+        handle.abort();
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn same_scene_at_arming_deadline_is_actionable_when_baseline_is_old_enough() {
+        let mut gate = RecallTriggerGate::default();
+        let scene = intro_scene();
+
+        assert!(!gate.accepts(&scene));
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+
+        assert!(gate.accepts(&scene));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn different_scene_after_arming_boundary_is_accepted_immediately() {
+        let mut gate = RecallTriggerGate::default();
+        let scene = intro_scene();
+        let next_scene = SceneState {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+
+        assert!(!gate.accepts(&scene));
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+
+        assert!(gate.accepts(&next_scene));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn latest_pre_arming_scene_observation_controls_repeat_delay() {
+        let mut gate = RecallTriggerGate::default();
+        let scene = intro_scene();
+        let next_scene = SceneState {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+
+        assert!(!gate.accepts(&scene));
+        tokio::time::advance(RECALL_ARMING_DELAY - Duration::from_millis(100)).await;
+
+        assert!(!gate.accepts(&next_scene));
+        tokio::time::advance(Duration::from_millis(100)).await;
+
+        assert!(!gate.accepts(&next_scene));
+        tokio::time::advance(SAME_SCENE_REPEAT_DELAY - Duration::from_millis(100)).await;
+
+        assert!(gate.accepts(&next_scene));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pre_arming_baseline_update_does_not_extend_arm_deadline() {
+        let mut gate = RecallTriggerGate::default();
+        let scene = intro_scene();
+        let next_scene = SceneState {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let third_scene = SceneState {
+            index: 3,
+            name: "Bridge".to_string(),
+        };
+
+        assert!(!gate.accepts(&scene));
+        tokio::time::advance(Duration::from_millis(100)).await;
+
+        assert!(!gate.accepts(&next_scene));
+        tokio::time::advance(RECALL_ARMING_DELAY - Duration::from_millis(100)).await;
+
+        assert!(gate.accepts(&third_scene));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn first_scene_observation_after_connect_primes_without_starting_fade() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        let state = ShellState::default();
+        let generation = configure_intro_recall(&state).await;
+        let (fade_tx, mut fade_rx) = mpsc::channel(4);
+        command_bus
+            .set_fade(Some(FadeEngineHandle::new(fade_tx)))
+            .await;
+
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        command_bus.set_lv1(Some(lv1)).await;
+
+        let handle =
+            spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
+        release_lv1.send(()).unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let AppEvent::Lv1(Lv1Event::SceneChanged(scene)) = events.recv().await.unwrap() {
+                    if scene == intro_scene() {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for initial scene sync");
+
+        tokio::time::timeout(Duration::from_millis(1), fade_rx.recv())
+            .await
+            .expect_err("initial scene sync should prime without sending fade commands");
+
+        let snapshot = state.snapshot().await;
+        assert!(
+            !snapshot
                 .logs
                 .iter()
                 .any(|log| log.message == "Auto fade start requested for scene 1: Intro")
@@ -285,17 +663,9 @@ mod tests {
         let request = intro_fade_request();
 
         let fade_replies = tokio::spawn(async move {
-            let abort = fade_rx.recv().await.expect("expected AbortAll command");
-            match abort {
-                FadeCommand::AbortAll { reply } => {
-                    let _ = reply.send(Ok(()));
-                }
-                other => panic!("expected AbortAll before stale generation, got {other:?}"),
-            }
-
             tokio::time::timeout(Duration::from_millis(100), fade_rx.recv())
                 .await
-                .expect_err("stale generation should not send StartFade after start log");
+                .expect_err("stale generation should not send fade commands after start log");
         });
 
         start_scene_recall_fade_with_hook(
@@ -316,9 +686,10 @@ mod tests {
         fade_replies.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn blocked_recall_does_not_abort_existing_fade() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let command_bus = AppCommandBus::new(event_bus.clone());
         let state = ShellState::default();
         let generation = configure_intro_recall(&state).await;
@@ -334,6 +705,10 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
         release_lv1.send(()).unwrap();
+        wait_for_intro_scene_event(&mut events).await;
+
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
             &state,
@@ -348,7 +723,7 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unavailable_lv1_state_blocks_before_abort_or_start() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
@@ -358,6 +733,9 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
 
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::task::yield_now().await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
@@ -383,7 +761,7 @@ mod tests {
         handle.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn fader_log_writes_publish_automation_refresh() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
@@ -394,6 +772,9 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
 
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::task::yield_now().await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         tokio::time::timeout(std::time::Duration::from_millis(250), async {
@@ -412,7 +793,7 @@ mod tests {
         handle.abort();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unavailable_lv1_state_does_not_log_start_request() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
@@ -422,6 +803,9 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
 
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        tokio::task::yield_now().await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
@@ -514,6 +898,31 @@ mod tests {
         (lv1, release_tx, server)
     }
 
+    async fn spawn_fake_lv1_with_intro_until_close(
+        event_bus: AppEventBus,
+    ) -> (
+        lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+        std_mpsc::Sender<()>,
+        std_mpsc::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (release_tx, release_rx) = std_mpsc::channel();
+        let (close_tx, close_rx) = std_mpsc::channel();
+        let server = tokio::task::spawn_blocking(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            release_rx.recv().unwrap();
+            stream.write_all(&channels_frame()).unwrap();
+            stream.write_all(&scene_index_frame()).unwrap();
+            stream.write_all(&scene_name_frame()).unwrap();
+            let _ = close_rx.recv_timeout(Duration::from_secs(2));
+        });
+
+        let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus);
+        (lv1, release_tx, close_tx, server)
+    }
+
     fn channels_frame() -> Vec<u8> {
         let mut args = vec![OscArg::Int(1)];
         args.push(OscArg::String("Lead".to_string()));
@@ -553,6 +962,20 @@ mod tests {
         .unwrap_or_else(|_| panic!("timed out waiting for log: {message}"));
     }
 
+    async fn wait_for_intro_scene_event(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let AppEvent::Lv1(Lv1Event::SceneChanged(scene)) = events.recv().await.unwrap() {
+                    if scene == intro_scene() {
+                        break;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for initial scene sync");
+    }
+
     fn snapshot_for_intro() -> Lv1StateSnapshot {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
@@ -583,6 +1006,10 @@ mod tests {
             scene_id: "1::Intro".to_string(),
             scene_label: "1: Intro".to_string(),
             fade_config: lv1_scene_fade_utility::fade::types::FadeConfig {
+                scene: lv1_scene_fade_utility::fade::types::FadeSceneIdentity {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
                 targets: vec![lv1_scene_fade_utility::fade::types::FadeTarget {
                     group: 0,
                     channel: 2,
