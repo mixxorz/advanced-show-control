@@ -50,7 +50,7 @@ Each spawned recall fader starts in `Priming`:
 
 - The first complete `SceneChanged(index, name)` establishes the generation baseline.
 - The baseline event does not fetch LV1 state, run scene recall validation, log fade skip/block messages, start a fade, or finish a fade.
-- The fader sets an `arm_after` deadline of `now + 500 ms`.
+- The fader sets an `arm_after` deadline of `now + 2000 ms`.
 - Additional scene observations before `arm_after` update the latest observed baseline and remain non-actionable.
 
 After `arm_after`, the fader transitions to `Armed`. The primed baseline is treated as the last observed identity until the first actionable recall is accepted:
@@ -59,7 +59,7 @@ After `arm_after`, the fader transitions to `Armed`. The primed baseline is trea
 - A scene identity equal to the last observed or accepted identity is actionable only if at least `500 ms` has elapsed since that identity last became the baseline or an accepted recall.
 - Identical same-scene observations inside the minimum repeat delay are ignored and do not fetch LV1 state or run recall validation.
 
-The same `500 ms` constant is used for initial arming and same-scene repeat suppression. The captured duplicate recall burst lasted about `166 ms`, so `500 ms` gives margin while keeping intentional repeat recall behavior available.
+Initial arming uses `2000 ms` to give connection and reconnect state sync a conservative settling window before automation can move faders. Same-scene repeat suppression uses a separate `500 ms` minimum delay. The captured duplicate recall burst lasted about `166 ms`, so `500 ms` gives margin while keeping intentional repeat recall behavior available after the app is armed.
 
 ## Reconnection
 
