@@ -35,7 +35,11 @@ export function Header(props: {
             onSave={props.onSaveShowFile}
             onSaveAs={props.onSaveShowFileAs}
           />
-          <button onClick={props.onOpenConnection} className="rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-400">
+          <button
+            aria-label="Open LV1 connection screen"
+            onClick={props.onOpenConnection}
+            className="rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-400"
+          >
             <StatusBadge label={props.appState.connection} tone={props.appState.connection === "connected" ? "good" : "neutral"} />
           </button>
           <StatusBadge

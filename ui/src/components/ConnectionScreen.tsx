@@ -3,16 +3,38 @@ import type { AppViewState, DiscoveredLv1System, Lv1SystemIdentity } from "../ty
 export function ConnectionScreen(props: {
   appState: AppViewState;
   commandError: string | null;
+  onDisconnect: () => void;
   onSelectSystem: (identity: Lv1SystemIdentity) => void;
   onResume: () => void;
 }) {
+  const isConnected = props.appState.connection === "connected";
+
   return (
     <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
       <section className="mx-auto grid max-w-5xl gap-5">
-        <div>
-          <p className="text-sm uppercase tracking-[0.25em] text-cyan-300">LV1 Connection</p>
-          <h1 className="mt-2 text-3xl font-semibold">Choose an LV1 system</h1>
-          <p className="mt-2 text-slate-400">Tap a discovered system to connect.</p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-sm uppercase tracking-[0.25em] text-cyan-300">LV1 Connection</p>
+            <h1 className="mt-2 text-3xl font-semibold">Choose an LV1 system</h1>
+            <p className="mt-2 text-slate-400">Tap a discovered system to connect.</p>
+          </div>
+
+          {isConnected && (
+            <div className="flex flex-wrap gap-3">
+              <button
+                className="rounded-lg border border-slate-700 px-4 py-2 font-semibold text-slate-100 hover:bg-slate-800"
+                onClick={props.onResume}
+              >
+                Resume main app
+              </button>
+              <button
+                className="rounded-lg border border-red-800 px-4 py-2 font-semibold text-red-100 hover:bg-red-950"
+                onClick={props.onDisconnect}
+              >
+                Disconnect
+              </button>
+            </div>
+          )}
         </div>
 
         {props.commandError && (

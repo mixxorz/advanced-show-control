@@ -115,6 +115,10 @@ export default function App() {
       <ConnectionScreen
         appState={appState}
         commandError={commandError}
+        onDisconnect={async () => {
+          await runSnapshotCommand("disconnect_lv1", undefined, setAppState, setCommandError);
+          setShowConnection(true);
+        }}
         onResume={() => setShowConnection(false)}
         onSelectSystem={async (identity) => {
           setCommandError(null);
