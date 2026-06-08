@@ -43,6 +43,14 @@ pub async fn refresh_lv1_discovery(
     state: State<'_, ShellState>,
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
+    refresh_lv1_discovery_snapshot(app, (*state).clone(), timeout_ms).await
+}
+
+async fn refresh_lv1_discovery_snapshot<R: Runtime>(
+    app: AppHandle<R>,
+    state: ShellState,
+    timeout_ms: Option<u64>,
+) -> Result<AppViewState, String> {
     let started = std::time::Instant::now();
     let timeout = timeout_ms
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
@@ -324,9 +332,29 @@ pub async fn connect_lv1_system(
 
 #[tauri::command]
 pub async fn startup_auto_connect_lv1(
+    app: AppHandle,
     state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
 ) -> Result<AppViewState, String> {
-    Ok(state.snapshot().await)
+    let preferences_path = app
+        .path()
+        .app_config_dir()
+        .map_err(|err| format!("Failed to resolve app config dir: {err}"))?
+        .join("preferences.json");
+    let preferences =
+        crate::connection_preferences::read_connection_preferences(&preferences_path)?;
+    let snapshot = refresh_lv1_discovery_snapshot(
+        app.clone(),
+        (*state).clone(),
+        Some(DEFAULT_DISCOVERY_TIMEOUT_MS),
+    )
+    .await?;
+    if let Some(identity) =
+        remembered_auto_connect_target(&preferences, &snapshot.discovered_lv1_systems)
+    {
+        return connect_lv1_system(app, state, active_command_bus, identity).await;
+    }
+    Ok(snapshot)
 }
 
 async fn connect_to_target<R: Runtime>(
@@ -440,6 +468,17 @@ fn should_save_connection_preferences(
 ) -> bool {
     snapshot.connection == AppConnectionState::Connected
         && snapshot.connected_lv1_identity.as_ref() == Some(identity)
+}
+
+fn remembered_auto_connect_target(
+    preferences: &crate::connection_preferences::ConnectionPreferences,
+    systems: &[crate::connection_state::DiscoveredLv1System],
+) -> Option<crate::connection_state::Lv1SystemIdentity> {
+    let remembered_uuid = preferences.last_connected_lv1.as_ref()?.uuid.as_ref()?;
+    systems
+        .iter()
+        .find(|system| system.identity.uuid.as_ref() == Some(remembered_uuid))
+        .map(|system| system.identity.clone())
 }
 
 async fn install_connected_runtime<R: Runtime>(
@@ -617,6 +656,56 @@ mod tests {
         let _ = refresh_lv1_discovery;
         let _ = connect_lv1_system;
         let _ = startup_auto_connect_lv1;
+    }
+
+    #[test]
+    fn remembered_uuid_matches_discovered_identity_without_host_fallback() {
+        let preferences = crate::connection_preferences::ConnectionPreferences {
+            last_connected_lv1: Some(crate::connection_preferences::LastConnectedLv1 {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("Old Host".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }),
+        };
+        let systems = vec![crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("New Host".to_string()),
+                address: "10.0.0.20".to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }];
+
+        let matched = remembered_auto_connect_target(&preferences, &systems).unwrap();
+
+        assert_eq!(matched.address, "10.0.0.20");
+    }
+
+    #[test]
+    fn remembered_uuid_absent_does_not_match_same_address() {
+        let preferences = crate::connection_preferences::ConnectionPreferences {
+            last_connected_lv1: Some(crate::connection_preferences::LastConnectedLv1 {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }),
+        };
+        let systems = vec![crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-2".to_string()),
+                host: Some("LV1".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }];
+
+        assert!(remembered_auto_connect_target(&preferences, &systems).is_none());
     }
 
     #[tokio::test]
