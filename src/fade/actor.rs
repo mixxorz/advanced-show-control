@@ -64,12 +64,12 @@ async fn run_engine(
 
                         if duration.is_zero() {
                             for target in &config.targets {
-                                state.channels.retain(|ch| {
-                                    !(ch.group == target.group && ch.channel == target.channel)
-                                });
                                 let _ = command_bus
                                     .set_gain(target.group, target.channel, target.target_db)
                                     .await;
+                                state.channels.retain(|ch| {
+                                    !(ch.group == target.group && ch.channel == target.channel)
+                                });
                                 state.fan_out(FadeEvent::ChannelCompleted {
                                     group: target.group,
                                     channel: target.channel,
