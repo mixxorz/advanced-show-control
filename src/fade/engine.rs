@@ -39,7 +39,6 @@ impl FadeEngineHandle {
             .map_err(|_| AppCommandError::FadeUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
     }
-
 }
 
 pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
@@ -111,7 +110,6 @@ async fn run_engine(
                                 continue;
                             }
                         };
-                        state.cancel_all_in_place();
                         let now = Instant::now();
                         let duration = Duration::from_millis(config.duration_ms);
 
@@ -121,6 +119,9 @@ async fn run_engine(
                                 .map(|ch| ch.gain_db)
                                 .unwrap_or(target.target_db);
 
+                            state
+                                .channels
+                                .retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
                             state.channels.push(ActiveChannel::new(
                                 config.scene.clone(),
                                 target.group,
@@ -152,19 +153,32 @@ async fn run_engine(
             _ = tick_fut => {
                 let now = Instant::now();
                 let mut done_indices = Vec::new();
+                let mut completed_events = Vec::new();
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
+                    if ch.is_done(now) {
+                        let target_db = ch.exact_final_send();
+                        let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
+                        completed_events.push(FadeEvent::ChannelCompleted {
+                            group: ch.group,
+                            channel: ch.channel,
+                        });
+                        done_indices.push(i);
+                        continue;
+                    }
+
                     if let Some(new_db) = ch.next_send(now) {
                         let _ = command_bus.set_gain(ch.group, ch.channel, new_db).await;
-                    }
-                    if ch.is_done(now) {
-                        done_indices.push(i);
                     }
                 }
 
                 // Remove completed channels (reverse order to preserve indices)
                 for i in done_indices.into_iter().rev() {
                     state.channels.remove(i);
+                }
+
+                for event in completed_events {
+                    state.fan_out(event);
                 }
 
                 if !state.is_active() {
