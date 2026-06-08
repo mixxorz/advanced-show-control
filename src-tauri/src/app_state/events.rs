@@ -51,16 +51,24 @@ impl ShellState {
             .as_ref()
             .map(|snapshot| snapshot.scene_list.clone())
             .unwrap_or_default();
+        let generation = inner.generation;
+        drop(inner);
+
         if !scene_list.is_empty() {
             let changed = self.show.reconcile_scene_list(scene_list.clone()).await.unwrap_or(false);
-            if changed {
-                inner.show_file_dirty = true;
+            let mut inner = self.inner.lock().await;
+            if inner.generation == generation
+                && inner.lv1_snapshot.as_ref().map(|snapshot| snapshot.scene_list.clone()) == Some(scene_list.clone())
+            {
+                if changed {
+                    inner.show_file_dirty = true;
+                }
+                if inner.selected_scene_id.is_none() {
+                    inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+                }
             }
-            if inner.selected_scene_id.is_none() {
-                inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
-            }
+            drop(inner);
         }
-        drop(inner);
         self.snapshot().await
     }
 
@@ -80,16 +88,25 @@ impl ShellState {
             .as_ref()
             .map(|snapshot| snapshot.scene_list.clone())
             .unwrap_or_default();
+        let generation = inner.generation;
+        drop(inner);
+
         if !scene_list.is_empty() {
             let changed = self.show.reconcile_scene_list(scene_list.clone()).await.ok()?;
-            if changed {
-                inner.show_file_dirty = true;
+            let mut inner = self.inner.lock().await;
+            if inner.generation != generation {
+                return None;
             }
-            if inner.selected_scene_id.is_none() {
-                inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+            if inner.lv1_snapshot.as_ref().map(|snapshot| snapshot.scene_list.clone()) == Some(scene_list.clone()) {
+                if changed {
+                    inner.show_file_dirty = true;
+                }
+                if inner.selected_scene_id.is_none() {
+                    inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+                }
             }
+            drop(inner);
         }
-        drop(inner);
         Some(self.snapshot().await)
     }
 
@@ -157,12 +174,16 @@ impl ShellState {
                 );
             }
             Lv1Event::SceneListChanged(scenes) => {
+                let generation = inner.generation;
+                drop(inner);
+
+                let changed = self.show.reconcile_scene_list(scenes.clone()).await.unwrap_or(false);
+
+                let mut inner = self.inner.lock().await;
+                if inner.generation != generation {
+                    return None;
+                }
                 ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
-                let changed = self
-                    .show
-                    .reconcile_scene_list(scenes.clone())
-                    .await
-                    .unwrap_or(false);
                 if changed {
                     inner.show_file_dirty = true;
                 }
@@ -171,6 +192,7 @@ impl ShellState {
                     LogSeverity::Info,
                     format!("Scene list updated: {} scenes", scenes.len()),
                 );
+                return Some(self.snapshot().await);
             }
             Lv1Event::FaderChanged {
                 group,
@@ -317,14 +339,6 @@ fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) ->
     inner.lv1_snapshot = Some(snapshot);
     if connected {
         inner.reconnect_state.active = false;
-    }
-    let scenes = inner
-        .lv1_snapshot
-        .as_ref()
-        .map(|snapshot| snapshot.scene_list.clone())
-        .unwrap_or_default();
-    if !scenes.is_empty() {
-        inner.reconcile_scene_fade_configs(&scenes);
     }
     let message = match inner
         .lv1_snapshot

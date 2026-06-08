@@ -15,7 +15,7 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
-    LogSource, SceneConfig, SceneSummary,
+    LogSource, SceneSummary,
 };
 
 pub(super) const MAX_LOGS: usize = 200;
@@ -47,7 +47,6 @@ pub(super) struct ShellInner {
     pub(super) pending_lv1_identity: Option<Lv1SystemIdentity>,
     pub(super) reconnect_state: ReconnectState,
     pub(super) fade_state: AppFadeState,
-    pub(super) scene_configs: Vec<SceneConfig>,
     pub(super) selected_scene_id: Option<String>,
     pub(super) show_file_path: Option<PathBuf>,
     pub(super) show_file_dirty: bool,
@@ -55,20 +54,6 @@ pub(super) struct ShellInner {
     pub(super) logs: VecDeque<AppLogEntry>,
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
-}
-
-impl ShellInner {
-    pub(super) fn reconcile_scene_fade_configs(&mut self, scenes: &[advanced_show_control::lv1::types::SceneListEntry]) -> bool {
-        let before = self.scene_configs.len();
-        self.scene_configs.retain(|scene| {
-            scenes.iter().any(|entry| {
-                scene.scene_id == scene_id(entry.index, &entry.name)
-                    && scene.scene_index == entry.index
-                    && scene.scene_name == entry.name
-            })
-        });
-        self.scene_configs.len() != before
-    }
 }
 
 impl Default for ShellState {
