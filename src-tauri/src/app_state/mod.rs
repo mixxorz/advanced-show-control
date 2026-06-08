@@ -19,4 +19,4 @@ mod view;
 pub use scene_recall::{SceneRecallDecision, SceneRecallFadeRequest};
 pub use shell::RuntimeHandles;
 pub use shell::ShellState;
-pub use view::AppViewState;
+pub use view::{AppConnectionState, AppViewState};

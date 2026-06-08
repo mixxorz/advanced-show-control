@@ -1,5 +1,7 @@
 mod app_state;
 mod commands;
+mod connection_preferences;
+mod connection_state;
 mod scene_recall_fader;
 mod show_file;
 
@@ -12,6 +14,7 @@ fn main() {
         .manage(ActiveCommandBus::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_status,
+            commands::refresh_lv1_discovery,
             commands::new_show_file,
             commands::open_show_file_dialog,
             commands::save_show_file,
@@ -19,7 +22,11 @@ fn main() {
             commands::set_scene_duration_ms,
             commands::select_scene_config,
             commands::connect_lv1,
+            commands::connect_lv1_system,
+            commands::attempt_reconnect_lv1,
+            commands::startup_auto_connect_lv1,
             commands::disconnect_lv1,
+            commands::reconnect_timed_out,
             commands::abort_all_fades,
             commands::finish_fade_now,
             commands::store_scene_config,

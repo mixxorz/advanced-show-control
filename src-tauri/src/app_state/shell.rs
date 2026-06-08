@@ -8,6 +8,7 @@ use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
 use crate::commands::ActiveCommandBus;
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
@@ -36,6 +37,10 @@ pub struct ShellState {
 pub(super) struct ShellInner {
     pub(super) generation: u64,
     pub(super) lv1_snapshot: Option<Lv1StateSnapshot>,
+    pub(super) discovered_lv1_systems: Vec<DiscoveredLv1System>,
+    pub(super) connected_lv1_identity: Option<Lv1SystemIdentity>,
+    pub(super) pending_lv1_identity: Option<Lv1SystemIdentity>,
+    pub(super) reconnect_state: ReconnectState,
     pub(super) fade_state: AppFadeState,
     pub(super) lockout: bool,
     pub(super) scene_configs: Vec<SceneConfig>,
@@ -74,6 +79,151 @@ impl ShellState {
         Some(snapshot_from_inner(&inner))
     }
 
+    pub async fn set_connected_lv1_identity(
+        &self,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.connected_lv1_identity = identity;
+        refresh_discovered_statuses(&mut inner);
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn establish_connected_lv1_identity_for_generation(
+        &self,
+        generation: u64,
+        identity: Lv1SystemIdentity,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+        if !matches!(
+            inner
+                .lv1_snapshot
+                .as_ref()
+                .map(|snapshot| &snapshot.connection),
+            Some(ConnectionStatus::Connected)
+        ) {
+            return None;
+        }
+
+        inner.connected_lv1_identity = Some(identity);
+        inner.pending_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
+        Some(snapshot_from_inner(&inner))
+    }
+
+    pub async fn set_pending_lv1_identity(
+        &self,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.pending_lv1_identity = identity;
+        refresh_discovered_statuses(&mut inner);
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn connected_lv1_identity(&self) -> Option<Lv1SystemIdentity> {
+        self.inner.lock().await.connected_lv1_identity.clone()
+    }
+
+    pub async fn set_pending_lv1_identity_for_generation(
+        &self,
+        generation: u64,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.pending_lv1_identity = identity;
+        refresh_discovered_statuses(&mut inner);
+        Some(snapshot_from_inner(&inner))
+    }
+
+    pub async fn clear_pending_lv1_identity_for_generation(
+        &self,
+        generation: u64,
+    ) -> Option<AppViewState> {
+        self.set_pending_lv1_identity_for_generation(generation, None)
+            .await
+    }
+
+    pub async fn fail_connect_for_generation(
+        &self,
+        generation: u64,
+        message: impl Into<String>,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.lv1_snapshot = None;
+        inner.pending_lv1_identity = None;
+        inner.connected_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
+        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
+        Some(snapshot_from_inner(&inner))
+    }
+
+    pub async fn fail_reconnect_for_generation(
+        &self,
+        generation: u64,
+        message: impl Into<String>,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.lv1_snapshot = None;
+        inner.pending_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
+        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
+        Some(snapshot_from_inner(&inner))
+    }
+
+    pub async fn set_discovered_lv1_systems(
+        &self,
+        systems: Vec<DiscoveredLv1System>,
+    ) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.discovered_lv1_systems = systems;
+        refresh_discovered_statuses(&mut inner);
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn set_reconnect_active(&self, active: bool) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        if active {
+            inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
+        }
+        inner.reconnect_state.active = active;
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn reconnect_timed_out(&self, attempt: u64) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+            inner.generation = inner.generation.saturating_add(1);
+            inner.duration_zero_skip_logs.clear();
+            inner.reconnect_state.active = false;
+        }
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn reconnect_timeout_generation(&self, attempt: u64) -> Option<u64> {
+        let inner = self.inner.lock().await;
+        if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+            Some(inner.generation)
+        } else {
+            None
+        }
+    }
+
     pub async fn clear_runtime_handles_for_generation(
         &self,
         generation: u64,
@@ -85,6 +235,26 @@ impl ShellState {
         }
 
         let mut handles = self.handles.lock().await;
+        handles.abort_all().await;
+        active_command_bus.set(None).await;
+    }
+
+    pub async fn abort_current_runtime(&self, active_command_bus: &ActiveCommandBus) {
+        let mut handles = self.handles.lock().await;
+        handles.abort_all().await;
+        active_command_bus.set(None).await;
+    }
+
+    pub async fn clear_runtime_handles_with_active_generation(
+        &self,
+        generation: u64,
+        active_command_bus: &ActiveCommandBus,
+    ) {
+        let mut handles = self.handles.lock().await;
+        if handles.active_generation != generation {
+            return;
+        }
+
         handles.abort_all().await;
         active_command_bus.set(None).await;
     }
@@ -111,12 +281,48 @@ impl ShellState {
     }
 }
 
+pub(super) fn refresh_discovered_statuses(inner: &mut ShellInner) {
+    let connected_identity_is_live = matches!(
+        inner
+            .lv1_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.connection),
+        Some(ConnectionStatus::Connected)
+    );
+    for system in &mut inner.discovered_lv1_systems {
+        system.status = if connected_identity_is_live
+            && Some(&system.identity) == inner.connected_lv1_identity.as_ref()
+        {
+            crate::connection_state::DiscoveredLv1Status::Connected
+        } else if Some(&system.identity) == inner.pending_lv1_identity.as_ref() {
+            crate::connection_state::DiscoveredLv1Status::Connecting
+        } else {
+            crate::connection_state::DiscoveredLv1Status::Available
+        };
+    }
+}
+
 fn cover_state_variants() {
+    let discovery_entry = lv1_scene_fade_utility::lv1::discovery::DiscoveryEntry {
+        service: "_waveslv113._tcp".to_string(),
+        uuid: Some("uuid".to_string()),
+        host: Some("LV1".to_string()),
+        port: Some(50000),
+        addresses: vec!["192.168.1.35".to_string()],
+        ipv6: Vec::new(),
+        source: "192.168.1.35".to_string(),
+    };
+
     let _ = (
         LogSource::Fade,
         LogSeverity::Error,
         AppFadeState::Running,
         AppFadeState::Blocked,
+        crate::connection_state::DiscoveredLv1Status::Available,
+        crate::connection_state::DiscoveredLv1Status::Connecting,
+        crate::connection_state::DiscoveredLv1Status::Connected,
+        crate::connection_state::DiscoveredLv1Status::Unavailable,
+        crate::connection_state::identity_from_discovery(&discovery_entry),
     );
 }
 
@@ -199,6 +405,10 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
 
     AppViewState {
         connection,
+        discovered_lv1_systems: inner.discovered_lv1_systems.clone(),
+        connected_lv1_identity: inner.connected_lv1_identity.clone(),
+        pending_lv1_identity: inner.pending_lv1_identity.clone(),
+        reconnect: inner.reconnect_state.clone(),
         current_scene,
         scene_count: scenes.len(),
         scenes,
@@ -239,6 +449,7 @@ pub(super) fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lv1_scene_fade_utility::lv1::messages::Lv1Event;
     use lv1_scene_fade_utility::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
 
     #[tokio::test]
@@ -330,6 +541,115 @@ mod tests {
         assert_eq!(handles.active_generation, generation);
     }
 
+    #[tokio::test]
+    async fn replacement_connect_cleanup_aborts_existing_runtime_and_clears_command_bus() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let active_command_bus = crate::commands::ActiveCommandBus::default();
+        let command_bus =
+            AppCommandBus::new(lv1_scene_fade_utility::runtime::events::AppEventBus::default());
+
+        let installed = state
+            .install_runtime_handles_for_generation(
+                generation,
+                RuntimeHandles {
+                    active_generation: 0,
+                    lv1: None,
+                    fade: None,
+                    command_bus: Some(command_bus),
+                    projector: Some(tokio::spawn(async {
+                        std::future::pending::<()>().await;
+                    })),
+                    scene_recall_fader: Some(tokio::spawn(async {
+                        std::future::pending::<()>().await;
+                    })),
+                },
+                &active_command_bus,
+            )
+            .await;
+        assert!(installed.is_ok());
+        assert!(active_command_bus.current().await.is_some());
+
+        let _ = state.begin_connecting().await;
+        state.abort_current_runtime(&active_command_bus).await;
+
+        assert!(active_command_bus.current().await.is_none());
+        let handles = state.handles.lock().await;
+        assert_eq!(handles.active_generation, 0);
+        assert!(handles.command_bus.is_none());
+        assert!(handles.projector.is_none());
+        assert!(handles.scene_recall_fader.is_none());
+    }
+
+    #[tokio::test]
+    async fn matching_reconnect_timeout_invalidates_current_generation() {
+        let state = ShellState::default();
+        state
+            .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }))
+            .await;
+        let (generation, _) = state.begin_connecting().await;
+        let reconnecting = state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("disconnect should enter reconnect state");
+
+        let snapshot = state.reconnect_timed_out(reconnecting.reconnect.attempt).await;
+
+        assert!(!snapshot.reconnect.active);
+        assert!(state.snapshot_for_generation(generation).await.is_none());
+        assert!(
+            state
+                .begin_connection_for_generation(
+                    generation,
+                    Lv1StateSnapshot {
+                        connection: ConnectionStatus::Connected,
+                        scene: None,
+                        scene_list: Vec::new(),
+                        channels: Vec::new(),
+                    },
+                )
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_reconnect_timeout_does_not_invalidate_newer_generation() {
+        let state = ShellState::default();
+        state
+            .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }))
+            .await;
+        let (generation, _) = state.begin_connecting().await;
+        let first_reconnect = state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("first disconnect should enter reconnect state");
+        state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+            .await
+            .expect("connected event should clear first reconnect state");
+        let second_reconnect = state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("second disconnect should enter reconnect state");
+
+        let snapshot = state.reconnect_timed_out(first_reconnect.reconnect.attempt).await;
+
+        assert!(snapshot.reconnect.active);
+        assert_eq!(snapshot.reconnect.attempt, second_reconnect.reconnect.attempt);
+        assert!(state.snapshot_for_generation(generation).await.is_some());
+    }
+
     #[test]
     fn snapshot_maps_lv1_scene_and_counts() {
         let mut inner = ShellInner::default();
@@ -364,6 +684,272 @@ mod tests {
         assert_eq!(snapshot.channels[0].name, "Lead");
         assert_eq!(snapshot.scene_configs.len(), 0);
         assert_eq!(snapshot.selected_scene_id, None);
+    }
+
+    #[test]
+    fn snapshot_includes_discovered_lv1_systems_and_reconnect_state() {
+        let mut inner = ShellInner::default();
+        inner.discovered_lv1_systems = vec![crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(12),
+            status: crate::connection_state::DiscoveredLv1Status::Connected,
+        }];
+        inner.connected_lv1_identity = Some(crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        });
+        inner.reconnect_state = crate::connection_state::ReconnectState {
+            active: true,
+            attempt: 1,
+        };
+
+        let snapshot = snapshot_from_inner(&inner);
+
+        assert_eq!(snapshot.discovered_lv1_systems.len(), 1);
+        assert_eq!(
+            snapshot.discovered_lv1_systems[0].identity.address,
+            "192.168.1.35"
+        );
+        assert_eq!(
+            snapshot.connected_lv1_identity.unwrap().address,
+            "192.168.1.35"
+        );
+        assert!(snapshot.reconnect.active);
+    }
+
+    #[tokio::test]
+    async fn set_discovered_lv1_systems_marks_connected_and_pending_rows() {
+        let state = ShellState::default();
+        let connected = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let pending = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-2".to_string()),
+            host: Some("LV1-MON".to_string()),
+            address: "192.168.1.36".to_string(),
+            port: 50000,
+        };
+        state
+            .begin_connection(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+            })
+            .await;
+        state
+            .set_connected_lv1_identity(Some(connected.clone()))
+            .await;
+        state.set_pending_lv1_identity(Some(pending.clone())).await;
+
+        let snapshot = state
+            .set_discovered_lv1_systems(vec![
+                crate::connection_state::DiscoveredLv1System {
+                    identity: connected,
+                    latency_ms: Some(10),
+                    status: crate::connection_state::DiscoveredLv1Status::Available,
+                },
+                crate::connection_state::DiscoveredLv1System {
+                    identity: pending,
+                    latency_ms: Some(20),
+                    status: crate::connection_state::DiscoveredLv1Status::Available,
+                },
+            ])
+            .await;
+
+        assert_eq!(
+            snapshot.discovered_lv1_systems[0].status,
+            crate::connection_state::DiscoveredLv1Status::Connected
+        );
+        assert_eq!(
+            snapshot.discovered_lv1_systems[1].status,
+            crate::connection_state::DiscoveredLv1Status::Connecting
+        );
+    }
+
+    #[tokio::test]
+    async fn disconnected_snapshot_does_not_mark_discovered_row_connected() {
+        let state = ShellState::default();
+        let connected = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        state
+            .set_connected_lv1_identity(Some(connected.clone()))
+            .await;
+
+        let snapshot = state
+            .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+                identity: connected,
+                latency_ms: Some(10),
+                status: crate::connection_state::DiscoveredLv1Status::Available,
+            }])
+            .await;
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_ne!(
+            snapshot.discovered_lv1_systems[0].status,
+            crate::connection_state::DiscoveredLv1Status::Connected
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cannot_establish_connected_or_clear_current_pending_identity() {
+        let state = ShellState::default();
+        let stale_identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let current_identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-2".to_string()),
+            host: Some("LV1-MON".to_string()),
+            address: "192.168.1.36".to_string(),
+            port: 50000,
+        };
+
+        let (stale_generation, _) = state.begin_connecting().await;
+        let (current_generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(
+                current_generation,
+                Some(current_identity.clone()),
+            )
+            .await
+            .expect("current generation should set pending identity");
+
+        let stale_establish = state
+            .establish_connected_lv1_identity_for_generation(stale_generation, stale_identity)
+            .await;
+        let stale_clear = state
+            .clear_pending_lv1_identity_for_generation(stale_generation)
+            .await;
+        let snapshot = state.snapshot().await;
+
+        assert!(stale_establish.is_none());
+        assert!(stale_clear.is_none());
+        assert_eq!(snapshot.connected_lv1_identity, None);
+        assert_eq!(snapshot.pending_lv1_identity, Some(current_identity));
+    }
+
+    #[tokio::test]
+    async fn cannot_establish_connected_identity_until_lv1_snapshot_is_connected() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let (generation, _) = state.begin_connecting().await;
+
+        let snapshot = state
+            .establish_connected_lv1_identity_for_generation(generation, identity)
+            .await;
+
+        assert!(snapshot.is_none());
+        assert_eq!(state.snapshot().await.connected_lv1_identity, None);
+    }
+
+    #[tokio::test]
+    async fn current_generation_connect_failure_clears_connecting_state_and_pending_identity() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(generation, Some(identity))
+            .await
+            .expect("current generation should set pending identity");
+
+        let snapshot = state
+            .fail_connect_for_generation(generation, "LV1 did not connect")
+            .await
+            .expect("current generation failure should apply");
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.pending_lv1_identity, None);
+        assert_eq!(snapshot.connected_lv1_identity, None);
+        assert_eq!(snapshot.logs.last().unwrap().severity, LogSeverity::Warning);
+        assert_eq!(snapshot.logs.last().unwrap().message, "LV1 did not connect");
+    }
+
+    #[tokio::test]
+    async fn reconnect_failure_preserves_connected_identity_for_next_uuid_match() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        state
+            .set_connected_lv1_identity(Some(identity.clone()))
+            .await;
+        state.set_reconnect_active(true).await;
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
+            .await
+            .expect("current generation should set pending identity");
+
+        let snapshot = state
+            .fail_reconnect_for_generation(generation, "LV1 did not connect")
+            .await
+            .expect("current generation reconnect failure should apply");
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.pending_lv1_identity, None);
+        assert_eq!(snapshot.connected_lv1_identity, Some(identity.clone()));
+        assert_eq!(state.connected_lv1_identity().await, Some(identity));
+        assert!(snapshot.reconnect.active);
+    }
+
+    #[tokio::test]
+    async fn stale_generation_connect_failure_does_not_clear_newer_pending_identity() {
+        let state = ShellState::default();
+        let current_identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-2".to_string()),
+            host: Some("LV1-MON".to_string()),
+            address: "192.168.1.36".to_string(),
+            port: 50000,
+        };
+
+        let (stale_generation, _) = state.begin_connecting().await;
+        let (current_generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(
+                current_generation,
+                Some(current_identity.clone()),
+            )
+            .await
+            .expect("current generation should set pending identity");
+
+        let stale = state
+            .fail_connect_for_generation(stale_generation, "LV1 did not connect")
+            .await;
+        let snapshot = state.snapshot().await;
+
+        assert!(stale.is_none());
+        assert_eq!(snapshot.connection, AppConnectionState::Connecting);
+        assert_eq!(snapshot.pending_lv1_identity, Some(current_identity));
     }
 
     #[test]

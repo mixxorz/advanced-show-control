@@ -8,6 +8,7 @@ export function Header(props: {
   onAbortAll: () => void;
   onFinishNow: () => void;
   onNewShowFile: () => void;
+  onOpenConnection: () => void;
   onOpenShowFile: () => void;
   onSaveShowFile: () => void;
   onSaveShowFileAs: () => void;
@@ -34,7 +35,13 @@ export function Header(props: {
             onSave={props.onSaveShowFile}
             onSaveAs={props.onSaveShowFileAs}
           />
-          <StatusBadge label={props.appState.connection} tone={props.appState.connection === "connected" ? "good" : "neutral"} />
+          <button
+            aria-label="Open LV1 connection screen"
+            onClick={props.onOpenConnection}
+            className="rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-400"
+          >
+            <StatusBadge label={props.appState.connection} tone={props.appState.connection === "connected" ? "good" : "neutral"} />
+          </button>
           <StatusBadge
             label={`Fade: ${props.appState.fadeState}`}
             tone={props.appState.fadeState === "blocked" ? "warning" : "neutral"}

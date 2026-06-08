@@ -1,7 +1,26 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected";
+export type DiscoveredLv1Status = "available" | "connecting" | "connected" | "unavailable";
 export type FadeState = "idle" | "running" | "blocked";
 export type LogSource = "app" | "lv1" | "fade";
 export type LogSeverity = "info" | "warning" | "error";
+
+export type Lv1SystemIdentity = {
+  uuid: string | null;
+  host: string | null;
+  address: string;
+  port: number;
+};
+
+export type DiscoveredLv1System = {
+  identity: Lv1SystemIdentity;
+  latencyMs: number | null;
+  status: DiscoveredLv1Status;
+};
+
+export type ReconnectState = {
+  active: boolean;
+  attempt: number;
+};
 
 export type SceneSummary = {
   index: number;
@@ -44,6 +63,10 @@ export type AppLogEntry = {
 
 export type AppViewState = {
   connection: ConnectionState;
+  discoveredLv1Systems: DiscoveredLv1System[];
+  connectedLv1Identity: Lv1SystemIdentity | null;
+  pendingLv1Identity: Lv1SystemIdentity | null;
+  reconnect: ReconnectState;
   currentScene: SceneSummary | null;
   scenes: SceneSummary[];
   sceneCount: number;
@@ -63,6 +86,10 @@ export type AppViewState = {
 
 export const disconnectedAppViewState: AppViewState = {
   connection: "disconnected",
+  discoveredLv1Systems: [],
+  connectedLv1Identity: null,
+  pendingLv1Identity: null,
+  reconnect: { active: false, attempt: 0 },
   currentScene: null,
   scenes: [],
   sceneCount: 0,

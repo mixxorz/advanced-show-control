@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneSummary {
@@ -93,6 +95,10 @@ impl Default for AppFadeState {
 #[serde(rename_all = "camelCase")]
 pub struct AppViewState {
     pub connection: AppConnectionState,
+    pub discovered_lv1_systems: Vec<DiscoveredLv1System>,
+    pub connected_lv1_identity: Option<Lv1SystemIdentity>,
+    pub pending_lv1_identity: Option<Lv1SystemIdentity>,
+    pub reconnect: ReconnectState,
     pub current_scene: Option<SceneSummary>,
     pub scenes: Vec<SceneSummary>,
     pub scene_count: usize,

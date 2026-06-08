@@ -208,6 +208,115 @@ async fn begin_connecting_sets_connecting_snapshot_and_logs_it() {
 }
 
 #[tokio::test]
+async fn lv1_disconnected_event_enters_reconnect_state() {
+    let state = super::ShellState::default();
+    state
+        .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        }))
+        .await;
+    let (generation, _) = state.begin_connecting().await;
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .unwrap();
+
+    assert!(snapshot.reconnect.active);
+    assert_eq!(snapshot.reconnect.attempt, 1);
+}
+
+#[tokio::test]
+async fn lv1_connected_event_refreshes_discovered_row_status() {
+    let state = super::ShellState::default();
+    let identity = crate::connection_state::Lv1SystemIdentity {
+        uuid: Some("uuid-1".to_string()),
+        host: Some("LV1-FOH".to_string()),
+        address: "192.168.1.35".to_string(),
+        port: 50000,
+    };
+    state
+        .set_connected_lv1_identity(Some(identity.clone()))
+        .await;
+    state
+        .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+            identity,
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }])
+        .await;
+    let (generation, _) = state.begin_connecting().await;
+    let disconnected = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("disconnect should apply to current generation");
+    assert_ne!(
+        disconnected.discovered_lv1_systems[0].status,
+        crate::connection_state::DiscoveredLv1Status::Connected
+    );
+
+    let connected = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+        .await
+        .expect("connected event should apply to current generation");
+
+    assert_eq!(
+        connected.discovered_lv1_systems[0].status,
+        crate::connection_state::DiscoveredLv1Status::Connected
+    );
+}
+
+#[tokio::test]
+async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
+    let state = super::ShellState::default();
+    state
+        .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        }))
+        .await;
+    let (generation, _) = state.begin_connecting().await;
+
+    let first_disconnect = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("first disconnect should apply to current generation");
+    assert!(first_disconnect.reconnect.active);
+    let first_attempt = first_disconnect.reconnect.attempt;
+
+    let connected = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+        .await
+        .expect("connected event should apply to current generation");
+    assert!(!connected.reconnect.active);
+
+    let second_disconnect = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("second disconnect should apply to current generation");
+
+    assert!(second_disconnect.reconnect.active);
+    assert!(second_disconnect.reconnect.attempt > first_attempt);
+}
+
+#[tokio::test]
+async fn lv1_disconnected_event_without_connected_identity_stays_out_of_reconnect_state() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("event should apply to current generation");
+
+    assert!(!snapshot.reconnect.active);
+}
+
+#[tokio::test]
 async fn lv1_scene_event_updates_rust_owned_snapshot() {
     let state = ShellState::default();
     let (generation, _snapshot) = state.begin_connecting().await;
@@ -256,6 +365,39 @@ async fn begin_connection_preserves_incoming_connection_state() {
 
     assert_eq!(snapshot.connection, AppConnectionState::Connected);
     assert_eq!(snapshot.logs.last().unwrap().message, "LV1 connected");
+}
+
+#[tokio::test]
+async fn begin_connection_clears_reconnect_state_when_connected() {
+    let state = ShellState::default();
+    state.set_reconnect_active(true).await;
+
+    let snapshot = state
+        .begin_connection(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+        })
+        .await;
+
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
+    assert!(!snapshot.reconnect.active);
+}
+
+#[tokio::test]
+async fn lv1_connected_event_clears_reconnect_state() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state.set_reconnect_active(true).await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+        .await
+        .expect("event should apply to current generation");
+
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
+    assert!(!snapshot.reconnect.active);
 }
 
 #[tokio::test]
@@ -350,6 +492,45 @@ async fn disconnect_increments_generation_and_ignores_old_events() {
         )
         .await;
     assert!(stale.is_none());
+}
+
+#[tokio::test]
+async fn manual_disconnect_clears_identities_and_connected_row_status() {
+    let state = ShellState::default();
+    let connected = crate::connection_state::Lv1SystemIdentity {
+        uuid: Some("uuid-1".to_string()),
+        host: Some("LV1-FOH".to_string()),
+        address: "192.168.1.35".to_string(),
+        port: 50000,
+    };
+    let pending = crate::connection_state::Lv1SystemIdentity {
+        uuid: Some("uuid-2".to_string()),
+        host: Some("LV1-MON".to_string()),
+        address: "192.168.1.36".to_string(),
+        port: 50000,
+    };
+    state
+        .set_connected_lv1_identity(Some(connected.clone()))
+        .await;
+    state.set_pending_lv1_identity(Some(pending.clone())).await;
+    state.set_reconnect_active(true).await;
+    state
+        .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+            identity: connected,
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }])
+        .await;
+
+    let (_, snapshot) = state.disconnect().await;
+
+    assert_eq!(snapshot.connected_lv1_identity, None);
+    assert_eq!(snapshot.pending_lv1_identity, None);
+    assert!(!snapshot.reconnect.active);
+    assert_ne!(
+        snapshot.discovered_lv1_systems[0].status,
+        crate::connection_state::DiscoveredLv1Status::Connected
+    );
 }
 
 #[tokio::test]

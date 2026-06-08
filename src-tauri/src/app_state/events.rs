@@ -5,7 +5,8 @@ use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
 
 use super::shell::{
-    MAX_LOGS, ShellInner, ShellState, current_timestamp, scene_id, snapshot_from_inner,
+    MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses, scene_id,
+    snapshot_from_inner,
 };
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource, SceneConfig};
 
@@ -65,6 +66,10 @@ impl ShellState {
         inner.generation = inner.generation.saturating_add(1);
         inner.duration_zero_skip_logs.clear();
         inner.lv1_snapshot = None;
+        inner.connected_lv1_identity = None;
+        inner.pending_lv1_identity = None;
+        inner.reconnect_state.active = false;
+        refresh_discovered_statuses(&mut inner);
         inner.push_log(
             LogSource::App,
             LogSeverity::Info,
@@ -87,6 +92,8 @@ impl ShellState {
         match event {
             Lv1Event::Connected => {
                 ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
+                inner.reconnect_state.active = false;
+                refresh_discovered_statuses(&mut inner);
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Info,
@@ -94,7 +101,14 @@ impl ShellState {
                 );
             }
             Lv1Event::Disconnected => {
+                let had_connected_identity = inner.connected_lv1_identity.is_some();
                 inner.lv1_snapshot = None;
+                inner.pending_lv1_identity = None;
+                inner.reconnect_state.active = had_connected_identity;
+                if had_connected_identity {
+                    inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
+                }
+                refresh_discovered_statuses(&mut inner);
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Warning,
@@ -302,7 +316,11 @@ fn ensure_lv1_snapshot(inner: &mut ShellInner) -> &mut Lv1StateSnapshot {
 }
 
 fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) -> AppViewState {
+    let connected = matches!(snapshot.connection, ConnectionStatus::Connected);
     inner.lv1_snapshot = Some(snapshot);
+    if connected {
+        inner.reconnect_state.active = false;
+    }
     let scenes = inner
         .lv1_snapshot
         .as_ref()

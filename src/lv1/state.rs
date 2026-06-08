@@ -216,20 +216,26 @@ pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorH
     Lv1ActorHandle { tx: cmd_tx }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum DrainCommandsResult {
+    TimedOut,
+    CommandChannelClosed,
+}
+
 /// Drain pending commands for `duration`, responding to GetState immediately.
 /// Used during reconnect delays so callers are never blocked indefinitely.
 async fn drain_commands_for(
     state: &mut ActorState,
     cmd_rx: &mut mpsc::Receiver<Lv1Command>,
     duration: Duration,
-) {
+) -> DrainCommandsResult {
     let deadline = tokio::time::sleep(duration);
     tokio::pin!(deadline);
     loop {
         tokio::select! {
-            _ = &mut deadline => break,
+            _ = &mut deadline => return DrainCommandsResult::TimedOut,
             cmd = cmd_rx.recv() => match cmd {
-                None => break,
+                None => return DrainCommandsResult::CommandChannelClosed,
                 Some(Lv1Command::GetState { reply }) => {
                     let _ = reply.send(state.snapshot());
                 }
@@ -261,7 +267,11 @@ async fn run_actor(
             match Lv1TcpClient::connect(&host, port).await {
                 Ok(c) => break c,
                 Err(_) => {
-                    drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
+                    if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
+                        == DrainCommandsResult::CommandChannelClosed
+                    {
+                        return;
+                    }
                 }
             }
         };
@@ -269,7 +279,11 @@ async fn run_actor(
         let device_name = "lv1-state-mirror";
         let uuid = uuid::Uuid::new_v4().to_string();
         if client.register_myfoh(device_name, &uuid).await.is_err() {
-            drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await;
+            if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
+                == DrainCommandsResult::CommandChannelClosed
+            {
+                return;
+            }
             continue;
         }
 
@@ -511,6 +525,17 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn drain_commands_reports_closed_command_channel() {
+        let (tx, mut rx) = mpsc::channel(1);
+        drop(tx);
+        let mut state = ActorState::new(AppEventBus::default());
+
+        let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
+
+        assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
     }
 
     #[test]
