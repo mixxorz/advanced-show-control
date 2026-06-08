@@ -8,17 +8,38 @@ impl ShowState {
         if channels.is_empty() {
             return Err("LV1 channel list is empty".to_string());
         }
+        let current_refs: Vec<ChannelRef> = channels
+            .iter()
+            .map(|channel| ChannelRef { group: channel.group, channel: channel.channel })
+            .collect();
+        let scoped_channels = self
+            .get_scene_config(scene_id)
+            .map(|scene| {
+                if scene.scoped_channels.is_empty() {
+                    current_refs.clone()
+                } else {
+                    scene
+                        .scoped_channels
+                        .into_iter()
+                        .filter(|scoped| current_refs.iter().any(|current| current == scoped))
+                        .collect()
+                }
+            })
+            .unwrap_or_else(|| current_refs.clone());
         let snapshot = SceneConfig {
             scene_id: scene_id.to_string(),
+            scene_index: scene_id.split_once("::").and_then(|(idx, _)| idx.parse().ok()).unwrap_or_default(),
+            scene_name: scene_id.split_once("::").map(|(_, name)| name.to_string()).unwrap_or_default(),
             duration_ms: self.get_scene_config(scene_id).map(|scene| scene.duration_ms).unwrap_or(1_000),
-            channels: channels
+            channel_configs: channels
                 .iter()
                 .map(|channel| ChannelConfig {
-                    channel: ChannelRef { group: channel.group, channel: channel.channel },
-                    scoped: true,
-                    target_db: channel.gain_db,
+                    group: channel.group,
+                    channel: channel.channel,
+                    fader_db: Some(channel.gain_db),
                 })
                 .collect(),
+            scoped_channels,
         };
         match self.scene_configs.iter_mut().find(|scene| scene.scene_id == scene_id) {
             Some(existing) => {
@@ -41,14 +62,26 @@ impl ShowState {
 
     pub fn set_channel_scoped(&mut self, scene_id: &str, group: i32, channel: i32, scoped: bool) -> Result<bool, String> {
         let scene = self.get_scene_config_mut(scene_id).ok_or_else(|| "Scene config not found".to_string())?;
-        let channel = scene.channels.iter_mut().find(|entry| entry.channel.group == group && entry.channel.channel == channel).ok_or_else(|| "Channel config not found".to_string())?;
-        if channel.scoped == scoped { Ok(false) } else { channel.scoped = scoped; Ok(true) }
+        let channel_exists = scene.channel_configs.iter().any(|entry| entry.group == group && entry.channel == channel);
+        if !channel_exists { return Err("Channel config not found".to_string()); }
+        let ref_exists = scene.scoped_channels.iter().any(|entry| entry.group == group && entry.channel == channel);
+        match (scoped, ref_exists) {
+            (true, false) => { scene.scoped_channels.push(ChannelRef { group, channel }); Ok(true) }
+            (false, true) => { scene.scoped_channels.retain(|entry| !(entry.group == group && entry.channel == channel)); Ok(true) }
+            _ => Ok(false),
+        }
     }
 
     pub fn set_all_channels_scoped(&mut self, scene_id: &str, scoped: bool) -> Result<bool, String> {
         let scene = self.get_scene_config_mut(scene_id).ok_or_else(|| "Scene config not found".to_string())?;
         let mut changed = false;
-        for channel in &mut scene.channels { if channel.scoped != scoped { channel.scoped = scoped; changed = true; } }
+        let refs: Vec<ChannelRef> = scene.channel_configs.iter().map(|entry| ChannelRef { group: entry.group, channel: entry.channel }).collect();
+        if scoped {
+            if scene.scoped_channels != refs { scene.scoped_channels = refs; changed = true; }
+        } else if !scene.scoped_channels.is_empty() {
+            scene.scoped_channels.clear();
+            changed = true;
+        }
         Ok(changed)
     }
 }

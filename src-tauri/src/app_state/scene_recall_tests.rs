@@ -6,7 +6,18 @@ use advanced_show_control::lv1::types::{
 use super::scene_recall::SceneRecallDecision;
 use super::shell::ShellState;
 use super::test_support::scene_config;
-use super::view::{ChannelConfig, ChannelRef, LogSeverity, LogSource};
+use super::view::{ChannelConfig, ChannelRef, LogSeverity, LogSource, ShowSnapshot};
+
+async fn seed_show(state: &ShellState, scene_configs: Vec<super::view::SceneConfig>) {
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs,
+        })
+        .await
+        .unwrap();
+}
 
 #[tokio::test]
 async fn configured_nonzero_scene_builds_fade_request() {
@@ -14,24 +25,18 @@ async fn configured_nonzero_scene_builds_fade_request() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig {
+            group: 0,
+            channel: 2,
+            fader_db: Some(-12.5),
+        }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -76,24 +81,18 @@ async fn recalled_scene_overrides_stale_current_scene_snapshot() {
     });
     state.begin_connection(snapshot).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig {
+            group: 0,
+            channel: 2,
+            fader_db: Some(-12.5),
+        }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -120,9 +119,9 @@ async fn duration_zero_skips_without_starting_fade() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(
+    seed_show(
+        &state,
+        vec![scene_config(
             1,
             "Intro",
             vec![ChannelConfig {
@@ -130,12 +129,10 @@ async fn duration_zero_skips_without_starting_fade() {
                 channel: 2,
                 fader_db: Some(-12.5),
             }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        )];
-    }
+            vec![ChannelRef { group: 0, channel: 2 }],
+        )],
+    )
+    .await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -155,26 +152,20 @@ async fn lockout_blocks_scene_recall_fade() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
-    state.set_lockout(true).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig {
+            group: 0,
+            channel: 2,
+            fader_db: Some(-12.5),
+        }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
+    state.set_lockout(true).await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -243,24 +234,14 @@ async fn missing_live_channel_snapshot_blocks() {
         })
         .await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-12.5) }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -291,24 +272,14 @@ async fn supplied_fresh_lv1_snapshot_is_used_for_scene_recall_validation() {
         })
         .await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-12.5) }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let decision = state
         .prepare_scene_recall_fade_with_lv1_snapshot_for_generation(
@@ -340,24 +311,14 @@ async fn supplied_fresh_lv1_snapshot_scene_mismatch_blocks_stale_recall() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-12.5) }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let mut fresh_snapshot = snapshot_for_intro();
     fresh_snapshot.scene = Some(SceneState {
@@ -415,24 +376,14 @@ async fn scoped_channel_without_stored_fader_value_blocks() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: None,
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig { group: 0, channel: 2, fader_db: None }],
+        vec![ChannelRef { group: 0, channel: 2 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -453,24 +404,14 @@ async fn scoped_channel_missing_from_live_topology_blocks() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        let mut config = scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 9,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 9,
-            }],
-        );
-        config.duration_ms = 4_000;
-        inner.scene_configs = vec![config];
-    }
+    let mut config = scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig { group: 0, channel: 9, fader_db: Some(-12.5) }],
+        vec![ChannelRef { group: 0, channel: 9 }],
+    );
+    config.duration_ms = 4_000;
+    seed_show(&state, vec![config]).await;
 
     let decision = state
         .prepare_scene_recall_fade_for_generation(
@@ -510,22 +451,16 @@ async fn duration_zero_skip_logs_once_per_generation_for_same_scene() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(
+    seed_show(
+        &state,
+        vec![scene_config(
             1,
             "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        )];
-    }
+            vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-12.5) }],
+            vec![ChannelRef { group: 0, channel: 2 }],
+        )],
+    )
+    .await;
 
     for _ in 0..2 {
         assert_eq!(
@@ -557,22 +492,16 @@ async fn duration_zero_skip_logs_again_after_generation_changes() {
     let (generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(
+    seed_show(
+        &state,
+        vec![scene_config(
             1,
             "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        )];
-    }
+            vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-12.5) }],
+            vec![ChannelRef { group: 0, channel: 2 }],
+        )],
+    )
+    .await;
 
     assert_eq!(
         state
@@ -590,22 +519,16 @@ async fn duration_zero_skip_logs_again_after_generation_changes() {
     let (next_generation, _) = state.begin_connecting().await;
     state.begin_connection(snapshot_for_intro()).await;
 
-    {
-        let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(
+    seed_show(
+        &state,
+        vec![scene_config(
             1,
             "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-12.5),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        )];
-    }
+            vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-12.5) }],
+            vec![ChannelRef { group: 0, channel: 2 }],
+        )],
+    )
+    .await;
 
     for _ in 0..2 {
         assert_eq!(

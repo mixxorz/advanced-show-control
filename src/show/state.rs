@@ -15,13 +15,36 @@ impl ShowState {
     }
 
     pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) -> bool {
-        let before = self.scene_configs.len();
-        self.scene_configs.retain(|scene| {
-            scenes
-                .iter()
-                .any(|entry| scene.scene_id == scene_id(entry.index, &entry.name))
-        });
-        self.scene_configs.len() != before
+        let mut next = Vec::with_capacity(scenes.len());
+        for entry in scenes {
+            let id = scene_id(entry.index, &entry.name);
+            if let Some(existing) = self.scene_configs.iter().find(|scene| scene.scene_id == id) {
+                next.push(existing.clone());
+            } else {
+                next.push(SceneConfig {
+                    scene_id: id,
+                    scene_index: entry.index,
+                    scene_name: entry.name.clone(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                });
+            }
+        }
+
+        let changed = next != self.scene_configs;
+        self.scene_configs = next;
+        changed
+    }
+
+    pub fn replace_snapshot(&mut self, snapshot: ShowSnapshot) {
+        self.lockout = snapshot.lockout;
+        self.scene_configs = snapshot.scene_configs;
+    }
+
+    pub fn clear(&mut self) {
+        self.lockout = false;
+        self.scene_configs.clear();
     }
 
     pub fn get_scene_config(&self, scene_id: &str) -> Option<SceneConfig> {
@@ -41,13 +64,19 @@ impl ShowState {
 mod tests {
     use super::*;
     use crate::lv1::types::ChannelInfo;
-    use crate::show::{ChannelConfig, ChannelRef};
+    use crate::show::ChannelConfig;
 
     fn scene_config(scene_id: &str, duration_ms: u64, channels: Vec<ChannelConfig>) -> SceneConfig {
+        let (scene_index, scene_name) = scene_id.split_once("::").map(|(index, name)| {
+            (index.parse().unwrap(), name.to_string())
+        }).unwrap();
         SceneConfig {
             scene_id: scene_id.to_string(),
+            scene_index,
+            scene_name,
             duration_ms,
-            channels,
+            channel_configs: channels,
+            scoped_channels: vec![],
         }
     }
 
@@ -56,12 +85,12 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1:scene-1",
+                "1::scene-1",
                 1_500,
                 vec![ChannelConfig {
-                    channel: ChannelRef { group: 0, channel: 1 },
-                    scoped: true,
-                    target_db: -12.0,
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-12.0),
                 }],
             )],
         };
@@ -72,8 +101,9 @@ mod tests {
         }]));
 
         assert_eq!(state.scene_configs[0].duration_ms, 1_500);
-        assert!(state.scene_configs[0].channels[0].scoped);
-        assert_eq!(state.scene_configs[0].channels[0].target_db, -12.0);
+        assert_eq!(state.scene_configs[0].scene_index, 1);
+        assert_eq!(state.scene_configs[0].scene_name, "scene-1");
+        assert_eq!(state.scene_configs[0].channel_configs[0].fader_db, Some(-12.0));
     }
 
     #[test]
@@ -81,12 +111,12 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1:scene-1",
+                "1::scene-1",
                 1_500,
                 vec![ChannelConfig {
-                    channel: ChannelRef { group: 0, channel: 1 },
-                    scoped: true,
-                    target_db: -12.0,
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-12.0),
                 }],
             )],
         };
@@ -98,16 +128,16 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_drops_same_name_different_index_scene() {
+    fn reconciliation_replaces_same_name_different_index_scene_with_default_config() {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1:scene-1",
+                "1::scene-1",
                 1_500,
                 vec![ChannelConfig {
-                    channel: ChannelRef { group: 0, channel: 1 },
-                    scoped: true,
-                    target_db: -12.0,
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-12.0),
                 }],
             )],
         };
@@ -116,17 +146,22 @@ mod tests {
             index: 2,
             name: "scene-1".to_string(),
         }]));
-        assert!(state.scene_configs.is_empty());
+        assert_eq!(state.scene_configs.len(), 1);
+        assert_eq!(state.scene_configs[0].scene_id, "2::scene-1");
+        assert_eq!(state.scene_configs[0].scene_index, 2);
+        assert_eq!(state.scene_configs[0].scene_name, "scene-1");
+        assert!(state.scene_configs[0].channel_configs.is_empty());
+        assert!(state.scene_configs[0].scoped_channels.is_empty());
     }
 
     #[test]
     fn invalid_duration_rejected() {
         let mut state = ShowState {
             lockout: false,
-            scene_configs: vec![scene_config("scene-1", 1_000, vec![])],
+            scene_configs: vec![scene_config("1::scene-1", 1_000, vec![])],
         };
 
-        let err = state.set_scene_duration_ms("scene-1", 99).unwrap_err();
+        let err = state.set_scene_duration_ms("1::scene-1", 99).unwrap_err();
 
         assert_eq!(err, "Fade duration must be between 100 ms and 120000 ms");
     }
@@ -136,21 +171,21 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "scene-1",
+                "1::scene-1",
                 1_000,
                 vec![ChannelConfig {
-                    channel: ChannelRef { group: 0, channel: 1 },
-                    scoped: false,
-                    target_db: -9.0,
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-9.0),
                 }],
             )],
         };
 
         assert!(state
-            .set_channel_scoped("scene-1", 0, 1, true)
+            .set_channel_scoped("1::scene-1", 0, 1, true)
             .unwrap());
         assert!(!state
-            .set_channel_scoped("scene-1", 0, 1, true)
+            .set_channel_scoped("1::scene-1", 0, 1, true)
             .unwrap());
     }
 
@@ -168,13 +203,16 @@ mod tests {
             muted: false,
         }];
 
-        assert!(state.store_scene_config("scene-1", &channels).unwrap());
+        assert!(state.store_scene_config("1::scene-1", &channels).unwrap());
 
         let snapshot = state.snapshot();
         assert_eq!(snapshot.scene_configs.len(), 1);
-        assert_eq!(snapshot.scene_configs[0].channels[0].channel.group, 0);
-        assert_eq!(snapshot.scene_configs[0].channels[0].channel.channel, 1);
-        assert!(snapshot.scene_configs[0].channels[0].scoped);
-        assert_eq!(snapshot.scene_configs[0].channels[0].target_db, -7.5);
+        assert_eq!(snapshot.scene_configs[0].scene_index, 1);
+        assert_eq!(snapshot.scene_configs[0].scene_name, "scene-1");
+        assert_eq!(snapshot.scene_configs[0].channel_configs[0].group, 0);
+        assert_eq!(snapshot.scene_configs[0].channel_configs[0].channel, 1);
+        assert_eq!(snapshot.scene_configs[0].channel_configs[0].fader_db, Some(-7.5));
+        assert_eq!(snapshot.scene_configs[0].scoped_channels[0].group, 0);
+        assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 1);
     }
 }

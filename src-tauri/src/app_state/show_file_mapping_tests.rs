@@ -1,6 +1,7 @@
 use super::shell::ShellState;
 use super::test_support::connected_state_with_scene_and_channel;
 use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
+use super::view::ShowSnapshot;
 
 #[tokio::test]
 async fn export_show_file_contains_current_configs() {
@@ -53,27 +54,25 @@ fn lv1_scene_only_snapshot() -> advanced_show_control::lv1::types::Lv1StateSnaps
 async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
     let state = ShellState::default();
     state.begin_connection(lv1_scene_only_snapshot()).await;
-
-    {
-        let mut inner = state.inner.lock().await;
-        inner.scene_configs[0]
-            .channel_configs
-            .push(super::view::ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-8.0),
-            });
-        inner.scene_configs[0]
-            .scoped_channels
-            .push(super::view::ChannelRef {
-                group: 0,
-                channel: 2,
-            });
-        inner.show_file_path = Some(std::path::PathBuf::from("/tmp/existing.lv1show"));
-        inner.show_file_last_saved_at = Some("123".to_string());
-        inner.show_file_dirty = true;
-        inner.lockout = true;
-    }
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: true,
+            scene_configs: vec![super::view::SceneConfig {
+                scene_id: "1::Intro".to_string(),
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 0,
+                channel_configs: vec![super::view::ChannelConfig {
+                    group: 0,
+                    channel: 2,
+                    fader_db: Some(-8.0),
+                }],
+                scoped_channels: vec![super::view::ChannelRef { group: 0, channel: 2 }],
+            }],
+        })
+        .await
+        .unwrap();
 
     let snapshot = state.new_show_file().await.unwrap();
 
@@ -106,18 +105,24 @@ async fn current_show_file_path_returns_pathbuf() {
 #[tokio::test]
 async fn new_show_file_clears_stale_selection_when_disconnected() {
     let state = ShellState::default();
-
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![super::view::SceneConfig {
+                scene_id: "stale::scene".to_string(),
+                scene_index: 99,
+                scene_name: "Stale".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+            }],
+        })
+        .await
+        .unwrap();
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("stale::scene".to_string());
-        inner.scene_configs = vec![super::view::SceneConfig {
-            scene_id: "stale::scene".to_string(),
-            scene_index: 99,
-            scene_name: "Stale".to_string(),
-            duration_ms: 0,
-            channel_configs: Vec::new(),
-            scoped_channels: Vec::new(),
-        }];
     }
 
     let snapshot = state.new_show_file().await.unwrap();

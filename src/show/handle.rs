@@ -83,4 +83,14 @@ impl ShowStateHandle {
         let (reply, reply_rx) = oneshot::channel();
         self.request(ShowCommand::ReconcileSceneList { scenes, reply }, reply_rx).await
     }
+
+    pub async fn replace_snapshot(&self, snapshot: ShowSnapshot) -> Result<(), ShowActorError> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.request(ShowCommand::ReplaceSnapshot { snapshot, reply }, reply_rx).await
+    }
+
+    pub async fn clear(&self) -> Result<(), ShowActorError> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.request(ShowCommand::Clear { reply }, reply_rx).await
+    }
 }

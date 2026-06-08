@@ -16,4 +16,6 @@ pub enum ShowCommand {
     LoadShowData { reply: oneshot::Sender<Result<(), String>> },
     ExportShowData { reply: oneshot::Sender<Result<(), String>> },
     ReconcileSceneList { scenes: Vec<SceneListEntry>, reply: oneshot::Sender<bool> },
+    ReplaceSnapshot { snapshot: ShowSnapshot, reply: oneshot::Sender<()> },
+    Clear { reply: oneshot::Sender<()> },
 }

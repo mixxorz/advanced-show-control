@@ -1,8 +1,8 @@
-use super::shell::{ShellInner, ShellState};
+use super::shell::ShellState;
 use super::test_support::{
     connected_snapshot, connected_state_with_scene_and_channel, scene_config,
 };
-use super::view::{AppConnectionState, ChannelConfig, ChannelRef};
+use super::view::{AppConnectionState, ChannelConfig, ChannelRef, ShowSnapshot};
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{
     ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
@@ -61,9 +61,16 @@ async fn channel_completed_logs_without_clearing_running_state() {
 #[tokio::test]
 async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_empty() {
     let state = ShellState::default();
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![scene_config(1, "Intro", Vec::new(), Vec::new())],
+        })
+        .await
+        .unwrap();
     {
         let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(1, "Intro", Vec::new(), Vec::new())];
         inner.selected_scene_id = Some("1::Intro".to_string());
     }
 
@@ -86,9 +93,16 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
 
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![scene_config(2, "Verse", Vec::new(), Vec::new())],
+        })
+        .await
+        .unwrap();
     {
         let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(2, "Verse", Vec::new(), Vec::new())];
         inner.selected_scene_id = Some("2::Verse".to_string());
     }
 
@@ -117,32 +131,26 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
 
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
-    let mut inner = ShellInner::default();
-    inner.reconcile_scene_fade_configs(&[
-        SceneListEntry {
-            index: 1,
-            name: "Intro".to_string(),
-        },
-        SceneListEntry {
-            index: 2,
-            name: "Verse".to_string(),
-        },
-    ]);
+    let mut state = advanced_show_control::show::state::ShowState { lockout: false, scene_configs: Vec::new() };
+    assert!(state.reconcile_scene_fade_configs(&[
+        SceneListEntry { index: 1, name: "Intro".to_string() },
+        SceneListEntry { index: 2, name: "Verse".to_string() },
+    ]));
 
-    assert_eq!(inner.scene_configs.len(), 2);
-    assert_eq!(inner.scene_configs[0].scene_id, "1::Intro");
-    assert_eq!(inner.scene_configs[0].scene_index, 1);
-    assert_eq!(inner.scene_configs[0].scene_name, "Intro");
-    assert_eq!(inner.scene_configs[0].duration_ms, 0);
-    assert!(inner.scene_configs[0].channel_configs.is_empty());
-    assert!(inner.scene_configs[0].scoped_channels.is_empty());
-    assert_eq!(inner.selected_scene_id.as_deref(), Some("1::Intro"));
+    assert_eq!(state.scene_configs.len(), 2);
+    assert_eq!(state.scene_configs[0].scene_id, "1::Intro");
+    assert_eq!(state.scene_configs[0].scene_index, 1);
+    assert_eq!(state.scene_configs[0].scene_name, "Intro");
+    assert_eq!(state.scene_configs[0].duration_ms, 0);
+    assert!(state.scene_configs[0].channel_configs.is_empty());
+    assert!(state.scene_configs[0].scoped_channels.is_empty());
 }
 
 #[test]
 fn scene_list_reconciliation_preserves_matching_config_data() {
-    let mut inner = ShellInner::default();
-    inner.scene_configs = vec![scene_config(
+    let mut state = advanced_show_control::show::state::ShowState {
+        lockout: false,
+        scene_configs: vec![scene_config(
         2,
         "Verse",
         vec![ChannelConfig {
@@ -154,21 +162,15 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
             group: 0,
             channel: 4,
         }],
-    )];
-    inner.selected_scene_id = Some("2::Verse".to_string());
+    )],
+    };
 
-    inner.reconcile_scene_fade_configs(&[
-        SceneListEntry {
-            index: 2,
-            name: "Verse".to_string(),
-        },
-        SceneListEntry {
-            index: 3,
-            name: "Chorus".to_string(),
-        },
-    ]);
+    assert!(state.reconcile_scene_fade_configs(&[
+        SceneListEntry { index: 2, name: "Verse".to_string() },
+        SceneListEntry { index: 3, name: "Chorus".to_string() },
+    ]));
 
-    let verse = inner
+    let verse = state
         .scene_configs
         .iter()
         .find(|scene| scene.scene_id == "2::Verse")
@@ -182,15 +184,14 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
     assert_eq!(verse.scoped_channels.len(), 1);
     assert_eq!(verse.scoped_channels[0].group, 0);
     assert_eq!(verse.scoped_channels[0].channel, 4);
-    assert_eq!(inner.scene_configs.len(), 2);
-    assert_eq!(inner.selected_scene_id.as_deref(), Some("2::Verse"));
+    assert_eq!(state.scene_configs.len(), 2);
 }
 
 #[test]
 fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
-    let mut inner = ShellInner::default();
-    inner.show_file_path = Some(std::path::PathBuf::from("/tmp/test.lv1show"));
-    inner.scene_configs = vec![scene_config(
+    let mut state = advanced_show_control::show::state::ShowState {
+        lockout: false,
+        scene_configs: vec![scene_config(
         1,
         "Intro",
         vec![ChannelConfig {
@@ -202,19 +203,14 @@ fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
             group: 0,
             channel: 2,
         }],
-    )];
+    )],
+    };
 
-    inner.reconcile_scene_fade_configs(&[SceneListEntry {
-        index: 2,
-        name: "Verse".to_string(),
-    }]);
-
-    assert!(inner.show_file_dirty);
-    assert_eq!(inner.scene_configs.len(), 1);
-    assert_eq!(inner.scene_configs[0].scene_id, "2::Verse");
-    assert!(inner.scene_configs[0].channel_configs.is_empty());
-    assert!(inner.scene_configs[0].scoped_channels.is_empty());
-    assert_eq!(inner.selected_scene_id.as_deref(), Some("2::Verse"));
+    assert!(state.reconcile_scene_fade_configs(&[SceneListEntry { index: 2, name: "Verse".to_string() }]));
+    assert_eq!(state.scene_configs.len(), 1);
+    assert_eq!(state.scene_configs[0].scene_id, "2::Verse");
+    assert!(state.scene_configs[0].channel_configs.is_empty());
+    assert!(state.scene_configs[0].scoped_channels.is_empty());
 }
 
 #[tokio::test]
@@ -562,22 +558,19 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
     state
         .begin_connection(connected_state_with_scene_and_channel())
         .await;
-    {
-        let mut inner = state.inner.lock().await;
-        inner.scene_configs = vec![scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-8.0),
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        )];
-    }
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                1,
+                "Intro",
+                vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-8.0) }],
+                vec![ChannelRef { group: 0, channel: 2 }],
+            )],
+        })
+        .await
+        .unwrap();
 
     let snapshot = state
         .apply_lv1_event_for_generation(

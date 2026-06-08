@@ -25,6 +25,8 @@ pub fn spawn_show_state(event_bus: AppEventBus) -> ShowStateHandle {
                 ShowCommand::LoadShowData { reply } => { let _ = reply.send(Ok(())); }
                 ShowCommand::ExportShowData { reply } => { let _ = reply.send(Ok(())); }
                 ShowCommand::ReconcileSceneList { scenes, reply } => { let changed = state.reconcile_scene_fade_configs(&scenes); let _ = reply.send(changed); if changed { event_bus.publish(AppEvent::Show(ShowEvent::StateChanged)); } }
+                ShowCommand::ReplaceSnapshot { snapshot, reply } => { state.replace_snapshot(snapshot); let _ = reply.send(()); }
+                ShowCommand::Clear { reply } => { state.clear(); let _ = reply.send(()); }
             }
         }
     });

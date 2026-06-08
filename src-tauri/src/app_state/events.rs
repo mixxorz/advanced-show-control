@@ -1,20 +1,18 @@
-use std::collections::HashSet;
-
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 
 use super::shell::{
-    MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses, scene_id,
+    MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses,
     snapshot_from_inner,
 };
-use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource, SceneConfig};
+use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
 
 impl ShellState {
     pub async fn begin_connecting(&self) -> (u64, AppViewState) {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
-        inner.duration_zero_skip_logs.clear();
+        self.scene_recall_logs.lock().await.clear_for_generation(inner.generation);
         inner.lv1_snapshot = Some(Lv1StateSnapshot {
             connection: ConnectionStatus::Connecting,
             scene: None,
@@ -27,25 +25,43 @@ impl ShellState {
             "Connecting to LV1".to_string(),
         );
         let generation = inner.generation;
-        (generation, snapshot_from_inner(&inner))
+        drop(inner);
+        (generation, self.snapshot().await)
     }
 
     pub async fn set_lockout(&self, enabled: bool) -> AppViewState {
+        let _ = self.show.set_lockout(enabled).await;
         let mut inner = self.inner.lock().await;
-        inner.lockout = enabled;
         inner.show_file_dirty = true;
         inner.push_log(
             LogSource::App,
             LogSeverity::Info,
             format!("Lockout {}", if enabled { "enabled" } else { "disabled" }),
         );
-        snapshot_from_inner(&inner)
+        drop(inner);
+        self.snapshot().await
     }
 
     #[cfg(test)]
     pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppViewState {
         let mut inner = self.inner.lock().await;
-        apply_begin_connection(&mut inner, snapshot)
+        let _ = apply_begin_connection(&mut inner, snapshot);
+        let scene_list = inner
+            .lv1_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.scene_list.clone())
+            .unwrap_or_default();
+        if !scene_list.is_empty() {
+            let changed = self.show.reconcile_scene_list(scene_list.clone()).await.unwrap_or(false);
+            if changed {
+                inner.show_file_dirty = true;
+            }
+            if inner.selected_scene_id.is_none() {
+                inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+            }
+        }
+        drop(inner);
+        self.snapshot().await
     }
 
     pub async fn begin_connection_for_generation(
@@ -58,13 +74,29 @@ impl ShellState {
             return None;
         }
 
-        Some(apply_begin_connection(&mut inner, snapshot))
+        let _ = apply_begin_connection(&mut inner, snapshot);
+        let scene_list = inner
+            .lv1_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.scene_list.clone())
+            .unwrap_or_default();
+        if !scene_list.is_empty() {
+            let changed = self.show.reconcile_scene_list(scene_list.clone()).await.ok()?;
+            if changed {
+                inner.show_file_dirty = true;
+            }
+            if inner.selected_scene_id.is_none() {
+                inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+            }
+        }
+        drop(inner);
+        Some(self.snapshot().await)
     }
 
     pub async fn disconnect(&self) -> (u64, AppViewState) {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
-        inner.duration_zero_skip_logs.clear();
+        self.scene_recall_logs.lock().await.clear_for_generation(inner.generation);
         inner.lv1_snapshot = None;
         inner.connected_lv1_identity = None;
         inner.pending_lv1_identity = None;
@@ -76,7 +108,8 @@ impl ShellState {
             "Disconnected from LV1".to_string(),
         );
         let generation = inner.generation;
-        (generation, snapshot_from_inner(&inner))
+        drop(inner);
+        (generation, self.snapshot().await)
     }
 
     pub async fn apply_lv1_event_for_generation(
@@ -125,7 +158,14 @@ impl ShellState {
             }
             Lv1Event::SceneListChanged(scenes) => {
                 ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
-                inner.reconcile_scene_fade_configs(scenes);
+                let changed = self
+                    .show
+                    .reconcile_scene_list(scenes.clone())
+                    .await
+                    .unwrap_or(false);
+                if changed {
+                    inner.show_file_dirty = true;
+                }
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Info,
@@ -168,7 +208,8 @@ impl ShellState {
             }
         }
 
-        Some(snapshot_from_inner(&inner))
+        drop(inner);
+        Some(self.snapshot().await)
     }
 
     #[cfg(test)]
@@ -245,57 +286,6 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) -> AppView
 }
 
 impl ShellInner {
-    pub(super) fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) {
-        let previous_scene_ids: HashSet<_> = self
-            .scene_configs
-            .iter()
-            .map(|config| config.scene_id.clone())
-            .collect();
-        let mut next = Vec::with_capacity(scenes.len());
-
-        for scene in scenes {
-            let id = scene_id(scene.index, &scene.name);
-            if let Some(mut existing) = self
-                .scene_configs
-                .iter()
-                .find(|config| config.scene_id == id)
-                .cloned()
-            {
-                existing.scene_index = scene.index;
-                existing.scene_name = scene.name.clone();
-                next.push(existing);
-            } else {
-                next.push(SceneConfig {
-                    scene_id: id,
-                    scene_index: scene.index,
-                    scene_name: scene.name.clone(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                });
-            }
-        }
-
-        let selected_still_exists = self
-            .selected_scene_id
-            .as_ref()
-            .is_some_and(|selected| next.iter().any(|config| &config.scene_id == selected));
-
-        if !selected_still_exists {
-            self.selected_scene_id = next.first().map(|config| config.scene_id.clone());
-        }
-
-        let next_scene_ids: HashSet<_> =
-            next.iter().map(|config| config.scene_id.clone()).collect();
-        let scene_set_changed = previous_scene_ids != next_scene_ids;
-
-        self.scene_configs = next;
-
-        if scene_set_changed && (self.show_file_path.is_some() || self.show_file_dirty) {
-            self.show_file_dirty = true;
-        }
-    }
-
     pub(super) fn push_log(&mut self, source: LogSource, severity: LogSeverity, message: String) {
         self.next_log_id += 1;
         let timestamp = current_timestamp();

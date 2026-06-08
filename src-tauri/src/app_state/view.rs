@@ -2,6 +2,8 @@ use serde::Serialize;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
+pub use advanced_show_control::show::types::{ChannelConfig, ChannelRef, SceneConfig, ShowSnapshot};
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneSummary {
@@ -15,32 +17,6 @@ pub struct ChannelSummary {
     pub group: i32,
     pub channel: i32,
     pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelRef {
-    pub group: i32,
-    pub channel: i32,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ChannelConfig {
-    pub group: i32,
-    pub channel: i32,
-    pub fader_db: Option<f64>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct SceneConfig {
-    pub scene_id: String,
-    pub scene_index: i32,
-    pub scene_name: String,
-    pub duration_ms: u64,
-    pub channel_configs: Vec<ChannelConfig>,
-    pub scoped_channels: Vec<ChannelRef>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

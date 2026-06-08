@@ -467,6 +467,7 @@ async fn connect_to_target<R: Runtime>(
     let lv1 = spawn_actor(identity.address.clone(), identity.port, event_bus.clone());
     let command_bus = AppCommandBus::new(event_bus.clone());
     command_bus.set_lv1(Some(lv1.clone())).await;
+    command_bus.set_show(Some(shell_state.show.clone())).await;
     let fade_command_bus = command_bus.clone();
     let fade = spawn_engine(command_bus, event_bus.clone());
     fade_command_bus.set_fade(Some(fade.clone())).await;

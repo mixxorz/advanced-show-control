@@ -8,16 +8,19 @@ pub struct ChannelRef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChannelConfig {
-    pub channel: ChannelRef,
-    pub scoped: bool,
-    pub target_db: f64,
+    pub group: i32,
+    pub channel: i32,
+    pub fader_db: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneConfig {
     pub scene_id: String,
+    pub scene_index: i32,
+    pub scene_name: String,
     pub duration_ms: u64,
-    pub channels: Vec<ChannelConfig>,
+    pub channel_configs: Vec<ChannelConfig>,
+    pub scoped_channels: Vec<ChannelRef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -26,6 +29,12 @@ pub struct ShowSnapshot {
     pub scene_configs: Vec<SceneConfig>,
 }
 
+impl ShowSnapshot {
+    pub fn empty() -> Self {
+        Self { lockout: false, scene_configs: Vec::new() }
+    }
+}
+
 pub fn scene_id(index: i32, name: &str) -> String {
-    format!("{index}:{name}")
+    format!("{index}::{name}")
 }

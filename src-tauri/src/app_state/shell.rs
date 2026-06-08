@@ -1,9 +1,12 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::runtime::commands::AppCommandBus;
+use advanced_show_control::show::actor::spawn_show_state;
+use advanced_show_control::show::handle::ShowStateHandle;
+use advanced_show_control::show::types::ShowSnapshot;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -30,6 +33,8 @@ pub struct RuntimeHandles {
 #[derive(Clone)]
 pub struct ShellState {
     pub handles: Arc<Mutex<RuntimeHandles>>,
+    pub show: ShowStateHandle,
+    pub(super) scene_recall_logs: Arc<Mutex<super::scene_recall::SceneRecallLogState>>,
     pub(super) inner: Arc<Mutex<ShellInner>>,
 }
 
@@ -42,23 +47,38 @@ pub(super) struct ShellInner {
     pub(super) pending_lv1_identity: Option<Lv1SystemIdentity>,
     pub(super) reconnect_state: ReconnectState,
     pub(super) fade_state: AppFadeState,
-    pub(super) lockout: bool,
     pub(super) scene_configs: Vec<SceneConfig>,
     pub(super) selected_scene_id: Option<String>,
     pub(super) show_file_path: Option<PathBuf>,
     pub(super) show_file_dirty: bool,
     pub(super) show_file_last_saved_at: Option<String>,
     pub(super) logs: VecDeque<AppLogEntry>,
-    pub(super) duration_zero_skip_logs: HashSet<String>,
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
+}
+
+impl ShellInner {
+    pub(super) fn reconcile_scene_fade_configs(&mut self, scenes: &[advanced_show_control::lv1::types::SceneListEntry]) -> bool {
+        let before = self.scene_configs.len();
+        self.scene_configs.retain(|scene| {
+            scenes.iter().any(|entry| {
+                scene.scene_id == scene_id(entry.index, &entry.name)
+                    && scene.scene_index == entry.index
+                    && scene.scene_name == entry.name
+            })
+        });
+        self.scene_configs.len() != before
+    }
 }
 
 impl Default for ShellState {
     fn default() -> Self {
         cover_state_variants();
+        let show = spawn_show_state(advanced_show_control::runtime::events::AppEventBus::default());
         Self {
             handles: Arc::new(Mutex::new(RuntimeHandles::default())),
+            show,
+            scene_recall_logs: Arc::new(Mutex::new(super::scene_recall::SceneRecallLogState::default())),
             inner: Arc::new(Mutex::new(ShellInner::default())),
         }
     }
@@ -66,17 +86,87 @@ impl Default for ShellState {
 
 impl ShellState {
     pub async fn snapshot(&self) -> AppViewState {
-        let inner = self.inner.lock().await;
-        snapshot_from_inner(&inner)
+        let inner_guard = self.inner.lock().await;
+        let inner = snapshot_inner(&inner_guard);
+        drop(inner_guard);
+        let show = self.show.get_snapshot().await.unwrap_or_else(|_| ShowSnapshot::empty());
+        snapshot_from_parts(inner, show)
     }
 
     pub async fn snapshot_for_generation(&self, generation: u64) -> Option<AppViewState> {
-        let inner = self.inner.lock().await;
-        if inner.generation != generation {
+        let inner_guard = self.inner.lock().await;
+        if inner_guard.generation != generation {
             return None;
         }
 
-        Some(snapshot_from_inner(&inner))
+        let inner = snapshot_inner(&inner_guard);
+        drop(inner_guard);
+        let show = self.show.get_snapshot().await.ok()?;
+        Some(snapshot_from_parts(inner, show))
+    }
+
+    pub async fn set_scene_duration_ms(
+        &self,
+        scene_id: String,
+        duration_ms: u64,
+    ) -> Result<AppViewState, String> {
+        let _ = self
+            .show
+            .set_scene_duration(scene_id, duration_ms)
+            .await
+            .map_err(|err| format!("{err:?}"))?;
+        Ok(self.snapshot().await)
+    }
+
+    pub async fn select_scene_config(&self, scene_id: String) -> Result<AppViewState, String> {
+        let mut inner = self.inner.lock().await;
+        inner.selected_scene_id = Some(scene_id);
+        drop(inner);
+        Ok(self.snapshot().await)
+    }
+
+    pub async fn store_scene_config(&self, scene_id: String) -> Result<AppViewState, String> {
+        let lv1 = self
+            .inner
+            .lock()
+            .await
+            .lv1_snapshot
+            .clone()
+            .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
+        let _ = self
+            .show
+            .store_scene_config(scene_id, lv1.channels)
+            .await
+            .map_err(|err| format!("{err:?}"))?;
+        Ok(self.snapshot().await)
+    }
+
+    pub async fn set_channel_scoped(
+        &self,
+        scene_id: String,
+        group: i32,
+        channel: i32,
+        scoped: bool,
+    ) -> Result<AppViewState, String> {
+        let _ = self
+            .show
+            .set_channel_scoped(scene_id, group, channel, scoped)
+            .await
+            .map_err(|err| format!("{err:?}"))?;
+        Ok(self.snapshot().await)
+    }
+
+    pub async fn set_all_channels_scoped(
+        &self,
+        scene_id: String,
+        scoped: bool,
+    ) -> Result<AppViewState, String> {
+        let _ = self
+            .show
+            .set_all_channels_scoped(scene_id, scoped)
+            .await
+            .map_err(|err| format!("{err:?}"))?;
+        Ok(self.snapshot().await)
     }
 
     #[cfg(test)]
@@ -212,10 +302,11 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
             inner.generation = inner.generation.saturating_add(1);
-            inner.duration_zero_skip_logs.clear();
             inner.reconnect_state.active = false;
+            self.scene_recall_logs.lock().await.clear_for_generation(inner.generation);
         }
-        snapshot_from_inner(&inner)
+        let show = self.show.get_snapshot().await.unwrap_or_else(|_| ShowSnapshot::empty());
+        snapshot_from_parts(snapshot_inner(&inner), show)
     }
 
     pub async fn reconnect_timeout_generation(&self, attempt: u64) -> Option<u64> {
@@ -352,6 +443,13 @@ pub(super) fn scene_id(index: i32, name: &str) -> String {
 }
 
 pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
+    snapshot_from_parts(
+        snapshot_inner(inner),
+        ShowSnapshot::empty(),
+    )
+}
+
+fn snapshot_inner(inner: &ShellInner) -> InnerSnapshot {
     let connection = inner
         .lv1_snapshot
         .as_ref()
@@ -406,7 +504,7 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         })
         .unwrap_or_default();
 
-    AppViewState {
+    InnerSnapshot {
         connection,
         discovered_lv1_systems: inner.discovered_lv1_systems.clone(),
         connected_lv1_identity: inner.connected_lv1_identity.clone(),
@@ -418,8 +516,6 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         channel_count,
         channels,
         fade_state: inner.fade_state.clone(),
-        lockout: inner.lockout,
-        scene_configs: inner.scene_configs.clone(),
         selected_scene_id: inner.selected_scene_id.clone(),
         show_file_name: inner
             .show_file_path
@@ -436,6 +532,52 @@ pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
         show_file_last_saved_at: inner.show_file_last_saved_at.clone(),
         logs: inner.logs.iter().cloned().collect(),
         last_event_at: inner.last_event_at.clone(),
+    }
+}
+
+struct InnerSnapshot {
+    connection: AppConnectionState,
+    discovered_lv1_systems: Vec<DiscoveredLv1System>,
+    connected_lv1_identity: Option<Lv1SystemIdentity>,
+    pending_lv1_identity: Option<Lv1SystemIdentity>,
+    reconnect: ReconnectState,
+    current_scene: Option<SceneSummary>,
+    scenes: Vec<SceneSummary>,
+    scene_count: usize,
+    channel_count: usize,
+    channels: Vec<ChannelSummary>,
+    fade_state: AppFadeState,
+    selected_scene_id: Option<String>,
+    show_file_name: String,
+    show_file_path: Option<String>,
+    show_file_dirty: bool,
+    show_file_last_saved_at: Option<String>,
+    logs: Vec<AppLogEntry>,
+    last_event_at: Option<String>,
+}
+
+fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState {
+    AppViewState {
+        connection: inner.connection,
+        discovered_lv1_systems: inner.discovered_lv1_systems,
+        connected_lv1_identity: inner.connected_lv1_identity,
+        pending_lv1_identity: inner.pending_lv1_identity,
+        reconnect: inner.reconnect,
+        current_scene: inner.current_scene,
+        scene_count: inner.scene_count,
+        scenes: inner.scenes,
+        channel_count: inner.channel_count,
+        channels: inner.channels,
+        fade_state: inner.fade_state,
+        lockout: show.lockout,
+        scene_configs: show.scene_configs,
+        selected_scene_id: inner.selected_scene_id,
+        show_file_name: inner.show_file_name,
+        show_file_path: inner.show_file_path,
+        show_file_dirty: inner.show_file_dirty,
+        show_file_last_saved_at: inner.show_file_last_saved_at,
+        logs: inner.logs,
+        last_event_at: inner.last_event_at,
     }
 }
 

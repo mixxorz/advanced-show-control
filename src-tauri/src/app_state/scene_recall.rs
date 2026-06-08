@@ -3,9 +3,30 @@ use std::collections::HashSet;
 use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneState};
+use advanced_show_control::show::types::ShowSnapshot;
 
 use super::shell::{ShellInner, ShellState, scene_id};
 use super::view::{LogSeverity, LogSource};
+
+#[derive(Debug, Default)]
+pub(super) struct SceneRecallLogState {
+    duration_zero_skip_log_generation: u64,
+    duration_zero_skip_log_scene_ids: HashSet<String>,
+}
+
+impl SceneRecallLogState {
+    pub(super) fn clear_for_generation(&mut self, generation: u64) {
+        self.duration_zero_skip_log_generation = generation;
+        self.duration_zero_skip_log_scene_ids.clear();
+    }
+
+    pub(super) fn should_log_duration_zero_skip(&mut self, generation: u64, scene_id: &str) -> bool {
+        if self.duration_zero_skip_log_generation != generation {
+            self.clear_for_generation(generation);
+        }
+        self.duration_zero_skip_log_scene_ids.insert(scene_id.to_string())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneRecallFadeRequest {
@@ -30,7 +51,13 @@ impl ShellState {
         recalled_scene: &SceneState,
     ) -> SceneRecallDecision {
         let mut inner = self.inner.lock().await;
-        prepare_scene_recall_fade_locked(&mut inner, generation, recalled_scene, true)
+        let show = self
+            .show
+            .get_snapshot()
+            .await
+            .unwrap_or(ShowSnapshot { lockout: false, scene_configs: Vec::new() });
+        let mut log_state = self.scene_recall_logs.lock().await;
+        prepare_scene_recall_fade_locked(&mut inner, &mut log_state, generation, recalled_scene, show, true)
     }
 
     pub async fn prepare_scene_recall_fade_with_lv1_snapshot_for_generation(
@@ -45,7 +72,13 @@ impl ShellState {
         }
 
         inner.lv1_snapshot = Some(snapshot);
-        prepare_scene_recall_fade_locked(&mut inner, generation, recalled_scene, false)
+        let show = self
+            .show
+            .get_snapshot()
+            .await
+            .unwrap_or(ShowSnapshot { lockout: false, scene_configs: Vec::new() });
+        let mut log_state = self.scene_recall_logs.lock().await;
+        prepare_scene_recall_fade_locked(&mut inner, &mut log_state, generation, recalled_scene, show, false)
     }
 
     pub async fn is_generation_current(&self, generation: u64) -> bool {
@@ -83,8 +116,10 @@ impl ShellState {
 
 fn prepare_scene_recall_fade_locked(
     inner: &mut ShellInner,
+    log_state: &mut SceneRecallLogState,
     generation: u64,
     recalled_scene: &SceneState,
+    show: ShowSnapshot,
     overwrite_snapshot_scene: bool,
 ) -> SceneRecallDecision {
     if inner.generation != generation {
@@ -144,7 +179,7 @@ fn prepare_scene_recall_fade_locked(
     }
 
     let id = scene_id(recalled_scene.index, &recalled_scene.name);
-    let Some(config) = inner
+    let Some(config) = show
         .scene_configs
         .iter()
         .find(|config| config.scene_id == id)
@@ -154,7 +189,7 @@ fn prepare_scene_recall_fade_locked(
     };
 
     if config.duration_ms == 0 {
-        if inner.duration_zero_skip_logs.insert(id.clone()) {
+        if log_state.should_log_duration_zero_skip(generation, &id) {
             inner.push_log(
                 LogSource::App,
                 LogSeverity::Info,
@@ -167,7 +202,7 @@ fn prepare_scene_recall_fade_locked(
         return SceneRecallDecision::Skip;
     }
 
-    if inner.lockout {
+    if show.lockout {
         inner.push_log(
             LogSource::App,
             LogSeverity::Warning,
