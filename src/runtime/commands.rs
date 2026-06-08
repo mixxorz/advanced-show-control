@@ -8,6 +8,8 @@ use crate::fade::types::FadeConfig;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::types::Lv1StateSnapshot;
+use crate::show::handle::ShowStateHandle;
+use crate::show::types::{SceneConfig, ShowSnapshot};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -16,6 +18,8 @@ pub enum AppCommandError {
     Lv1Unavailable,
     #[error("fade engine is unavailable")]
     FadeUnavailable,
+    #[error("show state is unavailable")]
+    ShowUnavailable,
     #[error("app command reply channel is closed")]
     ReplyChannelClosed,
     #[error("command failed: {0}")]
@@ -26,6 +30,7 @@ pub enum AppCommandError {
 struct AppCommandTargets {
     lv1: Option<Lv1ActorHandle>,
     fade: Option<FadeEngineHandle>,
+    show: Option<ShowStateHandle>,
 }
 
 #[derive(Clone)]
@@ -50,10 +55,39 @@ impl AppCommandBus {
         self.targets.lock().await.fade = fade;
     }
 
+    pub async fn set_show(&self, show: Option<ShowStateHandle>) {
+        self.targets.lock().await.show = show;
+    }
+
     pub async fn clear_targets(&self) {
         let mut targets = self.targets.lock().await;
         targets.lv1 = None;
         targets.fade = None;
+        targets.show = None;
+    }
+
+    pub async fn get_show_snapshot(&self) -> Result<ShowSnapshot, AppCommandError> {
+        let show = self.targets.lock().await.show.clone();
+        match show {
+            Some(show) => Ok(show.get_snapshot().await),
+            None => Err(AppCommandError::ShowUnavailable),
+        }
+    }
+
+    pub async fn get_scene_config(&self, scene_id: String) -> Result<Option<SceneConfig>, AppCommandError> {
+        let show = self.targets.lock().await.show.clone();
+        match show {
+            Some(show) => Ok(show.get_scene_config(scene_id).await),
+            None => Err(AppCommandError::ShowUnavailable),
+        }
+    }
+
+    pub async fn get_lockout(&self) -> Result<bool, AppCommandError> {
+        let show = self.targets.lock().await.show.clone();
+        match show {
+            Some(show) => Ok(show.get_lockout().await),
+            None => Err(AppCommandError::ShowUnavailable),
+        }
     }
 
     pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
