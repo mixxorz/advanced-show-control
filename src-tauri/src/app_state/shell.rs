@@ -134,6 +134,7 @@ fn cover_state_variants() {
         AppFadeState::Blocked,
         crate::connection_state::DiscoveredLv1Status::Available,
         crate::connection_state::DiscoveredLv1Status::Connecting,
+        crate::connection_state::DiscoveredLv1Status::Connected,
         crate::connection_state::DiscoveredLv1Status::Unavailable,
         crate::connection_state::identity_from_discovery(&discovery_entry),
     );
