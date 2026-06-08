@@ -228,6 +228,39 @@ async fn lv1_disconnected_event_enters_reconnect_state() {
 }
 
 #[tokio::test]
+async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
+    let state = super::ShellState::default();
+    state
+        .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        }))
+        .await;
+    let (generation, _) = state.begin_connecting().await;
+
+    let first_disconnect = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("first disconnect should apply to current generation");
+    assert!(first_disconnect.reconnect.active);
+
+    let connected = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+        .await
+        .expect("connected event should apply to current generation");
+    assert!(!connected.reconnect.active);
+
+    let second_disconnect = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("second disconnect should apply to current generation");
+
+    assert!(second_disconnect.reconnect.active);
+}
+
+#[tokio::test]
 async fn lv1_disconnected_event_without_connected_identity_stays_out_of_reconnect_state() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
