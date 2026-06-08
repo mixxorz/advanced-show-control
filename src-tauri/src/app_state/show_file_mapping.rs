@@ -30,14 +30,19 @@ impl ShellState {
                 .map_err(|err| format!("Failed to rebuild show data: {err:?}"))?;
         }
 
+        let selected_scene_id = self
+            .show
+            .get_snapshot()
+            .await
+            .ok()
+            .and_then(|snapshot| snapshot.scene_configs.first().cloned())
+            .map(|scene| scene.scene_id);
+
         let mut inner = self.inner.lock().await;
-        inner.selected_scene_id = None;
+        inner.selected_scene_id = selected_scene_id;
         inner.show_file_path = None;
         inner.show_file_dirty = false;
         inner.show_file_last_saved_at = None;
-        if let Some(scene) = self.show.get_snapshot().await.ok().and_then(|snapshot| snapshot.scene_configs.first().cloned()) {
-            inner.selected_scene_id = Some(scene.scene_id);
-        }
         inner.push_log(
             super::view::LogSource::App,
             super::view::LogSeverity::Info,
