@@ -487,6 +487,29 @@ mod tests {
     }
 
     #[test]
+    fn old_show_file_scene_configs_default_fader_scope_enabled() {
+        let json = r#"
+        {
+          "schemaVersion": 1,
+          "appVersion": "0.1.0",
+          "savedAt": "2026-06-09T00:00:00Z",
+          "safety": { "lockout": false },
+          "sceneConfigs": [{
+            "sceneIndex": 1,
+            "sceneName": "Intro",
+            "durationMs": 0,
+            "channelConfigs": [],
+            "scopedChannels": []
+          }]
+        }
+        "#;
+
+        let file: ShowFile = serde_json::from_str(json).unwrap();
+
+        assert!(file.scene_configs[0].scope_toggles.faders);
+    }
+
+    #[test]
     fn validation_keeps_exact_scene_matches() {
         let report = validate_show_file(&mut show_file(), &lv1_snapshot()).unwrap();
 
