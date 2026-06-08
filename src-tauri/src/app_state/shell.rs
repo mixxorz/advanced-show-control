@@ -344,8 +344,8 @@ impl ShellState {
         mut next: RuntimeHandles,
         active_command_bus: &ActiveCommandBus,
     ) -> Result<(), RuntimeHandles> {
-        let inner = self.inner.lock().await;
-        if inner.generation != generation {
+        let current_generation = { self.inner.lock().await.generation };
+        if current_generation != generation {
             next.abort_all().await;
             return Err(next);
         }
@@ -355,7 +355,6 @@ impl ShellState {
         handles.abort_all().await;
         next.active_generation = generation;
         *handles = next;
-        drop(inner);
         Ok(())
     }
 }
