@@ -13,8 +13,10 @@ impl ShowState {
         ShowSnapshot { lockout: self.lockout, scene_configs: self.scene_configs.clone() }
     }
 
-    pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) {
+    pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) -> bool {
+        let before = self.scene_configs.len();
         self.scene_configs.retain(|scene| scenes.iter().any(|entry| entry.name == scene.scene_id));
+        self.scene_configs.len() != before
     }
 
     pub fn get_scene_config(&self, scene_id: &str) -> Option<SceneConfig> {
@@ -59,14 +61,35 @@ mod tests {
             )],
         };
 
-        state.reconcile_scene_fade_configs(&[SceneListEntry {
+        assert!(!state.reconcile_scene_fade_configs(&[SceneListEntry {
             index: 1,
             name: "scene-1".to_string(),
-        }]);
+        }]));
 
         assert_eq!(state.scene_configs[0].duration_ms, 1_500);
         assert!(state.scene_configs[0].channels[0].scoped);
         assert_eq!(state.scene_configs[0].channels[0].target_db, -12.0);
+    }
+
+    #[test]
+    fn reconciliation_reports_noop_when_scene_list_matches_current_configs() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "scene-1",
+                1_500,
+                vec![ChannelConfig {
+                    channel: ChannelRef { group: 0, channel: 1 },
+                    scoped: true,
+                    target_db: -12.0,
+                }],
+            )],
+        };
+
+        assert!(!state.reconcile_scene_fade_configs(&[SceneListEntry {
+            index: 1,
+            name: "scene-1".to_string(),
+        }]));
     }
 
     #[test]

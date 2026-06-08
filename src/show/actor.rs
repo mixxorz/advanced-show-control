@@ -24,7 +24,7 @@ pub fn spawn_show_state(event_bus: AppEventBus) -> ShowStateHandle {
                 ShowCommand::StoreSceneConfig { scene_id, channels, reply } => { let result = state.store_scene_config(&scene_id, &channels); if matches!(result, Ok(true)) { event_bus.publish(AppEvent::Show(ShowEvent::SceneConfigChanged { scene_id })); } let _ = reply.send(result); }
                 ShowCommand::LoadShowData { reply } => { let _ = reply.send(Ok(())); }
                 ShowCommand::ExportShowData { reply } => { let _ = reply.send(Ok(())); }
-                ShowCommand::ReconcileSceneList { scenes, reply } => { state.reconcile_scene_fade_configs(&scenes); let _ = reply.send(true); event_bus.publish(AppEvent::Show(ShowEvent::StateChanged)); }
+                ShowCommand::ReconcileSceneList { scenes, reply } => { let changed = state.reconcile_scene_fade_configs(&scenes); let _ = reply.send(changed); if changed { event_bus.publish(AppEvent::Show(ShowEvent::StateChanged)); } }
             }
         }
     });
