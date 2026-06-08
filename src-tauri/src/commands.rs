@@ -15,6 +15,10 @@ use crate::app_state::{AppViewState, RuntimeHandles, ShellState};
 use crate::scene_recall_fader::spawn_scene_recall_fader;
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
+const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
+const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
+const MAX_DISCOVERY_TIMEOUT_MS: u64 = 6000;
+
 #[derive(Clone, Default)]
 pub struct ActiveCommandBus(pub Arc<Mutex<Option<AppCommandBus>>>);
 
@@ -40,12 +44,19 @@ pub async fn refresh_lv1_discovery(
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
     let started = std::time::Instant::now();
-    let entries = lv1_scene_fade_utility::lv1::discovery::discover(
-        lv1_scene_fade_utility::lv1::discovery::DiscoverOptions {
-            timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000)),
-            ..Default::default()
-        },
-    )
+    let timeout = timeout_ms
+        .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
+        .clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS);
+    let entries = spawn_blocking(move || {
+        lv1_scene_fade_utility::lv1::discovery::discover(
+            lv1_scene_fade_utility::lv1::discovery::DiscoverOptions {
+                timeout: std::time::Duration::from_millis(timeout),
+                ..Default::default()
+            },
+        )
+    })
+    .await
+    .map_err(|err| format!("Failed to run LV1 discovery task: {err}"))?
     .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?;
 
     let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
