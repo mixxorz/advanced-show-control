@@ -31,6 +31,20 @@ pub struct ShowFileSceneConfig {
     pub duration_ms: u64,
     pub channel_configs: Vec<ShowFileChannelConfig>,
     pub scoped_channels: Vec<ShowFileChannelRef>,
+    #[serde(default)]
+    pub scope_toggles: ShowFileSceneScopeToggles,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ShowFileSceneScopeToggles {
+    pub faders: bool,
+}
+
+impl Default for ShowFileSceneScopeToggles {
+    fn default() -> Self {
+        Self { faders: true }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -352,6 +366,7 @@ mod tests {
                     group: 0,
                     channel: 2,
                 }],
+                scope_toggles: ShowFileSceneScopeToggles::default(),
             }],
         }
     }
@@ -466,6 +481,8 @@ mod tests {
         assert!(json.contains("\"durationMs\": 4000"));
         assert!(json.contains("\"channelConfigs\""));
         assert!(json.contains("\"scopedChannels\""));
+        assert!(json.contains("\"scopeToggles\""));
+        assert!(json.contains("\"faders\": true"));
         assert!(json.contains("\"faderDb\": -12.5"));
     }
 

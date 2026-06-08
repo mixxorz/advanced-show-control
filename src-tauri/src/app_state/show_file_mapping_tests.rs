@@ -2,7 +2,6 @@ use super::shell::ShellState;
 use super::test_support::connected_state_with_scene_and_channel;
 use super::view::ShowSnapshot;
 use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
-use advanced_show_control::show::types::SceneScopeToggles;
 
 #[tokio::test]
 async fn export_show_file_contains_current_configs() {
@@ -73,7 +72,7 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: SceneScopeToggles::default(),
+                scope_toggles: advanced_show_control::show::types::SceneScopeToggles::default(),
             }],
         })
         .await
@@ -121,7 +120,7 @@ async fn new_show_file_clears_stale_selection_when_disconnected() {
                 duration_ms: 0,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: SceneScopeToggles::default(),
+                scope_toggles: advanced_show_control::show::types::SceneScopeToggles::default(),
             }],
         })
         .await
@@ -182,6 +181,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
                     group: 0,
                     channel: 2,
                 }],
+                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
             },
             ShowFileSceneConfig {
                 scene_index: 2,
@@ -189,6 +189,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
                 duration_ms: 5000,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
+                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
             },
         ],
     };
@@ -235,6 +236,7 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
                 group: 0,
                 channel: 2,
             }],
+            scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
         }],
     };
 

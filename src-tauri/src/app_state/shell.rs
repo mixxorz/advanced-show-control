@@ -156,6 +156,19 @@ impl ShellState {
         Ok(self.snapshot().await)
     }
 
+    pub async fn set_scene_scope_faders_enabled(
+        &self,
+        scene_id: String,
+        enabled: bool,
+    ) -> Result<AppViewState, String> {
+        let _ = self
+            .show
+            .set_scene_scope_faders_enabled(scene_id, enabled)
+            .await
+            .map_err(|err| format!("{err:?}"))?;
+        Ok(self.snapshot().await)
+    }
+
     #[cfg(test)]
     pub async fn set_connected_lv1_identity(
         &self,

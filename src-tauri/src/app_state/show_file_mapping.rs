@@ -4,7 +4,7 @@ use super::shell::ShellState;
 use super::view::AppViewState;
 use crate::show_file::{
     SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety,
-    ShowFileSceneConfig, validate_show_file,
+    ShowFileSceneConfig, ShowFileSceneScopeToggles, validate_show_file,
 };
 
 impl ShellState {
@@ -90,6 +90,9 @@ impl ShellState {
                             channel: channel.channel,
                         })
                         .collect(),
+                    scope_toggles: ShowFileSceneScopeToggles {
+                        faders: config.scope_toggles.faders,
+                    },
                 })
                 .collect(),
         })
