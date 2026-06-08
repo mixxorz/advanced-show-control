@@ -343,12 +343,16 @@ pub async fn startup_auto_connect_lv1(
         .join("preferences.json");
     let preferences =
         crate::connection_preferences::read_connection_preferences(&preferences_path)?;
-    let snapshot = refresh_lv1_discovery_snapshot(
-        app.clone(),
-        (*state).clone(),
-        Some(DEFAULT_DISCOVERY_TIMEOUT_MS),
+    let snapshot = startup_discovery_or_current_snapshot(
+        &state,
+        refresh_lv1_discovery_snapshot(
+            app.clone(),
+            (*state).clone(),
+            Some(DEFAULT_DISCOVERY_TIMEOUT_MS),
+        )
+        .await,
     )
-    .await?;
+    .await;
     if let Some(identity) =
         remembered_auto_connect_target(&preferences, &snapshot.discovered_lv1_systems)
     {
@@ -479,6 +483,16 @@ fn remembered_auto_connect_target(
         .iter()
         .find(|system| system.identity.uuid.as_ref() == Some(remembered_uuid))
         .map(|system| system.identity.clone())
+}
+
+async fn startup_discovery_or_current_snapshot(
+    state: &ShellState,
+    discovery_result: Result<AppViewState, String>,
+) -> AppViewState {
+    match discovery_result {
+        Ok(snapshot) => snapshot,
+        Err(_) => state.snapshot().await,
+    }
 }
 
 async fn install_connected_runtime<R: Runtime>(
@@ -706,6 +720,20 @@ mod tests {
         }];
 
         assert!(remembered_auto_connect_target(&preferences, &systems).is_none());
+    }
+
+    #[tokio::test]
+    async fn startup_discovery_failure_returns_current_snapshot() {
+        let state = ShellState::default();
+
+        let snapshot = startup_discovery_or_current_snapshot(
+            &state,
+            Err("Failed to discover LV1 systems: network unavailable".to_string()),
+        )
+        .await;
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert!(snapshot.discovered_lv1_systems.is_empty());
     }
 
     #[tokio::test]
