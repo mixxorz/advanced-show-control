@@ -5,3 +5,5 @@ node_modules/
 ui/node_modules/
 ui/dist/
 src-tauri/target/
+.worktrees
+opencode.json
