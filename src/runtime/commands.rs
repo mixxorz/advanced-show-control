@@ -8,7 +8,7 @@ use crate::fade::types::FadeConfig;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::types::Lv1StateSnapshot;
-use crate::show::handle::ShowStateHandle;
+use crate::show::handle::{ShowActorError, ShowStateHandle};
 use crate::show::types::{SceneConfig, ShowSnapshot};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
@@ -69,7 +69,7 @@ impl AppCommandBus {
     pub async fn get_show_snapshot(&self) -> Result<ShowSnapshot, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.get_snapshot().await),
+            Some(show) => show.get_snapshot().await.map_err(map_show_error),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -77,7 +77,7 @@ impl AppCommandBus {
     pub async fn get_scene_config(&self, scene_id: String) -> Result<Option<SceneConfig>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.get_scene_config(scene_id).await),
+            Some(show) => show.get_scene_config(scene_id).await.map_err(map_show_error),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -85,7 +85,7 @@ impl AppCommandBus {
     pub async fn get_lockout(&self) -> Result<bool, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.get_lockout().await),
+            Some(show) => show.get_lockout().await.map_err(map_show_error),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -141,6 +141,13 @@ fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
     AppCommandError::CommandFailed(error.to_string())
 }
 
+fn map_show_error(error: ShowActorError) -> AppCommandError {
+    match error {
+        ShowActorError::CommandChannelClosed => AppCommandError::ShowUnavailable,
+        ShowActorError::ReplyChannelClosed => AppCommandError::ReplyChannelClosed,
+    }
+}
+
 fn publish_failure(event_bus: &AppEventBus, command: &str, result: &Result<(), AppCommandError>) {
     if let Err(error) = result {
         event_bus.publish(AppEvent::CommandFailed {
@@ -156,6 +163,8 @@ mod tests {
     use crate::fade::curve::FadeCurve;
     use crate::fade::commands::FadeCommand;
     use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+    use crate::show::commands::ShowCommand;
+    use crate::show::handle::ShowStateHandle;
     use crate::runtime::events::{AppEvent, AppEventBus};
 
     #[tokio::test]
@@ -238,5 +247,45 @@ mod tests {
             cloned_bus.start_fade(config).await,
             Err(AppCommandError::FadeUnavailable)
         );
+    }
+
+    #[tokio::test]
+    async fn missing_show_returns_show_unavailable() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+
+        let err = bus.get_show_snapshot().await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::ShowUnavailable);
+    }
+
+    #[tokio::test]
+    async fn dropped_show_actor_maps_to_show_unavailable() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        drop(rx);
+        bus.set_show(Some(ShowStateHandle::new(tx))).await;
+
+        let err = bus.get_show_snapshot().await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::ShowUnavailable);
+    }
+
+    #[tokio::test]
+    async fn dropped_show_reply_maps_to_reply_channel_closed() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(ShowCommand::GetSnapshot { reply }) = rx.recv().await {
+                drop(reply);
+            }
+        });
+        bus.set_show(Some(ShowStateHandle::new(tx))).await;
+
+        let err = bus.get_show_snapshot().await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::ReplyChannelClosed);
     }
 }

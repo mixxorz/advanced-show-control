@@ -1,6 +1,7 @@
 use crate::lv1::types::SceneListEntry;
 
 use super::types::{SceneConfig, ShowSnapshot};
+use super::types::scene_id;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShowState {
@@ -15,7 +16,11 @@ impl ShowState {
 
     pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) -> bool {
         let before = self.scene_configs.len();
-        self.scene_configs.retain(|scene| scenes.iter().any(|entry| entry.name == scene.scene_id));
+        self.scene_configs.retain(|scene| {
+            scenes
+                .iter()
+                .any(|entry| scene.scene_id == scene_id(entry.index, &entry.name))
+        });
         self.scene_configs.len() != before
     }
 
@@ -51,7 +56,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "scene-1",
+                "1:scene-1",
                 1_500,
                 vec![ChannelConfig {
                     channel: ChannelRef { group: 0, channel: 1 },
@@ -76,7 +81,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "scene-1",
+                "1:scene-1",
                 1_500,
                 vec![ChannelConfig {
                     channel: ChannelRef { group: 0, channel: 1 },
@@ -90,6 +95,28 @@ mod tests {
             index: 1,
             name: "scene-1".to_string(),
         }]));
+    }
+
+    #[test]
+    fn reconciliation_drops_same_name_different_index_scene() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "1:scene-1",
+                1_500,
+                vec![ChannelConfig {
+                    channel: ChannelRef { group: 0, channel: 1 },
+                    scoped: true,
+                    target_db: -12.0,
+                }],
+            )],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
+            index: 2,
+            name: "scene-1".to_string(),
+        }]));
+        assert!(state.scene_configs.is_empty());
     }
 
     #[test]
