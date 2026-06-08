@@ -24,6 +24,11 @@ pub enum ShowCommand {
         duration_ms: u64,
         reply: oneshot::Sender<Result<bool, String>>,
     },
+    SetSceneScopeFadersEnabled {
+        scene_id: String,
+        enabled: bool,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
     SetChannelScoped {
         scene_id: String,
         group: i32,

@@ -79,6 +79,23 @@ impl ShowStateHandle {
         .await
     }
 
+    pub async fn set_scene_scope_faders_enabled(
+        &self,
+        scene_id: String,
+        enabled: bool,
+    ) -> Result<Result<bool, String>, ShowActorError> {
+        let (reply, reply_rx) = oneshot::channel();
+        self.request(
+            ShowCommand::SetSceneScopeFadersEnabled {
+                scene_id,
+                enabled,
+                reply,
+            },
+            reply_rx,
+        )
+        .await
+    }
+
     pub async fn set_channel_scoped(
         &self,
         scene_id: String,

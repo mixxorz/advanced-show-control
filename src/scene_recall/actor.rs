@@ -183,7 +183,9 @@ mod tests {
     use crate::lv1::types::{Lv1StateSnapshot, SceneState};
     use crate::scene_recall::events::SceneRecallEvent;
     use crate::show::actor::spawn_show_state;
-    use crate::show::types::{ChannelConfig, ChannelRef, SceneConfig, ShowSnapshot};
+    use crate::show::types::{
+        ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowSnapshot,
+    };
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -478,6 +480,7 @@ mod tests {
                     group: 0,
                     channel: 2,
                 }],
+                scope_toggles: SceneScopeToggles::default(),
             }],
         };
         handle.replace_snapshot(snapshot).await.unwrap();

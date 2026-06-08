@@ -56,6 +56,10 @@ impl ShowState {
                 })
                 .collect(),
             scoped_channels,
+            scope_toggles: self
+                .get_scene_config(scene_id)
+                .map(|scene| scene.scope_toggles)
+                .unwrap_or_default(),
         };
         match self
             .scene_configs
@@ -82,8 +86,8 @@ impl ShowState {
         scene_id: &str,
         duration_ms: u64,
     ) -> Result<bool, String> {
-        if !(100..=120_000).contains(&duration_ms) {
-            return Err("Fade duration must be between 100 ms and 120000 ms".to_string());
+        if duration_ms != 0 && !(100..=120_000).contains(&duration_ms) {
+            return Err("Fade duration must be 0 or between 100 ms and 120000 ms".to_string());
         }
         let scene = self
             .get_scene_config_mut(scene_id)
@@ -159,5 +163,21 @@ impl ShowState {
             changed = true;
         }
         Ok(changed)
+    }
+
+    pub fn set_scene_scope_faders_enabled(
+        &mut self,
+        scene_id: &str,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        let scene = self
+            .get_scene_config_mut(scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        if scene.scope_toggles.faders == enabled {
+            Ok(false)
+        } else {
+            scene.scope_toggles.faders = enabled;
+            Ok(true)
+        }
     }
 }

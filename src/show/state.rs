@@ -1,9 +1,9 @@
 use crate::lv1::types::SceneListEntry;
 
 use super::types::scene_id;
-use super::types::{SceneConfig, ShowSnapshot};
+use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
@@ -31,6 +31,7 @@ impl ShowState {
                     duration_ms: 0,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
                 });
             }
         }
@@ -79,6 +80,16 @@ mod tests {
     use crate::lv1::types::ChannelInfo;
     use crate::show::ChannelConfig;
 
+    fn channel(group: i32, channel: i32, name: &str, gain_db: f64) -> ChannelInfo {
+        ChannelInfo {
+            group,
+            channel,
+            name: name.to_string(),
+            gain_db,
+            muted: false,
+        }
+    }
+
     fn scene_config(scene_id: &str, duration_ms: u64, channels: Vec<ChannelConfig>) -> SceneConfig {
         let (scene_index, scene_name) = scene_id
             .split_once("::")
@@ -91,6 +102,7 @@ mod tests {
             duration_ms,
             channel_configs: channels,
             scoped_channels: vec![],
+            scope_toggles: SceneScopeToggles::default(),
         }
     }
 
@@ -180,7 +192,10 @@ mod tests {
 
         let err = state.set_scene_duration_ms("1::scene-1", 99).unwrap_err();
 
-        assert_eq!(err, "Fade duration must be between 100 ms and 120000 ms");
+        assert_eq!(
+            err,
+            "Fade duration must be 0 or between 100 ms and 120000 ms"
+        );
     }
 
     #[test]
@@ -230,5 +245,77 @@ mod tests {
         );
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].group, 0);
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 1);
+    }
+
+    #[test]
+    fn store_scene_config_defaults_fader_scope_enabled() {
+        let mut state = ShowState::default();
+        let changed = state
+            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .unwrap();
+
+        assert!(changed);
+        assert!(state.scene_configs[0].scope_toggles.faders);
+    }
+
+    #[test]
+    fn store_scene_config_preserves_fader_scope_toggle() {
+        let mut state = ShowState::default();
+        state
+            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .unwrap();
+        assert!(
+            state
+                .set_scene_scope_faders_enabled("1::scene-1", false)
+                .unwrap()
+        );
+
+        state
+            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -3.0)])
+            .unwrap();
+
+        assert!(!state.scene_configs[0].scope_toggles.faders);
+    }
+
+    #[test]
+    fn scene_scope_fader_toggle_mutation_reports_noop() {
+        let mut state = ShowState::default();
+        state
+            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .unwrap();
+
+        assert!(
+            state
+                .set_scene_scope_faders_enabled("1::scene-1", false)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .set_scene_scope_faders_enabled("1::scene-1", false)
+                .unwrap()
+        );
+        assert!(!state.scene_configs[0].scope_toggles.faders);
+    }
+
+    #[test]
+    fn scene_scope_fader_toggle_requires_existing_scene_config() {
+        let mut state = ShowState::default();
+
+        let err = state
+            .set_scene_scope_faders_enabled("missing", false)
+            .unwrap_err();
+
+        assert_eq!(err, "Scene config not found");
+    }
+
+    #[test]
+    fn scene_duration_allows_zero_for_immediate_movement() {
+        let mut state = ShowState::default();
+        state
+            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .unwrap();
+
+        assert!(state.set_scene_duration_ms("1::scene-1", 0).unwrap());
+        assert_eq!(state.scene_configs[0].duration_ms, 0);
     }
 }

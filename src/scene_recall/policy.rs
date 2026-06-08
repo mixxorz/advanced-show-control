@@ -114,7 +114,7 @@ fn blocked(reason: impl Into<String>) -> RecallPolicyDecision {
 mod tests {
     use super::*;
     use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState};
-    use crate::show::types::{ChannelConfig, ChannelRef, SceneConfig};
+    use crate::show::types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     fn snapshot(scene: Option<SceneState>, channels: Vec<ChannelInfo>) -> Lv1StateSnapshot {
         Lv1StateSnapshot {
@@ -140,6 +140,7 @@ mod tests {
                 group: 0,
                 channel: 2,
             }],
+            scope_toggles: SceneScopeToggles::default(),
         }
     }
 

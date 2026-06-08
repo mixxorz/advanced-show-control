@@ -141,6 +141,8 @@ impl ShellState {
                                 channel: channel.channel,
                             })
                             .collect(),
+                        scope_toggles:
+                            advanced_show_control::show::types::SceneScopeToggles::default(),
                     })
                     .collect(),
             })

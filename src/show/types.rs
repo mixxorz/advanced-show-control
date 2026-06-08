@@ -13,6 +13,17 @@ pub struct ChannelConfig {
     pub fader_db: Option<f64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneScopeToggles {
+    pub faders: bool,
+}
+
+impl Default for SceneScopeToggles {
+    fn default() -> Self {
+        Self { faders: true }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneConfig {
     pub scene_id: String,
@@ -21,6 +32,7 @@ pub struct SceneConfig {
     pub duration_ms: u64,
     pub channel_configs: Vec<ChannelConfig>,
     pub scoped_channels: Vec<ChannelRef>,
+    pub scope_toggles: SceneScopeToggles,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

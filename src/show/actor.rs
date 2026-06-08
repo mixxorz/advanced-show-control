@@ -45,6 +45,18 @@ pub fn spawn_show_state(event_bus: AppEventBus) -> ShowStateHandle {
                     }
                     let _ = reply.send(result);
                 }
+                ShowCommand::SetSceneScopeFadersEnabled {
+                    scene_id,
+                    enabled,
+                    reply,
+                } => {
+                    let result = state.set_scene_scope_faders_enabled(&scene_id, enabled);
+                    if matches!(result, Ok(true)) {
+                        event_bus
+                            .publish(AppEvent::Show(ShowEvent::SceneConfigChanged { scene_id }));
+                    }
+                    let _ = reply.send(result);
+                }
                 ShowCommand::SetChannelScoped {
                     scene_id,
                     group,

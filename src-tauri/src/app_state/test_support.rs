@@ -1,6 +1,7 @@
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
 };
+use advanced_show_control::show::types::SceneScopeToggles;
 
 use super::view::{ChannelConfig, ChannelRef, SceneConfig};
 
@@ -44,5 +45,6 @@ pub(super) fn scene_config(
         duration_ms: 0,
         channel_configs,
         scoped_channels,
+        scope_toggles: SceneScopeToggles::default(),
     }
 }
