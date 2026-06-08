@@ -8,6 +8,7 @@ use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
+use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
 
@@ -107,6 +108,99 @@ async fn spawn_runtime_for_test(
     let engine = spawn_engine(bus.clone(), event_bus);
     bus.set_fade(Some(engine.clone())).await;
     (bus, engine)
+}
+
+#[tokio::test]
+async fn zero_duration_fade_sends_final_gain_without_running_state() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (gain_tx, gain_rx) = std::sync::mpsc::channel();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+
+        let mut buf = [0_u8; 1024];
+        let mut decoder = FrameDecoder::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for frame in decoder.push(&buf[..n]).unwrap() {
+                        let msg = decode_frame_payload(&frame).unwrap();
+                        if msg.address == "/Set/Track/Out/Gain"
+                            && let (
+                                Some(OscArg::Int(group)),
+                                Some(OscArg::Int(channel)),
+                                Some(OscArg::Double(gain_db)),
+                            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                        {
+                            let _ = gain_tx.send((*group, *channel, *gain_db));
+                        }
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => panic!("server read failed: {err}"),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                target_db: -12.5,
+            }],
+            0,
+        ))
+        .await
+        .unwrap();
+
+    let first_gain = tokio::task::spawn_blocking(move || {
+        gain_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("zero-duration fade did not send final gain")
+    })
+    .await
+    .unwrap();
+    assert_eq!(first_gain, (0, 0, -12.5));
+
+    let first_event = wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |_| true,
+    )
+    .await;
+    assert!(
+        matches!(
+            first_event,
+            FadeEvent::ChannelCompleted {
+                group: 0,
+                channel: 0
+            }
+        ),
+        "zero-duration fade should complete channels without entering running state first, got {first_event:?}"
+    );
 }
 
 #[tokio::test]

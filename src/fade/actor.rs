@@ -62,6 +62,27 @@ async fn run_engine(
                         let now = Instant::now();
                         let duration = Duration::from_millis(config.duration_ms);
 
+                        if duration.is_zero() {
+                            for target in &config.targets {
+                                state.channels.retain(|ch| {
+                                    !(ch.group == target.group && ch.channel == target.channel)
+                                });
+                                let _ = command_bus
+                                    .set_gain(target.group, target.channel, target.target_db)
+                                    .await;
+                                state.fan_out(FadeEvent::ChannelCompleted {
+                                    group: target.group,
+                                    channel: target.channel,
+                                });
+                            }
+                            if !state.is_active() {
+                                tick_interval = None;
+                                state.fan_out(FadeEvent::FadeCompleted);
+                            }
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+
                         for target in &config.targets {
                             let start_db = state
                                 .channels
