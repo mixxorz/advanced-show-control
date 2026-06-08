@@ -114,9 +114,26 @@ async fn run_engine(
                         let duration = Duration::from_millis(config.duration_ms);
 
                         for target in &config.targets {
-                            let start_db = snapshot.channels.iter()
+                            let start_db = state
+                                .channels
+                                .iter()
                                 .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                                .map(|ch| ch.gain_db)
+                                .map(|ch| {
+                                    if ch.is_done(now) {
+                                        ch.target_db
+                                    } else {
+                                        ch.value_at(now)
+                                    }
+                                })
+                                .or_else(|| {
+                                    snapshot
+                                        .channels
+                                        .iter()
+                                        .find(|ch| {
+                                            ch.group == target.group && ch.channel == target.channel
+                                        })
+                                        .map(|ch| ch.gain_db)
+                                })
                                 .unwrap_or(target.target_db);
 
                             state

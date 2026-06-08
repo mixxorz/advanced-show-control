@@ -2,7 +2,7 @@ use lv1_scene_fade_utility::fade::curve::FadeCurve;
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeSceneIdentity, FadeTarget};
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
-use lv1_scene_fade_utility::lv1::tcp::encode_frame;
+use lv1_scene_fade_utility::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
 use lv1_scene_fade_utility::osc::OscArg;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
@@ -39,6 +39,40 @@ fn channels_args() -> Vec<OscArg> {
         args.push(OscArg::Int(0));
     }
     args
+}
+
+fn two_channels_args() -> Vec<OscArg> {
+    let mut args = vec![OscArg::Int(2)];
+    for (name, channel) in [("Ch 1", 0), ("Ch 2", 1)] {
+        args.push(OscArg::String(name.to_string()));
+        args.push(OscArg::Int(0));
+        args.push(OscArg::Int(channel));
+        args.push(OscArg::Double(-8.0));
+        for _ in 0..15 {
+            args.push(OscArg::Int(0));
+        }
+    }
+    args
+}
+
+async fn no_global_fade_completed_for(
+    events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    timeout: std::time::Duration,
+) {
+    let completed = tokio::time::timeout(timeout, async {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(!completed, "Intro should still be active");
 }
 
 async fn wait_for_app_fade_event(
@@ -332,7 +366,7 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
             .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
             .unwrap();
         stream
-            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .write_all(&lv1_frame("/Channels", &two_channels_args()))
             .unwrap();
         std::thread::sleep(std::time::Duration::from_secs(5));
     });
@@ -382,18 +416,132 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
     )
     .await;
 
-    let completed = tokio::time::timeout(std::time::Duration::from_millis(800), async {
+    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(2), |e| {
+        matches!(
+            e,
+            FadeEvent::ChannelCompleted {
+                group: 0,
+                channel: 1
+            }
+        )
+    })
+    .await;
+
+    no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(150)).await;
+}
+
+#[tokio::test]
+async fn replacement_fade_starts_from_active_mid_fade_value() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (gain_tx, gain_rx) = std::sync::mpsc::channel();
+
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+
+        let mut buf = [0_u8; 1024];
+        let mut decoder = FrameDecoder::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for frame in decoder.push(&buf[..n]).unwrap() {
+                        let msg = decode_frame_payload(&frame).unwrap();
+                        if msg.address == "/Set/Track/Out/Gain" {
+                            if let (
+                                Some(OscArg::Int(group)),
+                                Some(OscArg::Int(channel)),
+                                Some(OscArg::Double(gain_db)),
+                            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                            {
+                                let _ = gain_tx.send((*group, *channel, *gain_db));
+                            }
+                        }
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => panic!("server read failed: {err}"),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let _ = engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                target_db: -30.0,
+            }],
+            1_000,
+        ))
+        .await;
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |e| matches!(e, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    while gain_rx.try_recv().is_ok() {}
+
+    let _ = engine
+        .start_fade(fade_config(
+            scene(2, "Verse"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                target_db: -10.0,
+            }],
+            1_000,
+        ))
+        .await;
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |e| matches!(e, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    let replacement_first_gain = tokio::task::spawn_blocking(move || {
         loop {
-            match app_events.recv().await {
-                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
-                Ok(_) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+            let (group, channel, gain_db) = gain_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("replacement fade did not send gain");
+            if group == 0 && channel == 0 {
+                return gain_db;
             }
         }
     })
     .await
-    .unwrap_or(false);
+    .unwrap();
 
-    assert!(!completed, "Intro should still be active");
+    assert!(
+        replacement_first_gain < -12.0,
+        "replacement fade should continue from the active mid-fade value, got {replacement_first_gain}"
+    );
 }
