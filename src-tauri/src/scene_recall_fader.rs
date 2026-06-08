@@ -65,7 +65,11 @@ impl RecallTriggerGate {
                     };
                     self.accepts(current_scene)
                 }
-                Some(_) => false,
+                Some(_) => {
+                    *scene = Some(scene_identity);
+                    *observed_at = Some(now);
+                    false
+                }
                 None => {
                     *scene = Some(scene_identity);
                     *observed_at = Some(now);
@@ -366,6 +370,27 @@ mod tests {
 
         assert!(!gate.accepts(&scene));
         tokio::time::advance(RECALL_ARMING_DELAY).await;
+
+        assert!(gate.accepts(&next_scene));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn latest_pre_arming_scene_observation_controls_repeat_delay() {
+        let mut gate = RecallTriggerGate::default();
+        let scene = intro_scene();
+        let next_scene = SceneState {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+
+        assert!(!gate.accepts(&scene));
+        tokio::time::advance(Duration::from_millis(100)).await;
+
+        assert!(!gate.accepts(&next_scene));
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
+
+        assert!(!gate.accepts(&next_scene));
+        tokio::time::advance(SAME_SCENE_REPEAT_DELAY).await;
 
         assert!(gate.accepts(&next_scene));
     }
