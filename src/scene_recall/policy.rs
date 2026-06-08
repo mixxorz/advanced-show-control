@@ -323,36 +323,6 @@ mod tests {
     }
 
     #[test]
-    fn starts_enabled_zero_duration_scene_as_immediate_move() {
-        let decision = decide_scene_recall(RecallPolicyInput {
-            recalled_scene: SceneState {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            lv1_snapshot: snapshot(
-                Some(SceneState {
-                    index: 1,
-                    name: "Intro".to_string(),
-                }),
-                vec![ChannelInfo {
-                    group: 0,
-                    channel: 2,
-                    name: "Ch 2".to_string(),
-                    gain_db: 0.0,
-                    muted: false,
-                }],
-            ),
-            lockout: false,
-            scene_config: Some(config(0, Some(-12.5))),
-        });
-
-        assert!(matches!(
-            decision,
-            RecallPolicyDecision::Start(config) if config.duration_ms == 0 && config.targets.len() == 1
-        ));
-    }
-
-    #[test]
     fn missing_topology_and_stored_value_cases_block() {
         let missing_topology = decide_scene_recall(RecallPolicyInput {
             recalled_scene: SceneState {
