@@ -34,6 +34,36 @@ pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppViewState
 }
 
 #[tauri::command]
+pub async fn refresh_lv1_discovery(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    timeout_ms: Option<u64>,
+) -> Result<AppViewState, String> {
+    let started = std::time::Instant::now();
+    let entries = lv1_scene_fade_utility::lv1::discovery::discover(
+        lv1_scene_fade_utility::lv1::discovery::DiscoverOptions {
+            timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000)),
+            ..Default::default()
+        },
+    )
+    .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?;
+
+    let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+    let systems = entries
+        .iter()
+        .filter_map(crate::connection_state::identity_from_discovery)
+        .map(|identity| crate::connection_state::DiscoveredLv1System {
+            identity,
+            latency_ms: Some(latency_ms),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        })
+        .collect();
+    let snapshot = state.set_discovered_lv1_systems(systems).await;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn new_show_file(
     app: AppHandle,
     state: State<'_, ShellState>,

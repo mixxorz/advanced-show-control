@@ -14,6 +14,7 @@ fn main() {
         .manage(ActiveCommandBus::default())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_status,
+            commands::refresh_lv1_discovery,
             commands::new_show_file,
             commands::open_show_file_dialog,
             commands::save_show_file,

@@ -79,6 +79,36 @@ impl ShellState {
         Some(snapshot_from_inner(&inner))
     }
 
+    pub async fn set_connected_lv1_identity(
+        &self,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.connected_lv1_identity = identity;
+        refresh_discovered_statuses(&mut inner);
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn set_pending_lv1_identity(
+        &self,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.pending_lv1_identity = identity;
+        refresh_discovered_statuses(&mut inner);
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn set_discovered_lv1_systems(
+        &self,
+        systems: Vec<DiscoveredLv1System>,
+    ) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.discovered_lv1_systems = systems;
+        refresh_discovered_statuses(&mut inner);
+        snapshot_from_inner(&inner)
+    }
+
     pub async fn clear_runtime_handles_for_generation(
         &self,
         generation: u64,
@@ -113,6 +143,18 @@ impl ShellState {
         *handles = next;
         drop(inner);
         Ok(())
+    }
+}
+
+fn refresh_discovered_statuses(inner: &mut ShellInner) {
+    for system in &mut inner.discovered_lv1_systems {
+        system.status = if Some(&system.identity) == inner.connected_lv1_identity.as_ref() {
+            crate::connection_state::DiscoveredLv1Status::Connected
+        } else if Some(&system.identity) == inner.pending_lv1_identity.as_ref() {
+            crate::connection_state::DiscoveredLv1Status::Connecting
+        } else {
+            crate::connection_state::DiscoveredLv1Status::Available
+        };
     }
 }
 
@@ -423,6 +465,49 @@ mod tests {
             "192.168.1.35"
         );
         assert!(snapshot.reconnect.active);
+    }
+
+    #[tokio::test]
+    async fn set_discovered_lv1_systems_marks_connected_and_pending_rows() {
+        let state = ShellState::default();
+        let connected = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let pending = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-2".to_string()),
+            host: Some("LV1-MON".to_string()),
+            address: "192.168.1.36".to_string(),
+            port: 50000,
+        };
+        state.set_connected_lv1_identity(Some(connected.clone())).await;
+        state.set_pending_lv1_identity(Some(pending.clone())).await;
+
+        let snapshot = state
+            .set_discovered_lv1_systems(vec![
+                crate::connection_state::DiscoveredLv1System {
+                    identity: connected,
+                    latency_ms: Some(10),
+                    status: crate::connection_state::DiscoveredLv1Status::Available,
+                },
+                crate::connection_state::DiscoveredLv1System {
+                    identity: pending,
+                    latency_ms: Some(20),
+                    status: crate::connection_state::DiscoveredLv1Status::Available,
+                },
+            ])
+            .await;
+
+        assert_eq!(
+            snapshot.discovered_lv1_systems[0].status,
+            crate::connection_state::DiscoveredLv1Status::Connected
+        );
+        assert_eq!(
+            snapshot.discovered_lv1_systems[1].status,
+            crate::connection_state::DiscoveredLv1Status::Connecting
+        );
     }
 
     #[test]
