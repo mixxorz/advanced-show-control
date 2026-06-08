@@ -2,6 +2,7 @@ use tokio::sync::broadcast;
 
 use crate::fade::events::FadeEvent;
 use crate::lv1::events::Lv1Event;
+use crate::scene_recall::events::SceneRecallEvent;
 use crate::show::events::ShowEvent;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +15,7 @@ pub enum AppEvent {
     Lv1(Lv1Event),
     Fade(FadeEvent),
     Show(ShowEvent),
+    SceneRecall(SceneRecallEvent),
     Automation(AutomationEvent),
     CommandFailed { command: String, message: String },
 }

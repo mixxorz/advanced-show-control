@@ -693,6 +693,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                         }
                     }
                     AppEvent::Show(_) => {}
+                    AppEvent::SceneRecall(_) => {}
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     log_lagged_subscriber("shell-state-projector", count);

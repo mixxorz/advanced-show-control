@@ -1,8 +1,9 @@
 use std::collections::HashSet;
-
-use advanced_show_control::fade::curve::FadeCurve;
-use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
-use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneState};
+use advanced_show_control::fade::types::FadeConfig;
+use advanced_show_control::lv1::types::{Lv1StateSnapshot, SceneState};
+use advanced_show_control::scene_recall::policy::{
+    decide_scene_recall, RecallPolicyDecision, RecallPolicyInput,
+};
 use advanced_show_control::show::types::ShowSnapshot;
 
 use super::shell::{ShellInner, ShellState, scene_id};
@@ -137,184 +138,57 @@ fn prepare_scene_recall_fade_locked(
         );
         return SceneRecallDecision::Blocked;
     };
+    let id = scene_id(recalled_scene.index, &recalled_scene.name);
     if overwrite_snapshot_scene {
         snapshot.scene = Some(recalled_scene.clone());
     }
     let snapshot = snapshot.clone();
+    let scene_config = show.scene_configs.iter().find(|config| config.scene_id == id).cloned();
 
-    if snapshot.connection != ConnectionStatus::Connected {
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!(
-                "Auto fade blocked for scene {}: {}: LV1 is not connected",
-                recalled_scene.index, recalled_scene.name
-            ),
-        );
-        return SceneRecallDecision::Blocked;
-    }
+    let decision = decide_scene_recall(RecallPolicyInput {
+        recalled_scene: recalled_scene.clone(),
+        lv1_snapshot: snapshot,
+        lockout: show.lockout,
+        scene_config,
+    });
 
-    let Some(current_scene) = snapshot.scene.as_ref() else {
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!(
-                "Auto fade blocked for scene {}: {}: current scene snapshot is unavailable",
-                recalled_scene.index, recalled_scene.name
-            ),
-        );
-        return SceneRecallDecision::Blocked;
-    };
-
-    if current_scene.index != recalled_scene.index || current_scene.name != recalled_scene.name {
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!(
-                "Auto fade blocked for scene {}: {}: scene identity mismatch",
-                recalled_scene.index, recalled_scene.name
-            ),
-        );
-        return SceneRecallDecision::Blocked;
-    }
-
-    let id = scene_id(recalled_scene.index, &recalled_scene.name);
-    let Some(config) = show
-        .scene_configs
-        .iter()
-        .find(|config| config.scene_id == id)
-        .cloned()
-    else {
-        return SceneRecallDecision::Skip;
-    };
-
-    if config.duration_ms == 0 {
-        if log_state.should_log_duration_zero_skip(generation, &id) {
+    match decision {
+        RecallPolicyDecision::Start(fade_config) => {
+            let scene_label = format!("{}: {}", recalled_scene.index, recalled_scene.name);
             inner.push_log(
                 LogSource::App,
                 LogSeverity::Info,
                 format!(
-                    "Auto fade skipped for scene {}: {}: duration is 0",
+                    "Auto fade ready for scene {scene_label} with {} target{}",
+                    fade_config.targets.len(),
+                    if fade_config.targets.len() == 1 { "" } else { "s" }
+                ),
+            );
+            SceneRecallDecision::Start(SceneRecallFadeRequest { scene_id: id, scene_label, fade_config })
+        }
+        RecallPolicyDecision::Skip { reason } => {
+            if reason == "duration is 0" && log_state.should_log_duration_zero_skip(generation, &id) {
+                inner.push_log(
+                    LogSource::App,
+                    LogSeverity::Info,
+                    format!(
+                        "Auto fade skipped for scene {}: {}: duration is 0",
+                        recalled_scene.index, recalled_scene.name
+                    ),
+                );
+            }
+            SceneRecallDecision::Skip
+        }
+        RecallPolicyDecision::Blocked { reason } => {
+            inner.push_log(
+                LogSource::App,
+                LogSeverity::Warning,
+                format!(
+                    "Auto fade blocked for scene {}: {}: {reason}",
                     recalled_scene.index, recalled_scene.name
                 ),
             );
+            SceneRecallDecision::Blocked
         }
-        return SceneRecallDecision::Skip;
     }
-
-    if show.lockout {
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!(
-                "Auto fade blocked for scene {}: {}: lockout is enabled",
-                recalled_scene.index, recalled_scene.name
-            ),
-        );
-        return SceneRecallDecision::Blocked;
-    }
-
-    if snapshot.channels.is_empty() {
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!(
-                "Auto fade blocked for scene {}: {}: live channel snapshot is empty",
-                recalled_scene.index, recalled_scene.name
-            ),
-        );
-        return SceneRecallDecision::Blocked;
-    }
-
-    let live_channels = snapshot
-        .channels
-        .iter()
-        .map(|channel| (channel.group, channel.channel))
-        .collect::<HashSet<_>>();
-    let mut targets = Vec::with_capacity(config.scoped_channels.len());
-
-    for scoped in &config.scoped_channels {
-        if !live_channels.contains(&(scoped.group, scoped.channel)) {
-            inner.push_log(
-                LogSource::App,
-                LogSeverity::Warning,
-                format!(
-                    "Auto fade blocked for scene {}: {}: scoped channel group={} channel={} is missing from live topology",
-                    recalled_scene.index, recalled_scene.name, scoped.group, scoped.channel
-                ),
-            );
-            return SceneRecallDecision::Blocked;
-        }
-
-        let Some(stored) = config
-            .channel_configs
-            .iter()
-            .find(|entry| entry.group == scoped.group && entry.channel == scoped.channel)
-        else {
-            inner.push_log(
-                LogSource::App,
-                LogSeverity::Warning,
-                format!(
-                    "Auto fade blocked for scene {}: {}: scoped channel group={} channel={} has no stored config",
-                    recalled_scene.index, recalled_scene.name, scoped.group, scoped.channel
-                ),
-            );
-            return SceneRecallDecision::Blocked;
-        };
-
-        let Some(target_db) = stored.fader_db else {
-            inner.push_log(
-                LogSource::App,
-                LogSeverity::Warning,
-                format!(
-                    "Auto fade blocked for scene {}: {}: scoped channel group={} channel={} has no stored fader value",
-                    recalled_scene.index, recalled_scene.name, scoped.group, scoped.channel
-                ),
-            );
-            return SceneRecallDecision::Blocked;
-        };
-
-        targets.push(FadeTarget {
-            group: scoped.group,
-            channel: scoped.channel,
-            target_db,
-        });
-    }
-
-    if targets.is_empty() {
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!(
-                "Auto fade blocked for scene {}: {}: no scoped targets",
-                recalled_scene.index, recalled_scene.name
-            ),
-        );
-        return SceneRecallDecision::Blocked;
-    }
-
-    let scene_label = format!("{}: {}", recalled_scene.index, recalled_scene.name);
-    inner.push_log(
-        LogSource::App,
-        LogSeverity::Info,
-        format!(
-            "Auto fade ready for scene {scene_label} with {} target{}",
-            targets.len(),
-            if targets.len() == 1 { "" } else { "s" }
-        ),
-    );
-
-    SceneRecallDecision::Start(SceneRecallFadeRequest {
-        scene_id: id,
-        scene_label,
-        fade_config: FadeConfig {
-            scene: FadeSceneIdentity {
-                index: recalled_scene.index,
-                name: recalled_scene.name.clone(),
-            },
-            targets,
-            duration_ms: config.duration_ms,
-            curve: FadeCurve::Linear,
-        },
-    })
 }
