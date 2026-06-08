@@ -79,6 +79,7 @@ impl ShellState {
         Some(snapshot_from_inner(&inner))
     }
 
+    #[cfg(test)]
     pub async fn set_connected_lv1_identity(
         &self,
         identity: Option<Lv1SystemIdentity>,
@@ -114,6 +115,7 @@ impl ShellState {
         Some(snapshot_from_inner(&inner))
     }
 
+    #[cfg(test)]
     pub async fn set_pending_lv1_identity(
         &self,
         identity: Option<Lv1SystemIdentity>,
@@ -196,6 +198,7 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    #[cfg(test)]
     pub async fn set_reconnect_active(&self, active: bool) -> AppViewState {
         let mut inner = self.inner.lock().await;
         if active {
