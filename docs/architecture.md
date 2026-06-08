@@ -100,7 +100,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
 - It listens for LV1 scene recall facts.
 - It asks for a fresh LV1 snapshot before deciding.
 - It validates exact scene identity, lockout state, connection state, stored scene config, scoped targets, stored fader values, and live topology.
-- It treats duration `0` scenes as disabled.
+- It skips scenes whose fader scope toggle is disabled and starts validated fader moves even when duration is 0.
 - It starts validated fades through the command bus.
 - It does not reach into `ShowState` internals.
 

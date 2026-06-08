@@ -49,6 +49,8 @@ The app watches LV1 scene recalls and fader changes through the reverse-engineer
 4. The app fades only the captured/scoped faders from their current live positions to the stored target values.
 5. LV1 handles all other scoped scene changes instantly.
 
+A duration of 0 means enabled faders move to their stored targets immediately; disabling fader movement is controlled by the scene-level FADERS toggle.
+
 ---
 
 ## Important Operating Rule
@@ -108,6 +110,9 @@ type SceneFadeConfig = {
   enabled: boolean;
   durationMs: number;
   curve: "linearDb" | "easeInOutDb" | "linearAmplitude" | "easeInOutAmplitude";
+  scopeToggles: {
+    faders: boolean;
+  };
   targets: CapturedFaderTarget[];
 };
 
