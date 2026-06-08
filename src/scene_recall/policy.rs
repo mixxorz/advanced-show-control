@@ -256,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn duration_zero_skips() {
+    fn starts_zero_duration_scene_with_intact_target_data() {
         let decision = decide_scene_recall(RecallPolicyInput {
             recalled_scene: SceneState {
                 index: 1,
@@ -280,7 +280,12 @@ mod tests {
         });
         assert!(matches!(
             decision,
-            RecallPolicyDecision::Start(config) if config.duration_ms == 0 && config.targets.len() == 1
+            RecallPolicyDecision::Start(config)
+                if config.duration_ms == 0
+                    && config.targets.len() == 1
+                    && config.targets[0].group == 0
+                    && config.targets[0].channel == 2
+                    && config.targets[0].target_db == -12.5
         ));
     }
 
