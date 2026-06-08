@@ -1,6 +1,8 @@
 use advanced_show_control::fade::curve::FadeCurve;
-use advanced_show_control::fade::engine::spawn_engine;
-use advanced_show_control::fade::types::{FadeConfig, FadeEvent, FadeSceneIdentity, FadeTarget};
+use advanced_show_control::fade::actor::spawn_engine;
+use advanced_show_control::fade::events::FadeEvent;
+use advanced_show_control::fade::handle::FadeEngineHandle;
+use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
 use advanced_show_control::osc::OscArg;
@@ -101,7 +103,7 @@ async fn spawn_runtime_for_test(
     event_bus: AppEventBus,
 ) -> (
     AppCommandBus,
-    advanced_show_control::fade::engine::FadeEngineHandle,
+    FadeEngineHandle,
 ) {
     let bus = AppCommandBus::new(event_bus.clone());
     bus.set_lv1(Some(lv1)).await;

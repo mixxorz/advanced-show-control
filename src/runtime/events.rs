@@ -1,6 +1,6 @@
 use tokio::sync::broadcast;
 
-use crate::fade::types::FadeEvent;
+use crate::fade::events::FadeEvent;
 use crate::lv1::events::Lv1Event;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -21,7 +21,7 @@ pub(super) const MAX_LOGS: usize = 200;
 pub struct RuntimeHandles {
     pub active_generation: u64,
     pub lv1: Option<advanced_show_control::lv1::handle::Lv1ActorHandle>,
-    pub fade: Option<advanced_show_control::fade::engine::FadeEngineHandle>,
+    pub fade: Option<advanced_show_control::fade::handle::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
     pub scene_recall_fader: Option<JoinHandle<()>>,

@@ -268,8 +268,8 @@ fn publish_refresh_after_scene_recall_decision(
 mod tests {
     use super::*;
     use advanced_show_control::fade::curve::FadeCurve;
-    use advanced_show_control::fade::engine::FadeEngineHandle;
-    use advanced_show_control::fade::types::FadeCommand;
+    use advanced_show_control::fade::commands::FadeCommand;
+    use advanced_show_control::fade::handle::FadeEngineHandle;
     use advanced_show_control::lv1::actor::spawn_actor;
     use advanced_show_control::lv1::types::{
         ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,

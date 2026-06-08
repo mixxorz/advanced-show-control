@@ -11,7 +11,7 @@ use advanced_show_control::lv1::types::{
 #[tokio::test]
 async fn fade_events_update_fade_state() {
     use super::view::AppFadeState;
-    use advanced_show_control::fade::types::FadeEvent;
+    use advanced_show_control::fade::events::FadeEvent;
 
     let state = ShellState::default();
 
@@ -39,7 +39,7 @@ async fn fade_events_update_fade_state() {
 #[tokio::test]
 async fn channel_completed_logs_without_clearing_running_state() {
     use super::view::AppFadeState;
-    use advanced_show_control::fade::types::FadeEvent;
+    use advanced_show_control::fade::events::FadeEvent;
 
     let state = ShellState::default();
     let started = state.apply_fade_event(&FadeEvent::FadeStarted).await;
@@ -472,7 +472,7 @@ async fn stale_lv1_events_are_ignored_after_generation_change() {
 #[tokio::test]
 async fn stale_fade_events_are_ignored_after_generation_change() {
     use super::view::AppFadeState;
-    use advanced_show_control::fade::types::FadeEvent;
+    use advanced_show_control::fade::events::FadeEvent;
 
     let state = ShellState::default();
     let (first_generation, _) = state.begin_connecting().await;

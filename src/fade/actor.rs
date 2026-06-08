@@ -1,104 +1,20 @@
 //! Fade engine actor — animates LV1 faders over time.
 
 use std::time::{Duration, Instant};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
+use crate::fade::commands::FadeCommand;
+use crate::fade::events::FadeEvent;
+use crate::fade::handle::FadeEngineHandle;
+use crate::fade::state::{EngineState, finish_scene_channels};
 use crate::fade::tick::{ActiveChannel, TICK_HZ};
-use crate::fade::types::{FadeCommand, FadeConfig, FadeEvent, FadeSceneIdentity};
-use crate::runtime::commands::{AppCommandBus, AppCommandError};
+use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
-
-// ---------------------------------------------------------------------------
-// Handle
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct FadeEngineHandle {
-    tx: mpsc::Sender<FadeCommand>,
-}
-
-impl FadeEngineHandle {
-    pub fn new(tx: mpsc::Sender<FadeCommand>) -> Self {
-        Self { tx }
-    }
-
-    pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(FadeCommand::RecallSceneFade { config, reply })
-            .await
-            .map_err(|_| AppCommandError::FadeUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
-    }
-
-    pub async fn abort_all(&self) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(FadeCommand::AbortAll { reply })
-            .await
-            .map_err(|_| AppCommandError::FadeUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
-    }
-}
 
 pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     tokio::spawn(run_engine(command_bus, event_bus, cmd_rx));
     FadeEngineHandle::new(cmd_tx)
-}
-
-// ---------------------------------------------------------------------------
-// Actor internals
-// ---------------------------------------------------------------------------
-
-struct EngineState {
-    channels: Vec<ActiveChannel>,
-    event_bus: AppEventBus,
-}
-
-impl EngineState {
-    fn new(event_bus: AppEventBus) -> Self {
-        Self {
-            channels: Vec::new(),
-            event_bus,
-        }
-    }
-
-    fn fan_out(&mut self, event: FadeEvent) {
-        self.event_bus.publish(AppEvent::Fade(event));
-    }
-
-    fn is_active(&self) -> bool {
-        !self.channels.is_empty()
-    }
-
-    fn has_active_scene(&self, scene: &FadeSceneIdentity) -> bool {
-        self.channels.iter().any(|ch| &ch.scene == scene)
-    }
-
-    fn cancel_all_in_place(&mut self) {
-        self.channels.clear();
-    }
-}
-
-async fn finish_scene_channels(
-    state: &mut EngineState,
-    command_bus: &AppCommandBus,
-    scene: &FadeSceneIdentity,
-) {
-    let mut completed = Vec::new();
-    for ch in &mut state.channels {
-        if &ch.scene == scene {
-            let target_db = ch.exact_final_send();
-            let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
-            completed.push((ch.group, ch.channel));
-        }
-    }
-
-    state.channels.retain(|ch| &ch.scene != scene);
-    for (group, channel) in completed {
-        state.fan_out(FadeEvent::ChannelCompleted { group, channel });
-    }
 }
 
 async fn run_engine(
@@ -111,7 +27,6 @@ async fn run_engine(
     let mut tick_interval: Option<tokio::time::Interval> = None;
 
     loop {
-        // Build the tick future: only poll when active
         let tick_fut = async {
             match tick_interval.as_mut() {
                 Some(interval) => {
@@ -125,7 +40,7 @@ async fn run_engine(
         tokio::select! {
             cmd = cmd_rx.recv() => {
                 match cmd {
-                None => break,
+                    None => break,
                     Some(FadeCommand::RecallSceneFade { config, reply }) => {
                         if state.has_active_scene(&config.scene) {
                             finish_scene_channels(&mut state, &command_bus, &config.scene).await;
@@ -152,27 +67,17 @@ async fn run_engine(
                                 .channels
                                 .iter()
                                 .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                                .map(|ch| {
-                                    if ch.is_done(now) {
-                                        ch.target_db
-                                    } else {
-                                        ch.value_at(now)
-                                    }
-                                })
+                                .map(|ch| if ch.is_done(now) { ch.target_db } else { ch.value_at(now) })
                                 .or_else(|| {
                                     snapshot
                                         .channels
                                         .iter()
-                                        .find(|ch| {
-                                            ch.group == target.group && ch.channel == target.channel
-                                        })
+                                        .find(|ch| ch.group == target.group && ch.channel == target.channel)
                                         .map(|ch| ch.gain_db)
                                 })
                                 .unwrap_or(target.target_db);
 
-                            state
-                                .channels
-                                .retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
+                            state.channels.retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
                             state.channels.push(ActiveChannel::new(
                                 config.scene.clone(),
                                 target.group,
@@ -210,10 +115,7 @@ async fn run_engine(
                     if ch.is_done(now) {
                         let target_db = ch.exact_final_send();
                         let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
-                        completed_events.push(FadeEvent::ChannelCompleted {
-                            group: ch.group,
-                            channel: ch.channel,
-                        });
+                        completed_events.push(FadeEvent::ChannelCompleted { group: ch.group, channel: ch.channel });
                         done_indices.push(i);
                         continue;
                     }
@@ -223,7 +125,6 @@ async fn run_engine(
                     }
                 }
 
-                // Remove completed channels (reverse order to preserve indices)
                 for i in done_indices.into_iter().rev() {
                     state.channels.remove(i);
                 }
@@ -268,72 +169,5 @@ async fn run_engine(
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fade::curve::FadeCurve;
-    use crate::fade::types::{FadeCommand, FadeSceneIdentity, FadeTarget};
-    use tokio::sync::mpsc;
-
-    #[tokio::test]
-    async fn closed_command_channel_returns_fade_unavailable() {
-        let (tx, rx) = mpsc::channel(1);
-        drop(rx);
-        let handle = FadeEngineHandle { tx };
-
-        let result = handle
-            .start_fade(FadeConfig {
-                scene: FadeSceneIdentity {
-                    index: 1,
-                    name: "Intro".to_string(),
-                },
-                targets: vec![FadeTarget {
-                    group: 0,
-                    channel: 1,
-                    target_db: -12.0,
-                }],
-                duration_ms: 100,
-                curve: FadeCurve::Linear,
-            })
-            .await;
-
-        assert_eq!(result, Err(AppCommandError::FadeUnavailable));
-    }
-
-    #[tokio::test]
-    async fn dropped_reply_channel_returns_reply_channel_closed() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let handle = FadeEngineHandle { tx };
-
-        let task = tokio::spawn(async move {
-            handle
-                .start_fade(FadeConfig {
-                    scene: FadeSceneIdentity {
-                        index: 1,
-                        name: "Intro".to_string(),
-                    },
-                    targets: vec![FadeTarget {
-                        group: 0,
-                        channel: 1,
-                        target_db: -12.0,
-                    }],
-                    duration_ms: 100,
-                    curve: FadeCurve::Linear,
-                })
-                .await
-        });
-
-        match rx.recv().await.unwrap() {
-            FadeCommand::RecallSceneFade { reply, .. } => drop(reply),
-            _ => panic!("unexpected command"),
-        }
-
-        assert_eq!(
-            task.await.unwrap(),
-            Err(AppCommandError::ReplyChannelClosed)
-        );
     }
 }

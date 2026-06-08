@@ -482,8 +482,9 @@ async fn run_fade_test(
     curve: CurveArg,
 ) -> AppResult<()> {
     use advanced_show_control::fade::curve::FadeCurve;
-    use advanced_show_control::fade::engine::spawn_engine;
-    use advanced_show_control::fade::types::{FadeConfig, FadeEvent, FadeTarget};
+    use advanced_show_control::fade::actor::spawn_engine;
+    use advanced_show_control::fade::events::FadeEvent;
+    use advanced_show_control::fade::types::{FadeConfig, FadeTarget};
     use advanced_show_control::runtime::commands::AppCommandBus;
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;

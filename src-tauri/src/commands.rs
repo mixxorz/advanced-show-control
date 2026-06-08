@@ -1,4 +1,4 @@
-use advanced_show_control::fade::engine::spawn_engine;
+use advanced_show_control::fade::actor::spawn_engine;
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::discovery::resolve_target;
 use advanced_show_control::lv1::events::Lv1Event;
@@ -736,7 +736,7 @@ fn current_timestamp_millis() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use advanced_show_control::fade::types::FadeEvent;
+    use advanced_show_control::fade::events::FadeEvent;
     use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
     use advanced_show_control::runtime::events::AutomationEvent;
     use std::fs;

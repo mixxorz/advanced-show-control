@@ -3,7 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
-use crate::fade::engine::FadeEngineHandle;
+use crate::fade::handle::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::events::Lv1ActorError;
@@ -120,6 +120,7 @@ fn publish_failure(event_bus: &AppEventBus, command: &str, result: &Result<(), A
 mod tests {
     use super::*;
     use crate::fade::curve::FadeCurve;
+    use crate::fade::commands::FadeCommand;
     use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
     use crate::runtime::events::{AppEvent, AppEventBus};
 
@@ -173,9 +174,7 @@ mod tests {
         let fade = FadeEngineHandle::new(fade_tx);
 
         tokio::spawn(async move {
-            if let Some(crate::fade::types::FadeCommand::RecallSceneFade { reply, .. }) =
-                fade_rx.recv().await
-            {
+            if let Some(FadeCommand::RecallSceneFade { reply, .. }) = fade_rx.recv().await {
                 let _ = reply.send(Ok(()));
             }
         });

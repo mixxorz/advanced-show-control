@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use advanced_show_control::fade::types::FadeEvent;
+use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
 

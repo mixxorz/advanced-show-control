@@ -1,5 +1,5 @@
 use advanced_show_control::fade::curve::FadeCurve;
-use advanced_show_control::fade::engine::spawn_engine;
+use advanced_show_control::fade::actor::spawn_engine;
 use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::events::Lv1Event;
