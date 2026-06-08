@@ -124,6 +124,10 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    pub async fn connected_lv1_identity(&self) -> Option<Lv1SystemIdentity> {
+        self.inner.lock().await.connected_lv1_identity.clone()
+    }
+
     pub async fn set_pending_lv1_identity_for_generation(
         &self,
         generation: u64,
@@ -190,6 +194,15 @@ impl ShellState {
             inner.reconnect_state.active = false;
         }
         snapshot_from_inner(&inner)
+    }
+
+    pub async fn reconnect_timeout_generation(&self, attempt: u64) -> Option<u64> {
+        let inner = self.inner.lock().await;
+        if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+            Some(inner.generation)
+        } else {
+            None
+        }
     }
 
     pub async fn clear_runtime_handles_for_generation(

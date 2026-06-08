@@ -17,6 +17,10 @@ export async function reconnectTimedOut(attempt: number) {
   return invoke<AppViewState>("reconnect_timed_out", { attempt });
 }
 
+export async function attemptReconnectLv1() {
+  return invoke<AppViewState>("attempt_reconnect_lv1");
+}
+
 export async function refreshAppState(
   setAppState: (appState: AppViewState) => void,
   setCommandError: (message: string | null) => void,

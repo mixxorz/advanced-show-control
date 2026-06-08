@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 import {
+  attemptReconnectLv1,
   connectLv1System,
   reconnectTimedOut,
   refreshLv1Discovery,
@@ -94,20 +95,61 @@ export default function App() {
     }
 
     const attempt = appState.reconnect.attempt;
+    let cancelled = false;
+    let reconnectInFlight = false;
+
+    async function attemptReconnect() {
+      if (reconnectInFlight) {
+        return;
+      }
+      reconnectInFlight = true;
+      try {
+        const snapshot = await attemptReconnectLv1();
+        if (cancelled) {
+          return;
+        }
+        setAppState(snapshot);
+        if (snapshot.connection === "connected") {
+          setCommandError(null);
+          setShowConnection(false);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setCommandError(String(error));
+        }
+      } finally {
+        reconnectInFlight = false;
+      }
+    }
+
+    void attemptReconnect();
+    const interval = window.setInterval(() => {
+      void attemptReconnect();
+    }, 2000);
+
     const timer = window.setTimeout(async () => {
       try {
         const snapshot = await reconnectTimedOut(attempt);
+        if (cancelled) {
+          return;
+        }
         setAppState(snapshot);
         if (!snapshot.reconnect.active && snapshot.connection !== "connected") {
           setShowConnection(true);
         }
       } catch (error) {
-        setCommandError(String(error));
-        setShowConnection(true);
+        if (!cancelled) {
+          setCommandError(String(error));
+          setShowConnection(true);
+        }
       }
     }, 15000);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.clearTimeout(timer);
+    };
   }, [appState.reconnect.active, appState.reconnect.attempt]);
 
   if (showConnection) {

@@ -245,16 +245,29 @@ pub async fn disconnect_lv1(
 pub async fn reconnect_timed_out(
     app: AppHandle,
     state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
     attempt: u64,
 ) -> Result<AppViewState, String> {
-    reconnect_timed_out_snapshot(app, (*state).clone(), attempt).await
+    reconnect_timed_out_snapshot(
+        app,
+        (*state).clone(),
+        (*active_command_bus).clone(),
+        attempt,
+    )
+    .await
 }
 
 async fn reconnect_timed_out_snapshot<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
+    active_command_bus: ActiveCommandBus,
     attempt: u64,
 ) -> Result<AppViewState, String> {
+    if let Some(generation) = state.reconnect_timeout_generation(attempt).await {
+        state
+            .clear_runtime_handles_for_generation(generation, &active_command_bus)
+            .await;
+    }
     let snapshot = state.reconnect_timed_out(attempt).await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -347,6 +360,53 @@ pub async fn connect_lv1_system(
     }
 
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn attempt_reconnect_lv1(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
+) -> Result<AppViewState, String> {
+    attempt_reconnect_lv1_snapshot(app, (*state).clone(), (*active_command_bus).clone()).await
+}
+
+async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
+    app: AppHandle<R>,
+    state: ShellState,
+    active_command_bus: ActiveCommandBus,
+) -> Result<AppViewState, String> {
+    let Some(connected_identity) = state.connected_lv1_identity().await else {
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&app, &snapshot);
+        return Ok(snapshot);
+    };
+
+    if connected_identity.uuid.is_none() {
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&app, &snapshot);
+        return Ok(snapshot);
+    }
+
+    let snapshot = startup_discovery_or_current_snapshot(
+        &state,
+        refresh_lv1_discovery_snapshot(
+            app.clone(),
+            state.clone(),
+            Some(DEFAULT_DISCOVERY_TIMEOUT_MS),
+        )
+        .await,
+    )
+    .await;
+
+    let Some(identity) = reconnect_target_for_connected_identity(
+        &connected_identity,
+        &snapshot.discovered_lv1_systems,
+    ) else {
+        return Ok(snapshot);
+    };
+
+    connect_to_target(app, state, active_command_bus, identity).await
 }
 
 #[tauri::command]
@@ -504,6 +564,17 @@ fn remembered_auto_connect_target(
         .map(|system| system.identity.clone())
 }
 
+fn reconnect_target_for_connected_identity(
+    connected_identity: &crate::connection_state::Lv1SystemIdentity,
+    systems: &[crate::connection_state::DiscoveredLv1System],
+) -> Option<crate::connection_state::Lv1SystemIdentity> {
+    let connected_uuid = connected_identity.uuid.as_ref()?;
+    systems
+        .iter()
+        .find(|system| system.identity.uuid.as_ref() == Some(connected_uuid))
+        .map(|system| system.identity.clone())
+}
+
 async fn startup_discovery_or_current_snapshot(
     state: &ShellState,
     discovery_result: Result<AppViewState, String>,
@@ -530,6 +601,7 @@ async fn install_connected_runtime<R: Runtime>(
     runtime_handles.projector = Some(spawn_shell_state_projector(
         app.clone(),
         shell_state,
+        active_command_bus.clone(),
         generation,
         events,
     ));
@@ -556,6 +628,7 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
 fn spawn_shell_state_projector<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
+    active_command_bus: ActiveCommandBus,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> tokio::task::JoinHandle<()> {
@@ -574,6 +647,14 @@ fn spawn_shell_state_projector<R: Runtime>(
                             }
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
                                 eprintln!("failed to emit app-status-changed: {err}");
+                            }
+                            if matches!(event, Lv1Event::Disconnected) {
+                                state
+                                    .clear_runtime_handles_for_generation(
+                                        generation,
+                                        &active_command_bus,
+                                    )
+                                    .await;
                             }
                         }
                     }
@@ -688,6 +769,7 @@ mod tests {
     fn connection_chooser_commands_are_exposed() {
         let _ = refresh_lv1_discovery;
         let _ = connect_lv1_system;
+        let _ = attempt_reconnect_lv1;
         let _ = startup_auto_connect_lv1;
         let _ = reconnect_timed_out;
     }
@@ -697,13 +779,66 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let state = ShellState::default();
+        let active_command_bus = ActiveCommandBus::default();
         let reconnecting = enter_reconnect_state(&state).await;
 
-        let snapshot = reconnect_timed_out_snapshot(handle, state, reconnecting.reconnect.attempt)
-            .await
-            .expect("timeout command should return snapshot");
+        let snapshot = reconnect_timed_out_snapshot(
+            handle,
+            state,
+            active_command_bus,
+            reconnecting.reconnect.attempt,
+        )
+        .await
+        .expect("timeout command should return snapshot");
 
         assert!(!snapshot.reconnect.active);
+    }
+
+    #[tokio::test]
+    async fn reconnect_timed_out_aborts_runtime_and_clears_command_bus_for_matching_attempt() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let state = ShellState::default();
+        let active_command_bus = ActiveCommandBus::default();
+        let reconnecting = enter_reconnect_state(&state).await;
+        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let installed = state
+            .install_runtime_handles_for_generation(
+                1,
+                RuntimeHandles {
+                    active_generation: 0,
+                    lv1: None,
+                    fade: None,
+                    command_bus: Some(command_bus),
+                    projector: Some(tokio::spawn(async {
+                        std::future::pending::<()>().await;
+                    })),
+                    scene_recall_fader: Some(tokio::spawn(async {
+                        std::future::pending::<()>().await;
+                    })),
+                },
+                &active_command_bus,
+            )
+            .await;
+        assert!(installed.is_ok());
+        assert!(active_command_bus.current().await.is_some());
+
+        let snapshot = reconnect_timed_out_snapshot(
+            handle,
+            state.clone(),
+            active_command_bus.clone(),
+            reconnecting.reconnect.attempt,
+        )
+        .await
+        .expect("timeout command should return snapshot");
+
+        assert!(!snapshot.reconnect.active);
+        assert!(active_command_bus.current().await.is_none());
+        let handles = state.handles.lock().await;
+        assert_eq!(handles.active_generation, 0);
+        assert!(handles.command_bus.is_none());
+        assert!(handles.projector.is_none());
+        assert!(handles.scene_recall_fader.is_none());
     }
 
     #[tokio::test]
@@ -723,10 +858,14 @@ mod tests {
         assert!(second_reconnect.reconnect.active);
         assert!(second_reconnect.reconnect.attempt > first_reconnect.reconnect.attempt);
 
-        let snapshot =
-            reconnect_timed_out_snapshot(handle, state, first_reconnect.reconnect.attempt)
-                .await
-                .expect("timeout command should return snapshot");
+        let snapshot = reconnect_timed_out_snapshot(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            first_reconnect.reconnect.attempt,
+        )
+        .await
+        .expect("timeout command should return snapshot");
 
         assert!(snapshot.reconnect.active);
         assert_eq!(
@@ -799,6 +938,52 @@ mod tests {
         }];
 
         assert!(remembered_auto_connect_target(&preferences, &systems).is_none());
+    }
+
+    #[test]
+    fn reconnect_target_requires_connected_identity_uuid_without_host_fallback() {
+        let connected = crate::connection_state::Lv1SystemIdentity {
+            uuid: None,
+            host: Some("LV1".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let systems = vec![crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-2".to_string()),
+                host: Some("LV1".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }];
+
+        assert!(reconnect_target_for_connected_identity(&connected, &systems).is_none());
+    }
+
+    #[test]
+    fn reconnect_target_uses_discovered_identity_for_matching_uuid() {
+        let connected = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("Old Host".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let systems = vec![crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("New Host".to_string()),
+                address: "10.0.0.20".to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }];
+
+        let matched = reconnect_target_for_connected_identity(&connected, &systems).unwrap();
+
+        assert_eq!(matched.address, "10.0.0.20");
     }
 
     #[tokio::test]
@@ -1002,8 +1187,13 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let event_bus = AppEventBus::default();
-        let projector =
-            spawn_shell_state_projector(handle, state, generation, event_bus.subscribe());
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
 
         event_bus.publish(AppEvent::Automation(AutomationEvent::RuleTriggered {
             rule_id: "scene-recall-fader".to_string(),

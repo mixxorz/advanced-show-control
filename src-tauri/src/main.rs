@@ -23,6 +23,7 @@ fn main() {
             commands::select_scene_config,
             commands::connect_lv1,
             commands::connect_lv1_system,
+            commands::attempt_reconnect_lv1,
             commands::startup_auto_connect_lv1,
             commands::disconnect_lv1,
             commands::reconnect_timed_out,
