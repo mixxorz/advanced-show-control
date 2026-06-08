@@ -169,6 +169,23 @@ impl ShellState {
         Some(snapshot_from_inner(&inner))
     }
 
+    pub async fn fail_reconnect_for_generation(
+        &self,
+        generation: u64,
+        message: impl Into<String>,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.lv1_snapshot = None;
+        inner.pending_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
+        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
+        Some(snapshot_from_inner(&inner))
+    }
+
     pub async fn set_discovered_lv1_systems(
         &self,
         systems: Vec<DiscoveredLv1System>,
@@ -800,6 +817,37 @@ mod tests {
         assert_eq!(snapshot.connected_lv1_identity, None);
         assert_eq!(snapshot.logs.last().unwrap().severity, LogSeverity::Warning);
         assert_eq!(snapshot.logs.last().unwrap().message, "LV1 did not connect");
+    }
+
+    #[tokio::test]
+    async fn reconnect_failure_preserves_connected_identity_for_next_uuid_match() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        state
+            .set_connected_lv1_identity(Some(identity.clone()))
+            .await;
+        state.set_reconnect_active(true).await;
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
+            .await
+            .expect("current generation should set pending identity");
+
+        let snapshot = state
+            .fail_reconnect_for_generation(generation, "LV1 did not connect")
+            .await
+            .expect("current generation reconnect failure should apply");
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.pending_lv1_identity, None);
+        assert_eq!(snapshot.connected_lv1_identity, Some(identity.clone()));
+        assert_eq!(state.connected_lv1_identity().await, Some(identity));
+        assert!(snapshot.reconnect.active);
     }
 
     #[tokio::test]

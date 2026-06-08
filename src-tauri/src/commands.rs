@@ -320,6 +320,7 @@ pub async fn connect_lv1(
         (*state).clone(),
         (*active_command_bus).clone(),
         identity,
+        ConnectFailureMode::ClearConnectedIdentity,
     )
     .await
 }
@@ -336,6 +337,7 @@ pub async fn connect_lv1_system(
         (*state).clone(),
         (*active_command_bus).clone(),
         identity.clone(),
+        ConnectFailureMode::ClearConnectedIdentity,
     )
     .await?;
 
@@ -406,7 +408,20 @@ async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
         return Ok(snapshot);
     };
 
-    connect_to_target(app, state, active_command_bus, identity).await
+    connect_to_target(
+        app,
+        state,
+        active_command_bus,
+        identity,
+        ConnectFailureMode::PreserveConnectedIdentity,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+enum ConnectFailureMode {
+    ClearConnectedIdentity,
+    PreserveConnectedIdentity,
 }
 
 #[tauri::command]
@@ -445,6 +460,7 @@ async fn connect_to_target<R: Runtime>(
     state: ShellState,
     active_command_bus: ActiveCommandBus,
     identity: crate::connection_state::Lv1SystemIdentity,
+    failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
     let event_bus = AppEventBus::default();
     let (generation, connecting_snapshot) = state.begin_connecting().await;
@@ -486,10 +502,19 @@ async fn connect_to_target<R: Runtime>(
         != lv1_scene_fade_utility::lv1::model::ConnectionStatus::Connected
     {
         runtime_handles.abort_all().await;
-        if let Some(snapshot) = state
-            .fail_connect_for_generation(generation, "LV1 did not connect")
-            .await
-        {
+        let failed_snapshot = match failure_mode {
+            ConnectFailureMode::ClearConnectedIdentity => {
+                state
+                    .fail_connect_for_generation(generation, "LV1 did not connect")
+                    .await
+            }
+            ConnectFailureMode::PreserveConnectedIdentity => {
+                state
+                    .fail_reconnect_for_generation(generation, "LV1 did not connect")
+                    .await
+            }
+        };
+        if let Some(snapshot) = failed_snapshot {
             emit_snapshot(&app, &snapshot);
         } else {
             let snapshot = state.snapshot().await;

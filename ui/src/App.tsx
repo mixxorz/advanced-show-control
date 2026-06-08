@@ -152,88 +152,96 @@ export default function App() {
     };
   }, [appState.reconnect.active, appState.reconnect.attempt]);
 
-  if (showConnection) {
-    return (
-      <ConnectionScreen
-        appState={appState}
-        commandError={commandError}
-        onDisconnect={async () => {
-          await runSnapshotCommand("disconnect_lv1", undefined, setAppState, setCommandError);
-          setShowConnection(true);
-        }}
-        onResume={() => setShowConnection(false)}
-        onSelectSystem={async (identity) => {
-          setCommandError(null);
-          try {
-            const snapshot = await connectLv1System(identity);
-            setAppState(snapshot);
-            if (snapshot.connection === "connected") {
-              setShowConnection(false);
+  return (
+    <>
+      {showConnection ? (
+        <ConnectionScreen
+          appState={appState}
+          commandError={commandError}
+          onDisconnect={async () => {
+            await runSnapshotCommand("disconnect_lv1", undefined, setAppState, setCommandError);
+            setShowConnection(true);
+          }}
+          onResume={() => setShowConnection(false)}
+          onSelectSystem={async (identity) => {
+            setCommandError(null);
+            try {
+              const snapshot = await connectLv1System(identity);
+              setAppState(snapshot);
+              if (snapshot.connection === "connected") {
+                setShowConnection(false);
+              }
+            } catch (error) {
+              setCommandError(String(error));
             }
-          } catch (error) {
-            setCommandError(String(error));
-          }
-        }}
-      />
-    );
+          }}
+        />
+      ) : (
+        <main className="min-h-screen bg-slate-950 text-slate-100">
+          <Header
+            appState={appState}
+            commandError={commandError}
+            onAbortAll={() => runVoidCommand("abort_all_fades", setAppState, setCommandError)}
+            onFinishNow={() => runVoidCommand("finish_fade_now", setAppState, setCommandError)}
+            onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, setAppState, setCommandError)}
+            onOpenConnection={() => setShowConnection(true)}
+            onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, setAppState, setCommandError)}
+            onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, setAppState, setCommandError)}
+            onSaveShowFileAs={() => runSnapshotCommand("save_show_file_as_dialog", undefined, setAppState, setCommandError)}
+            onToggleLockout={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, setAppState, setCommandError)}
+          />
+
+          <nav className="border-b border-slate-800 px-6">
+            <div className="flex gap-2">
+              <TabButton active={activeTab === "scene"} onClick={() => setActiveTab("scene")}>
+                Scene
+              </TabButton>
+              <TabButton active={activeTab === "logs"} onClick={() => setActiveTab("logs")}>
+                Logs
+              </TabButton>
+            </div>
+          </nav>
+
+          <section className="p-6">
+            {activeTab === "scene" && (
+              <SceneTab
+                appState={appState}
+                selectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, setAppState, setCommandError)}
+                setSceneDurationMs={(sceneId: string, durationMs: number) =>
+                  runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, setAppState, setCommandError)
+                }
+                storeSceneConfig={(sceneId: string) =>
+                  runSnapshotCommand("store_scene_config", { sceneId }, setAppState, setCommandError)
+                }
+                setAllChannelsScoped={(sceneId: string, scoped: boolean) =>
+                  runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, setAppState, setCommandError)
+                }
+                setChannelScoped={(sceneId: string, group: number, channel: number, scoped: boolean) =>
+                  runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, setAppState, setCommandError)
+                }
+              />
+            )}
+            {activeTab === "logs" && <LogsTab appState={appState} />}
+          </section>
+        </main>
+      )}
+
+      <ReconnectOverlay active={appState.reconnect.active} />
+    </>
+  );
+}
+
+function ReconnectOverlay(props: { active: boolean }) {
+  if (!props.active) {
+    return null;
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-100">
-      <Header
-        appState={appState}
-        commandError={commandError}
-        onAbortAll={() => runVoidCommand("abort_all_fades", setAppState, setCommandError)}
-        onFinishNow={() => runVoidCommand("finish_fade_now", setAppState, setCommandError)}
-        onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, setAppState, setCommandError)}
-        onOpenConnection={() => setShowConnection(true)}
-        onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, setAppState, setCommandError)}
-        onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, setAppState, setCommandError)}
-        onSaveShowFileAs={() => runSnapshotCommand("save_show_file_as_dialog", undefined, setAppState, setCommandError)}
-        onToggleLockout={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, setAppState, setCommandError)}
-      />
-
-      <nav className="border-b border-slate-800 px-6">
-        <div className="flex gap-2">
-          <TabButton active={activeTab === "scene"} onClick={() => setActiveTab("scene")}>
-            Scene
-          </TabButton>
-          <TabButton active={activeTab === "logs"} onClick={() => setActiveTab("logs")}>
-            Logs
-          </TabButton>
-        </div>
-      </nav>
-
-      <section className="p-6">
-        {activeTab === "scene" && (
-          <SceneTab
-            appState={appState}
-            selectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, setAppState, setCommandError)}
-            setSceneDurationMs={(sceneId: string, durationMs: number) =>
-              runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, setAppState, setCommandError)
-            }
-            storeSceneConfig={(sceneId: string) =>
-              runSnapshotCommand("store_scene_config", { sceneId }, setAppState, setCommandError)
-            }
-            setAllChannelsScoped={(sceneId: string, scoped: boolean) =>
-              runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, setAppState, setCommandError)
-            }
-            setChannelScoped={(sceneId: string, group: number, channel: number, scoped: boolean) =>
-              runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, setAppState, setCommandError)
-            }
-          />
-        )}
-        {activeTab === "logs" && <LogsTab appState={appState} />}
-      </section>
-
-      {appState.reconnect.active && (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70">
-          <div className="rounded-xl border border-slate-700 bg-slate-900 px-8 py-6 text-xl font-semibold text-slate-100 shadow-2xl">
-            Reconnecting...
-          </div>
-        </div>
-      )}
-    </main>
+    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70">
+      <div className="rounded-xl border border-slate-700 bg-slate-900 px-8 py-6 text-xl font-semibold text-slate-100 shadow-2xl">
+        Reconnecting...
+      </div>
+    </div>
   );
 }
 
