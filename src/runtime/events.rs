@@ -1,7 +1,7 @@
 use tokio::sync::broadcast;
 
 use crate::fade::types::FadeEvent;
-use crate::lv1::messages::Lv1Event;
+use crate::lv1::events::Lv1Event;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutomationEvent {
@@ -49,7 +49,7 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::model::SceneState;
+    use crate::lv1::types::SceneState;
 
     #[tokio::test]
     async fn publish_succeeds_without_subscribers() {

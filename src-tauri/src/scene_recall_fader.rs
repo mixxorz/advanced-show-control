@@ -1,5 +1,5 @@
-use advanced_show_control::lv1::messages::Lv1Event;
-use advanced_show_control::lv1::model::SceneState;
+use advanced_show_control::lv1::events::Lv1Event;
+use advanced_show_control::lv1::types::SceneState;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{
     AppEvent, AppEventBus, AutomationEvent, log_lagged_subscriber,
@@ -270,10 +270,10 @@ mod tests {
     use advanced_show_control::fade::curve::FadeCurve;
     use advanced_show_control::fade::engine::FadeEngineHandle;
     use advanced_show_control::fade::types::FadeCommand;
-    use advanced_show_control::lv1::model::{
+    use advanced_show_control::lv1::actor::spawn_actor;
+    use advanced_show_control::lv1::types::{
         ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
     };
-    use advanced_show_control::lv1::state::spawn_actor;
     use advanced_show_control::osc::OscArg;
     use std::io::Write;
     use std::net::TcpListener;
@@ -878,7 +878,7 @@ mod tests {
     async fn spawn_fake_lv1_with_intro(
         event_bus: AppEventBus,
     ) -> (
-        advanced_show_control::lv1::state::Lv1ActorHandle,
+        advanced_show_control::lv1::handle::Lv1ActorHandle,
         std_mpsc::Sender<()>,
         tokio::task::JoinHandle<()>,
     ) {
@@ -901,7 +901,7 @@ mod tests {
     async fn spawn_fake_lv1_with_intro_until_close(
         event_bus: AppEventBus,
     ) -> (
-        advanced_show_control::lv1::state::Lv1ActorHandle,
+        advanced_show_control::lv1::handle::Lv1ActorHandle,
         std_mpsc::Sender<()>,
         std_mpsc::Sender<()>,
         tokio::task::JoinHandle<()>,

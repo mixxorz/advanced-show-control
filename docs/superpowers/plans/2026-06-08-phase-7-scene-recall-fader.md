@@ -64,7 +64,7 @@ Create `src-tauri/src/app_state/scene_recall_tests.rs`:
 
 ```rust
 use lv1_scene_fade_utility::fade::curve::FadeCurve;
-use lv1_scene_fade_utility::lv1::model::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState};
+use lv1_scene_fade_utility::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState};
 
 use super::scene_recall::SceneRecallDecision;
 use super::shell::ShellState;
@@ -159,7 +159,7 @@ use std::collections::HashSet;
 
 use lv1_scene_fade_utility::fade::curve::FadeCurve;
 use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeTarget};
-use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, SceneState};
+use lv1_scene_fade_utility::lv1::types::{ConnectionStatus, SceneState};
 
 use super::shell::{ShellState, scene_id};
 use super::view::{LogSeverity, LogSource};
@@ -771,7 +771,7 @@ git commit -m "test: cover scene recall safety blocks"
 Create `src-tauri/src/scene_recall_fader.rs`:
 
 ```rust
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
+use lv1_scene_fade_utility::lv1::events::Lv1Event;
 use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use tokio::task::JoinHandle;
@@ -886,7 +886,7 @@ Modify `RuntimeHandles` in `src-tauri/src/app_state/shell.rs`:
 #[derive(Default)]
 pub struct RuntimeHandles {
     pub active_generation: u64,
-    pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
+    pub lv1: Option<lv1_scene_fade_utility::lv1::handle::Lv1ActorHandle>,
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
@@ -979,7 +979,7 @@ mod tests {
     use crate::app_state::view::{ChannelConfig, ChannelRef, SceneConfig};
     use lv1_scene_fade_utility::fade::engine::FadeEngineHandle;
     use lv1_scene_fade_utility::fade::types::FadeCommand;
-    use lv1_scene_fade_utility::lv1::model::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState};
+use lv1_scene_fade_utility::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState};
     use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
     use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
     use tokio::sync::mpsc;

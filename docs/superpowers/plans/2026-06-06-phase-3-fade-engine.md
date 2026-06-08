@@ -6,7 +6,7 @@
 
 **Architecture:** `FadeEngine` is a separate tokio actor that subscribes to `Lv1Event` from the existing `Lv1Actor` and sends `Lv1Command::SetGain` commands back to it. The actor owns a 25 Hz tick loop while a fade is active. The `Lv1Actor` is the sole TCP owner — the fade engine never touches the network directly.
 
-**Tech Stack:** Rust, tokio (`mpsc`, `oneshot`, `time::interval`, `time::Instant`), existing `lv1::state::Lv1ActorHandle`.
+**Tech Stack:** Rust, tokio (`mpsc`, `oneshot`, `time::interval`, `time::Instant`), existing `lv1::handle::Lv1ActorHandle`.
 
 ---
 
@@ -348,7 +348,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use crate::fade::curve::{FadeCurve, interpolate};
-use crate::lv1::state::Lv1ActorHandle;
+use crate::lv1::handle::Lv1ActorHandle;
 
 pub const TICK_HZ: u64 = 25;
 pub const MIN_SEND_DELTA_DB: f64 = 0.1;
@@ -1117,7 +1117,7 @@ fn run_fade_test(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use lv1_scene_fade_utility::fade::curve::FadeCurve;
     use lv1_scene_fade_utility::fade::engine::{FadeConfig, FadeEvent, FadeTarget, spawn_engine};
-    use lv1_scene_fade_utility::lv1::state::spawn_actor;
+    use lv1_scene_fade_utility::lv1::actor::spawn_actor;
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");

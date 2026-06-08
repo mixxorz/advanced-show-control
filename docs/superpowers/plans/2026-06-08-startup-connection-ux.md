@@ -764,7 +764,7 @@ async fn lv1_disconnected_event_enters_reconnect_state() {
     let snapshot = state
         .apply_lv1_event_for_generation(
             generation,
-            &lv1_scene_fade_utility::lv1::messages::Lv1Event::Disconnected,
+            &lv1_scene_fade_utility::lv1::events::Lv1Event::Disconnected,
         )
         .await
         .unwrap();

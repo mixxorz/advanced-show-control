@@ -90,7 +90,7 @@ Do not commit after a red test. Continue to Task 2 so the production change is c
 Near the top of `src-tauri/src/scene_recall_fader.rs`, after the existing imports, add:
 
 ```rust
-use lv1_scene_fade_utility::lv1::model::SceneState;
+use lv1_scene_fade_utility::lv1::types::SceneState;
 use std::time::{Duration, Instant};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);

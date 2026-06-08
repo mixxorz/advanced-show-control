@@ -240,7 +240,7 @@ async fn run_engine(
 
             app_event = app_events.recv() => {
                 match app_event {
-                    Ok(AppEvent::Lv1(crate::lv1::messages::Lv1Event::FaderChanged { group, channel, gain_db })) => {
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::FaderChanged { group, channel, gain_db })) => {
                         if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel) {
                             if state.channels[pos].is_override(gain_db) {
                                 state.fan_out(FadeEvent::ChannelOverride { group, channel });
@@ -253,7 +253,7 @@ async fn run_engine(
                             }
                         }
                     }
-                    Ok(AppEvent::Lv1(crate::lv1::messages::Lv1Event::Disconnected)) => {
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected)) => {
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;

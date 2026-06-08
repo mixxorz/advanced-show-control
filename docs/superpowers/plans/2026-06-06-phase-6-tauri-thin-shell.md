@@ -573,7 +573,7 @@ pub struct AppSnapshot {
 
 #[derive(Default)]
 pub struct RuntimeHandles {
-    pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
+    pub lv1: Option<lv1_scene_fade_utility::lv1::handle::Lv1ActorHandle>,
     pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
 }
 
@@ -893,7 +893,7 @@ Create `src-tauri/src/commands.rs`:
 ```rust
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
 use lv1_scene_fade_utility::lv1::discovery::resolve_target;
-use lv1_scene_fade_utility::lv1::state::spawn_actor;
+use lv1_scene_fade_utility::lv1::actor::spawn_actor;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::app_state::{AppSnapshot, ShellState};

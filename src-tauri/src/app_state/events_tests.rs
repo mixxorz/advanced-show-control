@@ -3,8 +3,8 @@ use super::test_support::{
     connected_snapshot, connected_state_with_scene_and_channel, scene_config,
 };
 use super::view::{AppConnectionState, ChannelConfig, ChannelRef};
-use advanced_show_control::lv1::messages::Lv1Event;
-use advanced_show_control::lv1::model::{
+use advanced_show_control::lv1::events::Lv1Event;
+use advanced_show_control::lv1::types::{
     ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
 

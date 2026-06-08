@@ -1,7 +1,11 @@
+pub mod actor;
+pub mod commands;
 pub mod discovery;
+pub mod events;
+pub mod handle;
 pub mod messages;
-pub mod model;
 pub mod parsers;
 pub mod probe;
 pub mod state;
 pub mod tcp;
+pub mod types;

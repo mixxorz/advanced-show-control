@@ -1,9 +1,10 @@
 use clap::{Parser, Subcommand};
-use advanced_show_control::lv1::discovery::{DiscoverOptions, discover, resolve_target};
-use advanced_show_control::lv1::messages::Lv1Event;
-use advanced_show_control::lv1::model::ChannelInfo;
-use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
-use advanced_show_control::lv1::state::{Lv1ActorHandle, spawn_actor};
+use advanced_show_control::lv1::actor::spawn_actor;
+use advanced_show_control::lv1::discovery::{discover, resolve_target, DiscoverOptions};
+use advanced_show_control::lv1::events::Lv1Event;
+use advanced_show_control::lv1::handle::Lv1ActorHandle;
+use advanced_show_control::lv1::probe::{entry_for_message, JsonlLogger, MessageKind};
+use advanced_show_control::lv1::types::ChannelInfo;
 use advanced_show_control::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};

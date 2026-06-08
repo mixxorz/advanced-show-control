@@ -5,9 +5,9 @@ use tokio::sync::Mutex;
 
 use crate::fade::engine::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
+use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::messages::Lv1ActorError;
-use crate::lv1::model::Lv1StateSnapshot;
-use crate::lv1::state::Lv1ActorHandle;
+use crate::lv1::types::Lv1StateSnapshot;
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]

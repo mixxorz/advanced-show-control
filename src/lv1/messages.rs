@@ -1,7 +1,4 @@
 use thiserror::Error;
-use tokio::sync::oneshot;
-
-use super::model::{ChannelInfo, Lv1StateSnapshot, SceneListEntry, SceneState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum Lv1ActorError {
@@ -13,44 +10,4 @@ pub enum Lv1ActorError {
     NotConnected,
     #[error("LV1 actor failed to send command to LV1")]
     CommandSendFailed,
-}
-
-pub enum Lv1Command {
-    GetState {
-        reply: oneshot::Sender<Lv1StateSnapshot>,
-    },
-    SetGain {
-        group: i32,
-        channel: i32,
-        gain_db: f64,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
-    },
-    SetMute {
-        group: i32,
-        channel: i32,
-        muted: bool,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
-    },
-    Flush {
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
-    },
-}
-
-#[derive(Debug, Clone)]
-pub enum Lv1Event {
-    Connected,
-    Disconnected,
-    SceneChanged(SceneState),
-    SceneListChanged(Vec<SceneListEntry>),
-    FaderChanged {
-        group: i32,
-        channel: i32,
-        gain_db: f64,
-    },
-    MuteChanged {
-        group: i32,
-        channel: i32,
-        muted: bool,
-    },
-    ChannelTopologyChanged(Vec<ChannelInfo>),
 }

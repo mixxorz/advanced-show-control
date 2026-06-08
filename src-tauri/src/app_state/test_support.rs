@@ -1,4 +1,4 @@
-use advanced_show_control::lv1::model::{
+use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
 };
 

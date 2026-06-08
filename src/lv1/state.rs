@@ -1,12 +1,13 @@
-//! LV1 live state mirror — actor, types, commands, and events.
+//! LV1 live state mirror helpers.
 
-use tokio::sync::{mpsc, oneshot};
+use std::time::Instant;
 
-use super::messages::{Lv1ActorError, Lv1Command, Lv1Event};
-use super::model::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
-use super::parsers::{parse_channels_batch, parse_scene_list};
 use crate::osc::OscArg;
 use crate::runtime::events::{AppEvent, AppEventBus};
+
+use super::events::Lv1Event;
+use super::parsers::{parse_channels_batch, parse_scene_list};
+use super::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
 
 // ---------------------------------------------------------------------------
 // Group constants (confirmed from hardware logs)
@@ -30,18 +31,18 @@ pub mod group {
 /// as messages arrive; the buffer emits `Some(SceneState)` once both have been
 /// received, then clears itself.
 #[derive(Default)]
-pub struct SceneBuffer {
+pub(super) struct SceneBuffer {
     pending_index: Option<i32>,
     pending_name: Option<String>,
 }
 
 impl SceneBuffer {
-    pub fn apply_index(&mut self, index: i32) -> Option<SceneState> {
+    pub(super) fn apply_index(&mut self, index: i32) -> Option<SceneState> {
         self.pending_index = Some(index);
         self.try_emit()
     }
 
-    pub fn apply_name(&mut self, name: String) -> Option<SceneState> {
+    pub(super) fn apply_name(&mut self, name: String) -> Option<SceneState> {
         self.pending_name = Some(name);
         self.try_emit()
     }
@@ -57,7 +58,7 @@ impl SceneBuffer {
     }
 }
 
-pub fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, gain_db: f64) {
+pub(super) fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, gain_db: f64) {
     if let Some(ch) = channels
         .iter_mut()
         .find(|c| c.group == group && c.channel == channel)
@@ -66,7 +67,7 @@ pub fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: 
     }
 }
 
-pub fn apply_mute_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, muted: bool) {
+pub(super) fn apply_mute_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, muted: bool) {
     if let Some(ch) = channels
         .iter_mut()
         .find(|c| c.group == group && c.channel == channel)
@@ -75,7 +76,7 @@ pub fn apply_mute_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i
     }
 }
 
-pub fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
+pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
     match arg {
         OscArg::Bool(value) => Some(*value),
         OscArg::True => Some(true),
@@ -86,104 +87,18 @@ pub fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
     }
 }
 
-use crate::lv1::tcp::{
-    Lv1TcpClient, decode_frame_payload, pong_for_ping, read_next_async, send_async,
-};
-use std::time::{Duration, Instant};
-
-const PING_TIMEOUT: Duration = Duration::from_secs(10);
-const RECONNECT_DELAY: Duration = Duration::from_secs(3);
-
-/// A cloneable handle to the LV1 actor. Use this to send commands.
-#[derive(Clone)]
-pub struct Lv1ActorHandle {
-    tx: mpsc::Sender<Lv1Command>,
-}
-
-impl Lv1ActorHandle {
-    /// Get a point-in-time snapshot of the current state.
-    pub async fn get_state(&self) -> Lv1StateSnapshot {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self.tx.send(Lv1Command::GetState { reply: reply_tx }).await;
-        reply_rx
-            .await
-            .expect("actor dropped before responding to GetState")
-    }
-
-    /// Send a `/Set/Track/Out/Gain` command to LV1. Fire and forget.
-    pub async fn set_gain(
-        &self,
-        group: i32,
-        channel: i32,
-        gain_db: f64,
-    ) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
-            .tx
-            .send(Lv1Command::SetGain {
-                group,
-                channel,
-                gain_db,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Send a `/Set/Track/Out/Mute` command to LV1. Fire and forget.
-    pub async fn set_mute(
-        &self,
-        group: i32,
-        channel: i32,
-        muted: bool,
-    ) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
-            .tx
-            .send(Lv1Command::SetMute {
-                group,
-                channel,
-                muted,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Wait until all previously queued commands have been processed.
-    pub async fn flush(&self) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::Flush { reply: reply_tx })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-}
-
-struct ActorState {
-    connection: ConnectionStatus,
-    scene: Option<SceneState>,
-    scene_list: Vec<SceneListEntry>,
-    channels: Vec<ChannelInfo>,
-    scene_buf: SceneBuffer,
-    last_ping: Instant,
-    event_bus: AppEventBus,
+pub(super) struct ActorState {
+    pub(super) connection: ConnectionStatus,
+    pub(super) scene: Option<SceneState>,
+    pub(super) scene_list: Vec<SceneListEntry>,
+    pub(super) channels: Vec<ChannelInfo>,
+    pub(super) scene_buf: SceneBuffer,
+    pub(super) last_ping: Instant,
+    pub(super) event_bus: AppEventBus,
 }
 
 impl ActorState {
-    fn new(event_bus: AppEventBus) -> Self {
+    pub(super) fn new(event_bus: AppEventBus) -> Self {
         Self {
             connection: ConnectionStatus::Connecting,
             scene: None,
@@ -195,7 +110,7 @@ impl ActorState {
         }
     }
 
-    fn snapshot(&self) -> Lv1StateSnapshot {
+    pub(super) fn snapshot(&self) -> Lv1StateSnapshot {
         Lv1StateSnapshot {
             connection: self.connection.clone(),
             scene: self.scene.clone(),
@@ -204,226 +119,12 @@ impl ActorState {
         }
     }
 
-    fn fan_out(&mut self, event: Lv1Event) {
+    pub(super) fn fan_out(&mut self, event: Lv1Event) {
         self.event_bus.publish(AppEvent::Lv1(event));
     }
 }
 
-/// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
-pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorHandle {
-    let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_actor(host, port, event_bus, cmd_rx));
-    Lv1ActorHandle { tx: cmd_tx }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-enum DrainCommandsResult {
-    TimedOut,
-    CommandChannelClosed,
-}
-
-/// Drain pending commands for `duration`, responding to GetState immediately.
-/// Used during reconnect delays so callers are never blocked indefinitely.
-async fn drain_commands_for(
-    state: &mut ActorState,
-    cmd_rx: &mut mpsc::Receiver<Lv1Command>,
-    duration: Duration,
-) -> DrainCommandsResult {
-    let deadline = tokio::time::sleep(duration);
-    tokio::pin!(deadline);
-    loop {
-        tokio::select! {
-            _ = &mut deadline => return DrainCommandsResult::TimedOut,
-            cmd = cmd_rx.recv() => match cmd {
-                None => return DrainCommandsResult::CommandChannelClosed,
-                Some(Lv1Command::GetState { reply }) => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Some(Lv1Command::SetGain { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetMute { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::Flush { reply }) => {
-                    let _ = reply.send(Ok(()));
-                }
-            },
-        }
-    }
-}
-
-async fn run_actor(
-    host: String,
-    port: u16,
-    event_bus: AppEventBus,
-    mut cmd_rx: mpsc::Receiver<Lv1Command>,
-) {
-    let mut state = ActorState::new(event_bus);
-
-    loop {
-        // --- Connect (drain commands during reconnect sleeps) ---
-        let mut client = loop {
-            match Lv1TcpClient::connect(&host, port).await {
-                Ok(c) => break c,
-                Err(_) => {
-                    if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
-                        == DrainCommandsResult::CommandChannelClosed
-                    {
-                        return;
-                    }
-                }
-            }
-        };
-
-        let device_name = "lv1-state-mirror";
-        let uuid = uuid::Uuid::new_v4().to_string();
-        if client.register_myfoh(device_name, &uuid).await.is_err() {
-            if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
-                == DrainCommandsResult::CommandChannelClosed
-            {
-                return;
-            }
-            continue;
-        }
-
-        state.connection = ConnectionStatus::Connected;
-        state.last_ping = Instant::now();
-
-        tokio::task::yield_now().await;
-        while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                Lv1Command::GetState { reply } => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Lv1Command::SetGain { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetMute { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::Flush { reply } => {
-                    let _ = reply.send(Ok(()));
-                }
-            }
-        }
-        state.fan_out(Lv1Event::Connected);
-
-        // --- Run loop ---
-        let disconnected = run_connected(&mut client, &mut state, &mut cmd_rx).await;
-
-        // --- Disconnect ---
-        state.connection = ConnectionStatus::Disconnected;
-        state.scene = None;
-        state.channels.clear();
-        state.scene_buf = SceneBuffer::default();
-        state.fan_out(Lv1Event::Disconnected);
-
-        if disconnected == DisconnectReason::CommandChannelClosed {
-            break;
-        }
-
-        tokio::time::sleep(RECONNECT_DELAY).await;
-    }
-}
-
-#[derive(PartialEq)]
-enum DisconnectReason {
-    TcpError,
-    PingTimeout,
-    CommandChannelClosed,
-}
-
-async fn run_connected(
-    client: &mut Lv1TcpClient,
-    state: &mut ActorState,
-    cmd_rx: &mut mpsc::Receiver<Lv1Command>,
-) -> DisconnectReason {
-    let reader = &mut client.reader;
-    let writer = &mut client.writer;
-    let decoder = &mut client.decoder;
-
-    loop {
-        // Check ping watchdog
-        if state.last_ping.elapsed() > PING_TIMEOUT {
-            return DisconnectReason::PingTimeout;
-        }
-
-        tokio::select! {
-            frames = read_next_async(reader, decoder) => {
-                match frames {
-                    Err(_) => return DisconnectReason::TcpError,
-                    Ok(frames) => {
-                        for frame in frames {
-                            if let Ok(msg) = decode_frame_payload(&frame) {
-                                // Handle ping/pong
-                                if let Some((addr, args)) = pong_for_ping(&msg) {
-                                    let _ = send_async(writer, addr, &args).await;
-                                    state.last_ping = Instant::now();
-                                    continue;
-                                }
-                                handle_message(state, &msg);
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Handle commands
-            cmd = cmd_rx.recv() => {
-                match cmd {
-                    None => return DisconnectReason::CommandChannelClosed,
-                    Some(Lv1Command::GetState { reply }) => {
-                        let _ = reply.send(state.snapshot());
-                    }
-                    Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
-                        let result = send_async(
-                            writer,
-                            "/Set/Track/Out/Gain",
-                            &[
-                                crate::osc::OscArg::Int(group),
-                                crate::osc::OscArg::Int(channel),
-                                crate::osc::OscArg::Double(gain_db),
-                            ],
-                        )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
-
-                        let failed = result.is_err();
-                        let _ = reply.send(result);
-                        if failed {
-                            return DisconnectReason::TcpError;
-                        }
-                    }
-                    Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
-                        let result = send_async(
-                            writer,
-                            "/Set/Track/Out/Mute",
-                            &[
-                                crate::osc::OscArg::Int(group),
-                                crate::osc::OscArg::Int(channel),
-                                crate::osc::OscArg::Bool(muted),
-                            ],
-                        )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
-
-                        let failed = result.is_err();
-                        let _ = reply.send(result);
-                        if failed {
-                            return DisconnectReason::TcpError;
-                        }
-                    }
-                    Some(Lv1Command::Flush { reply }) => {
-                        let _ = reply.send(Ok(()));
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
+pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
     match msg.address.as_str() {
         "/Channels" => {
             if let Ok(channels) = parse_channels_batch(&msg.args) {
@@ -495,7 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn actor_publishes_scene_changes_to_event_bus() {
-        use crate::lv1::messages::Lv1Event;
+        use crate::lv1::events::Lv1Event;
         use crate::runtime::events::{AppEvent, AppEventBus};
 
         let bus = AppEventBus::new(16);
@@ -525,17 +226,6 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn drain_commands_reports_closed_command_channel() {
-        let (tx, mut rx) = mpsc::channel(1);
-        drop(tx);
-        let mut state = ActorState::new(AppEventBus::default());
-
-        let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
-
-        assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
     }
 
     #[test]

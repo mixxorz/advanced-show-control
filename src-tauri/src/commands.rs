@@ -1,7 +1,7 @@
 use advanced_show_control::fade::engine::spawn_engine;
+use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::discovery::resolve_target;
-use advanced_show_control::lv1::messages::Lv1Event;
-use advanced_show_control::lv1::state::spawn_actor;
+use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
@@ -487,7 +487,7 @@ async fn connect_to_target<R: Runtime>(
 
     let initial_snapshot = lv1.get_state().await;
     if initial_snapshot.connection
-        != advanced_show_control::lv1::model::ConnectionStatus::Connected
+        != advanced_show_control::lv1::types::ConnectionStatus::Connected
     {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
@@ -737,7 +737,7 @@ fn current_timestamp_millis() -> String {
 mod tests {
     use super::*;
     use advanced_show_control::fade::types::FadeEvent;
-    use advanced_show_control::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
+    use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
     use advanced_show_control::runtime::events::AutomationEvent;
     use std::fs;
     use std::sync::{Arc, Mutex};

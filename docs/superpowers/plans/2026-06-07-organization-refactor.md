@@ -142,11 +142,11 @@ pub struct Lv1StateSnapshot {
 
 - [ ] **Step 3: Create `src/lv1/messages.rs`**
 
-Move `Lv1ActorError`, `Lv1Command`, and `Lv1Event` out of `src/lv1/state.rs`. Keep the existing variants unchanged. Add imports from `tokio::sync::{mpsc, oneshot}` and `crate::lv1::model::{Lv1StateSnapshot, SceneState, SceneListEntry, ChannelInfo}`.
+Move `Lv1ActorError`, `Lv1Command`, and `Lv1Event` out of `src/lv1/state.rs`. Keep the existing variants unchanged. Add imports from `tokio::sync::{mpsc, oneshot}` and `crate::lv1::types::{Lv1StateSnapshot, SceneState, SceneListEntry, ChannelInfo}`.
 
 - [ ] **Step 4: Create `src/lv1/parsers.rs`**
 
-Move `CHANNELS_RECORD_STRIDE`, `parse_channels_batch`, and `parse_scene_list` out of `src/lv1/state.rs`. Keep parser behavior unchanged. Import `crate::osc::OscArg` and `crate::lv1::model::{ChannelInfo, SceneListEntry}`.
+Move `CHANNELS_RECORD_STRIDE`, `parse_channels_batch`, and `parse_scene_list` out of `src/lv1/state.rs`. Keep parser behavior unchanged. Import `crate::osc::OscArg` and `crate::lv1::types::{ChannelInfo, SceneListEntry}`.
 
 - [ ] **Step 5: Update `src/lv1/mod.rs`**
 
@@ -170,13 +170,13 @@ Replace local type/parser definitions with imports:
 
 ```rust
 use crate::lv1::messages::{Lv1ActorError, Lv1Command, Lv1Event};
-use crate::lv1::model::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
+use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
 use crate::lv1::parsers::{parse_channels_batch, parse_scene_list};
 ```
 
 - [ ] **Step 7: Fix downstream imports**
 
-Where files import model types from `lv1::state`, change those imports to `lv1::model`. Where files import `Lv1Event` or actor errors, change those imports to `lv1::messages`. Keep `spawn_actor` and `Lv1ActorHandle` imported from `lv1::state`.
+Where files import model types from `lv1::state`, change those imports to `lv1::types`. Where files import `Lv1Event` or actor errors, change those imports to `lv1::events` or `lv1::messages`. Keep `spawn_actor` and `Lv1ActorHandle` imported from `lv1::actor` and `lv1::handle`.
 
 Expected likely files:
 

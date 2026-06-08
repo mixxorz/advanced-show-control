@@ -602,7 +602,7 @@ Add this helper before `run_vegas`:
 
 ```rust
 async fn wait_for_channels(
-    lv1: &lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+    lv1: &lv1_scene_fade_utility::lv1::handle::Lv1ActorHandle,
     timeout_ms: u64,
 ) -> AppResult<Vec<lv1_scene_fade_utility::lv1::state::ChannelInfo>> {
     let deadline = Instant::now() + Duration::from_millis(timeout_ms);

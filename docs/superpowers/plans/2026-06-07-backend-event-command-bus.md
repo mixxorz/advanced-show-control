@@ -52,7 +52,7 @@ Create `src/runtime/events.rs` with the tests first:
 use tokio::sync::broadcast;
 
 use crate::fade::types::FadeEvent;
-use crate::lv1::messages::Lv1Event;
+use crate::lv1::events::Lv1Event;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AutomationEvent {
@@ -75,7 +75,7 @@ pub struct AppEventBus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::model::SceneState;
+    use crate::lv1::types::SceneState;
 
     #[tokio::test]
     async fn publish_succeeds_without_subscribers() {
@@ -214,7 +214,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::types::FadeConfig;
-use crate::lv1::model::Lv1StateSnapshot;
+use crate::lv1::types::Lv1StateSnapshot;
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AppCommandError {
@@ -383,7 +383,7 @@ use tokio::sync::mpsc;
 
 use crate::fade::engine::FadeEngineHandle;
 use crate::lv1::messages::Lv1ActorError;
-use crate::lv1::state::Lv1ActorHandle;
+use crate::lv1::handle::Lv1ActorHandle;
 use crate::runtime::commands::{AppCommand, AppCommandError};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
@@ -503,7 +503,7 @@ Add this test to `src/lv1/state.rs` inside the existing `#[cfg(test)] mod tests`
 ```rust
 #[tokio::test]
 async fn actor_publishes_scene_changes_to_event_bus() {
-    use crate::lv1::messages::Lv1Event;
+    use crate::lv1::events::Lv1Event;
     use crate::runtime::events::{AppEvent, AppEventBus};
 
     let bus = AppEventBus::new(16);
@@ -1077,8 +1077,8 @@ git commit -m "refactor: project shell state from app events"
 Create `tests/runtime_bus.rs`:
 
 ```rust
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::SceneState;
+use lv1_scene_fade_utility::lv1::events::Lv1Event;
+use lv1_scene_fade_utility::lv1::types::SceneState;
 use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
 
 #[tokio::test]

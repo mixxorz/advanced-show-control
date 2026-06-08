@@ -2,7 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use advanced_show_control::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::runtime::commands::AppCommandBus;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -20,7 +20,7 @@ pub(super) const MAX_LOGS: usize = 200;
 #[derive(Default)]
 pub struct RuntimeHandles {
     pub active_generation: u64,
-    pub lv1: Option<advanced_show_control::lv1::state::Lv1ActorHandle>,
+    pub lv1: Option<advanced_show_control::lv1::handle::Lv1ActorHandle>,
     pub fade: Option<advanced_show_control::fade::engine::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
@@ -452,8 +452,8 @@ pub(super) fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use advanced_show_control::lv1::messages::Lv1Event;
-    use advanced_show_control::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
+    use advanced_show_control::lv1::events::Lv1Event;
+    use advanced_show_control::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
 
     #[tokio::test]
     async fn default_snapshot_exposes_untitled_show_and_is_not_dirty() {

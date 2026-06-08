@@ -1,6 +1,6 @@
 use crate::osc::OscArg;
 
-use super::model::{ChannelInfo, SceneListEntry};
+use super::types::{ChannelInfo, SceneListEntry};
 
 // Each channel record in the /Channels batch has 19 fields:
 // [0] s:name, [1] i:group, [2] i:channel, [3] d:gain_db,

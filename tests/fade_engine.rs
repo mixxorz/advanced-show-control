@@ -1,7 +1,7 @@
 use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::engine::spawn_engine;
 use advanced_show_control::fade::types::{FadeConfig, FadeEvent, FadeSceneIdentity, FadeTarget};
-use advanced_show_control::lv1::state::spawn_actor;
+use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::commands::AppCommandBus;
@@ -97,7 +97,7 @@ async fn wait_for_app_fade_event(
 }
 
 async fn spawn_runtime_for_test(
-    lv1: advanced_show_control::lv1::state::Lv1ActorHandle,
+    lv1: advanced_show_control::lv1::handle::Lv1ActorHandle,
     event_bus: AppEventBus,
 ) -> (
     AppCommandBus,
