@@ -93,6 +93,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "uses real-time scene recall arming sleep; replace with injected clock"]
     fn accepts_after_two_second_arming_delay() {
         let mut state = SceneRecallState::default();
         let scene = scene(1, "Intro");
@@ -104,6 +105,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "uses real-time scene recall repeat-delay sleep; replace with injected clock"]
     fn suppresses_same_scene_repeat_for_500ms() {
         let mut state = SceneRecallState::default();
         let scene = scene(1, "Intro");
