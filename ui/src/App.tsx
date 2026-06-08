@@ -56,7 +56,6 @@ export default function App() {
         appState={appState}
         commandError={commandError}
         onAbortAll={() => runVoidCommand("abort_all_fades", setAppState, setCommandError)}
-        onFinishNow={() => runVoidCommand("finish_fade_now", setAppState, setCommandError)}
         onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, setAppState, setCommandError)}
         onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, setAppState, setCommandError)}
         onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, setAppState, setCommandError)}

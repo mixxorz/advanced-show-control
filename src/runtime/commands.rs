@@ -101,14 +101,6 @@ impl AppCommandBus {
         publish_failure(&self.event_bus, "abort_all_fades", &result);
         result
     }
-
-    pub async fn finish_fade_now(&self) -> Result<(), AppCommandError> {
-        let result = Err(AppCommandError::CommandFailed(
-            "finish-now fade command is unavailable".to_string(),
-        ));
-        publish_failure(&self.event_bus, "finish_fade_now", &result);
-        result
-    }
 }
 
 fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {

@@ -205,18 +205,6 @@ pub async fn abort_all_fades(
 }
 
 #[tauri::command]
-pub async fn finish_fade_now(
-    active_command_bus: State<'_, ActiveCommandBus>,
-) -> Result<(), String> {
-    let command_bus = active_command_bus.current().await;
-    let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
-    command_bus
-        .finish_fade_now()
-        .await
-        .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
 pub async fn connect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,

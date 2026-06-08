@@ -6,7 +6,6 @@ export function Header(props: {
   appState: AppViewState;
   commandError: string | null;
   onAbortAll: () => void;
-  onFinishNow: () => void;
   onNewShowFile: () => void;
   onOpenShowFile: () => void;
   onSaveShowFile: () => void;
@@ -48,12 +47,6 @@ export function Header(props: {
             onClick={props.onToggleLockout}
           >
             {props.appState.lockout ? "Lockout On" : "Lockout Off"}
-          </button>
-          <button
-            className="rounded-lg border border-slate-700 px-4 py-3 font-semibold text-slate-100 hover:bg-slate-800"
-            onClick={props.onFinishNow}
-          >
-            Finish Now
           </button>
           <button
             className="rounded-lg bg-red-700 px-5 py-3 font-bold text-white shadow-lg shadow-red-950/40 hover:bg-red-600"
