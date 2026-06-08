@@ -1,5 +1,6 @@
 mod app_state;
 mod commands;
+mod connection_preferences;
 mod scene_recall_fader;
 mod show_file;
 
