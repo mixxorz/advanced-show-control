@@ -3,7 +3,6 @@ pub mod commands;
 pub mod discovery;
 pub mod events;
 pub mod handle;
-pub mod messages;
 pub mod parsers;
 pub mod probe;
 pub mod state;

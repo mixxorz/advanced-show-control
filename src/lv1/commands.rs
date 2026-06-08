@@ -1,6 +1,6 @@
 use tokio::sync::oneshot;
 
-use super::messages::Lv1ActorError;
+use super::events::Lv1ActorError;
 use super::types::Lv1StateSnapshot;
 
 pub enum Lv1Command {

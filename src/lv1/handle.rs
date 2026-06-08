@@ -1,7 +1,7 @@
 use tokio::sync::{mpsc, oneshot};
 
 use super::commands::Lv1Command;
-use super::messages::Lv1ActorError;
+use super::events::Lv1ActorError;
 use super::types::Lv1StateSnapshot;
 
 /// A cloneable handle to the LV1 actor. Use this to send commands.

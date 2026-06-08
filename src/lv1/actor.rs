@@ -6,8 +6,8 @@ use tokio::sync::mpsc;
 
 use super::commands::Lv1Command;
 use super::events::Lv1Event;
+use super::events::Lv1ActorError;
 use super::handle::Lv1ActorHandle;
-use super::messages::Lv1ActorError;
 use super::state::{handle_message, ActorState};
 use super::tcp::{decode_frame_payload, pong_for_ping, read_next_async, send_async, Lv1TcpClient};
 use super::types::ConnectionStatus;
