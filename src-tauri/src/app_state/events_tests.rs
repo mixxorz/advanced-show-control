@@ -292,6 +292,39 @@ async fn begin_connection_preserves_incoming_connection_state() {
 }
 
 #[tokio::test]
+async fn begin_connection_clears_reconnect_state_when_connected() {
+    let state = ShellState::default();
+    state.set_reconnect_active(true).await;
+
+    let snapshot = state
+        .begin_connection(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: Vec::new(),
+            channels: Vec::new(),
+        })
+        .await;
+
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
+    assert!(!snapshot.reconnect.active);
+}
+
+#[tokio::test]
+async fn lv1_connected_event_clears_reconnect_state() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state.set_reconnect_active(true).await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+        .await
+        .expect("event should apply to current generation");
+
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
+    assert!(!snapshot.reconnect.active);
+}
+
+#[tokio::test]
 async fn stale_lv1_events_are_ignored_after_generation_change() {
     let state = ShellState::default();
 

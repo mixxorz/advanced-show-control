@@ -92,6 +92,7 @@ impl ShellState {
         match event {
             Lv1Event::Connected => {
                 ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
+                inner.reconnect_state.active = false;
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Info,
@@ -312,7 +313,11 @@ fn ensure_lv1_snapshot(inner: &mut ShellInner) -> &mut Lv1StateSnapshot {
 }
 
 fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) -> AppViewState {
+    let connected = matches!(snapshot.connection, ConnectionStatus::Connected);
     inner.lv1_snapshot = Some(snapshot);
+    if connected {
+        inner.reconnect_state.active = false;
+    }
     let scenes = inner
         .lv1_snapshot
         .as_ref()
