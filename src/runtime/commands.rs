@@ -103,11 +103,9 @@ impl AppCommandBus {
     }
 
     pub async fn finish_fade_now(&self) -> Result<(), AppCommandError> {
-        let fade = self.targets.lock().await.fade.clone();
-        let result = match fade {
-            Some(fade) => fade.finish_now().await,
-            None => Err(AppCommandError::FadeUnavailable),
-        };
+        let result = Err(AppCommandError::CommandFailed(
+            "finish-now fade command is unavailable".to_string(),
+        ));
         publish_failure(&self.event_bus, "finish_fade_now", &result);
         result
     }
@@ -130,7 +128,7 @@ fn publish_failure(event_bus: &AppEventBus, command: &str, result: &Result<(), A
 mod tests {
     use super::*;
     use crate::fade::curve::FadeCurve;
-    use crate::fade::types::{FadeConfig, FadeTarget};
+    use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
     use crate::runtime::events::{AppEvent, AppEventBus};
 
     #[tokio::test]
@@ -149,6 +147,10 @@ mod tests {
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new(event_bus.clone());
         let config = FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 1,
@@ -179,7 +181,7 @@ mod tests {
         let fade = FadeEngineHandle::new(fade_tx);
 
         tokio::spawn(async move {
-            if let Some(crate::fade::types::FadeCommand::StartFade { reply, .. }) =
+            if let Some(crate::fade::types::FadeCommand::RecallSceneFade { reply, .. }) =
                 fade_rx.recv().await
             {
                 let _ = reply.send(Ok(()));
@@ -190,6 +192,10 @@ mod tests {
         let cloned_bus = bus.clone();
 
         let config = FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 1,

@@ -1,6 +1,8 @@
 use lv1_scene_fade_utility::fade::curve::FadeCurve;
 use lv1_scene_fade_utility::fade::engine::spawn_engine;
-use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeTarget};
+use lv1_scene_fade_utility::fade::types::{
+    FadeConfig, FadeEvent, FadeSceneIdentity, FadeTarget,
+};
 use lv1_scene_fade_utility::lv1::state::spawn_actor;
 use lv1_scene_fade_utility::lv1::tcp::encode_frame;
 use lv1_scene_fade_utility::osc::OscArg;
@@ -85,6 +87,10 @@ async fn engine_emits_fade_started_and_completed() {
 
     let _ = engine
         .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
@@ -133,6 +139,10 @@ async fn engine_abort_all_stops_fade() {
 
     let _ = engine
         .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
@@ -195,6 +205,10 @@ async fn engine_detects_manual_override() {
 
     let _ = engine
         .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
@@ -243,6 +257,10 @@ async fn start_fade_while_running_replaces_previous() {
 
     let _ = engine
         .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
@@ -262,6 +280,10 @@ async fn start_fade_while_running_replaces_previous() {
 
     let _ = engine
         .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,

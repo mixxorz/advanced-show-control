@@ -547,6 +547,10 @@ async fn run_fade_test(
 
     let _ = engine
         .start_fade(FadeConfig {
+            scene: lv1_scene_fade_utility::fade::types::FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
             targets: vec![FadeTarget {
                 group,
                 channel,

@@ -236,24 +236,26 @@ mod tests {
             FadeCommand::AbortAll { reply } => {
                 let _ = reply.send(Ok(()));
             }
-            other => panic!("expected AbortAll before StartFade, got {other:?}"),
+            other => panic!("expected AbortAll before RecallSceneFade, got {other:?}"),
         }
 
         let start = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
             .await
-            .expect("timed out waiting for StartFade")
+            .expect("timed out waiting for RecallSceneFade")
             .expect("fade command channel should be open");
         match start {
-            FadeCommand::StartFade { config, reply } => {
+            FadeCommand::RecallSceneFade { config, reply } => {
                 assert_eq!(config.duration_ms, 4_000);
                 assert_eq!(config.curve, FadeCurve::Linear);
+                assert_eq!(config.scene.index, 1);
+                assert_eq!(config.scene.name, "Intro");
                 assert_eq!(config.targets.len(), 1);
                 assert_eq!(config.targets[0].group, 0);
                 assert_eq!(config.targets[0].channel, 2);
                 assert_eq!(config.targets[0].target_db, -12.5);
                 let _ = reply.send(Ok(()));
             }
-            other => panic!("expected StartFade after AbortAll, got {other:?}"),
+            other => panic!("expected RecallSceneFade after AbortAll, got {other:?}"),
         }
 
         wait_for_log(&state, "Auto fade start requested for scene 1: Intro").await;
@@ -295,7 +297,7 @@ mod tests {
 
             tokio::time::timeout(Duration::from_millis(100), fade_rx.recv())
                 .await
-                .expect_err("stale generation should not send StartFade after start log");
+                .expect_err("stale generation should not send RecallSceneFade after start log");
         });
 
         start_scene_recall_fade_with_hook(
@@ -583,6 +585,10 @@ mod tests {
             scene_id: "1::Intro".to_string(),
             scene_label: "1: Intro".to_string(),
             fade_config: lv1_scene_fade_utility::fade::types::FadeConfig {
+                scene: lv1_scene_fade_utility::fade::types::FadeSceneIdentity {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
                 targets: vec![lv1_scene_fade_utility::fade::types::FadeTarget {
                     group: 0,
                     channel: 2,

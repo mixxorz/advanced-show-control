@@ -203,6 +203,13 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) -> AppView
                 "Fade aborted".to_string(),
             );
         }
+        FadeEvent::ChannelCompleted { group, channel } => {
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Info,
+                format!("Fade channel completed: group {group}, channel {channel}"),
+            );
+        }
         FadeEvent::ChannelOverride { group, channel } => {
             inner.fade_state = AppFadeState::Blocked;
             inner.push_log(
