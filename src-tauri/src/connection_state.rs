@@ -31,6 +31,7 @@ pub struct DiscoveredLv1System {
 #[serde(rename_all = "camelCase")]
 pub struct ReconnectState {
     pub active: bool,
+    pub attempt: u64,
 }
 
 pub fn identity_from_discovery(entry: &DiscoveryEntry) -> Option<Lv1SystemIdentity> {

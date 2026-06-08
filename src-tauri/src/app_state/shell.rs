@@ -177,7 +177,18 @@ impl ShellState {
 
     pub async fn set_reconnect_active(&self, active: bool) -> AppViewState {
         let mut inner = self.inner.lock().await;
+        if active {
+            inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
+        }
         inner.reconnect_state.active = active;
+        snapshot_from_inner(&inner)
+    }
+
+    pub async fn reconnect_timed_out(&self, attempt: u64) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+            inner.reconnect_state.active = false;
+        }
         snapshot_from_inner(&inner)
     }
 
@@ -240,7 +251,10 @@ impl ShellState {
 
 pub(super) fn refresh_discovered_statuses(inner: &mut ShellInner) {
     let connected_identity_is_live = matches!(
-        inner.lv1_snapshot.as_ref().map(|snapshot| &snapshot.connection),
+        inner
+            .lv1_snapshot
+            .as_ref()
+            .map(|snapshot| &snapshot.connection),
         Some(ConnectionStatus::Connected)
     );
     for system in &mut inner.discovered_lv1_systems {
@@ -589,7 +603,10 @@ mod tests {
             address: "192.168.1.35".to_string(),
             port: 50000,
         });
-        inner.reconnect_state = crate::connection_state::ReconnectState { active: true };
+        inner.reconnect_state = crate::connection_state::ReconnectState {
+            active: true,
+            attempt: 1,
+        };
 
         let snapshot = snapshot_from_inner(&inner);
 

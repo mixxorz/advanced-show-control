@@ -93,6 +93,7 @@ impl ShellState {
             Lv1Event::Connected => {
                 ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
                 inner.reconnect_state.active = false;
+                refresh_discovered_statuses(&mut inner);
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Info,
@@ -104,6 +105,9 @@ impl ShellState {
                 inner.lv1_snapshot = None;
                 inner.pending_lv1_identity = None;
                 inner.reconnect_state.active = had_connected_identity;
+                if had_connected_identity {
+                    inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
+                }
                 refresh_discovered_statuses(&mut inner);
                 inner.push_log(
                     LogSource::Lv1,

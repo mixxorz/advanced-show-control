@@ -245,15 +245,17 @@ pub async fn disconnect_lv1(
 pub async fn reconnect_timed_out(
     app: AppHandle,
     state: State<'_, ShellState>,
+    attempt: u64,
 ) -> Result<AppViewState, String> {
-    reconnect_timed_out_snapshot(app, (*state).clone()).await
+    reconnect_timed_out_snapshot(app, (*state).clone(), attempt).await
 }
 
 async fn reconnect_timed_out_snapshot<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
+    attempt: u64,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.set_reconnect_active(false).await;
+    let snapshot = state.reconnect_timed_out(attempt).await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -695,13 +697,58 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let state = ShellState::default();
-        state.set_reconnect_active(true).await;
+        let reconnecting = enter_reconnect_state(&state).await;
 
-        let snapshot = reconnect_timed_out_snapshot(handle, state)
+        let snapshot = reconnect_timed_out_snapshot(handle, state, reconnecting.reconnect.attempt)
             .await
             .expect("timeout command should return snapshot");
 
         assert!(!snapshot.reconnect.active);
+    }
+
+    #[tokio::test]
+    async fn stale_reconnect_timed_out_does_not_clear_newer_reconnect_state() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let state = ShellState::default();
+        let first_reconnect = enter_reconnect_state(&state).await;
+        state
+            .apply_lv1_event_for_generation(1, &Lv1Event::Connected)
+            .await
+            .expect("connected event should apply");
+        let second_reconnect = state
+            .apply_lv1_event_for_generation(1, &Lv1Event::Disconnected)
+            .await
+            .expect("second disconnect should apply");
+        assert!(second_reconnect.reconnect.active);
+        assert!(second_reconnect.reconnect.attempt > first_reconnect.reconnect.attempt);
+
+        let snapshot =
+            reconnect_timed_out_snapshot(handle, state, first_reconnect.reconnect.attempt)
+                .await
+                .expect("timeout command should return snapshot");
+
+        assert!(snapshot.reconnect.active);
+        assert_eq!(
+            snapshot.reconnect.attempt,
+            second_reconnect.reconnect.attempt
+        );
+    }
+
+    async fn enter_reconnect_state(state: &ShellState) -> AppViewState {
+        state
+            .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }))
+            .await;
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("disconnect should apply")
     }
 
     #[test]

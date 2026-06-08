@@ -225,6 +225,47 @@ async fn lv1_disconnected_event_enters_reconnect_state() {
         .unwrap();
 
     assert!(snapshot.reconnect.active);
+    assert_eq!(snapshot.reconnect.attempt, 1);
+}
+
+#[tokio::test]
+async fn lv1_connected_event_refreshes_discovered_row_status() {
+    let state = super::ShellState::default();
+    let identity = crate::connection_state::Lv1SystemIdentity {
+        uuid: Some("uuid-1".to_string()),
+        host: Some("LV1-FOH".to_string()),
+        address: "192.168.1.35".to_string(),
+        port: 50000,
+    };
+    state
+        .set_connected_lv1_identity(Some(identity.clone()))
+        .await;
+    state
+        .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+            identity,
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }])
+        .await;
+    let (generation, _) = state.begin_connecting().await;
+    let disconnected = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("disconnect should apply to current generation");
+    assert_ne!(
+        disconnected.discovered_lv1_systems[0].status,
+        crate::connection_state::DiscoveredLv1Status::Connected
+    );
+
+    let connected = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+        .await
+        .expect("connected event should apply to current generation");
+
+    assert_eq!(
+        connected.discovered_lv1_systems[0].status,
+        crate::connection_state::DiscoveredLv1Status::Connected
+    );
 }
 
 #[tokio::test]
@@ -245,6 +286,7 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
         .await
         .expect("first disconnect should apply to current generation");
     assert!(first_disconnect.reconnect.active);
+    let first_attempt = first_disconnect.reconnect.attempt;
 
     let connected = state
         .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
@@ -258,6 +300,7 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
         .expect("second disconnect should apply to current generation");
 
     assert!(second_disconnect.reconnect.active);
+    assert!(second_disconnect.reconnect.attempt > first_attempt);
 }
 
 #[tokio::test]
