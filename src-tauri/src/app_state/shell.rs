@@ -89,6 +89,22 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    pub async fn establish_connected_lv1_identity_for_generation(
+        &self,
+        generation: u64,
+        identity: Lv1SystemIdentity,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.connected_lv1_identity = Some(identity);
+        inner.pending_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
+        Some(snapshot_from_inner(&inner))
+    }
+
     pub async fn set_pending_lv1_identity(
         &self,
         identity: Option<Lv1SystemIdentity>,
@@ -97,6 +113,29 @@ impl ShellState {
         inner.pending_lv1_identity = identity;
         refresh_discovered_statuses(&mut inner);
         snapshot_from_inner(&inner)
+    }
+
+    pub async fn set_pending_lv1_identity_for_generation(
+        &self,
+        generation: u64,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> Option<AppViewState> {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return None;
+        }
+
+        inner.pending_lv1_identity = identity;
+        refresh_discovered_statuses(&mut inner);
+        Some(snapshot_from_inner(&inner))
+    }
+
+    pub async fn clear_pending_lv1_identity_for_generation(
+        &self,
+        generation: u64,
+    ) -> Option<AppViewState> {
+        self.set_pending_lv1_identity_for_generation(generation, None)
+            .await
     }
 
     pub async fn set_discovered_lv1_systems(
@@ -124,6 +163,20 @@ impl ShellState {
         active_command_bus.set(None).await;
     }
 
+    pub async fn clear_runtime_handles_with_active_generation(
+        &self,
+        generation: u64,
+        active_command_bus: &ActiveCommandBus,
+    ) {
+        let mut handles = self.handles.lock().await;
+        if handles.active_generation != generation {
+            return;
+        }
+
+        handles.abort_all().await;
+        active_command_bus.set(None).await;
+    }
+
     pub async fn install_runtime_handles_for_generation(
         &self,
         generation: u64,
@@ -146,7 +199,7 @@ impl ShellState {
     }
 }
 
-fn refresh_discovered_statuses(inner: &mut ShellInner) {
+pub(super) fn refresh_discovered_statuses(inner: &mut ShellInner) {
     for system in &mut inner.discovered_lv1_systems {
         system.status = if Some(&system.identity) == inner.connected_lv1_identity.as_ref() {
             crate::connection_state::DiscoveredLv1Status::Connected
@@ -482,7 +535,9 @@ mod tests {
             address: "192.168.1.36".to_string(),
             port: 50000,
         };
-        state.set_connected_lv1_identity(Some(connected.clone())).await;
+        state
+            .set_connected_lv1_identity(Some(connected.clone()))
+            .await;
         state.set_pending_lv1_identity(Some(pending.clone())).await;
 
         let snapshot = state
@@ -508,6 +563,46 @@ mod tests {
             snapshot.discovered_lv1_systems[1].status,
             crate::connection_state::DiscoveredLv1Status::Connecting
         );
+    }
+
+    #[tokio::test]
+    async fn stale_generation_cannot_establish_connected_or_clear_current_pending_identity() {
+        let state = ShellState::default();
+        let stale_identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let current_identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-2".to_string()),
+            host: Some("LV1-MON".to_string()),
+            address: "192.168.1.36".to_string(),
+            port: 50000,
+        };
+
+        let (stale_generation, _) = state.begin_connecting().await;
+        let (current_generation, _) = state.begin_connecting().await;
+        state
+            .set_pending_lv1_identity_for_generation(
+                current_generation,
+                Some(current_identity.clone()),
+            )
+            .await
+            .expect("current generation should set pending identity");
+
+        let stale_establish = state
+            .establish_connected_lv1_identity_for_generation(stale_generation, stale_identity)
+            .await;
+        let stale_clear = state
+            .clear_pending_lv1_identity_for_generation(stale_generation)
+            .await;
+        let snapshot = state.snapshot().await;
+
+        assert!(stale_establish.is_none());
+        assert!(stale_clear.is_none());
+        assert_eq!(snapshot.connected_lv1_identity, None);
+        assert_eq!(snapshot.pending_lv1_identity, Some(current_identity));
     }
 
     #[test]

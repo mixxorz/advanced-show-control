@@ -353,6 +353,43 @@ async fn disconnect_increments_generation_and_ignores_old_events() {
 }
 
 #[tokio::test]
+async fn manual_disconnect_clears_identities_and_connected_row_status() {
+    let state = ShellState::default();
+    let connected = crate::connection_state::Lv1SystemIdentity {
+        uuid: Some("uuid-1".to_string()),
+        host: Some("LV1-FOH".to_string()),
+        address: "192.168.1.35".to_string(),
+        port: 50000,
+    };
+    let pending = crate::connection_state::Lv1SystemIdentity {
+        uuid: Some("uuid-2".to_string()),
+        host: Some("LV1-MON".to_string()),
+        address: "192.168.1.36".to_string(),
+        port: 50000,
+    };
+    state
+        .set_connected_lv1_identity(Some(connected.clone()))
+        .await;
+    state.set_pending_lv1_identity(Some(pending.clone())).await;
+    state
+        .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+            identity: connected,
+            latency_ms: Some(10),
+            status: crate::connection_state::DiscoveredLv1Status::Available,
+        }])
+        .await;
+
+    let (_, snapshot) = state.disconnect().await;
+
+    assert_eq!(snapshot.connected_lv1_identity, None);
+    assert_eq!(snapshot.pending_lv1_identity, None);
+    assert_ne!(
+        snapshot.discovered_lv1_systems[0].status,
+        crate::connection_state::DiscoveredLv1Status::Connected
+    );
+}
+
+#[tokio::test]
 async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;

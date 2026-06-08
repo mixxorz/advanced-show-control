@@ -275,7 +275,13 @@ pub async fn connect_lv1(
         port,
     };
 
-    connect_to_target(app, (*state).clone(), (*active_command_bus).clone(), identity).await
+    connect_to_target(
+        app,
+        (*state).clone(),
+        (*active_command_bus).clone(),
+        identity,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -332,8 +338,12 @@ async fn connect_to_target<R: Runtime>(
     let event_bus = AppEventBus::default();
     let (generation, connecting_snapshot) = state.begin_connecting().await;
     emit_snapshot(&app, &connecting_snapshot);
-    let pending_snapshot = state.set_pending_lv1_identity(Some(identity.clone())).await;
-    emit_snapshot(&app, &pending_snapshot);
+    if let Some(pending_snapshot) = state
+        .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
+        .await
+    {
+        emit_snapshot(&app, &pending_snapshot);
+    }
     let events = event_bus.subscribe();
 
     let shell_state = state.clone();
@@ -367,14 +377,19 @@ async fn connect_to_target<R: Runtime>(
         Some(snapshot) => snapshot,
         None => {
             runtime_handles.abort_all().await;
-            state.set_pending_lv1_identity(None).await;
+            if let Some(snapshot) = state
+                .clear_pending_lv1_identity_for_generation(generation)
+                .await
+            {
+                emit_snapshot(&app, &snapshot);
+            }
             let snapshot = state.snapshot().await;
             emit_snapshot(&app, &snapshot);
             return Ok(snapshot);
         }
     };
 
-    let installed_snapshot = install_connected_runtime(
+    let _installed_snapshot = install_connected_runtime(
         &app,
         &state,
         shell_state,
@@ -386,12 +401,18 @@ async fn connect_to_target<R: Runtime>(
     )
     .await?;
 
-    if state.snapshot_for_generation(generation).await.is_none() {
-        return Ok(installed_snapshot);
-    }
+    let Some(snapshot) = state
+        .establish_connected_lv1_identity_for_generation(generation, identity)
+        .await
+    else {
+        state
+            .clear_runtime_handles_with_active_generation(generation, &active_command_bus)
+            .await;
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&app, &snapshot);
+        return Ok(snapshot);
+    };
 
-    state.set_connected_lv1_identity(Some(identity)).await;
-    let snapshot = state.set_pending_lv1_identity(None).await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }

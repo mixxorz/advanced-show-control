@@ -5,7 +5,8 @@ use lv1_scene_fade_utility::lv1::messages::Lv1Event;
 use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
 
 use super::shell::{
-    MAX_LOGS, ShellInner, ShellState, current_timestamp, scene_id, snapshot_from_inner,
+    MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses, scene_id,
+    snapshot_from_inner,
 };
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource, SceneConfig};
 
@@ -65,6 +66,9 @@ impl ShellState {
         inner.generation = inner.generation.saturating_add(1);
         inner.duration_zero_skip_logs.clear();
         inner.lv1_snapshot = None;
+        inner.connected_lv1_identity = None;
+        inner.pending_lv1_identity = None;
+        refresh_discovered_statuses(&mut inner);
         inner.push_log(
             LogSource::App,
             LogSeverity::Info,
@@ -95,6 +99,9 @@ impl ShellState {
             }
             Lv1Event::Disconnected => {
                 inner.lv1_snapshot = None;
+                inner.connected_lv1_identity = None;
+                inner.pending_lv1_identity = None;
+                refresh_discovered_statuses(&mut inner);
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Warning,
