@@ -2,11 +2,9 @@ use std::collections::HashSet;
 
 use crate::lv1::events::Lv1Event;
 use crate::runtime::commands::AppCommandBus;
-use crate::runtime::events::{AppEvent, AppEventBus, AutomationEvent, log_lagged_subscriber};
+use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::scene_recall::policy::{decide_scene_recall, RecallPolicyDecision, RecallPolicyInput};
 use crate::scene_recall::state::SceneRecallState;
-
-const AUTOMATION_RULE_ID: &str = "scene-recall-fader";
 
 pub fn spawn_scene_recall_fader(
     generation: u64,
@@ -100,10 +98,6 @@ pub fn spawn_scene_recall_fader(
                                     scene_label: scene_label.clone(),
                                 },
                             ));
-                            event_bus.publish(AppEvent::Automation(AutomationEvent::RuleTriggered {
-                                rule_id: AUTOMATION_RULE_ID.to_string(),
-                            }));
-
                             if command_bus.get_generation().await != generation {
                                 continue;
                             }
@@ -291,16 +285,14 @@ mod tests {
 
         let mut seen_ready = false;
         let mut seen_start_requested = false;
-        let mut seen_rule_triggered = false;
         for _ in 0..3 {
             match next_app_event(&mut events).await {
                 AppEvent::SceneRecall(SceneRecallEvent::Ready { .. }) => seen_ready = true,
                 AppEvent::SceneRecall(SceneRecallEvent::StartRequested { .. }) => seen_start_requested = true,
-                AppEvent::Automation(AutomationEvent::RuleTriggered { .. }) => seen_rule_triggered = true,
                 other => panic!("unexpected event: {other:?}"),
             }
         }
-        assert!(seen_ready && seen_start_requested && seen_rule_triggered);
+        assert!(seen_ready && seen_start_requested);
 
         let fade_command = tokio::time::timeout(Duration::from_secs(1), fade_rx.recv())
             .await
@@ -362,7 +354,7 @@ mod tests {
         loop {
             let event = events.recv().await.unwrap();
             match event {
-                AppEvent::SceneRecall(_) | AppEvent::Automation(_) => return event,
+                AppEvent::SceneRecall(_) => return event,
                 _ => continue,
             }
         }

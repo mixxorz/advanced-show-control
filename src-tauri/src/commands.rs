@@ -652,13 +652,13 @@ fn spawn_shell_state_projector<R: Runtime>(
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(app_event) => match app_event {
+                Ok(app_event) => match &app_event {
                     AppEvent::Lv1(event) => {
                         if let Some(snapshot) = state
                             .apply_lv1_event_for_generation(generation, &event)
                             .await
                         {
-                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(&event))
+                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event))
                             {
                                 eprintln!("failed to emit lv1-event: {err}");
                             }
@@ -688,15 +688,13 @@ fn spawn_shell_state_projector<R: Runtime>(
                     AppEvent::CommandFailed { command, message } => {
                         eprintln!("command failed: {command}: {message}");
                     }
-                    AppEvent::Automation(_) => {
-                        if let Some(snapshot) = state.snapshot_for_generation(generation).await {
+                    AppEvent::Show(_) | AppEvent::SceneRecall(_) => {
+                        if let Some(snapshot) = state.project_event_for_generation(generation, &app_event).await {
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
                                 eprintln!("failed to emit app-status-changed: {err}");
                             }
                         }
                     }
-                    AppEvent::Show(_) => {}
-                    AppEvent::SceneRecall(_) => {}
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     log_lagged_subscriber("shell-state-projector", count);
@@ -744,7 +742,7 @@ mod tests {
     use super::*;
     use advanced_show_control::fade::events::FadeEvent;
     use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
-    use advanced_show_control::runtime::events::AutomationEvent;
+    use advanced_show_control::show::events::ShowEvent;
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1191,7 +1189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn automation_event_emits_fresh_app_status_snapshot() {
+    async fn show_event_emits_fresh_app_status_snapshot() {
         let app = mock_app();
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1214,8 +1212,49 @@ mod tests {
             event_bus.subscribe(),
         );
 
-        event_bus.publish(AppEvent::Automation(AutomationEvent::RuleTriggered {
-            rule_id: "scene-recall-fader".to_string(),
+        event_bus.publish(AppEvent::Show(ShowEvent::StateChanged));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !observed.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("projector should emit snapshot for show refresh");
+
+        projector.abort();
+    }
+
+    #[tokio::test]
+    async fn scene_recall_events_emit_fresh_app_status_snapshot() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let event_bus = AppEventBus::default();
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        event_bus.publish(AppEvent::SceneRecall(advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
+            scene_label: "1: Intro".to_string(),
+            reason: "locked out".to_string(),
         }));
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
@@ -1227,7 +1266,7 @@ mod tests {
             }
         })
         .await
-        .expect("projector should emit snapshot for automation refresh");
+        .expect("projector should emit snapshot for scene recall refresh");
 
         projector.abort();
     }

@@ -1,6 +1,8 @@
 mod events;
 #[cfg(test)]
 mod events_tests;
+mod logs;
+mod projection;
 mod shell;
 mod show_file_mapping;
 #[cfg(test)]
