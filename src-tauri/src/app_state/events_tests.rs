@@ -37,6 +37,28 @@ async fn fade_events_update_fade_state() {
 }
 
 #[tokio::test]
+async fn channel_completed_logs_without_clearing_running_state() {
+    use super::view::AppFadeState;
+    use lv1_scene_fade_utility::fade::types::FadeEvent;
+
+    let state = ShellState::default();
+    let started = state.apply_fade_event(&FadeEvent::FadeStarted).await;
+    assert_eq!(started.fade_state, AppFadeState::Running);
+
+    let completed = state
+        .apply_fade_event(&FadeEvent::ChannelCompleted {
+            group: 0,
+            channel: 2,
+        })
+        .await;
+
+    assert_eq!(completed.fade_state, AppFadeState::Running);
+    assert!(completed.logs.iter().any(|log| {
+        log.message == "Fade channel completed: group 0, channel 2"
+    }));
+}
+
+#[tokio::test]
 async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_empty() {
     let state = ShellState::default();
     {
