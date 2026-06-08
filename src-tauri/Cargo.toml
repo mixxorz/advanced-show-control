@@ -3,6 +3,7 @@ name = "lv1-scene-fade-utility-tauri"
 version = "0.1.0"
 description = "Desktop shell for LV1 Scene Fade Utility"
 edition = "2024"
+license = "GPL-3.0-or-later"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
