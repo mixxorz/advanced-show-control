@@ -89,6 +89,7 @@ impl ActiveChannel {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn exact_final_send(&mut self) -> f64 {
         self.expected_db = self.target_db;
         self.target_db

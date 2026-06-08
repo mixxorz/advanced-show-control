@@ -152,22 +152,14 @@ async fn run_engine(
             _ = tick_fut => {
                 let now = Instant::now();
                 let mut done_indices = Vec::new();
-                let mut completed_channels = Vec::new();
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
                     if let Some(new_db) = ch.next_send(now) {
                         let _ = command_bus.set_gain(ch.group, ch.channel, new_db).await;
                     }
                     if ch.is_done(now) {
-                        let final_db = ch.exact_final_send();
-                        let _ = command_bus.set_gain(ch.group, ch.channel, final_db).await;
-                        completed_channels.push((ch.group, ch.channel));
                         done_indices.push(i);
                     }
-                }
-
-                for (group, channel) in completed_channels {
-                    state.fan_out(FadeEvent::ChannelCompleted { group, channel });
                 }
 
                 // Remove completed channels (reverse order to preserve indices)
