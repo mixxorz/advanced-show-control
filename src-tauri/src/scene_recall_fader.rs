@@ -29,8 +29,9 @@ impl From<&SceneState> for RecallSceneIdentity {
 
 enum RecallTriggerGate {
     Priming {
-        scene: Option<RecallSceneIdentity>,
-        observed_at: Option<Instant>,
+        baseline: Option<RecallSceneIdentity>,
+        baseline_at: Option<Instant>,
+        arm_after: Option<Instant>,
     },
     Armed {
         last_scene: Option<RecallSceneIdentity>,
@@ -41,8 +42,9 @@ enum RecallTriggerGate {
 impl Default for RecallTriggerGate {
     fn default() -> Self {
         Self::Priming {
-            scene: None,
-            observed_at: None,
+            baseline: None,
+            baseline_at: None,
+            arm_after: None,
         }
     }
 }
@@ -53,26 +55,29 @@ impl RecallTriggerGate {
         let scene_identity = RecallSceneIdentity::from(current_scene);
 
         match self {
-            Self::Priming { scene, observed_at } => match observed_at {
-                Some(first_observed_at)
-                    if now.duration_since(*first_observed_at) >= RECALL_ARMING_DELAY =>
-                {
-                    let baseline_scene = scene.clone().unwrap_or_else(|| scene_identity.clone());
-                    let baseline_at = *first_observed_at + RECALL_ARMING_DELAY;
+            Self::Priming {
+                baseline,
+                baseline_at,
+                arm_after,
+            } => match arm_after {
+                Some(deadline) if now >= *deadline => {
+                    let baseline_scene = baseline.clone().unwrap_or_else(|| scene_identity.clone());
+                    let last_triggered_at = baseline_at.unwrap_or(now);
                     *self = Self::Armed {
                         last_scene: Some(baseline_scene),
-                        last_triggered_at: Some(baseline_at),
+                        last_triggered_at: Some(last_triggered_at),
                     };
                     self.accepts(current_scene)
                 }
                 Some(_) => {
-                    *scene = Some(scene_identity);
-                    *observed_at = Some(now);
+                    *baseline = Some(scene_identity);
+                    *baseline_at = Some(now);
                     false
                 }
                 None => {
-                    *scene = Some(scene_identity);
-                    *observed_at = Some(now);
+                    *baseline = Some(scene_identity);
+                    *baseline_at = Some(now);
+                    *arm_after = Some(now + RECALL_ARMING_DELAY);
                     false
                 }
             },
@@ -307,7 +312,7 @@ mod tests {
         .await
         .expect("timed out waiting for initial scene sync");
 
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         let start = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
@@ -365,7 +370,7 @@ mod tests {
         release_lv1.send(()).unwrap();
         wait_for_intro_scene_event(&mut events).await;
 
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
         tokio::time::advance(Duration::from_millis(100)).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
@@ -416,7 +421,7 @@ mod tests {
         release_lv1.send(()).unwrap();
         wait_for_intro_scene_event(&mut events).await;
 
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         let first = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
@@ -457,7 +462,7 @@ mod tests {
             "new generation should prime before sending same-scene fade commands"
         );
 
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         let second = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
@@ -498,7 +503,7 @@ mod tests {
         release_lv1.send(()).unwrap();
         wait_for_intro_scene_event(&mut events).await;
 
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
         let first = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
             .await
@@ -530,15 +535,12 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn primed_same_scene_waits_for_repeat_delay_after_arming_boundary() {
+    async fn same_scene_at_arming_deadline_is_actionable_when_baseline_is_old_enough() {
         let mut gate = RecallTriggerGate::default();
         let scene = intro_scene();
 
         assert!(!gate.accepts(&scene));
         tokio::time::advance(RECALL_ARMING_DELAY).await;
-
-        assert!(!gate.accepts(&scene));
-        tokio::time::advance(SAME_SCENE_REPEAT_DELAY).await;
 
         assert!(gate.accepts(&scene));
     }
@@ -568,15 +570,37 @@ mod tests {
         };
 
         assert!(!gate.accepts(&scene));
+        tokio::time::advance(RECALL_ARMING_DELAY - Duration::from_millis(100)).await;
+
+        assert!(!gate.accepts(&next_scene));
         tokio::time::advance(Duration::from_millis(100)).await;
 
         assert!(!gate.accepts(&next_scene));
-        tokio::time::advance(RECALL_ARMING_DELAY).await;
-
-        assert!(!gate.accepts(&next_scene));
-        tokio::time::advance(SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(SAME_SCENE_REPEAT_DELAY - Duration::from_millis(100)).await;
 
         assert!(gate.accepts(&next_scene));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pre_arming_baseline_update_does_not_extend_arm_deadline() {
+        let mut gate = RecallTriggerGate::default();
+        let scene = intro_scene();
+        let next_scene = SceneState {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let third_scene = SceneState {
+            index: 3,
+            name: "Bridge".to_string(),
+        };
+
+        assert!(!gate.accepts(&scene));
+        tokio::time::advance(Duration::from_millis(100)).await;
+
+        assert!(!gate.accepts(&next_scene));
+        tokio::time::advance(RECALL_ARMING_DELAY - Duration::from_millis(100)).await;
+
+        assert!(gate.accepts(&third_scene));
     }
 
     #[tokio::test(start_paused = true)]
@@ -683,7 +707,7 @@ mod tests {
         release_lv1.send(()).unwrap();
         wait_for_intro_scene_event(&mut events).await;
 
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
@@ -711,7 +735,7 @@ mod tests {
 
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
         tokio::task::yield_now().await;
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
@@ -750,7 +774,7 @@ mod tests {
 
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
         tokio::task::yield_now().await;
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         tokio::time::timeout(std::time::Duration::from_millis(250), async {
@@ -781,7 +805,7 @@ mod tests {
 
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
         tokio::task::yield_now().await;
-        tokio::time::advance(RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY).await;
+        tokio::time::advance(RECALL_ARMING_DELAY).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
 
         wait_for_log(
@@ -938,9 +962,7 @@ mod tests {
         .unwrap_or_else(|_| panic!("timed out waiting for log: {message}"));
     }
 
-    async fn wait_for_intro_scene_event(
-        events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
-    ) {
+    async fn wait_for_intro_scene_event(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 if let AppEvent::Lv1(Lv1Event::SceneChanged(scene)) = events.recv().await.unwrap() {
