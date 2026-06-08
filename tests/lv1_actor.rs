@@ -1,9 +1,9 @@
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::ConnectionStatus;
-use lv1_scene_fade_utility::lv1::state::spawn_actor;
-use lv1_scene_fade_utility::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
-use lv1_scene_fade_utility::osc::OscArg;
-use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::model::ConnectionStatus;
+use advanced_show_control::lv1::state::spawn_actor;
+use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
+use advanced_show_control::osc::OscArg;
+use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
 use std::net::TcpListener;
 

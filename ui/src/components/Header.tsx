@@ -17,7 +17,7 @@ export function Header(props: {
     <header className="border-b border-slate-800 bg-slate-900/80 px-6 py-4">
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
-          <h1 className="text-xl font-semibold">LV1 Scene Fade Utility</h1>
+          <h1 className="text-xl font-semibold">Advanced Show Control</h1>
           <p className="text-sm text-slate-400">
             {props.appState.currentScene
               ? `Scene ${props.appState.currentScene.index}: ${props.appState.currentScene.name}`

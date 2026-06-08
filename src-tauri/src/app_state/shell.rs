@@ -2,8 +2,8 @@ use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
-use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
+use advanced_show_control::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::runtime::commands::AppCommandBus;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -20,8 +20,8 @@ pub(super) const MAX_LOGS: usize = 200;
 #[derive(Default)]
 pub struct RuntimeHandles {
     pub active_generation: u64,
-    pub lv1: Option<lv1_scene_fade_utility::lv1::state::Lv1ActorHandle>,
-    pub fade: Option<lv1_scene_fade_utility::fade::engine::FadeEngineHandle>,
+    pub lv1: Option<advanced_show_control::lv1::state::Lv1ActorHandle>,
+    pub fade: Option<advanced_show_control::fade::engine::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
     pub scene_recall_fader: Option<JoinHandle<()>>,
@@ -306,7 +306,7 @@ pub(super) fn refresh_discovered_statuses(inner: &mut ShellInner) {
 }
 
 fn cover_state_variants() {
-    let discovery_entry = lv1_scene_fade_utility::lv1::discovery::DiscoveryEntry {
+    let discovery_entry = advanced_show_control::lv1::discovery::DiscoveryEntry {
         service: "_waveslv113._tcp".to_string(),
         uuid: Some("uuid".to_string()),
         host: Some("LV1".to_string()),
@@ -452,8 +452,8 @@ pub(super) fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-    use lv1_scene_fade_utility::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
+    use advanced_show_control::lv1::messages::Lv1Event;
+    use advanced_show_control::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
 
     #[tokio::test]
     async fn default_snapshot_exposes_untitled_show_and_is_not_dirty() {
@@ -550,7 +550,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
         let active_command_bus = crate::commands::ActiveCommandBus::default();
         let command_bus =
-            AppCommandBus::new(lv1_scene_fade_utility::runtime::events::AppEventBus::default());
+            AppCommandBus::new(advanced_show_control::runtime::events::AppEventBus::default());
 
         let installed = state
             .install_runtime_handles_for_generation(

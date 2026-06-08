@@ -1,6 +1,6 @@
 use super::shell::ShellState;
 use super::test_support::connected_state_with_scene_and_channel;
-use lv1_scene_fade_utility::lv1::model::{
+use advanced_show_control::lv1::model::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
 };
 

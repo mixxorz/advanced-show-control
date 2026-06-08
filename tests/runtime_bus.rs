@@ -1,13 +1,13 @@
-use lv1_scene_fade_utility::fade::curve::FadeCurve;
-use lv1_scene_fade_utility::fade::engine::spawn_engine;
-use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::SceneState;
-use lv1_scene_fade_utility::lv1::state::spawn_actor;
-use lv1_scene_fade_utility::lv1::tcp::encode_frame;
-use lv1_scene_fade_utility::osc::OscArg;
-use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus};
+use advanced_show_control::fade::curve::FadeCurve;
+use advanced_show_control::fade::engine::spawn_engine;
+use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::model::SceneState;
+use advanced_show_control::lv1::state::spawn_actor;
+use advanced_show_control::lv1::tcp::encode_frame;
+use advanced_show_control::osc::OscArg;
+use advanced_show_control::runtime::commands::AppCommandBus;
+use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
 use std::net::TcpListener;
 

@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use lv1_scene_fade_utility::fade::curve::FadeCurve;
-use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
-use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneState};
+use advanced_show_control::fade::curve::FadeCurve;
+use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+use advanced_show_control::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneState};
 
 use super::shell::{ShellInner, ShellState, scene_id};
 use super::view::{LogSeverity, LogSource};

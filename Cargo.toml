@@ -1,5 +1,5 @@
 [package]
-name = "lv1-scene-fade-utility"
+name = "advanced-show-control"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
@@ -9,7 +9,7 @@ members = [".", "src-tauri"]
 resolver = "2"
 
 [lib]
-name = "lv1_scene_fade_utility"
+name = "advanced_show_control"
 path = "src/lib.rs"
 
 [dependencies]

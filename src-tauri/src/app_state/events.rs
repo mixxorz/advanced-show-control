@@ -1,8 +1,8 @@
 use std::collections::HashSet;
 
-use lv1_scene_fade_utility::fade::types::FadeEvent;
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+use advanced_show_control::fade::types::FadeEvent;
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::model::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
 
 use super::shell::{
     MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses, scene_id,

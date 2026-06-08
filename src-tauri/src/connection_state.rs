@@ -1,4 +1,4 @@
-use lv1_scene_fade_utility::lv1::discovery::DiscoveryEntry;
+use advanced_show_control::lv1::discovery::DiscoveryEntry;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

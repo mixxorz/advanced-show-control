@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "LV1 Scene Fade Utility",
+  "productName": "Advanced Show Control",
   "version": "0.1.0",
-  "identifier": "com.lv1scenefade.utility",
+  "identifier": "com.advancedshowcontrol.app",
   "build": {
     "beforeDevCommand": "npm --prefix ui run dev",
     "beforeBuildCommand": "npm --prefix ui run build",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "LV1 Scene Fade Utility",
+        "title": "Advanced Show Control",
         "width": 1180,
         "height": 780,
         "minWidth": 960,

@@ -1,4 +1,5 @@
 {
+  "name": "advanced-show-control",
   "private": true,
   "scripts": {
     "dev": "npm --prefix ui run dev",

@@ -3,15 +3,15 @@ use super::test_support::{
     connected_snapshot, connected_state_with_scene_and_channel, scene_config,
 };
 use super::view::{AppConnectionState, ChannelConfig, ChannelRef};
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::{
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::model::{
     ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
 
 #[tokio::test]
 async fn fade_events_update_fade_state() {
     use super::view::AppFadeState;
-    use lv1_scene_fade_utility::fade::types::FadeEvent;
+    use advanced_show_control::fade::types::FadeEvent;
 
     let state = ShellState::default();
 
@@ -39,7 +39,7 @@ async fn fade_events_update_fade_state() {
 #[tokio::test]
 async fn channel_completed_logs_without_clearing_running_state() {
     use super::view::AppFadeState;
-    use lv1_scene_fade_utility::fade::types::FadeEvent;
+    use advanced_show_control::fade::types::FadeEvent;
 
     let state = ShellState::default();
     let started = state.apply_fade_event(&FadeEvent::FadeStarted).await;
@@ -472,7 +472,7 @@ async fn stale_lv1_events_are_ignored_after_generation_change() {
 #[tokio::test]
 async fn stale_fade_events_are_ignored_after_generation_change() {
     use super::view::AppFadeState;
-    use lv1_scene_fade_utility::fade::types::FadeEvent;
+    use advanced_show_control::fade::types::FadeEvent;
 
     let state = ShellState::default();
     let (first_generation, _) = state.begin_connecting().await;

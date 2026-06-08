@@ -81,9 +81,9 @@ npm run build
 Useful targeted Rust checks:
 
 ```bash
-cargo test -p lv1-scene-fade-utility-tauri scene_recall
-cargo test -p lv1-scene-fade-utility-tauri commands::tests
-cargo test -p lv1-scene-fade-utility fade
+cargo test -p advanced-show-control-tauri scene_recall
+cargo test -p advanced-show-control-tauri commands::tests
+cargo test -p advanced-show-control fade
 ```
 
 Before claiming work is complete, run the verification command that proves the claim and read the output.

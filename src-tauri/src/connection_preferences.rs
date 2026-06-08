@@ -49,7 +49,7 @@ mod tests {
     fn temp_preferences_path(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "lv1-scene-fade-utility-preferences-{name}-{}-{}.json",
+            "advanced-show-control-preferences-{name}-{}-{}.json",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)

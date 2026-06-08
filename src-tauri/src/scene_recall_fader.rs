@@ -1,7 +1,7 @@
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::SceneState;
-use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::events::{
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::model::SceneState;
+use advanced_show_control::runtime::commands::AppCommandBus;
+use advanced_show_control::runtime::events::{
     AppEvent, AppEventBus, AutomationEvent, log_lagged_subscriber,
 };
 use tokio::task::JoinHandle;
@@ -267,14 +267,14 @@ fn publish_refresh_after_scene_recall_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lv1_scene_fade_utility::fade::curve::FadeCurve;
-    use lv1_scene_fade_utility::fade::engine::FadeEngineHandle;
-    use lv1_scene_fade_utility::fade::types::FadeCommand;
-    use lv1_scene_fade_utility::lv1::model::{
+    use advanced_show_control::fade::curve::FadeCurve;
+    use advanced_show_control::fade::engine::FadeEngineHandle;
+    use advanced_show_control::fade::types::FadeCommand;
+    use advanced_show_control::lv1::model::{
         ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
     };
-    use lv1_scene_fade_utility::lv1::state::spawn_actor;
-    use lv1_scene_fade_utility::osc::OscArg;
+    use advanced_show_control::lv1::state::spawn_actor;
+    use advanced_show_control::osc::OscArg;
     use std::io::Write;
     use std::net::TcpListener;
     use std::sync::mpsc as std_mpsc;
@@ -878,7 +878,7 @@ mod tests {
     async fn spawn_fake_lv1_with_intro(
         event_bus: AppEventBus,
     ) -> (
-        lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+        advanced_show_control::lv1::state::Lv1ActorHandle,
         std_mpsc::Sender<()>,
         tokio::task::JoinHandle<()>,
     ) {
@@ -901,7 +901,7 @@ mod tests {
     async fn spawn_fake_lv1_with_intro_until_close(
         event_bus: AppEventBus,
     ) -> (
-        lv1_scene_fade_utility::lv1::state::Lv1ActorHandle,
+        advanced_show_control::lv1::state::Lv1ActorHandle,
         std_mpsc::Sender<()>,
         std_mpsc::Sender<()>,
         tokio::task::JoinHandle<()>,
@@ -932,16 +932,16 @@ mod tests {
         for _ in 0..15 {
             args.push(OscArg::Int(0));
         }
-        lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &args).unwrap()
+        advanced_show_control::lv1::tcp::encode_frame("/Channels", &args).unwrap()
     }
 
     fn scene_index_frame() -> Vec<u8> {
-        lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/CurSceneIndex", &[OscArg::Int(1)])
+        advanced_show_control::lv1::tcp::encode_frame("/Notify/CurSceneIndex", &[OscArg::Int(1)])
             .unwrap()
     }
 
     fn scene_name_frame() -> Vec<u8> {
-        lv1_scene_fade_utility::lv1::tcp::encode_frame(
+        advanced_show_control::lv1::tcp::encode_frame(
             "/Notify/Scene/Name",
             &[OscArg::String("Intro".to_string())],
         )
@@ -1005,12 +1005,12 @@ mod tests {
         SceneRecallFadeRequest {
             scene_id: "1::Intro".to_string(),
             scene_label: "1: Intro".to_string(),
-            fade_config: lv1_scene_fade_utility::fade::types::FadeConfig {
-                scene: lv1_scene_fade_utility::fade::types::FadeSceneIdentity {
+            fade_config: advanced_show_control::fade::types::FadeConfig {
+                scene: advanced_show_control::fade::types::FadeSceneIdentity {
                     index: 1,
                     name: "Intro".to_string(),
                 },
-                targets: vec![lv1_scene_fade_utility::fade::types::FadeTarget {
+                targets: vec![advanced_show_control::fade::types::FadeTarget {
                     group: 0,
                     channel: 2,
                     target_db: -12.5,

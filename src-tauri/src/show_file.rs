@@ -1,4 +1,4 @@
-use lv1_scene_fade_utility::lv1::model::Lv1StateSnapshot;
+use advanced_show_control::lv1::model::Lv1StateSnapshot;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;
@@ -167,7 +167,7 @@ fn default_show_folder_from(document_dir: Option<PathBuf>, home_dir: Option<Path
         .or_else(|| home_dir.as_ref().map(|home| home.join("Documents")))
         .or(home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("LV1 Scene Fade Utility")
+        .join("Advanced Show Control")
 }
 
 fn backup_folder_from(data_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> PathBuf {
@@ -181,12 +181,12 @@ fn backup_folder_from(data_dir: Option<PathBuf>, home_dir: Option<PathBuf>) -> P
 fn app_data_folder_name() -> &'static str {
     #[cfg(target_os = "linux")]
     {
-        "lv1-scene-fade-utility"
+        "advanced-show-control"
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        "LV1 Scene Fade Utility"
+        "Advanced Show Control"
     }
 }
 
@@ -296,7 +296,7 @@ fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lv1_scene_fade_utility::lv1::model::{ChannelInfo, ConnectionStatus, SceneListEntry};
+    use advanced_show_control::lv1::model::{ChannelInfo, ConnectionStatus, SceneListEntry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -359,7 +359,7 @@ mod tests {
     fn temp_test_dir(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "lv1-scene-fade-utility-{}-{}-{}",
+            "advanced-show-control-{}-{}-{}",
             name,
             std::process::id(),
             SystemTime::now()
@@ -379,7 +379,7 @@ mod tests {
 
         assert_eq!(
             folder,
-            home.join("Documents").join("LV1 Scene Fade Utility")
+            home.join("Documents").join("Advanced Show Control")
         );
 
         let _ = fs::remove_dir_all(&home);
@@ -388,10 +388,10 @@ mod tests {
     #[test]
     fn app_data_folder_name_matches_platform_expectation() {
         #[cfg(target_os = "linux")]
-        assert_eq!(app_data_folder_name(), "lv1-scene-fade-utility");
+        assert_eq!(app_data_folder_name(), "advanced-show-control");
 
         #[cfg(not(target_os = "linux"))]
-        assert_eq!(app_data_folder_name(), "LV1 Scene Fade Utility");
+        assert_eq!(app_data_folder_name(), "Advanced Show Control");
     }
 
     #[test]

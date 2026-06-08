@@ -1,9 +1,9 @@
-use lv1_scene_fade_utility::fade::engine::spawn_engine;
-use lv1_scene_fade_utility::lv1::discovery::resolve_target;
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::state::spawn_actor;
-use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
-use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use advanced_show_control::fade::engine::spawn_engine;
+use advanced_show_control::lv1::discovery::resolve_target;
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::state::spawn_actor;
+use advanced_show_control::runtime::commands::AppCommandBus;
+use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -56,8 +56,8 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
         .clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS);
     let entries = spawn_blocking(move || {
-        lv1_scene_fade_utility::lv1::discovery::discover(
-            lv1_scene_fade_utility::lv1::discovery::DiscoverOptions {
+        advanced_show_control::lv1::discovery::discover(
+            advanced_show_control::lv1::discovery::DiscoverOptions {
                 timeout: std::time::Duration::from_millis(timeout),
                 ..Default::default()
             },
@@ -487,7 +487,7 @@ async fn connect_to_target<R: Runtime>(
 
     let initial_snapshot = lv1.get_state().await;
     if initial_snapshot.connection
-        != lv1_scene_fade_utility::lv1::model::ConnectionStatus::Connected
+        != advanced_show_control::lv1::model::ConnectionStatus::Connected
     {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
@@ -736,9 +736,9 @@ fn current_timestamp_millis() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lv1_scene_fade_utility::fade::types::FadeEvent;
-    use lv1_scene_fade_utility::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
-    use lv1_scene_fade_utility::runtime::events::AutomationEvent;
+    use advanced_show_control::fade::types::FadeEvent;
+    use advanced_show_control::lv1::model::{ConnectionStatus, Lv1StateSnapshot};
+    use advanced_show_control::runtime::events::AutomationEvent;
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -747,7 +747,7 @@ mod tests {
     fn temp_dir(name: &str) -> std::path::PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
-            "lv1-scene-fade-utility-commands-{}-{}-{}",
+            "advanced-show-control-commands-{}-{}-{}",
             name,
             std::process::id(),
             SystemTime::now()
@@ -761,7 +761,7 @@ mod tests {
 
     #[test]
     fn ensure_show_file_folder_creates_missing_directory() {
-        let folder = temp_dir("show-folder").join("LV1 Scene Fade Utility");
+        let folder = temp_dir("show-folder").join("Advanced Show Control");
 
         let created = ensure_show_file_folder(folder.clone()).unwrap();
 

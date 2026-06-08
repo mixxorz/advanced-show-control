@@ -9,6 +9,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "advanced-show-control"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_json",
+ "socket2 0.5.10",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "advanced-show-control-tauri"
+version = "0.1.0"
+dependencies = [
+ "advanced-show-control",
+ "dirs",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tokio",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2095,33 +2122,6 @@ name = "log"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
-
-[[package]]
-name = "lv1-scene-fade-utility"
-version = "0.1.0"
-dependencies = [
- "clap",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
-]
-
-[[package]]
-name = "lv1-scene-fade-utility-tauri"
-version = "0.1.0"
-dependencies = [
- "dirs",
- "lv1-scene-fade-utility",
- "rfd",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tokio",
-]
 
 [[package]]
 name = "markup5ever"

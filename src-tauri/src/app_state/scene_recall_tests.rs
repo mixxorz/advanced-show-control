@@ -1,5 +1,5 @@
-use lv1_scene_fade_utility::fade::curve::FadeCurve;
-use lv1_scene_fade_utility::lv1::model::{
+use advanced_show_control::fade::curve::FadeCurve;
+use advanced_show_control::lv1::model::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState,
 };
 

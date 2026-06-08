@@ -37,11 +37,11 @@ async fn export_show_file_contains_current_configs() {
     );
 }
 
-fn lv1_scene_only_snapshot() -> lv1_scene_fade_utility::lv1::model::Lv1StateSnapshot {
-    lv1_scene_fade_utility::lv1::model::Lv1StateSnapshot {
-        connection: lv1_scene_fade_utility::lv1::model::ConnectionStatus::Connected,
+fn lv1_scene_only_snapshot() -> advanced_show_control::lv1::model::Lv1StateSnapshot {
+    advanced_show_control::lv1::model::Lv1StateSnapshot {
+        connection: advanced_show_control::lv1::model::ConnectionStatus::Connected,
         scene: None,
-        scene_list: vec![lv1_scene_fade_utility::lv1::model::SceneListEntry {
+        scene_list: vec![advanced_show_control::lv1::model::SceneListEntry {
             index: 1,
             name: "Intro".to_string(),
         }],

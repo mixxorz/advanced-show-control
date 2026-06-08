@@ -1,12 +1,12 @@
 use clap::{Parser, Subcommand};
-use lv1_scene_fade_utility::lv1::discovery::{DiscoverOptions, discover, resolve_target};
-use lv1_scene_fade_utility::lv1::messages::Lv1Event;
-use lv1_scene_fade_utility::lv1::model::ChannelInfo;
-use lv1_scene_fade_utility::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
-use lv1_scene_fade_utility::lv1::state::{Lv1ActorHandle, spawn_actor};
-use lv1_scene_fade_utility::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
-use lv1_scene_fade_utility::osc::OscArg;
-use lv1_scene_fade_utility::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use advanced_show_control::lv1::discovery::{DiscoverOptions, discover, resolve_target};
+use advanced_show_control::lv1::messages::Lv1Event;
+use advanced_show_control::lv1::model::ChannelInfo;
+use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
+use advanced_show_control::lv1::state::{Lv1ActorHandle, spawn_actor};
+use advanced_show_control::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
+use advanced_show_control::osc::OscArg;
+use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -480,10 +480,10 @@ async fn run_fade_test(
     duration_ms: u64,
     curve: CurveArg,
 ) -> AppResult<()> {
-    use lv1_scene_fade_utility::fade::curve::FadeCurve;
-    use lv1_scene_fade_utility::fade::engine::spawn_engine;
-    use lv1_scene_fade_utility::fade::types::{FadeConfig, FadeEvent, FadeTarget};
-    use lv1_scene_fade_utility::runtime::commands::AppCommandBus;
+    use advanced_show_control::fade::curve::FadeCurve;
+    use advanced_show_control::fade::engine::spawn_engine;
+    use advanced_show_control::fade::types::{FadeConfig, FadeEvent, FadeTarget};
+    use advanced_show_control::runtime::commands::AppCommandBus;
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
@@ -547,7 +547,7 @@ async fn run_fade_test(
 
     let _ = engine
         .start_fade(FadeConfig {
-            scene: lv1_scene_fade_utility::fade::types::FadeSceneIdentity {
+            scene: advanced_show_control::fade::types::FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
             },
@@ -707,7 +707,7 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
 }
 
 async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
-    use lv1_scene_fade_utility::vegas::gain_db_at;
+    use advanced_show_control::vegas::gain_db_at;
 
     const VEGAS_TICK_HZ: u64 = 25;
 
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn help_uses_lv1_probe_name_even_when_binary_name_differs() {
-        let err = parse_cli_from(["lv1-scene-fade-utility", "--help"]).unwrap_err();
+        let err = parse_cli_from(["advanced-show-control", "--help"]).unwrap_err();
 
         assert!(err.to_string().contains("Usage: lv1-probe <COMMAND>"));
     }
@@ -1013,18 +1013,18 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             std::thread::sleep(Duration::from_millis(150));
 
-            let mut args = vec![lv1_scene_fade_utility::osc::OscArg::Int(1)];
-            args.push(lv1_scene_fade_utility::osc::OscArg::String(
+            let mut args = vec![advanced_show_control::osc::OscArg::Int(1)];
+            args.push(advanced_show_control::osc::OscArg::String(
                 "Channel 1".to_string(),
             ));
-            args.push(lv1_scene_fade_utility::osc::OscArg::Int(0));
-            args.push(lv1_scene_fade_utility::osc::OscArg::Int(0));
-            args.push(lv1_scene_fade_utility::osc::OscArg::Double(-9.1));
+            args.push(advanced_show_control::osc::OscArg::Int(0));
+            args.push(advanced_show_control::osc::OscArg::Int(0));
+            args.push(advanced_show_control::osc::OscArg::Double(-9.1));
             for _ in 0..15 {
-                args.push(lv1_scene_fade_utility::osc::OscArg::Int(0));
+                args.push(advanced_show_control::osc::OscArg::Int(0));
             }
 
-            let frame = lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &args).unwrap();
+            let frame = advanced_show_control::lv1::tcp::encode_frame("/Channels", &args).unwrap();
             stream.write_all(&frame).unwrap();
             std::thread::sleep(Duration::from_millis(250));
         });
@@ -1072,52 +1072,52 @@ mod tests {
         let server = tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let channels = vec![
-                lv1_scene_fade_utility::osc::OscArg::Int(1),
-                lv1_scene_fade_utility::osc::OscArg::String("Channel 1".to_string()),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Double(-9.1),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(1),
+                advanced_show_control::osc::OscArg::String("Channel 1".to_string()),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Double(-9.1),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
             ];
             let frame =
-                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Channels", &channels).unwrap();
+                advanced_show_control::lv1::tcp::encode_frame("/Channels", &channels).unwrap();
             stream.write_all(&frame).unwrap();
 
             std::thread::sleep(Duration::from_millis(50));
 
             let mute_on = vec![
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Bool(true),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Bool(true),
             ];
             let frame =
-                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_on)
+                advanced_show_control::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_on)
                     .unwrap();
             stream.write_all(&frame).unwrap();
 
             std::thread::sleep(Duration::from_millis(80));
 
             let mute_off = vec![
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Int(0),
-                lv1_scene_fade_utility::osc::OscArg::Bool(false),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::osc::OscArg::Bool(false),
             ];
             let frame =
-                lv1_scene_fade_utility::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_off)
+                advanced_show_control::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_off)
                     .unwrap();
             stream.write_all(&frame).unwrap();
 
