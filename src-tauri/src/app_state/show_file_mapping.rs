@@ -144,8 +144,9 @@ impl ShellState {
                                 channel: channel.channel,
                             })
                             .collect(),
-                        scope_toggles:
-                            advanced_show_control::show::types::SceneScopeToggles::default(),
+                        scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
+                            faders: config.scope_toggles.faders,
+                        },
                     })
                     .collect(),
             })

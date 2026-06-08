@@ -214,6 +214,43 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
 }
 
 #[tokio::test]
+async fn load_show_file_preserves_disabled_fader_scope_toggle() {
+    let state = ShellState::default();
+    state
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+
+    let mut file = ShowFile {
+        schema_version: 1,
+        app_version: "0.1.0".to_string(),
+        saved_at: "123".to_string(),
+        safety: crate::show_file::ShowFileSafety { lockout: false },
+        scene_configs: vec![ShowFileSceneConfig {
+            scene_index: 1,
+            scene_name: "Intro".to_string(),
+            duration_ms: 5000,
+            channel_configs: vec![ShowFileChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-9.0),
+            }],
+            scoped_channels: vec![ShowFileChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+            scope_toggles: crate::show_file::ShowFileSceneScopeToggles { faders: false },
+        }],
+    };
+
+    let snapshot = state
+        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
+        .await
+        .unwrap();
+
+    assert!(!snapshot.scene_configs[0].scope_toggles.faders);
+}
+
+#[tokio::test]
 async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
     let state = ShellState::default();
     state.begin_connection(lv1_scene_only_snapshot()).await;
