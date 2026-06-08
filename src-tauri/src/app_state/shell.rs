@@ -175,6 +175,12 @@ impl ShellState {
         snapshot_from_inner(&inner)
     }
 
+    pub async fn set_reconnect_active(&self, active: bool) -> AppViewState {
+        let mut inner = self.inner.lock().await;
+        inner.reconnect_state.active = active;
+        snapshot_from_inner(&inner)
+    }
+
     pub async fn clear_runtime_handles_for_generation(
         &self,
         generation: u64,

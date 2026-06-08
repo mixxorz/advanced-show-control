@@ -25,6 +25,7 @@ fn main() {
             commands::connect_lv1_system,
             commands::startup_auto_connect_lv1,
             commands::disconnect_lv1,
+            commands::reconnect_timed_out,
             commands::abort_all_fades,
             commands::finish_fade_now,
             commands::store_scene_config,

@@ -68,6 +68,7 @@ impl ShellState {
         inner.lv1_snapshot = None;
         inner.connected_lv1_identity = None;
         inner.pending_lv1_identity = None;
+        inner.reconnect_state.active = false;
         refresh_discovered_statuses(&mut inner);
         inner.push_log(
             LogSource::App,
@@ -98,9 +99,11 @@ impl ShellState {
                 );
             }
             Lv1Event::Disconnected => {
+                let had_connected_identity = inner.connected_lv1_identity.is_some();
                 inner.lv1_snapshot = None;
                 inner.connected_lv1_identity = None;
                 inner.pending_lv1_identity = None;
+                inner.reconnect_state.active = had_connected_identity;
                 refresh_discovered_statuses(&mut inner);
                 inner.push_log(
                     LogSource::Lv1,

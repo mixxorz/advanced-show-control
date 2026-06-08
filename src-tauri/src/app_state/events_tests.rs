@@ -208,6 +208,39 @@ async fn begin_connecting_sets_connecting_snapshot_and_logs_it() {
 }
 
 #[tokio::test]
+async fn lv1_disconnected_event_enters_reconnect_state() {
+    let state = super::ShellState::default();
+    state
+        .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        }))
+        .await;
+    let (generation, _) = state.begin_connecting().await;
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .unwrap();
+
+    assert!(snapshot.reconnect.active);
+}
+
+#[tokio::test]
+async fn lv1_disconnected_event_without_connected_identity_stays_out_of_reconnect_state() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("event should apply to current generation");
+
+    assert!(!snapshot.reconnect.active);
+}
+
+#[tokio::test]
 async fn lv1_scene_event_updates_rust_owned_snapshot() {
     let state = ShellState::default();
     let (generation, _snapshot) = state.begin_connecting().await;
@@ -371,6 +404,7 @@ async fn manual_disconnect_clears_identities_and_connected_row_status() {
         .set_connected_lv1_identity(Some(connected.clone()))
         .await;
     state.set_pending_lv1_identity(Some(pending.clone())).await;
+    state.set_reconnect_active(true).await;
     state
         .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
             identity: connected,
@@ -383,6 +417,7 @@ async fn manual_disconnect_clears_identities_and_connected_row_status() {
 
     assert_eq!(snapshot.connected_lv1_identity, None);
     assert_eq!(snapshot.pending_lv1_identity, None);
+    assert!(!snapshot.reconnect.active);
     assert_ne!(
         snapshot.discovered_lv1_systems[0].status,
         crate::connection_state::DiscoveredLv1Status::Connected

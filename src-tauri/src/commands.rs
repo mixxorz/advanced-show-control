@@ -242,6 +242,23 @@ pub async fn disconnect_lv1(
 }
 
 #[tauri::command]
+pub async fn reconnect_timed_out(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+) -> Result<AppViewState, String> {
+    reconnect_timed_out_snapshot(app, (*state).clone()).await
+}
+
+async fn reconnect_timed_out_snapshot<R: Runtime>(
+    app: AppHandle<R>,
+    state: ShellState,
+) -> Result<AppViewState, String> {
+    let snapshot = state.set_reconnect_active(false).await;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn abort_all_fades(
     active_command_bus: State<'_, ActiveCommandBus>,
 ) -> Result<(), String> {
@@ -670,6 +687,21 @@ mod tests {
         let _ = refresh_lv1_discovery;
         let _ = connect_lv1_system;
         let _ = startup_auto_connect_lv1;
+        let _ = reconnect_timed_out;
+    }
+
+    #[tokio::test]
+    async fn reconnect_timed_out_clears_reconnect_state() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let state = ShellState::default();
+        state.set_reconnect_active(true).await;
+
+        let snapshot = reconnect_timed_out_snapshot(handle, state)
+            .await
+            .expect("timeout command should return snapshot");
+
+        assert!(!snapshot.reconnect.active);
     }
 
     #[test]
