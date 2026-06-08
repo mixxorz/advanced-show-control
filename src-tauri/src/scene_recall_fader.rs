@@ -108,37 +108,6 @@ async fn start_scene_recall_fade_with_hook<F, Fut>(
         return;
     }
 
-    if state
-        .log_scene_recall_fader_info_for_generation(
-            generation,
-            format!(
-                "Previous fade abort requested before auto fade for scene {}",
-                request.scene_label
-            ),
-        )
-        .await
-    {
-        publish_log_refresh(event_bus);
-    } else {
-        return;
-    }
-
-    if let Err(err) = command_bus.abort_all_fades().await {
-        if state
-            .log_scene_recall_fader_warning_for_generation(
-                generation,
-                format!(
-                    "Auto fade blocked for scene {}: failed to abort previous fade: {err}",
-                    request.scene_label
-                ),
-            )
-            .await
-        {
-            publish_log_refresh(event_bus);
-        }
-        return;
-    }
-
     if !state.is_generation_current(generation).await {
         return;
     }
@@ -211,7 +180,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[tokio::test]
-    async fn valid_scene_recall_aborts_existing_fade_then_starts_new_fade() {
+    async fn valid_scene_recall_starts_scene_fade_without_global_abort() {
         let event_bus = AppEventBus::default();
         let command_bus = AppCommandBus::new(event_bus.clone());
         let state = ShellState::default();
@@ -227,17 +196,6 @@ mod tests {
         let handle =
             spawn_scene_recall_fader(state.clone(), generation, command_bus, event_bus.clone());
         release_lv1.send(()).unwrap();
-
-        let abort = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
-            .await
-            .expect("timed out waiting for AbortAll")
-            .expect("fade command channel should be open");
-        match abort {
-            FadeCommand::AbortAll { reply } => {
-                let _ = reply.send(Ok(()));
-            }
-            other => panic!("expected AbortAll before RecallSceneFade, got {other:?}"),
-        }
 
         let start = tokio::time::timeout(Duration::from_secs(2), fade_rx.recv())
             .await
@@ -255,12 +213,12 @@ mod tests {
                 assert_eq!(config.targets[0].target_db, -12.5);
                 let _ = reply.send(Ok(()));
             }
-            other => panic!("expected RecallSceneFade after AbortAll, got {other:?}"),
+            other => panic!("expected RecallSceneFade without preceding AbortAll, got {other:?}"),
         }
 
         wait_for_log(&state, "Auto fade start requested for scene 1: Intro").await;
         let snapshot = state.snapshot().await;
-        assert!(snapshot.logs.iter().any(|log| {
+        assert!(!snapshot.logs.iter().any(|log| {
             log.message == "Previous fade abort requested before auto fade for scene 1: Intro"
         }));
         assert!(
@@ -287,17 +245,9 @@ mod tests {
         let request = intro_fade_request();
 
         let fade_replies = tokio::spawn(async move {
-            let abort = fade_rx.recv().await.expect("expected AbortAll command");
-            match abort {
-                FadeCommand::AbortAll { reply } => {
-                    let _ = reply.send(Ok(()));
-                }
-                other => panic!("expected AbortAll before stale generation, got {other:?}"),
-            }
-
             tokio::time::timeout(Duration::from_millis(100), fade_rx.recv())
                 .await
-                .expect_err("stale generation should not send RecallSceneFade after start log");
+                .expect_err("stale generation should not send fade commands after start log");
         });
 
         start_scene_recall_fade_with_hook(
