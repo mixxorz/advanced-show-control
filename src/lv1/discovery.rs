@@ -113,15 +113,15 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
 
         match socket.recv_from(&mut buf) {
             Ok((size, source)) => {
-                if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string()) {
-                    if entry_matches(
+                if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string())
+                    && entry_matches(
                         &entry,
                         &options.filter_service,
                         options.filter_host_ip.as_deref(),
-                    ) {
-                        let key = dedupe_key(&entry);
-                        found.entry(key).or_insert(entry);
-                    }
+                    )
+                {
+                    let key = dedupe_key(&entry);
+                    found.entry(key).or_insert(entry);
                 }
             }
             Err(err)

@@ -76,9 +76,13 @@ Use the smallest relevant command while developing, then run broader verificatio
 Common Rust checks:
 
 ```bash
-cargo test --workspace
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run --workspace
 cargo build --workspace
 ```
+
+Use `cargo test ...` for targeted inner-loop checks when nextest would be broader than needed.
 
 Common frontend checks:
 

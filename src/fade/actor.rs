@@ -7,7 +7,7 @@ use crate::fade::commands::FadeCommand;
 use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::{EngineState, finish_scene_channels};
-use crate::fade::tick::{ActiveChannel, TICK_HZ};
+use crate::fade::tick::{ActiveChannel, ActiveChannelInit, TICK_HZ};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -78,16 +78,16 @@ async fn run_engine(
                                 .unwrap_or(target.target_db);
 
                             state.channels.retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
-                            state.channels.push(ActiveChannel::new(
-                                config.scene.clone(),
-                                target.group,
-                                target.channel,
+                            state.channels.push(ActiveChannel::new(ActiveChannelInit {
+                                scene: config.scene.clone(),
+                                group: target.group,
+                                channel: target.channel,
                                 start_db,
-                                target.target_db,
-                                config.curve,
+                                target_db: target.target_db,
+                                curve: config.curve,
                                 duration,
-                                now,
-                            ));
+                                started_at: now,
+                            }));
                         }
 
                         let mut interval = tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));
@@ -142,15 +142,15 @@ async fn run_engine(
             app_event = app_events.recv() => {
                 match app_event {
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::FaderChanged { group, channel, gain_db })) => {
-                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel) {
-                            if state.channels[pos].is_override(gain_db) {
-                                state.fan_out(FadeEvent::ChannelOverride { group, channel });
-                                state.channels.remove(pos);
-                                state.fan_out(FadeEvent::ChannelCancelled { group, channel });
+                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel)
+                            && state.channels[pos].is_override(gain_db)
+                        {
+                            state.fan_out(FadeEvent::ChannelOverride { group, channel });
+                            state.channels.remove(pos);
+                            state.fan_out(FadeEvent::ChannelCancelled { group, channel });
 
-                                if !state.is_active() {
-                                    tick_interval = None;
-                                }
+                            if !state.is_active() {
+                                tick_interval = None;
                             }
                         }
                     }

@@ -5,11 +5,11 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 use super::commands::Lv1Command;
-use super::events::Lv1Event;
 use super::events::Lv1ActorError;
+use super::events::Lv1Event;
 use super::handle::Lv1ActorHandle;
-use super::state::{handle_message, ActorState};
-use super::tcp::{decode_frame_payload, pong_for_ping, read_next_async, send_async, Lv1TcpClient};
+use super::state::{ActorState, handle_message};
+use super::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping, read_next_async, send_async};
 use super::types::ConnectionStatus;
 use crate::osc::OscArg;
 use crate::runtime::events::AppEventBus;

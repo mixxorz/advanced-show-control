@@ -22,17 +22,26 @@ impl ShellState {
 
 fn apply_scene_recall_event_locked(inner: &mut super::shell::ShellInner, event: &SceneRecallEvent) {
     match event {
-        SceneRecallEvent::Blocked { scene_label, reason } => inner.push_log(
+        SceneRecallEvent::Blocked {
+            scene_label,
+            reason,
+        } => inner.push_log(
             LogSource::App,
             LogSeverity::Warning,
             format!("Scene recall blocked for {scene_label}: {reason}"),
         ),
-        SceneRecallEvent::Skipped { scene_label, reason } => inner.push_log(
+        SceneRecallEvent::Skipped {
+            scene_label,
+            reason,
+        } => inner.push_log(
             LogSource::App,
             LogSeverity::Info,
             format!("Scene recall skipped for {scene_label}: {reason}"),
         ),
-        SceneRecallEvent::Ready { scene_label, target_count } => inner.push_log(
+        SceneRecallEvent::Ready {
+            scene_label,
+            target_count,
+        } => inner.push_log(
             LogSource::App,
             LogSeverity::Info,
             format!("Scene recall ready for {scene_label} ({target_count} targets)"),
@@ -66,6 +75,9 @@ mod tests {
             .await
             .expect("event should apply to current generation");
 
-        assert_eq!(snapshot.logs.last().unwrap().message, "Scene recall blocked for 1: Intro: locked out");
+        assert_eq!(
+            snapshot.logs.last().unwrap().message,
+            "Scene recall blocked for 1: Intro: locked out"
+        );
     }
 }

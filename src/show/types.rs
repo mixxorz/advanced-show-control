@@ -31,7 +31,10 @@ pub struct ShowSnapshot {
 
 impl ShowSnapshot {
     pub fn empty() -> Self {
-        Self { lockout: false, scene_configs: Vec::new() }
+        Self {
+            lockout: false,
+            scene_configs: Vec::new(),
+        }
     }
 }
 

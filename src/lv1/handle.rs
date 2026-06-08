@@ -32,8 +32,7 @@ impl Lv1ActorHandle {
         gain_db: f64,
     ) -> Result<(), Lv1ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
-            .tx
+        self.tx
             .send(Lv1Command::SetGain {
                 group,
                 channel,
@@ -56,8 +55,7 @@ impl Lv1ActorHandle {
         muted: bool,
     ) -> Result<(), Lv1ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
-            .tx
+        self.tx
             .send(Lv1Command::SetMute {
                 group,
                 channel,

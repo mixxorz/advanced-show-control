@@ -25,27 +25,29 @@ pub(crate) struct ActiveChannel {
     pub(crate) started_at: Instant,
 }
 
+pub(crate) struct ActiveChannelInit {
+    pub(crate) scene: FadeSceneIdentity,
+    pub(crate) group: i32,
+    pub(crate) channel: i32,
+    pub(crate) start_db: f64,
+    pub(crate) target_db: f64,
+    pub(crate) curve: FadeCurve,
+    pub(crate) duration: Duration,
+    pub(crate) started_at: Instant,
+}
+
 impl ActiveChannel {
-    pub(crate) fn new(
-        scene: FadeSceneIdentity,
-        group: i32,
-        channel: i32,
-        start_db: f64,
-        target_db: f64,
-        curve: FadeCurve,
-        duration: Duration,
-        started_at: Instant,
-    ) -> Self {
+    pub(crate) fn new(init: ActiveChannelInit) -> Self {
         Self {
-            scene,
-            group,
-            channel,
-            start_db,
-            target_db,
-            expected_db: start_db,
-            curve,
-            duration,
-            started_at,
+            scene: init.scene,
+            group: init.group,
+            channel: init.channel,
+            start_db: init.start_db,
+            target_db: init.target_db,
+            expected_db: init.start_db,
+            curve: init.curve,
+            duration: init.duration,
+            started_at: init.started_at,
         }
     }
 
@@ -102,19 +104,19 @@ mod tests {
     use std::time::Duration;
 
     fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
-        ActiveChannel::new(
-            FadeSceneIdentity {
+        ActiveChannel::new(ActiveChannelInit {
+            scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
             },
-            0,
-            0,
+            group: 0,
+            channel: 0,
             start_db,
             target_db,
-            FadeCurve::Linear,
-            Duration::from_millis(duration_ms),
-            Instant::now(),
-        )
+            curve: FadeCurve::Linear,
+            duration: Duration::from_millis(duration_ms),
+            started_at: Instant::now(),
+        })
     }
 
     #[test]
@@ -123,16 +125,16 @@ mod tests {
             index: 7,
             name: "Bridge".to_string(),
         };
-        let ch = ActiveChannel::new(
-            scene.clone(),
-            0,
-            3,
-            -20.0,
-            -10.0,
-            FadeCurve::Linear,
-            Duration::from_millis(4000),
-            Instant::now(),
-        );
+        let ch = ActiveChannel::new(ActiveChannelInit {
+            scene: scene.clone(),
+            group: 0,
+            channel: 3,
+            start_db: -20.0,
+            target_db: -10.0,
+            curve: FadeCurve::Linear,
+            duration: Duration::from_millis(4000),
+            started_at: Instant::now(),
+        });
         assert_eq!(ch.scene, scene);
         assert_eq!(ch.group, 0);
         assert_eq!(ch.channel, 3);

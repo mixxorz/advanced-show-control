@@ -54,16 +54,26 @@ impl ShellState {
         drop(inner);
 
         if !scene_list.is_empty() {
-            let changed = self.show.reconcile_scene_list(scene_list.clone()).await.unwrap_or(false);
+            let changed = self
+                .show
+                .reconcile_scene_list(scene_list.clone())
+                .await
+                .unwrap_or(false);
             let mut inner = self.inner.lock().await;
             if inner.generation == generation
-                && inner.lv1_snapshot.as_ref().map(|snapshot| snapshot.scene_list.clone()) == Some(scene_list.clone())
+                && inner
+                    .lv1_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.scene_list.clone())
+                    == Some(scene_list.clone())
             {
                 if changed {
                     inner.show_file_dirty = true;
                 }
                 if inner.selected_scene_id.is_none() {
-                    inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+                    inner.selected_scene_id = scene_list
+                        .first()
+                        .map(|scene| format!("{}::{}", scene.index, scene.name));
                 }
             }
             drop(inner);
@@ -91,17 +101,28 @@ impl ShellState {
         drop(inner);
 
         if !scene_list.is_empty() {
-            let changed = self.show.reconcile_scene_list(scene_list.clone()).await.ok()?;
+            let changed = self
+                .show
+                .reconcile_scene_list(scene_list.clone())
+                .await
+                .ok()?;
             let mut inner = self.inner.lock().await;
             if inner.generation != generation {
                 return None;
             }
-            if inner.lv1_snapshot.as_ref().map(|snapshot| snapshot.scene_list.clone()) == Some(scene_list.clone()) {
+            if inner
+                .lv1_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.scene_list.clone())
+                == Some(scene_list.clone())
+            {
                 if changed {
                     inner.show_file_dirty = true;
                 }
                 if inner.selected_scene_id.is_none() {
-                    inner.selected_scene_id = scene_list.first().map(|scene| format!("{}::{}", scene.index, scene.name));
+                    inner.selected_scene_id = scene_list
+                        .first()
+                        .map(|scene| format!("{}::{}", scene.index, scene.name));
                 }
             }
             drop(inner);
@@ -175,7 +196,11 @@ impl ShellState {
                 let generation = inner.generation;
                 drop(inner);
 
-                let changed = self.show.reconcile_scene_list(scenes.clone()).await.unwrap_or(false);
+                let changed = self
+                    .show
+                    .reconcile_scene_list(scenes.clone())
+                    .await
+                    .unwrap_or(false);
 
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {

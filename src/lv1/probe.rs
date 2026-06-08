@@ -43,7 +43,7 @@ fn is_fader_gain_address(address: &str) -> bool {
         .split('/')
         .filter(|segment| !segment.is_empty())
         .collect();
-    segments.last() == Some(&"Gain") && segments.iter().any(|segment| *segment == "Track")
+    segments.last() == Some(&"Gain") && segments.contains(&"Track")
 }
 
 fn is_scene_address(address: &str) -> bool {

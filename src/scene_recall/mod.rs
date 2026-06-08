@@ -5,5 +5,5 @@ pub mod state;
 
 pub use actor::spawn_scene_recall_fader;
 pub use events::SceneRecallEvent;
-pub use policy::{decide_scene_recall, RecallPolicyDecision, RecallPolicyInput};
+pub use policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 pub use state::SceneRecallState;

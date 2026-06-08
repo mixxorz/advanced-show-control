@@ -16,7 +16,10 @@ struct RecallSceneIdentity {
 
 impl From<&SceneState> for RecallSceneIdentity {
     fn from(scene: &SceneState) -> Self {
-        Self { index: scene.index, name: scene.name.clone() }
+        Self {
+            index: scene.index,
+            name: scene.name.clone(),
+        }
     }
 }
 
@@ -36,7 +39,10 @@ impl SceneRecallState {
     }
 
     pub fn accepts(&mut self, current_scene: &SceneState) -> bool {
-        let now = Instant::now();
+        self.accepts_at(current_scene, Instant::now())
+    }
+
+    pub(crate) fn accepts_at(&mut self, current_scene: &SceneState, now: Instant) -> bool {
         let scene_identity = RecallSceneIdentity::from(current_scene);
 
         match self.arm_after {
@@ -55,13 +61,18 @@ impl SceneRecallState {
                 if self.last_scene.as_ref() == Some(&scene_identity)
                     && self
                         .last_triggered_at
-                        .map(|triggered_at| now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY)
+                        .map(|triggered_at| {
+                            now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY
+                        })
                         .unwrap_or(false)
                 {
                     return false;
                 }
 
-                let baseline_scene = self.baseline.clone().unwrap_or_else(|| scene_identity.clone());
+                let baseline_scene = self
+                    .baseline
+                    .clone()
+                    .unwrap_or_else(|| scene_identity.clone());
                 let triggered_at = self.baseline_at.unwrap_or(now);
                 self.last_scene = Some(baseline_scene);
                 self.last_triggered_at = Some(triggered_at);
@@ -80,7 +91,8 @@ impl SceneRecallState {
     }
 
     pub fn should_log_duration_zero_skip(&mut self, scene_id: &str) -> bool {
-        self.duration_zero_skip_scene_ids.insert(scene_id.to_string())
+        self.duration_zero_skip_scene_ids
+            .insert(scene_id.to_string())
     }
 }
 
@@ -89,33 +101,38 @@ mod tests {
     use super::*;
 
     fn scene(index: i32, name: &str) -> SceneState {
-        SceneState { index, name: name.to_string() }
+        SceneState {
+            index,
+            name: name.to_string(),
+        }
     }
 
     #[test]
-    #[ignore = "uses real-time scene recall arming sleep; replace with injected clock"]
     fn accepts_after_two_second_arming_delay() {
         let mut state = SceneRecallState::default();
         let scene = scene(1, "Intro");
+        let start = Instant::now();
 
-        assert!(!state.accepts(&scene));
-        std::thread::sleep(Duration::from_secs(2));
-
-        assert!(state.accepts(&scene));
+        assert!(!state.accepts_at(&scene, start));
+        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY));
     }
 
     #[test]
-    #[ignore = "uses real-time scene recall repeat-delay sleep; replace with injected clock"]
     fn suppresses_same_scene_repeat_for_500ms() {
         let mut state = SceneRecallState::default();
         let scene = scene(1, "Intro");
+        let start = Instant::now();
 
-        assert!(!state.accepts(&scene));
-        std::thread::sleep(Duration::from_secs(2));
-        assert!(state.accepts(&scene));
-        assert!(!state.accepts(&scene));
-        std::thread::sleep(Duration::from_millis(500));
-        assert!(state.accepts(&scene));
+        assert!(!state.accepts_at(&scene, start));
+        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY));
+        assert!(!state.accepts_at(
+            &scene,
+            start + RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY - Duration::from_millis(1)
+        ));
+        assert!(state.accepts_at(
+            &scene,
+            start + RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY
+        ));
     }
 
     #[test]

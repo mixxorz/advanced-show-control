@@ -58,7 +58,12 @@ impl SceneBuffer {
     }
 }
 
-pub(super) fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, gain_db: f64) {
+pub(super) fn apply_fader_update(
+    channels: &mut [ChannelInfo],
+    group: i32,
+    channel: i32,
+    gain_db: f64,
+) {
     if let Some(ch) = channels
         .iter_mut()
         .find(|c| c.group == group && c.channel == channel)
@@ -67,7 +72,12 @@ pub(super) fn apply_fader_update(channels: &mut Vec<ChannelInfo>, group: i32, ch
     }
 }
 
-pub(super) fn apply_mute_update(channels: &mut Vec<ChannelInfo>, group: i32, channel: i32, muted: bool) {
+pub(super) fn apply_mute_update(
+    channels: &mut [ChannelInfo],
+    group: i32,
+    channel: i32,
+    muted: bool,
+) {
     if let Some(ch) = channels
         .iter_mut()
         .find(|c| c.group == group && c.channel == channel)
@@ -133,19 +143,19 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
             }
         }
         "/Notify/CurSceneIndex" => {
-            if let Some(crate::osc::OscArg::Int(index)) = msg.args.first() {
-                if let Some(scene) = state.scene_buf.apply_index(*index) {
-                    state.scene = Some(scene.clone());
-                    state.fan_out(Lv1Event::SceneChanged(scene));
-                }
+            if let Some(crate::osc::OscArg::Int(index)) = msg.args.first()
+                && let Some(scene) = state.scene_buf.apply_index(*index)
+            {
+                state.scene = Some(scene.clone());
+                state.fan_out(Lv1Event::SceneChanged(scene));
             }
         }
         "/Notify/Scene/Name" => {
-            if let Some(crate::osc::OscArg::String(name)) = msg.args.first() {
-                if let Some(scene) = state.scene_buf.apply_name(name.clone()) {
-                    state.scene = Some(scene.clone());
-                    state.fan_out(Lv1Event::SceneChanged(scene));
-                }
+            if let Some(crate::osc::OscArg::String(name)) = msg.args.first()
+                && let Some(scene) = state.scene_buf.apply_name(name.clone())
+            {
+                state.scene = Some(scene.clone());
+                state.fan_out(Lv1Event::SceneChanged(scene));
             }
         }
         "/Notify/SceneList" => {
@@ -175,15 +185,14 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
                 Some(crate::osc::OscArg::Int(channel)),
                 Some(mute_arg),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                && let Some(muted) = osc_arg_to_bool(mute_arg)
             {
-                if let Some(muted) = osc_arg_to_bool(mute_arg) {
-                    apply_mute_update(&mut state.channels, *group, *channel, muted);
-                    state.fan_out(Lv1Event::MuteChanged {
-                        group: *group,
-                        channel: *channel,
-                        muted,
-                    });
-                }
+                apply_mute_update(&mut state.channels, *group, *channel, muted);
+                state.fan_out(Lv1Event::MuteChanged {
+                    group: *group,
+                    channel: *channel,
+                    muted,
+                });
             }
         }
         _ => {}

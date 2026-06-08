@@ -377,10 +377,7 @@ mod tests {
         let home = temp_test_dir("home-documents");
         let folder = default_show_folder_from(None, Some(home.clone()));
 
-        assert_eq!(
-            folder,
-            home.join("Documents").join("Advanced Show Control")
-        );
+        assert_eq!(folder, home.join("Documents").join("Advanced Show Control"));
 
         let _ = fs::remove_dir_all(&home);
     }

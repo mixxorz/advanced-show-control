@@ -1,7 +1,7 @@
 use crate::lv1::types::SceneListEntry;
 
-use super::types::{SceneConfig, ShowSnapshot};
 use super::types::scene_id;
+use super::types::{SceneConfig, ShowSnapshot};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShowState {
@@ -11,7 +11,10 @@ pub struct ShowState {
 
 impl ShowState {
     pub fn snapshot(&self) -> ShowSnapshot {
-        ShowSnapshot { lockout: self.lockout, scene_configs: self.scene_configs.clone() }
+        ShowSnapshot {
+            lockout: self.lockout,
+            scene_configs: self.scene_configs.clone(),
+        }
     }
 
     pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) -> bool {
@@ -48,15 +51,25 @@ impl ShowState {
     }
 
     pub fn get_scene_config(&self, scene_id: &str) -> Option<SceneConfig> {
-        self.scene_configs.iter().find(|scene| scene.scene_id == scene_id).cloned()
+        self.scene_configs
+            .iter()
+            .find(|scene| scene.scene_id == scene_id)
+            .cloned()
     }
 
     pub fn set_lockout(&mut self, enabled: bool) -> bool {
-        if self.lockout == enabled { false } else { self.lockout = enabled; true }
+        if self.lockout == enabled {
+            false
+        } else {
+            self.lockout = enabled;
+            true
+        }
     }
 
     pub(crate) fn get_scene_config_mut(&mut self, scene_id: &str) -> Option<&mut SceneConfig> {
-        self.scene_configs.iter_mut().find(|scene| scene.scene_id == scene_id)
+        self.scene_configs
+            .iter_mut()
+            .find(|scene| scene.scene_id == scene_id)
     }
 }
 
@@ -67,9 +80,10 @@ mod tests {
     use crate::show::ChannelConfig;
 
     fn scene_config(scene_id: &str, duration_ms: u64, channels: Vec<ChannelConfig>) -> SceneConfig {
-        let (scene_index, scene_name) = scene_id.split_once("::").map(|(index, name)| {
-            (index.parse().unwrap(), name.to_string())
-        }).unwrap();
+        let (scene_index, scene_name) = scene_id
+            .split_once("::")
+            .map(|(index, name)| (index.parse().unwrap(), name.to_string()))
+            .unwrap();
         SceneConfig {
             scene_id: scene_id.to_string(),
             scene_index,
@@ -103,7 +117,10 @@ mod tests {
         assert_eq!(state.scene_configs[0].duration_ms, 1_500);
         assert_eq!(state.scene_configs[0].scene_index, 1);
         assert_eq!(state.scene_configs[0].scene_name, "scene-1");
-        assert_eq!(state.scene_configs[0].channel_configs[0].fader_db, Some(-12.0));
+        assert_eq!(
+            state.scene_configs[0].channel_configs[0].fader_db,
+            Some(-12.0)
+        );
     }
 
     #[test]
@@ -181,12 +198,8 @@ mod tests {
             )],
         };
 
-        assert!(state
-            .set_channel_scoped("1::scene-1", 0, 1, true)
-            .unwrap());
-        assert!(!state
-            .set_channel_scoped("1::scene-1", 0, 1, true)
-            .unwrap());
+        assert!(state.set_channel_scoped("1::scene-1", 0, 1, true).unwrap());
+        assert!(!state.set_channel_scoped("1::scene-1", 0, 1, true).unwrap());
     }
 
     #[test]
@@ -211,7 +224,10 @@ mod tests {
         assert_eq!(snapshot.scene_configs[0].scene_name, "scene-1");
         assert_eq!(snapshot.scene_configs[0].channel_configs[0].group, 0);
         assert_eq!(snapshot.scene_configs[0].channel_configs[0].channel, 1);
-        assert_eq!(snapshot.scene_configs[0].channel_configs[0].fader_db, Some(-7.5));
+        assert_eq!(
+            snapshot.scene_configs[0].channel_configs[0].fader_db,
+            Some(-7.5)
+        );
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].group, 0);
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 1);
     }

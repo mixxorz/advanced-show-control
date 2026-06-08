@@ -34,7 +34,7 @@ pub struct RuntimeHandles {
 pub struct ShellState {
     pub handles: Arc<Mutex<RuntimeHandles>>,
     pub show: ShowStateHandle,
-    pub(super) inner: Arc<Mutex<ShellInner>>, 
+    pub(super) inner: Arc<Mutex<ShellInner>>,
 }
 
 #[derive(Default)]
@@ -72,7 +72,11 @@ impl ShellState {
         let inner_guard = self.inner.lock().await;
         let inner = snapshot_inner(&inner_guard);
         drop(inner_guard);
-        let show = self.show.get_snapshot().await.unwrap_or_else(|_| ShowSnapshot::empty());
+        let show = self
+            .show
+            .get_snapshot()
+            .await
+            .unwrap_or_else(|_| ShowSnapshot::empty());
         snapshot_from_parts(inner, show)
     }
 
@@ -291,7 +295,11 @@ impl ShellState {
             snapshot_inner(&inner)
         };
 
-        let show = self.show.get_snapshot().await.unwrap_or_else(|_| ShowSnapshot::empty());
+        let show = self
+            .show
+            .get_snapshot()
+            .await
+            .unwrap_or_else(|_| ShowSnapshot::empty());
         snapshot_from_parts(snapshot, show)
     }
 
@@ -424,10 +432,7 @@ impl RuntimeHandles {
 }
 
 pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
-    snapshot_from_parts(
-        snapshot_inner(inner),
-        ShowSnapshot::empty(),
-    )
+    snapshot_from_parts(snapshot_inner(inner), ShowSnapshot::empty())
 }
 
 fn snapshot_inner(inner: &ShellInner) -> InnerSnapshot {
@@ -724,7 +729,9 @@ mod tests {
             .await
             .expect("disconnect should enter reconnect state");
 
-        let snapshot = state.reconnect_timed_out(reconnecting.reconnect.attempt).await;
+        let snapshot = state
+            .reconnect_timed_out(reconnecting.reconnect.attempt)
+            .await;
 
         assert!(!snapshot.reconnect.active);
         assert!(state.snapshot_for_generation(generation).await.is_none());
@@ -769,34 +776,41 @@ mod tests {
             .await
             .expect("second disconnect should enter reconnect state");
 
-        let snapshot = state.reconnect_timed_out(first_reconnect.reconnect.attempt).await;
+        let snapshot = state
+            .reconnect_timed_out(first_reconnect.reconnect.attempt)
+            .await;
 
         assert!(snapshot.reconnect.active);
-        assert_eq!(snapshot.reconnect.attempt, second_reconnect.reconnect.attempt);
+        assert_eq!(
+            snapshot.reconnect.attempt,
+            second_reconnect.reconnect.attempt
+        );
         assert!(state.snapshot_for_generation(generation).await.is_some());
     }
 
     #[test]
     fn snapshot_maps_lv1_scene_and_counts() {
-        let mut inner = ShellInner::default();
-        inner.lv1_snapshot = Some(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: Some(SceneState {
-                index: 3,
-                name: "Verse".to_string(),
+        let inner = ShellInner {
+            lv1_snapshot: Some(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: Some(SceneState {
+                    index: 3,
+                    name: "Verse".to_string(),
+                }),
+                scene_list: vec![SceneListEntry {
+                    index: 3,
+                    name: "Verse".to_string(),
+                }],
+                channels: vec![ChannelInfo {
+                    group: 0,
+                    channel: 0,
+                    name: "Lead".to_string(),
+                    gain_db: -6.0,
+                    muted: false,
+                }],
             }),
-            scene_list: vec![SceneListEntry {
-                index: 3,
-                name: "Verse".to_string(),
-            }],
-            channels: vec![ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Lead".to_string(),
-                gain_db: -6.0,
-                muted: false,
-            }],
-        });
+            ..Default::default()
+        };
 
         let snapshot = snapshot_from_inner(&inner);
 
@@ -814,26 +828,28 @@ mod tests {
 
     #[test]
     fn snapshot_includes_discovered_lv1_systems_and_reconnect_state() {
-        let mut inner = ShellInner::default();
-        inner.discovered_lv1_systems = vec![crate::connection_state::DiscoveredLv1System {
-            identity: crate::connection_state::Lv1SystemIdentity {
+        let inner = ShellInner {
+            discovered_lv1_systems: vec![crate::connection_state::DiscoveredLv1System {
+                identity: crate::connection_state::Lv1SystemIdentity {
+                    uuid: Some("uuid-1".to_string()),
+                    host: Some("LV1-FOH".to_string()),
+                    address: "192.168.1.35".to_string(),
+                    port: 50000,
+                },
+                latency_ms: Some(12),
+                status: crate::connection_state::DiscoveredLv1Status::Connected,
+            }],
+            connected_lv1_identity: Some(crate::connection_state::Lv1SystemIdentity {
                 uuid: Some("uuid-1".to_string()),
                 host: Some("LV1-FOH".to_string()),
                 address: "192.168.1.35".to_string(),
                 port: 50000,
+            }),
+            reconnect_state: crate::connection_state::ReconnectState {
+                active: true,
+                attempt: 1,
             },
-            latency_ms: Some(12),
-            status: crate::connection_state::DiscoveredLv1Status::Connected,
-        }];
-        inner.connected_lv1_identity = Some(crate::connection_state::Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            host: Some("LV1-FOH".to_string()),
-            address: "192.168.1.35".to_string(),
-            port: 50000,
-        });
-        inner.reconnect_state = crate::connection_state::ReconnectState {
-            active: true,
-            attempt: 1,
+            ..Default::default()
         };
 
         let snapshot = snapshot_from_inner(&inner);

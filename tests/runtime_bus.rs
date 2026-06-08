@@ -1,10 +1,10 @@
-use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::actor::spawn_engine;
+use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::SceneState;
 use advanced_show_control::lv1::tcp::encode_frame;
+use advanced_show_control::lv1::types::SceneState;
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
@@ -68,7 +68,7 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let result = tokio::time::timeout(
+    tokio::time::timeout(
         std::time::Duration::from_secs(2),
         command_bus.start_fade(FadeConfig {
             scene: FadeSceneIdentity {
@@ -87,8 +87,6 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     .await
     .expect("start_fade timed out")
     .unwrap();
-
-    assert_eq!(result, ());
 
     drop(fade);
 }

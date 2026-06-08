@@ -1,5 +1,5 @@
-use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::actor::spawn_engine;
+use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::fade::handle::FadeEngineHandle;
 use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
@@ -101,10 +101,7 @@ async fn wait_for_app_fade_event(
 async fn spawn_runtime_for_test(
     lv1: advanced_show_control::lv1::handle::Lv1ActorHandle,
     event_bus: AppEventBus,
-) -> (
-    AppCommandBus,
-    FadeEngineHandle,
-) {
+) -> (AppCommandBus, FadeEngineHandle) {
     let bus = AppCommandBus::new(event_bus.clone());
     bus.set_lv1(Some(lv1)).await;
     let engine = spawn_engine(bus.clone(), event_bus);
@@ -548,15 +545,14 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
                 Ok(n) => {
                     for frame in decoder.push(&buf[..n]).unwrap() {
                         let msg = decode_frame_payload(&frame).unwrap();
-                        if msg.address == "/Set/Track/Out/Gain" {
-                            if let (
+                        if msg.address == "/Set/Track/Out/Gain"
+                            && let (
                                 Some(OscArg::Int(group)),
                                 Some(OscArg::Int(channel)),
                                 Some(OscArg::Double(gain_db)),
                             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                            {
-                                let _ = gain_tx.send((*group, *channel, *gain_db));
-                            }
+                        {
+                            let _ = gain_tx.send((*group, *channel, *gain_db));
                         }
                     }
                 }

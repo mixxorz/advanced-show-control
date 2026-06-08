@@ -1,13 +1,13 @@
-use clap::{Parser, Subcommand};
 use advanced_show_control::lv1::actor::spawn_actor;
-use advanced_show_control::lv1::discovery::{discover, resolve_target, DiscoverOptions};
+use advanced_show_control::lv1::discovery::{DiscoverOptions, discover, resolve_target};
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::handle::Lv1ActorHandle;
-use advanced_show_control::lv1::probe::{entry_for_message, JsonlLogger, MessageKind};
-use advanced_show_control::lv1::types::ChannelInfo;
+use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
+use advanced_show_control::lv1::types::ChannelInfo;
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -481,8 +481,8 @@ async fn run_fade_test(
     duration_ms: u64,
     curve: CurveArg,
 ) -> AppResult<()> {
-    use advanced_show_control::fade::curve::FadeCurve;
     use advanced_show_control::fade::actor::spawn_engine;
+    use advanced_show_control::fade::curve::FadeCurve;
     use advanced_show_control::fade::events::FadeEvent;
     use advanced_show_control::fade::types::{FadeConfig, FadeTarget};
     use advanced_show_control::runtime::commands::AppCommandBus;

@@ -156,7 +156,7 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
 }
 
 pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err(OscError::InvalidPaddedLength(bytes.len()));
     }
     let mut offset = 0;

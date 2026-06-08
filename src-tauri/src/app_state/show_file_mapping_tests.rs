@@ -1,7 +1,7 @@
 use super::shell::ShellState;
 use super::test_support::connected_state_with_scene_and_channel;
-use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
 use super::view::ShowSnapshot;
+use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
 
 #[tokio::test]
 async fn export_show_file_contains_current_configs() {
@@ -68,7 +68,10 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
                     channel: 2,
                     fader_db: Some(-8.0),
                 }],
-                scoped_channels: vec![super::view::ChannelRef { group: 0, channel: 2 }],
+                scoped_channels: vec![super::view::ChannelRef {
+                    group: 0,
+                    channel: 2,
+                }],
             }],
         })
         .await

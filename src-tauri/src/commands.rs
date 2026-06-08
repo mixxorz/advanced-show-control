@@ -490,8 +490,7 @@ async fn connect_to_target<R: Runtime>(
     };
 
     let initial_snapshot = lv1.get_state().await;
-    if initial_snapshot.connection
-        != advanced_show_control::lv1::types::ConnectionStatus::Connected
+    if initial_snapshot.connection != advanced_show_control::lv1::types::ConnectionStatus::Connected
     {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
@@ -602,6 +601,7 @@ async fn startup_discovery_or_current_snapshot(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn install_connected_runtime<R: Runtime>(
     app: &AppHandle<R>,
     state: &ShellState,
@@ -655,11 +655,10 @@ fn spawn_shell_state_projector<R: Runtime>(
                 Ok(app_event) => match &app_event {
                     AppEvent::Lv1(event) => {
                         if let Some(snapshot) = state
-                            .apply_lv1_event_for_generation(generation, &event)
+                            .apply_lv1_event_for_generation(generation, event)
                             .await
                         {
-                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event))
-                            {
+                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event)) {
                                 eprintln!("failed to emit lv1-event: {err}");
                             }
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
@@ -677,22 +676,23 @@ fn spawn_shell_state_projector<R: Runtime>(
                     }
                     AppEvent::Fade(event) => {
                         if let Some(snapshot) = state
-                            .apply_fade_event_for_generation(generation, &event)
+                            .apply_fade_event_for_generation(generation, event)
                             .await
+                            && let Err(err) = app.emit("app-status-changed", &snapshot)
                         {
-                            if let Err(err) = app.emit("app-status-changed", &snapshot) {
-                                eprintln!("failed to emit app-status-changed: {err}");
-                            }
+                            eprintln!("failed to emit app-status-changed: {err}");
                         }
                     }
                     AppEvent::CommandFailed { command, message } => {
                         eprintln!("command failed: {command}: {message}");
                     }
                     AppEvent::Show(_) | AppEvent::SceneRecall(_) => {
-                        if let Some(snapshot) = state.project_event_for_generation(generation, &app_event).await {
-                            if let Err(err) = app.emit("app-status-changed", &snapshot) {
-                                eprintln!("failed to emit app-status-changed: {err}");
-                            }
+                        if let Some(snapshot) = state
+                            .project_event_for_generation(generation, &app_event)
+                            .await
+                            && let Err(err) = app.emit("app-status-changed", &snapshot)
+                        {
+                            eprintln!("failed to emit app-status-changed: {err}");
                         }
                     }
                 },
@@ -738,6 +738,7 @@ fn current_timestamp_millis() -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
     use advanced_show_control::fade::events::FadeEvent;
@@ -1252,10 +1253,12 @@ mod tests {
             event_bus.subscribe(),
         );
 
-        event_bus.publish(AppEvent::SceneRecall(advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
-            scene_label: "1: Intro".to_string(),
-            reason: "locked out".to_string(),
-        }));
+        event_bus.publish(AppEvent::SceneRecall(
+            advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
+                scene_label: "1: Intro".to_string(),
+                reason: "locked out".to_string(),
+            },
+        ));
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {

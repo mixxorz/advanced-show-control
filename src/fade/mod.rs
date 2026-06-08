@@ -1,8 +1,8 @@
-pub mod curve;
 pub mod actor;
 pub mod commands;
-pub mod fader_law;
+pub mod curve;
 pub mod events;
+pub mod fader_law;
 pub mod handle;
 pub mod state;
 pub mod tick;

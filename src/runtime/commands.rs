@@ -5,12 +5,12 @@ use tokio::sync::Mutex;
 
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
-use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::events::Lv1ActorError;
+use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::types::Lv1StateSnapshot;
+use crate::runtime::events::{AppEvent, AppEventBus};
 use crate::show::handle::{ShowActorError, ShowStateHandle};
 use crate::show::types::{SceneConfig, ShowSnapshot};
-use crate::runtime::events::{AppEvent, AppEventBus};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AppCommandError {
@@ -83,10 +83,16 @@ impl AppCommandBus {
         }
     }
 
-    pub async fn get_scene_config(&self, scene_id: String) -> Result<Option<SceneConfig>, AppCommandError> {
+    pub async fn get_scene_config(
+        &self,
+        scene_id: String,
+    ) -> Result<Option<SceneConfig>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show.get_scene_config(scene_id).await.map_err(map_show_error),
+            Some(show) => show
+                .get_scene_config(scene_id)
+                .await
+                .map_err(map_show_error),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -169,12 +175,12 @@ fn publish_failure(event_bus: &AppEventBus, command: &str, result: &Result<(), A
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fade::curve::FadeCurve;
     use crate::fade::commands::FadeCommand;
+    use crate::fade::curve::FadeCurve;
     use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+    use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::commands::ShowCommand;
     use crate::show::handle::ShowStateHandle;
-    use crate::runtime::events::{AppEvent, AppEventBus};
 
     #[tokio::test]
     async fn missing_lv1_returns_lv1_unavailable() {

@@ -63,7 +63,9 @@ impl ShellState {
             schema_version: SHOW_FILE_SCHEMA_VERSION,
             app_version: env!("CARGO_PKG_VERSION").to_string(),
             saved_at,
-            safety: ShowFileSafety { lockout: show.lockout },
+            safety: ShowFileSafety {
+                lockout: show.lockout,
+            },
             scene_configs: show
                 .scene_configs
                 .into_iter()
@@ -83,7 +85,10 @@ impl ShellState {
                     scoped_channels: config
                         .scoped_channels
                         .into_iter()
-                        .map(|channel| ShowFileChannelRef { group: channel.group, channel: channel.channel })
+                        .map(|channel| ShowFileChannelRef {
+                            group: channel.group,
+                            channel: channel.channel,
+                        })
                         .collect(),
                 })
                 .collect(),
@@ -143,9 +148,10 @@ impl ShellState {
             .map_err(|err| format!("Failed to load show data: {err:?}"))?;
 
         let mut inner = self.inner.lock().await;
-        inner.selected_scene_id = file.scene_configs.first().map(|config| {
-            format!("{}::{}", config.scene_index, config.scene_name)
-        });
+        inner.selected_scene_id = file
+            .scene_configs
+            .first()
+            .map(|config| format!("{}::{}", config.scene_index, config.scene_name));
         inner.show_file_path = Some(path);
         inner.show_file_last_saved_at = Some(file.saved_at.clone());
         inner.show_file_dirty = report.removed_anything();

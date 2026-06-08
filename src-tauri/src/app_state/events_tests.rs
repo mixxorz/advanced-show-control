@@ -53,9 +53,12 @@ async fn channel_completed_logs_without_clearing_running_state() {
         .await;
 
     assert_eq!(completed.fade_state, AppFadeState::Running);
-    assert!(completed.logs.iter().any(|log| {
-        log.message == "Fade channel completed: group 0, channel 2"
-    }));
+    assert!(
+        completed
+            .logs
+            .iter()
+            .any(|log| { log.message == "Fade channel completed: group 0, channel 2" })
+    );
 }
 
 #[tokio::test]
@@ -131,10 +134,19 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
 
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
-    let mut state = advanced_show_control::show::state::ShowState { lockout: false, scene_configs: Vec::new() };
+    let mut state = advanced_show_control::show::state::ShowState {
+        lockout: false,
+        scene_configs: Vec::new(),
+    };
     assert!(state.reconcile_scene_fade_configs(&[
-        SceneListEntry { index: 1, name: "Intro".to_string() },
-        SceneListEntry { index: 2, name: "Verse".to_string() },
+        SceneListEntry {
+            index: 1,
+            name: "Intro".to_string()
+        },
+        SceneListEntry {
+            index: 2,
+            name: "Verse".to_string()
+        },
     ]));
 
     assert_eq!(state.scene_configs.len(), 2);
@@ -151,23 +163,29 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
     let mut state = advanced_show_control::show::state::ShowState {
         lockout: false,
         scene_configs: vec![scene_config(
-        2,
-        "Verse",
-        vec![ChannelConfig {
-            group: 0,
-            channel: 4,
-            fader_db: Some(-5.5),
-        }],
-        vec![ChannelRef {
-            group: 0,
-            channel: 4,
-        }],
-    )],
+            2,
+            "Verse",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 4,
+                fader_db: Some(-5.5),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 4,
+            }],
+        )],
     };
 
     assert!(state.reconcile_scene_fade_configs(&[
-        SceneListEntry { index: 2, name: "Verse".to_string() },
-        SceneListEntry { index: 3, name: "Chorus".to_string() },
+        SceneListEntry {
+            index: 2,
+            name: "Verse".to_string()
+        },
+        SceneListEntry {
+            index: 3,
+            name: "Chorus".to_string()
+        },
     ]));
 
     let verse = state
@@ -192,21 +210,24 @@ fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
     let mut state = advanced_show_control::show::state::ShowState {
         lockout: false,
         scene_configs: vec![scene_config(
-        1,
-        "Intro",
-        vec![ChannelConfig {
-            group: 0,
-            channel: 2,
-            fader_db: Some(-5.0),
-        }],
-        vec![ChannelRef {
-            group: 0,
-            channel: 2,
-        }],
-    )],
+            1,
+            "Intro",
+            vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-5.0),
+            }],
+            vec![ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+        )],
     };
 
-    assert!(state.reconcile_scene_fade_configs(&[SceneListEntry { index: 2, name: "Verse".to_string() }]));
+    assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
+        index: 2,
+        name: "Verse".to_string()
+    }]));
     assert_eq!(state.scene_configs.len(), 1);
     assert_eq!(state.scene_configs[0].scene_id, "2::Verse");
     assert!(state.scene_configs[0].channel_configs.is_empty());
@@ -565,8 +586,15 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
             scene_configs: vec![scene_config(
                 1,
                 "Intro",
-                vec![ChannelConfig { group: 0, channel: 2, fader_db: Some(-8.0) }],
-                vec![ChannelRef { group: 0, channel: 2 }],
+                vec![ChannelConfig {
+                    group: 0,
+                    channel: 2,
+                    fader_db: Some(-8.0),
+                }],
+                vec![ChannelRef {
+                    group: 0,
+                    channel: 2,
+                }],
             )],
         })
         .await

@@ -55,18 +55,13 @@ pub enum AppConnectionState {
     Connected,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum AppFadeState {
+    #[default]
     Idle,
     Running,
     Blocked,
-}
-
-impl Default for AppFadeState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
