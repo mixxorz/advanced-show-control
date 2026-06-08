@@ -208,6 +208,8 @@ impl ShellState {
     pub async fn reconnect_timed_out(&self, attempt: u64) -> AppViewState {
         let mut inner = self.inner.lock().await;
         if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+            inner.generation = inner.generation.saturating_add(1);
+            inner.duration_zero_skip_logs.clear();
             inner.reconnect_state.active = false;
         }
         snapshot_from_inner(&inner)
@@ -447,6 +449,7 @@ pub(super) fn current_timestamp() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lv1_scene_fade_utility::lv1::messages::Lv1Event;
     use lv1_scene_fade_utility::lv1::model::{ChannelInfo, SceneListEntry, SceneState};
 
     #[tokio::test]
@@ -576,6 +579,75 @@ mod tests {
         assert!(handles.command_bus.is_none());
         assert!(handles.projector.is_none());
         assert!(handles.scene_recall_fader.is_none());
+    }
+
+    #[tokio::test]
+    async fn matching_reconnect_timeout_invalidates_current_generation() {
+        let state = ShellState::default();
+        state
+            .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }))
+            .await;
+        let (generation, _) = state.begin_connecting().await;
+        let reconnecting = state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("disconnect should enter reconnect state");
+
+        let snapshot = state.reconnect_timed_out(reconnecting.reconnect.attempt).await;
+
+        assert!(!snapshot.reconnect.active);
+        assert!(state.snapshot_for_generation(generation).await.is_none());
+        assert!(
+            state
+                .begin_connection_for_generation(
+                    generation,
+                    Lv1StateSnapshot {
+                        connection: ConnectionStatus::Connected,
+                        scene: None,
+                        scene_list: Vec::new(),
+                        channels: Vec::new(),
+                    },
+                )
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_reconnect_timeout_does_not_invalidate_newer_generation() {
+        let state = ShellState::default();
+        state
+            .set_connected_lv1_identity(Some(crate::connection_state::Lv1SystemIdentity {
+                uuid: Some("uuid-1".to_string()),
+                host: Some("LV1-FOH".to_string()),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }))
+            .await;
+        let (generation, _) = state.begin_connecting().await;
+        let first_reconnect = state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("first disconnect should enter reconnect state");
+        state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+            .await
+            .expect("connected event should clear first reconnect state");
+        let second_reconnect = state
+            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .await
+            .expect("second disconnect should enter reconnect state");
+
+        let snapshot = state.reconnect_timed_out(first_reconnect.reconnect.attempt).await;
+
+        assert!(snapshot.reconnect.active);
+        assert_eq!(snapshot.reconnect.attempt, second_reconnect.reconnect.attempt);
+        assert!(state.snapshot_for_generation(generation).await.is_some());
     }
 
     #[test]
