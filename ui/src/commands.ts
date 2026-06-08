@@ -1,5 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppViewState } from "./types";
+import type { AppViewState, Lv1SystemIdentity } from "./types";
+
+export async function startupAutoConnectLv1() {
+  return invoke<AppViewState>("startup_auto_connect_lv1");
+}
+
+export async function refreshLv1Discovery() {
+  return invoke<AppViewState>("refresh_lv1_discovery", { timeoutMs: 1000 });
+}
+
+export async function connectLv1System(identity: Lv1SystemIdentity) {
+  return invoke<AppViewState>("connect_lv1_system", { identity });
+}
+
+export async function reconnectTimedOut(attempt: number) {
+  return invoke<AppViewState>("reconnect_timed_out", { attempt });
+}
 
 export async function refreshAppState(
   setAppState: (appState: AppViewState) => void,
