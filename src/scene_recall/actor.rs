@@ -149,7 +149,7 @@ pub fn spawn_scene_recall_fader(
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("scene-recall-fader", count);
+                    log_lagged_subscriber("scene-recall", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
