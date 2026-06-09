@@ -2,6 +2,7 @@ mod app_state;
 mod commands;
 mod connection_preferences;
 mod connection_state;
+mod diagnostics;
 mod show_file;
 
 use app_state::ShellState;

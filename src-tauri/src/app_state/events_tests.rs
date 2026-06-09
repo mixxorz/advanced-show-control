@@ -377,6 +377,24 @@ async fn lv1_scene_event_updates_rust_owned_snapshot() {
 }
 
 #[tokio::test]
+async fn duplicate_connecting_attempt_is_rejected() {
+    let state = ShellState::default();
+    let first = state.try_begin_connecting().await;
+    let second = state.try_begin_connecting().await;
+
+    assert!(first.is_some());
+    assert!(second.is_none());
+
+    let snapshot = state.snapshot().await;
+    let connecting_logs = snapshot
+        .logs
+        .iter()
+        .filter(|log| log.message == "Connecting to LV1")
+        .count();
+    assert_eq!(connecting_logs, 1);
+}
+
+#[tokio::test]
 async fn begin_connection_preserves_incoming_connection_state() {
     let state = ShellState::default();
     let (_, _connecting) = state.begin_connecting().await;

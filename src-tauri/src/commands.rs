@@ -468,7 +468,11 @@ async fn connect_to_target<R: Runtime>(
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
     let event_bus = AppEventBus::default();
-    let (generation, connecting_snapshot) = state.begin_connecting().await;
+    let Some((generation, connecting_snapshot)) = state.try_begin_connecting().await else {
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&app, &snapshot);
+        return Ok(snapshot);
+    };
     state.abort_current_runtime(&active_command_bus).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
@@ -663,7 +667,13 @@ fn spawn_shell_state_projector<R: Runtime>(
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> tokio::task::JoinHandle<()> {
+    let diagnostics_path = crate::diagnostics::diagnostic_log_path(&app);
     tokio::spawn(async move {
+        let _ = crate::diagnostics::append_diagnostic(
+            &diagnostics_path,
+            "tauri-shell",
+            &format!("projector started generation={generation}"),
+        );
         loop {
             match events.recv().await {
                 Ok(app_event) => match &app_event {
@@ -699,6 +709,15 @@ fn spawn_shell_state_projector<R: Runtime>(
                     }
                     AppEvent::CommandFailed { command, message } => {
                         eprintln!("command failed: {command}: {message}");
+                    }
+                    AppEvent::Diagnostic { source, message } => {
+                        if let Err(err) = crate::diagnostics::append_diagnostic(
+                            &diagnostics_path,
+                            source,
+                            message,
+                        ) {
+                            eprintln!("failed to write diagnostic log: {err}");
+                        }
                     }
                     AppEvent::Show(_) | AppEvent::SceneRecall(_) => {
                         if let Some(snapshot) = state

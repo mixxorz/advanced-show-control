@@ -11,6 +11,7 @@ pub enum AppEvent {
     Show(ShowEvent),
     SceneRecall(crate::scene_recall::events::SceneRecallEvent),
     CommandFailed { command: String, message: String },
+    Diagnostic { source: String, message: String },
 }
 
 #[derive(Clone)]

@@ -132,9 +132,28 @@ impl ActorState {
     pub(super) fn fan_out(&mut self, event: Lv1Event) {
         self.event_bus.publish(AppEvent::Lv1(event));
     }
+
+    pub(super) fn diagnose(&mut self, message: impl Into<String>) {
+        self.event_bus.publish(AppEvent::Diagnostic {
+            source: "lv1-actor".to_string(),
+            message: message.into(),
+        });
+    }
 }
 
 pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
+    if is_diagnostic_address(&msg.address) {
+        state.diagnose(format!(
+            "received {} args=[{}]",
+            msg.address,
+            msg.args
+                .iter()
+                .map(crate::lv1::probe::format_arg)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
     match msg.address.as_str() {
         "/Channels" => {
             if let Ok(channels) = parse_channels_batch(&msg.args) {
@@ -158,12 +177,16 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
                 state.fan_out(Lv1Event::SceneChanged(scene));
             }
         }
-        "/Notify/SceneList" => {
-            if let Ok(list) = parse_scene_list(&msg.args) {
+        "/Notify/SceneList" => match parse_scene_list(&msg.args) {
+            Ok(list) => {
+                state.diagnose(format!("parsed /Notify/SceneList scenes={}", list.len()));
                 state.scene_list = list.clone();
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }
-        }
+            Err(err) => {
+                state.diagnose(format!("failed to parse /Notify/SceneList: {err}"));
+            }
+        },
         "/Notify/Track/Out/Gain" => {
             if let (
                 Some(crate::osc::OscArg::Int(group)),
@@ -197,6 +220,10 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         _ => {}
     }
+}
+
+fn is_diagnostic_address(address: &str) -> bool {
+    address == "/Channels" || address.split('/').any(|segment| segment.contains("Scene"))
 }
 
 #[cfg(test)]
@@ -250,6 +277,34 @@ mod tests {
             }
         );
         assert!(buf.apply_index(0).is_none());
+    }
+
+    #[tokio::test]
+    async fn scene_list_message_emits_diagnostic_event() {
+        let bus = AppEventBus::new(16);
+        let mut rx = bus.subscribe();
+        let mut state = ActorState::new(bus);
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/SceneList".to_string(),
+                args: vec![
+                    crate::osc::OscArg::Int(1),
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::String("Intro".to_string()),
+                ],
+            },
+        );
+
+        let event = rx.recv().await.unwrap();
+        match event {
+            AppEvent::Diagnostic { source, message } => {
+                assert_eq!(source, "lv1-actor");
+                assert!(message.contains("/Notify/SceneList"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[test]

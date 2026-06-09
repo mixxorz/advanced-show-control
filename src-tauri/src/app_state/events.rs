@@ -9,7 +9,28 @@ use super::shell::{
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
 
 impl ShellState {
+    #[cfg(test)]
     pub async fn begin_connecting(&self) -> (u64, AppViewState) {
+        self.begin_connecting_unchecked().await
+    }
+
+    pub async fn try_begin_connecting(&self) -> Option<(u64, AppViewState)> {
+        let inner = self.inner.lock().await;
+        if matches!(
+            inner
+                .lv1_snapshot
+                .as_ref()
+                .map(|snapshot| &snapshot.connection),
+            Some(ConnectionStatus::Connecting)
+        ) {
+            return None;
+        }
+        drop(inner);
+
+        Some(self.begin_connecting_unchecked().await)
+    }
+
+    async fn begin_connecting_unchecked(&self) -> (u64, AppViewState) {
         let mut inner = self.inner.lock().await;
         inner.generation = inner.generation.saturating_add(1);
         inner.lv1_snapshot = Some(Lv1StateSnapshot {
