@@ -200,7 +200,8 @@ impl ShellState {
         inner.connected_lv1_identity = Some(identity);
         inner.pending_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        Some(snapshot_from_inner(&inner))
+        drop(inner);
+        self.snapshot_for_generation(generation).await
     }
 
     #[cfg(test)]
@@ -1020,6 +1021,55 @@ mod tests {
 
         assert!(snapshot.is_none());
         assert_eq!(state.snapshot().await.connected_lv1_identity, None);
+    }
+
+    #[tokio::test]
+    async fn established_connected_identity_snapshot_includes_show_configs() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        state
+            .show
+            .store_scene_config(
+                "1::Intro".to_string(),
+                vec![ChannelInfo {
+                    group: 0,
+                    channel: 1,
+                    name: "Lead".to_string(),
+                    gain_db: -6.0,
+                    muted: false,
+                }],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .unwrap();
+
+        let snapshot = state
+            .establish_connected_lv1_identity_for_generation(
+                generation,
+                crate::connection_state::Lv1SystemIdentity {
+                    uuid: Some("uuid-1".to_string()),
+                    host: Some("LV1-FOH".to_string()),
+                    address: "192.168.1.35".to_string(),
+                    port: 50000,
+                },
+            )
+            .await
+            .expect("current connected generation should establish identity");
+
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
     }
 
     #[tokio::test]

@@ -13,11 +13,23 @@ struct DiagnosticEntry<'a> {
 }
 
 pub fn diagnostic_log_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+
     app.path()
         .app_config_dir()
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join("diagnostics.jsonl")
+        .join("logs")
+        .join(format!(
+            "diagnostics-{started_at}-{}.jsonl",
+            std::process::id()
+        ))
 }
+
+#[derive(Clone)]
+pub struct DiagnosticLogPath(pub PathBuf);
 
 pub fn append_diagnostic(path: &Path, source: &str, message: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {

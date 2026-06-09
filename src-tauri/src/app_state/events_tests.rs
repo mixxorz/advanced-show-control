@@ -235,6 +235,41 @@ fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
 }
 
 #[tokio::test]
+async fn late_scene_list_event_returns_snapshot_without_deadlock() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .begin_connection_for_generation(
+            generation,
+            Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+            },
+        )
+        .await
+        .expect("current generation should connect");
+
+    let snapshot = tokio::time::timeout(
+        std::time::Duration::from_millis(100),
+        state.apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::SceneListChanged(vec![SceneListEntry {
+                index: 0,
+                name: "Intro".to_string(),
+            }]),
+        ),
+    )
+    .await
+    .expect("scene list projection should not deadlock")
+    .expect("scene list should apply to current generation");
+
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].scene_id, "0::Intro");
+}
+
+#[tokio::test]
 async fn begin_connecting_sets_connecting_snapshot_and_logs_it() {
     let state = ShellState::default();
 

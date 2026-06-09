@@ -217,11 +217,25 @@ impl ShellState {
                 let generation = inner.generation;
                 drop(inner);
 
+                let before_count = self
+                    .show
+                    .get_snapshot()
+                    .await
+                    .map(|snapshot| snapshot.scene_configs.len())
+                    .unwrap_or(0);
+
                 let changed = self
                     .show
                     .reconcile_scene_list(scenes.clone())
                     .await
                     .unwrap_or(false);
+
+                let after_count = self
+                    .show
+                    .get_snapshot()
+                    .await
+                    .map(|snapshot| snapshot.scene_configs.len())
+                    .unwrap_or(0);
 
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {
@@ -236,6 +250,18 @@ impl ShellState {
                     LogSeverity::Info,
                     format!("Scene list updated: {} scenes", scenes.len()),
                 );
+                inner.push_log(
+                    LogSource::App,
+                    LogSeverity::Info,
+                    format!(
+                        "Diagnostic: scene list projection scenes={} changed={} configs_before={} configs_after={}",
+                        scenes.len(),
+                        changed,
+                        before_count,
+                        after_count
+                    ),
+                );
+                drop(inner);
                 return Some(self.snapshot().await);
             }
             Lv1Event::FaderChanged {

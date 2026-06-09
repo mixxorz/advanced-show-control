@@ -667,7 +667,10 @@ fn spawn_shell_state_projector<R: Runtime>(
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> tokio::task::JoinHandle<()> {
-    let diagnostics_path = crate::diagnostics::diagnostic_log_path(&app);
+    let diagnostics_path = app
+        .try_state::<crate::diagnostics::DiagnosticLogPath>()
+        .map(|path| path.0.clone())
+        .unwrap_or_else(|| crate::diagnostics::diagnostic_log_path(&app));
     tokio::spawn(async move {
         let _ = crate::diagnostics::append_diagnostic(
             &diagnostics_path,
@@ -682,6 +685,19 @@ fn spawn_shell_state_projector<R: Runtime>(
                             .apply_lv1_event_for_generation(generation, event)
                             .await
                         {
+                            if matches!(event, Lv1Event::SceneListChanged(_)) {
+                                let diagnostics_path = diagnostics_path.clone();
+                                let message = format!(
+                                    "emitting app-status-changed after scene list: scenes={} scene_configs={}",
+                                    snapshot.scenes.len(),
+                                    snapshot.scene_configs.len()
+                                );
+                                let _ = crate::diagnostics::append_diagnostic(
+                                    &diagnostics_path,
+                                    "tauri-shell",
+                                    &message,
+                                );
+                            }
                             if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event)) {
                                 eprintln!("failed to emit lv1-event: {err}");
                             }
