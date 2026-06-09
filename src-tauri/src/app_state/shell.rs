@@ -574,6 +574,7 @@ fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState
     }
 }
 
+#[allow(dead_code)]
 pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
     snapshot_from_parts(snapshot_inner(inner), ShowSnapshot::empty())
 }

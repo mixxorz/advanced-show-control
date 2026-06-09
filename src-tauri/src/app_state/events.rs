@@ -4,7 +4,6 @@ use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 
 use super::shell::{
     MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses,
-    snapshot_from_inner,
 };
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
 
@@ -65,7 +64,7 @@ impl ShellState {
     #[cfg(test)]
     pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppViewState {
         let mut inner = self.inner.lock().await;
-        let _ = apply_begin_connection(&mut inner, snapshot);
+        apply_begin_connection(&mut inner, snapshot);
         let scene_list = inner
             .lv1_snapshot
             .as_ref()
@@ -112,7 +111,7 @@ impl ShellState {
             return None;
         }
 
-        let _ = apply_begin_connection(&mut inner, snapshot);
+        apply_begin_connection(&mut inner, snapshot);
         let scene_list = inner
             .lv1_snapshot
             .as_ref()
@@ -307,7 +306,9 @@ impl ShellState {
     #[cfg(test)]
     pub async fn apply_fade_event(&self, event: &FadeEvent) -> AppViewState {
         let mut inner = self.inner.lock().await;
-        apply_fade_event_locked(&mut inner, event)
+        apply_fade_event_locked(&mut inner, event);
+        drop(inner);
+        self.snapshot().await
     }
 
     pub async fn apply_fade_event_for_generation(
@@ -320,11 +321,13 @@ impl ShellState {
             return None;
         }
 
-        Some(apply_fade_event_locked(&mut inner, event))
+        apply_fade_event_locked(&mut inner, event);
+        drop(inner);
+        self.snapshot_for_generation(generation).await
     }
 }
 
-fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) -> AppViewState {
+fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
     match event {
         FadeEvent::FadeStarted => {
             inner.fade_state = AppFadeState::Running;
@@ -373,8 +376,6 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) -> AppView
             );
         }
     }
-
-    snapshot_from_inner(inner)
 }
 
 impl ShellInner {
@@ -404,7 +405,7 @@ fn ensure_lv1_snapshot(inner: &mut ShellInner) -> &mut Lv1StateSnapshot {
     })
 }
 
-fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) -> AppViewState {
+fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) {
     let connected = matches!(snapshot.connection, ConnectionStatus::Connected);
     inner.lv1_snapshot = Some(snapshot);
     if connected {
@@ -421,5 +422,4 @@ fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) ->
         None => "LV1 disconnected",
     };
     inner.push_log(LogSource::Lv1, LogSeverity::Info, message.to_string());
-    snapshot_from_inner(inner)
 }

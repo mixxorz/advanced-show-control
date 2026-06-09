@@ -5,7 +5,7 @@ use super::test_support::{
 use super::view::{AppConnectionState, ChannelConfig, ChannelRef, ShowSnapshot};
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{
-    ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
+    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
 
 #[tokio::test]
@@ -130,6 +130,36 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
     assert_eq!(current.scene_configs.len(), 1);
     assert_eq!(current.scene_configs[0].scene_id, "2::Verse");
     assert_eq!(current.selected_scene_id.as_deref(), Some("2::Verse"));
+}
+
+#[tokio::test]
+async fn lv1_disconnected_event_snapshot_includes_show_configs() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .show
+        .store_scene_config(
+            "1::Intro".to_string(),
+            vec![ChannelInfo {
+                group: 0,
+                channel: 1,
+                name: "Lead".to_string(),
+                gain_db: -6.0,
+                muted: false,
+            }],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .await
+        .expect("disconnect should apply to current generation");
+
+    assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
 }
 
 #[test]
