@@ -1,9 +1,25 @@
-/target
-logs/
-.superpowers/
+# Rust / Cargo
+debug
+target
+src-tauri/target/
+**/*.rs.bk
+*.pdb
+**/mutants.out*/
+rustc-ice-*.txt
+
+# Node / UI
 node_modules/
 ui/node_modules/
 ui/dist/
-src-tauri/target/
+
+# Local app data
+logs/
+
+# Tooling
+.superpowers/
 .worktrees
 opencode.json
+tags
+
+# macOS
+.DS_Store
