@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::runtime::commands::AppCommandBus;
-use advanced_show_control::show::actor::spawn_show_state;
 use advanced_show_control::show::handle::ShowStateHandle;
 use advanced_show_control::show::types::ShowSnapshot;
 use tokio::sync::Mutex;
@@ -58,10 +57,9 @@ pub(super) struct ShellInner {
 impl Default for ShellState {
     fn default() -> Self {
         cover_state_variants();
-        let show = spawn_show_state(advanced_show_control::runtime::events::AppEventBus::default());
         Self {
             handles: Arc::new(Mutex::new(RuntimeHandles::default())),
-            show,
+            show: ShowStateHandle::new_empty(),
             inner: Arc::new(Mutex::new(ShellInner::default())),
         }
     }
@@ -595,6 +593,11 @@ mod tests {
     use super::*;
     use advanced_show_control::lv1::events::Lv1Event;
     use advanced_show_control::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
+
+    #[test]
+    fn default_construction_does_not_require_tokio_runtime() {
+        let _state = ShellState::default();
+    }
 
     #[tokio::test]
     async fn default_snapshot_exposes_untitled_show_and_is_not_dirty() {

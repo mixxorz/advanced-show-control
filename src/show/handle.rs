@@ -1,8 +1,10 @@
-use tokio::sync::{mpsc, oneshot};
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use crate::lv1::types::{ChannelInfo, SceneListEntry};
 
-use super::commands::ShowCommand;
+use super::state::ShowState;
 use super::types::{SceneConfig, ShowSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,53 +15,33 @@ pub enum ShowActorError {
 
 #[derive(Clone)]
 pub struct ShowStateHandle {
-    tx: mpsc::Sender<ShowCommand>,
+    state: Arc<Mutex<ShowState>>,
 }
 
 impl ShowStateHandle {
-    pub(crate) fn new(tx: mpsc::Sender<ShowCommand>) -> Self {
-        Self { tx }
-    }
-
-    async fn request<T>(
-        &self,
-        command: ShowCommand,
-        reply_rx: oneshot::Receiver<T>,
-    ) -> Result<T, ShowActorError> {
-        self.tx
-            .send(command)
-            .await
-            .map_err(|_| ShowActorError::CommandChannelClosed)?;
-        reply_rx
-            .await
-            .map_err(|_| ShowActorError::ReplyChannelClosed)
+    pub fn new_empty() -> Self {
+        Self {
+            state: Arc::new(Mutex::new(ShowState::default())),
+        }
     }
 
     pub async fn get_snapshot(&self) -> Result<ShowSnapshot, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::GetSnapshot { reply }, reply_rx)
-            .await
+        Ok(self.state.lock().await.snapshot())
     }
 
     pub async fn get_scene_config(
         &self,
         scene_id: String,
     ) -> Result<Option<SceneConfig>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::GetSceneConfig { scene_id, reply }, reply_rx)
-            .await
+        Ok(self.state.lock().await.get_scene_config(&scene_id))
     }
 
     pub async fn get_lockout(&self) -> Result<bool, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::GetLockout { reply }, reply_rx)
-            .await
+        Ok(self.state.lock().await.lockout)
     }
 
     pub async fn set_lockout(&self, enabled: bool) -> Result<bool, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::SetLockout { enabled, reply }, reply_rx)
-            .await
+        Ok(self.state.lock().await.set_lockout(enabled))
     }
 
     pub async fn set_scene_duration(
@@ -67,16 +49,11 @@ impl ShowStateHandle {
         scene_id: String,
         duration_ms: u64,
     ) -> Result<Result<bool, String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(
-            ShowCommand::SetSceneDuration {
-                scene_id,
-                duration_ms,
-                reply,
-            },
-            reply_rx,
-        )
-        .await
+        Ok(self
+            .state
+            .lock()
+            .await
+            .set_scene_duration_ms(&scene_id, duration_ms))
     }
 
     pub async fn set_scene_scope_faders_enabled(
@@ -84,16 +61,11 @@ impl ShowStateHandle {
         scene_id: String,
         enabled: bool,
     ) -> Result<Result<bool, String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(
-            ShowCommand::SetSceneScopeFadersEnabled {
-                scene_id,
-                enabled,
-                reply,
-            },
-            reply_rx,
-        )
-        .await
+        Ok(self
+            .state
+            .lock()
+            .await
+            .set_scene_scope_faders_enabled(&scene_id, enabled))
     }
 
     pub async fn set_channel_scoped(
@@ -103,18 +75,11 @@ impl ShowStateHandle {
         channel: i32,
         scoped: bool,
     ) -> Result<Result<bool, String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(
-            ShowCommand::SetChannelScoped {
-                scene_id,
-                group,
-                channel,
-                scoped,
-                reply,
-            },
-            reply_rx,
-        )
-        .await
+        Ok(self
+            .state
+            .lock()
+            .await
+            .set_channel_scoped(&scene_id, group, channel, scoped))
     }
 
     pub async fn set_all_channels_scoped(
@@ -122,16 +87,11 @@ impl ShowStateHandle {
         scene_id: String,
         scoped: bool,
     ) -> Result<Result<bool, String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(
-            ShowCommand::SetAllChannelsScoped {
-                scene_id,
-                scoped,
-                reply,
-            },
-            reply_rx,
-        )
-        .await
+        Ok(self
+            .state
+            .lock()
+            .await
+            .set_all_channels_scoped(&scene_id, scoped))
     }
 
     pub async fn store_scene_config(
@@ -139,35 +99,31 @@ impl ShowStateHandle {
         scene_id: String,
         channels: Vec<ChannelInfo>,
     ) -> Result<Result<bool, String>, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(
-            ShowCommand::StoreSceneConfig {
-                scene_id,
-                channels,
-                reply,
-            },
-            reply_rx,
-        )
-        .await
+        Ok(self
+            .state
+            .lock()
+            .await
+            .store_scene_config(&scene_id, &channels))
     }
 
     pub async fn reconcile_scene_list(
         &self,
         scenes: Vec<SceneListEntry>,
     ) -> Result<bool, ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::ReconcileSceneList { scenes, reply }, reply_rx)
+        Ok(self
+            .state
+            .lock()
             .await
+            .reconcile_scene_fade_configs(&scenes))
     }
 
     pub async fn replace_snapshot(&self, snapshot: ShowSnapshot) -> Result<(), ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::ReplaceSnapshot { snapshot, reply }, reply_rx)
-            .await
+        self.state.lock().await.replace_snapshot(snapshot);
+        Ok(())
     }
 
     pub async fn clear(&self) -> Result<(), ShowActorError> {
-        let (reply, reply_rx) = oneshot::channel();
-        self.request(ShowCommand::Clear { reply }, reply_rx).await
+        self.state.lock().await.clear();
+        Ok(())
     }
 }

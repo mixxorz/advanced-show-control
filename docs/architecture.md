@@ -36,7 +36,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
 
 - `Lv1Actor` owns the LV1 TCP connection and the mirrored LV1 state.
 - `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
-- `ShowState` owns show data only: scene configs, scoped faders, stored target values, and show-file persistence.
+- `ShowState` owns show data only: scene configs, scoped faders, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
 - `SceneRecallFader` owns scene recall policy and decision-making.
 - `Tauri Shell` owns UI projection, shell commands, and user-facing state derived from the runtime.
 
@@ -44,7 +44,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
 
 ## Event Flow
 
-`LV1 TCP -> Lv1Actor -> AppEventBus -> ShowState / FadeEngine / SceneRecallFader / Tauri Shell`
+`LV1 TCP -> Lv1Actor -> AppEventBus -> FadeEngine / SceneRecallFader / Tauri Shell`
 
 ```text
 ┌─────────┐     ┌──────────┐     ┌─────────────┐
@@ -55,17 +55,17 @@ The rule is simple: no module reaches into another module's state directly. Modu
                     │                   │                    │
                     ▼                   ▼                    ▼
           ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
-          │ ShowState      │   │ FadeEngine │   │ SceneRecallFader │
-          └────────┬───────┘   └─────┬──────┘   └────────┬─────────┘
-                   │                │                   │
-                   ▼                ▼                   ▼
-          ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
-          │ Tauri Shell    │   │ LV1 writes │   │ recall policy    │
-          │ projection     │   │ / overlap  │   │ / decisions      │
-          └────────────────┘   └────────────┘   └──────────────────┘
+           │ FadeEngine    │   │ SceneRecallFader │   │ Tauri Shell    │
+           └─────┬─────────┘   └────────┬─────────┘   └──────┬────────┘
+                 │                      │                    │
+                 ▼                      ▼                    ▼
+           ┌────────────┐       ┌──────────────────┐   ┌────────────────┐
+           │ LV1 writes │       │ recall policy    │   │ projection     │
+           │ / overlap  │       │ / decisions      │   │ + ShowState    │
+           └────────────┘       └──────────────────┘   └────────────────┘
 ```
 
-`Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on Tauri projection ordering; it reads fresh LV1 state through `AppCommandBus` before it decides whether a recall should start, skip, or continue.
+`Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on Tauri projection ordering; it reads fresh LV1 state and app show state through `AppCommandBus` before it decides whether a recall should start, skip, or continue.
 
 ## Command Flow
 
@@ -119,7 +119,8 @@ The rule is simple: no module reaches into another module's state directly. Modu
 
 ## Runtime Lifecycle
 
-- `connect` installs the current command targets and starts the actor, fade, recall, and shell projection tasks.
+- App startup constructs `ShowState` without spawning Tokio work.
+- `connect` installs the current command targets and starts the LV1 actor, fade, recall, and shell projection tasks.
 - `disconnect` and reconnect clear command targets and abort old runtime tasks.
 - Generation guards prevent stale events, snapshots, or handles from mutating current state.
 
@@ -131,7 +132,7 @@ Core runtime modules live under `src/`:
 
 - `src/lv1/` for LV1 connection, events, commands, handles, and state.
 - `src/fade/` for fade engine commands, events, state, timing, and fader law.
-- `src/show/` for show state, show commands, event handling, capture, and shared scene/channel types.
+- `src/show/` for show state, capture, and shared scene/channel types.
 - `src/scene_recall/` for recall policy, recall state, events, and the scene recall fader actor.
 - `src/runtime/` for bus-level commands and events.
 - `src/osc.rs` and `src/vegas.rs` for transport or protocol helpers.

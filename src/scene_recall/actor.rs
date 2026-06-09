@@ -182,7 +182,6 @@ mod tests {
     use crate::lv1::handle::Lv1ActorHandle;
     use crate::lv1::types::{Lv1StateSnapshot, SceneState};
     use crate::scene_recall::events::SceneRecallEvent;
-    use crate::show::actor::spawn_show_state;
     use crate::show::types::{
         ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowSnapshot,
     };
@@ -457,7 +456,7 @@ mod tests {
     }
 
     fn show_handle() -> crate::show::handle::ShowStateHandle {
-        spawn_show_state(AppEventBus::default())
+        crate::show::handle::ShowStateHandle::new_empty()
     }
 
     async fn seed_show(handle: &crate::show::handle::ShowStateHandle) {
