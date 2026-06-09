@@ -595,6 +595,24 @@ mod tests {
     use advanced_show_control::lv1::events::Lv1Event;
     use advanced_show_control::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
 
+    async fn store_intro_scene_config(state: &ShellState) {
+        state
+            .show
+            .store_scene_config(
+                "1::Intro".to_string(),
+                vec![ChannelInfo {
+                    group: 0,
+                    channel: 1,
+                    name: "Lead".to_string(),
+                    gain_db: -6.0,
+                    muted: false,
+                }],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
     #[test]
     fn default_construction_does_not_require_tokio_runtime() {
         let _state = ShellState::default();
@@ -1027,21 +1045,7 @@ mod tests {
     async fn established_connected_identity_snapshot_includes_show_configs() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        state
-            .show
-            .store_scene_config(
-                "1::Intro".to_string(),
-                vec![ChannelInfo {
-                    group: 0,
-                    channel: 1,
-                    name: "Lead".to_string(),
-                    gain_db: -6.0,
-                    muted: false,
-                }],
-            )
-            .await
-            .unwrap()
-            .unwrap();
+        store_intro_scene_config(&state).await;
         state
             .begin_connection_for_generation(
                 generation,
@@ -1067,6 +1071,67 @@ mod tests {
             )
             .await
             .expect("current connected generation should establish identity");
+
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
+    }
+
+    #[tokio::test]
+    async fn pending_identity_snapshot_includes_show_configs() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        store_intro_scene_config(&state).await;
+
+        let snapshot = state
+            .set_pending_lv1_identity_for_generation(
+                generation,
+                Some(crate::connection_state::Lv1SystemIdentity {
+                    uuid: Some("uuid-1".to_string()),
+                    host: Some("LV1-FOH".to_string()),
+                    address: "192.168.1.35".to_string(),
+                    port: 50000,
+                }),
+            )
+            .await
+            .expect("current generation should set pending identity");
+
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
+    }
+
+    #[tokio::test]
+    async fn connect_failure_snapshot_includes_show_configs() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        store_intro_scene_config(&state).await;
+
+        let snapshot = state
+            .fail_connect_for_generation(generation, "LV1 did not connect")
+            .await
+            .expect("current generation failure should apply");
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
+    }
+
+    #[tokio::test]
+    async fn discovered_systems_snapshot_includes_show_configs() {
+        let state = ShellState::default();
+        store_intro_scene_config(&state).await;
+
+        let snapshot = state
+            .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+                identity: crate::connection_state::Lv1SystemIdentity {
+                    uuid: Some("uuid-1".to_string()),
+                    host: Some("LV1-FOH".to_string()),
+                    address: "192.168.1.35".to_string(),
+                    port: 50000,
+                },
+                latency_ms: Some(10),
+                status: crate::connection_state::DiscoveredLv1Status::Available,
+            }])
+            .await;
 
         assert_eq!(snapshot.scene_configs.len(), 1);
         assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
