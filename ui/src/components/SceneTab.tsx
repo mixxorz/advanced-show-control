@@ -9,6 +9,18 @@ import {
 } from "../format";
 import { DurationInput } from "./DurationInput";
 
+function duplicateSceneNames(scenes: SceneConfig[]): string[] {
+  const counts = new Map<string, number>();
+  for (const scene of scenes) {
+    counts.set(scene.sceneName, (counts.get(scene.sceneName) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
 export function SceneTab(props: {
   appState: AppViewState;
   selectScene: (sceneId: string) => void;
@@ -19,6 +31,7 @@ export function SceneTab(props: {
   setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
 }) {
   const selected = props.appState.sceneConfigs.find((scene) => scene.sceneId === props.appState.selectedSceneId);
+  const duplicateNames = duplicateSceneNames(props.appState.sceneConfigs);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[22rem_1fr]">
@@ -75,6 +88,15 @@ export function SceneTab(props: {
                 </button>
               </div>
             </div>
+            {duplicateNames.length > 0 ? (
+              <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-sm text-amber-100">
+                <p className="font-semibold">Scene tracking warning</p>
+                <p className="mt-1 text-amber-100/80">
+                  Duplicate scene names make some LV1 scene moves hard to track. Rename duplicate scenes for the most reliable scene tracking.
+                </p>
+                <p className="mt-1 text-xs text-amber-100/70">Duplicates: {duplicateNames.join(", ")}</p>
+              </div>
+            ) : null}
             <DurationInput
               durationMs={selected.durationMs}
               sceneId={selected.sceneId}
