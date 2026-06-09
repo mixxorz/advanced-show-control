@@ -574,11 +574,6 @@ fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState
     }
 }
 
-#[allow(dead_code)]
-pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
-    snapshot_from_parts(snapshot_inner(inner), ShowSnapshot::empty())
-}
-
 pub(super) fn current_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -823,10 +818,12 @@ mod tests {
         assert!(state.snapshot_for_generation(generation).await.is_some());
     }
 
-    #[test]
-    fn snapshot_maps_lv1_scene_and_counts() {
-        let inner = ShellInner {
-            lv1_snapshot: Some(Lv1StateSnapshot {
+    #[tokio::test]
+    async fn snapshot_maps_lv1_scene_and_counts() {
+        let state = ShellState::default();
+
+        let snapshot = state
+            .begin_connection(Lv1StateSnapshot {
                 connection: ConnectionStatus::Connected,
                 scene: Some(SceneState {
                     index: 3,
@@ -843,11 +840,8 @@ mod tests {
                     gain_db: -6.0,
                     muted: false,
                 }],
-            }),
-            ..Default::default()
-        };
-
-        let snapshot = snapshot_from_parts(snapshot_inner(&inner), ShowSnapshot::empty());
+            })
+            .await;
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Verse");
@@ -857,37 +851,32 @@ mod tests {
         assert_eq!(snapshot.channels[0].group, 0);
         assert_eq!(snapshot.channels[0].channel, 0);
         assert_eq!(snapshot.channels[0].name, "Lead");
-        assert_eq!(snapshot.scene_configs.len(), 0);
-        assert_eq!(snapshot.selected_scene_id, None);
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_id, "3::Verse");
+        assert_eq!(snapshot.selected_scene_id, Some("3::Verse".to_string()));
     }
 
-    #[test]
-    fn snapshot_includes_discovered_lv1_systems_and_reconnect_state() {
-        let inner = ShellInner {
-            discovered_lv1_systems: vec![crate::connection_state::DiscoveredLv1System {
-                identity: crate::connection_state::Lv1SystemIdentity {
-                    uuid: Some("uuid-1".to_string()),
-                    host: Some("LV1-FOH".to_string()),
-                    address: "192.168.1.35".to_string(),
-                    port: 50000,
-                },
-                latency_ms: Some(12),
-                status: crate::connection_state::DiscoveredLv1Status::Connected,
-            }],
-            connected_lv1_identity: Some(crate::connection_state::Lv1SystemIdentity {
-                uuid: Some("uuid-1".to_string()),
-                host: Some("LV1-FOH".to_string()),
-                address: "192.168.1.35".to_string(),
-                port: 50000,
-            }),
-            reconnect_state: crate::connection_state::ReconnectState {
-                active: true,
-                attempt: 1,
-            },
-            ..Default::default()
+    #[tokio::test]
+    async fn snapshot_includes_discovered_lv1_systems_and_reconnect_state() {
+        let state = ShellState::default();
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
         };
 
-        let snapshot = snapshot_from_parts(snapshot_inner(&inner), ShowSnapshot::empty());
+        state
+            .set_connected_lv1_identity(Some(identity.clone()))
+            .await;
+        state.set_reconnect_active(true).await;
+        let snapshot = state
+            .set_discovered_lv1_systems(vec![crate::connection_state::DiscoveredLv1System {
+                identity,
+                latency_ms: Some(12),
+                status: crate::connection_state::DiscoveredLv1Status::Available,
+            }])
+            .await;
 
         assert_eq!(snapshot.discovered_lv1_systems.len(), 1);
         assert_eq!(
