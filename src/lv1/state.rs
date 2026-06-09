@@ -179,7 +179,14 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
             Ok(list) => {
-                state.diagnose(format!("parsed /Notify/SceneList scenes={}", list.len()));
+                state.diagnose(format!(
+                    "parsed /Notify/SceneList scenes={} entries=[{}]",
+                    list.len(),
+                    list.iter()
+                        .map(|entry| format!("{}:{:?}", entry.index, entry.name))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ));
                 state.scene_list = list.clone();
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }

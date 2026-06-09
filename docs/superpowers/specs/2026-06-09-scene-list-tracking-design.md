@@ -47,7 +47,9 @@ For `Insert`, create a default `SceneConfig` for the inserted scene. Preserve ex
 
 For `Delete`, remove the deleted scene's config. Preserve remaining configs, shift them as needed, and update each config's locator fields from the new scene-list entry.
 
-For `Ambiguous`, fall back to the current exact-match reconciliation behavior. There is no deterministic single-operation transform to apply, so exact `(index, name)` matches keep their existing configs and unmatched entries are treated the same way they are today.
+For changes other than `Noop` and same-index `Rename`, reconcile by scene name using FIFO matching. The new LV1 scene list controls final order and indexes. Existing configs with matching names keep their fade settings and receive updated locator fields. New names receive default configs. Old names absent from the new list are dropped.
+
+For duplicate scene names, FIFO matching means the first new occurrence gets the first old config with that name, the second gets the second, and so on. This is deterministic but cannot prove true identity if two same-named scenes swap places.
 
 The React scene list should also display a persistent warning when the current scene list is hard to track deterministically, such as when duplicate scene names are present. This warning can be derived entirely in React from the scene list or projected scene config data. It does not need new backend state for the first implementation.
 
@@ -68,8 +70,9 @@ Add focused unit tests for `ShowState::reconcile_scene_fade_configs` covering:
 - Insert creates only one default config and preserves existing configs.
 - Delete removes only the deleted config and preserves remaining configs.
 - Duplicate names are handled when the single-operation transform is unique.
-- Duplicate names produce `Ambiguous` when the moved/deleted/inserted scene cannot be distinguished, then use exact-match reconciliation fallback.
-- Multi-operation transitions are `Ambiguous`, then use exact-match reconciliation fallback.
+- Adjacent moves preserve the moved scene's settings by matching scene names.
+- Duplicate names use FIFO name matching and preserve configs deterministically.
+- Multi-operation transitions preserve settings for matching scene names, default new names, and drop removed names.
 - The React scene list shows a persistent warning when duplicate scene names make tracking harder.
 
 Existing scene recall policy tests should continue to prove exact index/name validation before fade start.

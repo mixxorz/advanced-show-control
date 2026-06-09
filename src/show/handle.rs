@@ -117,6 +117,17 @@ impl ShowStateHandle {
             .reconcile_scene_fade_configs(&scenes))
     }
 
+    pub async fn scene_reconciliation_diagnostic(
+        &self,
+        scenes: Vec<SceneListEntry>,
+    ) -> Result<String, ShowActorError> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .scene_reconciliation_diagnostic(&scenes))
+    }
+
     pub async fn replace_snapshot(&self, snapshot: ShowSnapshot) -> Result<(), ShowActorError> {
         self.state.lock().await.replace_snapshot(snapshot);
         Ok(())

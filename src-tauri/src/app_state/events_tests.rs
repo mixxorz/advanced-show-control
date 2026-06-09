@@ -320,6 +320,60 @@ async fn late_scene_list_event_returns_snapshot_without_deadlock() {
 }
 
 #[tokio::test]
+async fn scene_list_event_logs_reconciliation_preview() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![
+                scene_config(0, "Intro", Vec::new(), Vec::new()),
+                scene_config(1, "Verse", Vec::new(), Vec::new()),
+            ],
+        })
+        .await
+        .unwrap();
+    state
+        .begin_connection_for_generation(
+            generation,
+            Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+            },
+        )
+        .await
+        .expect("current generation should connect");
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::SceneListChanged(vec![
+                SceneListEntry {
+                    index: 0,
+                    name: "Verse".to_string(),
+                },
+                SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
+            ]),
+        )
+        .await
+        .expect("scene list should apply to current generation");
+
+    assert!(snapshot.logs.iter().any(|log| {
+        log.message.contains("scene reconciliation preview")
+            && log
+                .message
+                .contains("change=ambiguous exact-match-fallback")
+            && log.message.contains("move_candidates=[0->1,1->0]")
+    }));
+}
+
+#[tokio::test]
 async fn begin_connecting_sets_connecting_snapshot_and_logs_it() {
     let state = ShellState::default();
 

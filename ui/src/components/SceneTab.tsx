@@ -9,6 +9,22 @@ import {
 } from "../format";
 import { DurationInput } from "./DurationInput";
 
+function duplicateSceneNames(scenes: SceneConfig[]): string[] {
+  const counts = new Map<string, number>();
+  for (const scene of scenes) {
+    counts.set(scene.sceneName, (counts.get(scene.sceneName) ?? 0) + 1);
+  }
+
+  return [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function sceneDisplayIndex(sceneIndex: number): number {
+  return sceneIndex + 1;
+}
+
 export function SceneTab(props: {
   appState: AppViewState;
   selectScene: (sceneId: string) => void;
@@ -19,6 +35,7 @@ export function SceneTab(props: {
   setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
 }) {
   const selected = props.appState.sceneConfigs.find((scene) => scene.sceneId === props.appState.selectedSceneId);
+  const duplicateNames = duplicateSceneNames(props.appState.sceneConfigs);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[22rem_1fr]">
@@ -27,6 +44,15 @@ export function SceneTab(props: {
         <p className="mt-1 text-sm text-slate-400">
           Select the scene config to edit.
         </p>
+        {duplicateNames.length > 0 ? (
+          <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-sm text-amber-100">
+            <p className="font-semibold">Scene tracking warning</p>
+            <p className="mt-1 text-amber-100/80">
+              Duplicate scene names make some LV1 scene moves hard to track. Rename duplicate scenes for the most reliable scene tracking.
+            </p>
+            <p className="mt-1 text-xs text-amber-100/70">Duplicates: {duplicateNames.join(", ")}</p>
+          </div>
+        ) : null}
         <div className="mt-4 max-h-[34rem] overflow-auto rounded-lg border border-slate-800">
           {props.appState.sceneConfigs.length === 0 ? (
             <p className="p-3 text-sm text-slate-400">No scenes loaded.</p>
@@ -45,7 +71,7 @@ export function SceneTab(props: {
                   onClick={() => props.selectScene(scene.sceneId)}
                   >
                     <span className="block text-sm font-semibold text-slate-100">
-                      {scene.sceneIndex}: {scene.sceneName}
+                      {sceneDisplayIndex(scene.sceneIndex)}: {scene.sceneName}
                     </span>
                     <span className="mt-1 block text-xs text-slate-400">
                       {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
@@ -62,7 +88,7 @@ export function SceneTab(props: {
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">
-                  {selected.sceneIndex}: {selected.sceneName}
+                  {sceneDisplayIndex(selected.sceneIndex)}: {selected.sceneName}
                 </h2>
                 <p className="mt-1 text-sm text-slate-400">Current LV1 scene does not affect which scene config is edited.</p>
               </div>
@@ -159,7 +185,7 @@ function ScopeGrid(props: {
           <section key={groupName}>
             <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{groupName}</h4>
             <div className="mt-2 flex flex-wrap gap-2">
-              {configs
+              {[...configs]
                 .sort((a, b) => a.channel - b.channel)
                 .map((config) => {
                   const key = channelKey(config.group, config.channel);

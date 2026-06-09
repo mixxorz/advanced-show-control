@@ -33,9 +33,9 @@ When a transform is deterministic, existing fade settings, scoped channels, and 
 
 ## Ambiguous Edits
 
-If the old and new scene lists cannot be explained by one supported operation, reconciliation falls back to exact matching by `(index, name)`, matching the previous behavior. Exact matches keep their config. Unmatched scenes are treated as new or removed according to the current exact-match algorithm.
+For changes other than same-index renames, reconciliation matches existing configs to the new LV1 scene list by scene name using FIFO matching. The new LV1 scene list controls final order and indexes. Existing configs with matching names keep their fade settings and receive updated locator fields. New scene names get default configs. Old scene names absent from the new list are dropped.
 
-Duplicate scene names can make some moves or deletes impossible to distinguish from scene-list data alone. The Scene tab should show a persistent warning when the current list has duplicate names or another known hard-to-track condition. The warning is advisory; recall automation still validates exact current scene index and name before sending fader commands.
+Duplicate scene names use the same FIFO matching policy: the first new occurrence receives the first old config with that name, the second receives the second, and so on. This is deterministic and avoids silently deleting settings, but it cannot know whether two identically named scenes swapped places. The Scene tab should show a persistent warning when the current list has duplicate names or another known hard-to-track condition. The warning is advisory; recall automation still validates exact current scene index and name before sending fader commands.
 
 ## Safety
 
