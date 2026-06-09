@@ -47,6 +47,100 @@ fn update_scene_locator(config: &mut SceneConfig, entry: &SceneEntry) {
     config.scene_name = entry.name.clone();
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SceneListChange {
+    Noop,
+    Rename,
+    Move { from: usize, to: usize },
+    Insert { at: usize },
+    Delete { at: usize },
+    Ambiguous,
+}
+
+fn without_at(entries: &[SceneEntry], at: usize) -> Vec<SceneEntry> {
+    entries
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, entry)| if idx == at { None } else { Some(entry.clone()) })
+        .collect()
+}
+
+fn names(entries: &[SceneEntry]) -> Vec<&str> {
+    entries.iter().map(|entry| entry.name.as_str()).collect()
+}
+
+fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneListChange {
+    if old == new {
+        return SceneListChange::Noop;
+    }
+
+    if old.len() == new.len() {
+        let changed_indexes: Vec<_> = old
+            .iter()
+            .zip(new.iter())
+            .enumerate()
+            .filter_map(|(idx, (old_entry, new_entry))| {
+                if old_entry == new_entry {
+                    None
+                } else {
+                    Some(idx)
+                }
+            })
+            .collect();
+
+        if changed_indexes.len() == 1 {
+            let idx = changed_indexes[0];
+            if old[idx].index == new[idx].index {
+                return SceneListChange::Rename;
+            }
+        }
+
+        let mut matches = Vec::new();
+        for from in 0..old.len() {
+            let remaining = without_at(old, from);
+            let moved = old[from].clone();
+            for to in 0..old.len() {
+                let mut candidate = remaining.clone();
+                candidate.insert(to, moved.clone());
+                if names(&candidate) == names(new) {
+                    matches.push((from, to));
+                }
+            }
+        }
+        matches.sort_unstable();
+        matches.dedup();
+        return match matches.as_slice() {
+            [(from, to)] if from != to => SceneListChange::Move {
+                from: *from,
+                to: *to,
+            },
+            _ => SceneListChange::Ambiguous,
+        };
+    }
+
+    if new.len() == old.len() + 1 {
+        let matches: Vec<_> = (0..new.len())
+            .filter(|at| names(&without_at(new, *at)) == names(old))
+            .collect();
+        return match matches.as_slice() {
+            [at] => SceneListChange::Insert { at: *at },
+            _ => SceneListChange::Ambiguous,
+        };
+    }
+
+    if old.len() == new.len() + 1 {
+        let matches: Vec<_> = (0..old.len())
+            .filter(|at| names(&without_at(old, *at)) == names(new))
+            .collect();
+        return match matches.as_slice() {
+            [at] => SceneListChange::Delete { at: *at },
+            _ => SceneListChange::Ambiguous,
+        };
+    }
+
+    SceneListChange::Ambiguous
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     pub lockout: bool,
@@ -65,32 +159,52 @@ impl ShowState {
         let old_entries = entries_from_configs(&self.scene_configs);
         let new_entries = entries_from_scene_list(scenes);
 
-        if old_entries == new_entries {
-            return false;
-        }
-
-        if old_entries.len() == new_entries.len() {
-            let changed_at: Vec<_> = old_entries
-                .iter()
-                .zip(new_entries.iter())
-                .enumerate()
-                .filter(|(_, (old, new))| old != new)
-                .collect();
-            if changed_at.len() == 1 {
-                let (_, (old, new)) = changed_at[0];
-                if old.index == new.index
-                    && let Some(scene) = self.scene_configs.iter_mut().find(|scene| {
-                        scene.scene_index == old.index && scene.scene_name == old.name
-                    })
-                {
-                    update_scene_locator(scene, new);
-                    return true;
-                }
+        match classify_scene_list_change(&old_entries, &new_entries) {
+            SceneListChange::Noop => false,
+            SceneListChange::Rename => self.apply_position_mapping(&new_entries),
+            SceneListChange::Move { from, to } => {
+                let mut next = self.scene_configs.clone();
+                let moved = next.remove(from);
+                next.insert(to, moved);
+                self.replace_scene_configs_with_entries(next, &new_entries)
+            }
+            SceneListChange::Insert { at } => {
+                let mut next = self.scene_configs.clone();
+                next.insert(at, default_scene_config(&new_entries[at]));
+                self.replace_scene_configs_with_entries(next, &new_entries)
+            }
+            SceneListChange::Delete { at } => {
+                let mut next = self.scene_configs.clone();
+                next.remove(at);
+                self.replace_scene_configs_with_entries(next, &new_entries)
+            }
+            SceneListChange::Ambiguous => {
+                self.reconcile_scene_fade_configs_by_exact_match(&new_entries)
             }
         }
+    }
 
-        let mut next = Vec::with_capacity(scenes.len());
-        for entry in &new_entries {
+    fn apply_position_mapping(&mut self, entries: &[SceneEntry]) -> bool {
+        self.replace_scene_configs_with_entries(self.scene_configs.clone(), entries)
+    }
+
+    fn replace_scene_configs_with_entries(
+        &mut self,
+        mut configs: Vec<SceneConfig>,
+        entries: &[SceneEntry],
+    ) -> bool {
+        for (config, entry) in configs.iter_mut().zip(entries.iter()) {
+            update_scene_locator(config, entry);
+        }
+
+        let changed = configs != self.scene_configs;
+        self.scene_configs = configs;
+        changed
+    }
+
+    fn reconcile_scene_fade_configs_by_exact_match(&mut self, entries: &[SceneEntry]) -> bool {
+        let mut next = Vec::with_capacity(entries.len());
+        for entry in entries {
             let id = scene_id(entry.index, &entry.name);
             if let Some(existing) = self.scene_configs.iter().find(|scene| scene.scene_id == id) {
                 next.push(existing.clone());
@@ -166,6 +280,25 @@ mod tests {
             channel_configs: channels,
             scoped_channels: vec![],
             scope_toggles: SceneScopeToggles::default(),
+        }
+    }
+
+    fn named_scene_config(index: i32, name: &str, duration_ms: u64) -> SceneConfig {
+        scene_config(
+            &format!("{index}::{name}"),
+            duration_ms,
+            vec![ChannelConfig {
+                group: 0,
+                channel: index,
+                fader_db: Some(-10.0 - f64::from(index)),
+            }],
+        )
+    }
+
+    fn scene_entry(index: i32, name: &str) -> SceneListEntry {
+        SceneListEntry {
+            index,
+            name: name.to_string(),
         }
     }
 
@@ -306,6 +439,125 @@ mod tests {
         assert_eq!(state.scene_configs[0].scene_name, "scene-1");
         assert!(state.scene_configs[0].channel_configs.is_empty());
         assert!(state.scene_configs[0].scoped_channels.is_empty());
+    }
+
+    #[test]
+    fn reconciliation_tracks_scene_move_later() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+                named_scene_config(2, "Chorus", 300),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            scene_entry(0, "Verse"),
+            scene_entry(1, "Chorus"),
+            scene_entry(2, "Intro"),
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "0::Verse");
+        assert_eq!(state.scene_configs[0].duration_ms, 200);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Chorus");
+        assert_eq!(state.scene_configs[1].duration_ms, 300);
+        assert_eq!(state.scene_configs[2].scene_id, "2::Intro");
+        assert_eq!(state.scene_configs[2].duration_ms, 100);
+    }
+
+    #[test]
+    fn reconciliation_tracks_scene_move_earlier() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+                named_scene_config(2, "Chorus", 300),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            scene_entry(0, "Chorus"),
+            scene_entry(1, "Intro"),
+            scene_entry(2, "Verse"),
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "0::Chorus");
+        assert_eq!(state.scene_configs[0].duration_ms, 300);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Intro");
+        assert_eq!(state.scene_configs[1].duration_ms, 100);
+        assert_eq!(state.scene_configs[2].scene_id, "2::Verse");
+        assert_eq!(state.scene_configs[2].duration_ms, 200);
+    }
+
+    #[test]
+    fn reconciliation_tracks_single_insert() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Chorus", 300),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            scene_entry(0, "Intro"),
+            scene_entry(1, "Verse"),
+            scene_entry(2, "Chorus"),
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "0::Intro");
+        assert_eq!(state.scene_configs[0].duration_ms, 100);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Verse");
+        assert_eq!(state.scene_configs[1].duration_ms, 0);
+        assert!(state.scene_configs[1].channel_configs.is_empty());
+        assert_eq!(state.scene_configs[2].scene_id, "2::Chorus");
+        assert_eq!(state.scene_configs[2].duration_ms, 300);
+    }
+
+    #[test]
+    fn reconciliation_tracks_single_delete() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+                named_scene_config(2, "Chorus", 300),
+            ],
+        };
+
+        assert!(
+            state
+                .reconcile_scene_fade_configs(&[scene_entry(0, "Intro"), scene_entry(1, "Chorus")])
+        );
+
+        assert_eq!(state.scene_configs.len(), 2);
+        assert_eq!(state.scene_configs[0].scene_id, "0::Intro");
+        assert_eq!(state.scene_configs[0].duration_ms, 100);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Chorus");
+        assert_eq!(state.scene_configs[1].duration_ms, 300);
+    }
+
+    #[test]
+    fn reconciliation_uses_exact_match_fallback_for_multi_operation_change() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            scene_entry(0, "Intro New"),
+            scene_entry(1, "Verse New")
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "0::Intro New");
+        assert_eq!(state.scene_configs[0].duration_ms, 0);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Verse New");
+        assert_eq!(state.scene_configs[1].duration_ms, 0);
     }
 
     #[test]
