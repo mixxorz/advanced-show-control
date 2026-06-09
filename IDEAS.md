@@ -8,6 +8,10 @@
 - [ ] Auto-reload the last app show file on startup when reconnecting to the same LV1 console. The app should persist enough console identity metadata to avoid loading fade configuration onto the wrong console, and should make any skipped auto-load visible so the user can choose a file manually.
 - [ ] Add an event trigger/action automation engine. Users should be able to define automations with triggers and actions, so incoming events can drive configured app behavior without hard-coding every workflow into a dedicated runtime task.
 
+## Bugs
+
+- [ ] Scene recall automation can trigger while scenes are being moved around in the LV1 scene list. Investigate whether scene-list edits emit current-scene notifications or otherwise look like recalls, then suppress recall automation for scene-management-only changes without weakening real recall detection.
+
 ## Optimization
 
 - [ ] Optimize `AppEventBus` subscriptions so subscribers can receive only the event kinds they care about instead of every published event. Consider typed or filtered subscriptions that reduce noisy data flow while preserving ordering and safety-critical visibility for components that need the full event stream.
