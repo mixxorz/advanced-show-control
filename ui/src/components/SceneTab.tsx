@@ -40,6 +40,15 @@ export function SceneTab(props: {
         <p className="mt-1 text-sm text-slate-400">
           Select the scene config to edit.
         </p>
+        {duplicateNames.length > 0 ? (
+          <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-sm text-amber-100">
+            <p className="font-semibold">Scene tracking warning</p>
+            <p className="mt-1 text-amber-100/80">
+              Duplicate scene names make some LV1 scene moves hard to track. Rename duplicate scenes for the most reliable scene tracking.
+            </p>
+            <p className="mt-1 text-xs text-amber-100/70">Duplicates: {duplicateNames.join(", ")}</p>
+          </div>
+        ) : null}
         <div className="mt-4 max-h-[34rem] overflow-auto rounded-lg border border-slate-800">
           {props.appState.sceneConfigs.length === 0 ? (
             <p className="p-3 text-sm text-slate-400">No scenes loaded.</p>
@@ -88,15 +97,6 @@ export function SceneTab(props: {
                 </button>
               </div>
             </div>
-            {duplicateNames.length > 0 ? (
-              <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-sm text-amber-100">
-                <p className="font-semibold">Scene tracking warning</p>
-                <p className="mt-1 text-amber-100/80">
-                  Duplicate scene names make some LV1 scene moves hard to track. Rename duplicate scenes for the most reliable scene tracking.
-                </p>
-                <p className="mt-1 text-xs text-amber-100/70">Duplicates: {duplicateNames.join(", ")}</p>
-              </div>
-            ) : null}
             <DurationInput
               durationMs={selected.durationMs}
               sceneId={selected.sceneId}
@@ -181,7 +181,7 @@ function ScopeGrid(props: {
           <section key={groupName}>
             <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{groupName}</h4>
             <div className="mt-2 flex flex-wrap gap-2">
-              {configs
+              {[...configs]
                 .sort((a, b) => a.channel - b.channel)
                 .map((config) => {
                   const key = channelKey(config.group, config.channel);
