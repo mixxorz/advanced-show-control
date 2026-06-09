@@ -175,7 +175,8 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         inner.connected_lv1_identity = identity;
         refresh_discovered_statuses(&mut inner);
-        snapshot_from_inner(&inner)
+        drop(inner);
+        self.snapshot().await
     }
 
     pub async fn establish_connected_lv1_identity_for_generation(
@@ -212,7 +213,8 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         inner.pending_lv1_identity = identity;
         refresh_discovered_statuses(&mut inner);
-        snapshot_from_inner(&inner)
+        drop(inner);
+        self.snapshot().await
     }
 
     pub async fn connected_lv1_identity(&self) -> Option<Lv1SystemIdentity> {
@@ -231,7 +233,8 @@ impl ShellState {
 
         inner.pending_lv1_identity = identity;
         refresh_discovered_statuses(&mut inner);
-        Some(snapshot_from_inner(&inner))
+        drop(inner);
+        self.snapshot_for_generation(generation).await
     }
 
     pub async fn clear_pending_lv1_identity_for_generation(
@@ -257,7 +260,8 @@ impl ShellState {
         inner.connected_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
         inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
-        Some(snapshot_from_inner(&inner))
+        drop(inner);
+        self.snapshot_for_generation(generation).await
     }
 
     pub async fn fail_reconnect_for_generation(
@@ -274,7 +278,8 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
         inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
-        Some(snapshot_from_inner(&inner))
+        drop(inner);
+        self.snapshot_for_generation(generation).await
     }
 
     pub async fn set_discovered_lv1_systems(
@@ -284,7 +289,8 @@ impl ShellState {
         let mut inner = self.inner.lock().await;
         inner.discovered_lv1_systems = systems;
         refresh_discovered_statuses(&mut inner);
-        snapshot_from_inner(&inner)
+        drop(inner);
+        self.snapshot().await
     }
 
     #[cfg(test)]
@@ -294,25 +300,18 @@ impl ShellState {
             inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
         }
         inner.reconnect_state.active = active;
-        snapshot_from_inner(&inner)
+        drop(inner);
+        self.snapshot().await
     }
 
     pub async fn reconnect_timed_out(&self, attempt: u64) -> AppViewState {
-        let snapshot = {
-            let mut inner = self.inner.lock().await;
-            if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
-                inner.generation = inner.generation.saturating_add(1);
-                inner.reconnect_state.active = false;
-            }
-            snapshot_inner(&inner)
-        };
-
-        let show = self
-            .show
-            .get_snapshot()
-            .await
-            .unwrap_or_else(|_| ShowSnapshot::empty());
-        snapshot_from_parts(snapshot, show)
+        let mut inner = self.inner.lock().await;
+        if inner.reconnect_state.active && inner.reconnect_state.attempt == attempt {
+            inner.generation = inner.generation.saturating_add(1);
+            inner.reconnect_state.active = false;
+        }
+        drop(inner);
+        self.snapshot().await
     }
 
     pub async fn reconnect_timeout_generation(&self, attempt: u64) -> Option<u64> {
@@ -441,10 +440,6 @@ impl RuntimeHandles {
         self.fade = None;
         self.command_bus = None;
     }
-}
-
-pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
-    snapshot_from_parts(snapshot_inner(inner), ShowSnapshot::empty())
 }
 
 fn snapshot_inner(inner: &ShellInner) -> InnerSnapshot {
@@ -577,6 +572,10 @@ fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState
         logs: inner.logs,
         last_event_at: inner.last_event_at,
     }
+}
+
+pub(super) fn snapshot_from_inner(inner: &ShellInner) -> AppViewState {
+    snapshot_from_parts(snapshot_inner(inner), ShowSnapshot::empty())
 }
 
 pub(super) fn current_timestamp() -> String {
@@ -847,7 +846,7 @@ mod tests {
             ..Default::default()
         };
 
-        let snapshot = snapshot_from_inner(&inner);
+        let snapshot = snapshot_from_parts(snapshot_inner(&inner), ShowSnapshot::empty());
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Verse");
@@ -887,7 +886,7 @@ mod tests {
             ..Default::default()
         };
 
-        let snapshot = snapshot_from_inner(&inner);
+        let snapshot = snapshot_from_parts(snapshot_inner(&inner), ShowSnapshot::empty());
 
         assert_eq!(snapshot.discovered_lv1_systems.len(), 1);
         assert_eq!(
