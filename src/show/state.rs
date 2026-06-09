@@ -1,3 +1,5 @@
+use std::collections::{HashMap, VecDeque};
+
 use crate::lv1::types::SceneListEntry;
 
 use super::types::scene_id;
@@ -112,6 +114,19 @@ fn move_candidates(old: &[SceneEntry], new: &[SceneEntry]) -> Vec<(usize, usize)
     matches
 }
 
+fn name_counts(entries: &[SceneEntry]) -> Vec<String> {
+    let mut counts = HashMap::<String, usize>::new();
+    for entry in entries {
+        *counts.entry(entry.name.clone()).or_default() += 1;
+    }
+    let mut duplicates = counts
+        .into_iter()
+        .filter_map(|(name, count)| (count > 1).then(|| format!("{name}x{count}")))
+        .collect::<Vec<_>>();
+    duplicates.sort();
+    duplicates
+}
+
 fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneListChange {
     if old == new {
         return SceneListChange::Noop;
@@ -192,24 +207,11 @@ impl ShowState {
         match classify_scene_list_change(&old_entries, &new_entries) {
             SceneListChange::Noop => false,
             SceneListChange::Rename => self.apply_position_mapping(&new_entries),
-            SceneListChange::Move { from, to } => {
-                let mut next = self.scene_configs.clone();
-                let moved = next.remove(from);
-                next.insert(to, moved);
-                self.replace_scene_configs_with_entries(next, &new_entries)
-            }
-            SceneListChange::Insert { at } => {
-                let mut next = self.scene_configs.clone();
-                next.insert(at, default_scene_config(&new_entries[at]));
-                self.replace_scene_configs_with_entries(next, &new_entries)
-            }
-            SceneListChange::Delete { at } => {
-                let mut next = self.scene_configs.clone();
-                next.remove(at);
-                self.replace_scene_configs_with_entries(next, &new_entries)
-            }
-            SceneListChange::Ambiguous => {
-                self.reconcile_scene_fade_configs_by_exact_match(&new_entries)
+            SceneListChange::Move { .. }
+            | SceneListChange::Insert { .. }
+            | SceneListChange::Delete { .. }
+            | SceneListChange::Ambiguous => {
+                self.reconcile_scene_fade_configs_by_name_fifo(&new_entries)
             }
         }
     }
@@ -224,11 +226,17 @@ impl ShowState {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "scene reconciliation preview: change={} old=[{}] new=[{}] move_candidates=[{}]",
+            "scene reconciliation preview: change={} old=[{}] new=[{}] move_candidates=[{}] duplicate_names=[{}] strategy={}",
             change.diagnostic_label(),
             describe_entries(&old_entries),
             describe_entries(&new_entries),
             candidates,
+            name_counts(&new_entries).join(","),
+            if matches!(change, SceneListChange::Rename | SceneListChange::Noop) {
+                "classified"
+            } else {
+                "name-keyed-fifo"
+            },
         )
     }
 
@@ -250,18 +258,27 @@ impl ShowState {
         changed
     }
 
-    fn reconcile_scene_fade_configs_by_exact_match(&mut self, entries: &[SceneEntry]) -> bool {
-        let mut next = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let id = scene_id(entry.index, &entry.name);
-            if let Some(existing) = self.scene_configs.iter().find(|scene| scene.scene_id == id) {
-                next.push(existing.clone());
-            } else {
-                next.push(default_scene_config(entry));
-            }
+    fn reconcile_scene_fade_configs_by_name_fifo(&mut self, entries: &[SceneEntry]) -> bool {
+        let mut old_by_name = HashMap::<String, VecDeque<SceneConfig>>::new();
+        let old_configs = std::mem::take(&mut self.scene_configs);
+        for scene in old_configs.iter().cloned() {
+            old_by_name
+                .entry(scene.scene_name.clone())
+                .or_default()
+                .push_back(scene);
         }
 
-        let changed = next != self.scene_configs;
+        let mut next = Vec::with_capacity(entries.len());
+        for entry in entries {
+            let mut scene = old_by_name
+                .get_mut(&entry.name)
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| default_scene_config(entry));
+            update_scene_locator(&mut scene, entry);
+            next.push(scene);
+        }
+
+        let changed = next != old_configs;
         self.scene_configs = next;
         changed
     }
@@ -463,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_replaces_same_name_different_index_scene_with_default_config() {
+    fn reconciliation_preserves_same_name_different_index_scene_config() {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
@@ -485,8 +502,11 @@ mod tests {
         assert_eq!(state.scene_configs[0].scene_id, "2::scene-1");
         assert_eq!(state.scene_configs[0].scene_index, 2);
         assert_eq!(state.scene_configs[0].scene_name, "scene-1");
-        assert!(state.scene_configs[0].channel_configs.is_empty());
-        assert!(state.scene_configs[0].scoped_channels.is_empty());
+        assert_eq!(state.scene_configs[0].duration_ms, 1_500);
+        assert_eq!(
+            state.scene_configs[0].channel_configs[0].fader_db,
+            Some(-12.0)
+        );
     }
 
     #[test]
@@ -629,6 +649,60 @@ mod tests {
         assert!(diagnostic.contains("old=[0:\"Intro\" | 1:\"Verse\" | 2:\"Chorus\"]"));
         assert!(diagnostic.contains("new=[0:\"Verse\" | 1:\"Intro\" | 2:\"Chorus\"]"));
         assert!(diagnostic.contains("move_candidates=[0->1,1->0]"));
+    }
+
+    #[test]
+    fn reconciliation_tracks_adjacent_scene_move_by_name() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+                named_scene_config(2, "Chorus", 300),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            scene_entry(0, "Verse"),
+            scene_entry(1, "Intro"),
+            scene_entry(2, "Chorus"),
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "0::Verse");
+        assert_eq!(state.scene_configs[0].duration_ms, 200);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Intro");
+        assert_eq!(state.scene_configs[1].duration_ms, 100);
+        assert_eq!(state.scene_configs[2].scene_id, "2::Chorus");
+        assert_eq!(state.scene_configs[2].duration_ms, 300);
+    }
+
+    #[test]
+    fn reconciliation_uses_fifo_name_matching_for_duplicate_scene_names() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Dupe", 200),
+                named_scene_config(2, "Dupe", 300),
+                named_scene_config(3, "Chorus", 400),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            scene_entry(0, "Dupe"),
+            scene_entry(1, "Intro"),
+            scene_entry(2, "Dupe"),
+            scene_entry(3, "Chorus"),
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "0::Dupe");
+        assert_eq!(state.scene_configs[0].duration_ms, 200);
+        assert_eq!(state.scene_configs[1].scene_id, "1::Intro");
+        assert_eq!(state.scene_configs[1].duration_ms, 100);
+        assert_eq!(state.scene_configs[2].scene_id, "2::Dupe");
+        assert_eq!(state.scene_configs[2].duration_ms, 300);
+        assert_eq!(state.scene_configs[3].scene_id, "3::Chorus");
+        assert_eq!(state.scene_configs[3].duration_ms, 400);
     }
 
     #[test]
