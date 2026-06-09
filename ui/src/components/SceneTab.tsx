@@ -21,6 +21,10 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
+function sceneDisplayIndex(sceneIndex: number): number {
+  return sceneIndex + 1;
+}
+
 export function SceneTab(props: {
   appState: AppViewState;
   selectScene: (sceneId: string) => void;
@@ -67,7 +71,7 @@ export function SceneTab(props: {
                   onClick={() => props.selectScene(scene.sceneId)}
                   >
                     <span className="block text-sm font-semibold text-slate-100">
-                      {scene.sceneIndex}: {scene.sceneName}
+                      {sceneDisplayIndex(scene.sceneIndex)}: {scene.sceneName}
                     </span>
                     <span className="mt-1 block text-xs text-slate-400">
                       {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
@@ -84,7 +88,7 @@ export function SceneTab(props: {
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">
-                  {selected.sceneIndex}: {selected.sceneName}
+                  {sceneDisplayIndex(selected.sceneIndex)}: {selected.sceneName}
                 </h2>
                 <p className="mt-1 text-sm text-slate-400">Current LV1 scene does not affect which scene config is edited.</p>
               </div>
