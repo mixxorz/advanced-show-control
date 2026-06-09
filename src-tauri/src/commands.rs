@@ -681,6 +681,20 @@ fn spawn_shell_state_projector<R: Runtime>(
             match events.recv().await {
                 Ok(app_event) => match &app_event {
                     AppEvent::Lv1(event) => {
+                        if let Lv1Event::SceneListChanged(scenes) = event {
+                            let message = state
+                                .show
+                                .scene_reconciliation_diagnostic(scenes.clone())
+                                .await
+                                .unwrap_or_else(|_| {
+                                    "scene reconciliation preview unavailable".to_string()
+                                });
+                            let _ = crate::diagnostics::append_diagnostic(
+                                &diagnostics_path,
+                                "show-state",
+                                &message,
+                            );
+                        }
                         if let Some(snapshot) = state
                             .apply_lv1_event_for_generation(generation, event)
                             .await

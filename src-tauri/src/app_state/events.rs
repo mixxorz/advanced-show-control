@@ -228,6 +228,11 @@ impl ShellState {
                     .await
                     .map(|snapshot| snapshot.scene_configs.len())
                     .unwrap_or(0);
+                let reconciliation_diagnostic = self
+                    .show
+                    .scene_reconciliation_diagnostic(scenes.clone())
+                    .await
+                    .unwrap_or_else(|_| "scene reconciliation preview unavailable".to_string());
 
                 if !self.is_generation_current(generation).await {
                     return None;
@@ -261,6 +266,7 @@ impl ShellState {
                     LogSeverity::Info,
                     format!("Scene list updated: {} scenes", scenes.len()),
                 );
+                inner.push_log(LogSource::App, LogSeverity::Info, reconciliation_diagnostic);
                 inner.push_log(
                     LogSource::App,
                     LogSeverity::Info,

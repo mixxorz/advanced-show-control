@@ -57,6 +57,19 @@ enum SceneListChange {
     Ambiguous,
 }
 
+impl SceneListChange {
+    fn diagnostic_label(&self) -> String {
+        match self {
+            Self::Noop => "noop".to_string(),
+            Self::Rename => "rename".to_string(),
+            Self::Move { from, to } => format!("move from={from} to={to}"),
+            Self::Insert { at } => format!("insert at={at}"),
+            Self::Delete { at } => format!("delete at={at}"),
+            Self::Ambiguous => "ambiguous exact-match-fallback".to_string(),
+        }
+    }
+}
+
 fn without_at(entries: &[SceneEntry], at: usize) -> Vec<SceneEntry> {
     entries
         .iter()
@@ -67,6 +80,36 @@ fn without_at(entries: &[SceneEntry], at: usize) -> Vec<SceneEntry> {
 
 fn names(entries: &[SceneEntry]) -> Vec<&str> {
     entries.iter().map(|entry| entry.name.as_str()).collect()
+}
+
+fn describe_entries(entries: &[SceneEntry]) -> String {
+    entries
+        .iter()
+        .map(|entry| format!("{}:{:?}", entry.index, entry.name))
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+fn move_candidates(old: &[SceneEntry], new: &[SceneEntry]) -> Vec<(usize, usize)> {
+    if old.len() != new.len() {
+        return Vec::new();
+    }
+
+    let mut matches = Vec::new();
+    for from in 0..old.len() {
+        let remaining = without_at(old, from);
+        let moved = old[from].clone();
+        for to in 0..old.len() {
+            let mut candidate = remaining.clone();
+            candidate.insert(to, moved.clone());
+            if names(&candidate) == names(new) {
+                matches.push((from, to));
+            }
+        }
+    }
+    matches.sort_unstable();
+    matches.dedup();
+    matches
 }
 
 fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneListChange {
@@ -95,20 +138,7 @@ fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneLi
             }
         }
 
-        let mut matches = Vec::new();
-        for from in 0..old.len() {
-            let remaining = without_at(old, from);
-            let moved = old[from].clone();
-            for to in 0..old.len() {
-                let mut candidate = remaining.clone();
-                candidate.insert(to, moved.clone());
-                if names(&candidate) == names(new) {
-                    matches.push((from, to));
-                }
-            }
-        }
-        matches.sort_unstable();
-        matches.dedup();
+        let matches = move_candidates(old, new);
         return match matches.as_slice() {
             [(from, to)] if from != to => SceneListChange::Move {
                 from: *from,
@@ -182,6 +212,24 @@ impl ShowState {
                 self.reconcile_scene_fade_configs_by_exact_match(&new_entries)
             }
         }
+    }
+
+    pub fn scene_reconciliation_diagnostic(&self, scenes: &[SceneListEntry]) -> String {
+        let old_entries = entries_from_configs(&self.scene_configs);
+        let new_entries = entries_from_scene_list(scenes);
+        let change = classify_scene_list_change(&old_entries, &new_entries);
+        let candidates = move_candidates(&old_entries, &new_entries)
+            .into_iter()
+            .map(|(from, to)| format!("{from}->{to}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        format!(
+            "scene reconciliation preview: change={} old=[{}] new=[{}] move_candidates=[{}]",
+            change.diagnostic_label(),
+            describe_entries(&old_entries),
+            describe_entries(&new_entries),
+            candidates,
+        )
     }
 
     fn apply_position_mapping(&mut self, entries: &[SceneEntry]) -> bool {
@@ -558,6 +606,29 @@ mod tests {
         assert_eq!(state.scene_configs[0].duration_ms, 0);
         assert_eq!(state.scene_configs[1].scene_id, "1::Verse New");
         assert_eq!(state.scene_configs[1].duration_ms, 0);
+    }
+
+    #[test]
+    fn scene_reconciliation_diagnostic_describes_adjacent_move_ambiguity() {
+        let state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+                named_scene_config(2, "Chorus", 300),
+            ],
+        };
+
+        let diagnostic = state.scene_reconciliation_diagnostic(&[
+            scene_entry(0, "Verse"),
+            scene_entry(1, "Intro"),
+            scene_entry(2, "Chorus"),
+        ]);
+
+        assert!(diagnostic.contains("change=ambiguous exact-match-fallback"));
+        assert!(diagnostic.contains("old=[0:\"Intro\" | 1:\"Verse\" | 2:\"Chorus\"]"));
+        assert!(diagnostic.contains("new=[0:\"Verse\" | 1:\"Intro\" | 2:\"Chorus\"]"));
+        assert!(diagnostic.contains("move_candidates=[0->1,1->0]"));
     }
 
     #[test]
