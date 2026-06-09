@@ -6,6 +6,24 @@ use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::scene_recall::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scene_recall::state::SceneRecallState;
 
+const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+
+struct PendingSceneObservation {
+    scene: crate::lv1::types::SceneState,
+    seen_at: tokio::time::Instant,
+    settle_after: tokio::time::Instant,
+}
+
+impl PendingSceneObservation {
+    fn new(scene: crate::lv1::types::SceneState, now: tokio::time::Instant) -> Self {
+        Self {
+            scene,
+            seen_at: now,
+            settle_after: now + SCENE_CHANGED_SETTLE_DELAY,
+        }
+    }
+}
+
 pub fn spawn_scene_recall_fader(
     generation: u64,
     command_bus: AppCommandBus,
@@ -16,11 +34,10 @@ pub fn spawn_scene_recall_fader(
     tokio::spawn(async move {
         let mut recall_state = SceneRecallState::default();
         let mut duration_zero_logged: HashSet<String> = HashSet::new();
-        let mut pending_scene: Option<(crate::lv1::types::SceneState, tokio::time::Instant)> = None;
-        let mut pending_settle_after: Option<tokio::time::Instant> = None;
+        let mut pending_scene: Option<PendingSceneObservation> = None;
 
         loop {
-            if let Some(deadline) = pending_settle_after {
+            if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
                 tokio::select! {
                     event = events.recv() => {
                         match event {
@@ -28,8 +45,7 @@ pub fn spawn_scene_recall_fader(
                                 recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
                             }
                             Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
-                                pending_scene = Some((scene, tokio::time::Instant::now()));
-                                pending_settle_after = Some(tokio::time::Instant::now() + std::time::Duration::from_millis(25));
+                                pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
                             }
                             Ok(_) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -39,131 +55,15 @@ pub fn spawn_scene_recall_fader(
                         }
                     }
                     _ = tokio::time::sleep_until(deadline) => {
-                        pending_settle_after = None;
-                        if let Some((scene, seen_at)) = pending_scene.take() {
-                            if recall_state.is_scene_list_edit_suppressed(seen_at)
-                                || recall_state.is_scene_list_edit_suppressed(tokio::time::Instant::now())
-                            {
-                                continue;
-                            }
-                            if !recall_state.accepts(&scene) {
-                                continue;
-                            }
-
-                            if command_bus.get_generation().await != generation {
-                                continue;
-                            }
-
-                            let lv1_snapshot = match fresh_lv1_snapshot(&command_bus, &scene).await {
-                                Ok(snapshot) => snapshot,
-                                Err(err) => {
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    event_bus.publish(AppEvent::SceneRecall(
-                                        crate::scene_recall::events::SceneRecallEvent::Blocked {
-                                            scene_label: scene_label(&scene),
-                                            reason: format!("LV1 state is unavailable: {err}"),
-                                        },
-                                    ));
-                                    continue;
-                                }
-                            };
-
-                            let scene_id = format!("{}::{}", scene.index, scene.name);
-                            let scene_config = match command_bus.get_scene_config(scene_id.clone()).await {
-                                Ok(scene_config) => scene_config,
-                                Err(err) => {
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    event_bus.publish(AppEvent::SceneRecall(
-                                        crate::scene_recall::events::SceneRecallEvent::Blocked {
-                                            scene_label: scene_label(&scene),
-                                            reason: format!("failed to fetch scene config: {err}"),
-                                        },
-                                    ));
-                                    continue;
-                                }
-                            };
-                            let lockout = match command_bus.get_lockout().await {
-                                Ok(lockout) => lockout,
-                                Err(err) => {
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    event_bus.publish(AppEvent::SceneRecall(
-                                        crate::scene_recall::events::SceneRecallEvent::Blocked {
-                                            scene_label: scene_label(&scene),
-                                            reason: format!("failed to fetch lockout: {err}"),
-                                        },
-                                    ));
-                                    continue;
-                                }
-                            };
-
-                            match decide_scene_recall(RecallPolicyInput {
-                                recalled_scene: scene.clone(),
-                                lv1_snapshot,
-                                lockout,
-                                scene_config,
-                            }) {
-                                RecallPolicyDecision::Start(fade_config) => {
-                                    let scene_label = scene_label(&scene);
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    event_bus.publish(AppEvent::SceneRecall(
-                                        crate::scene_recall::events::SceneRecallEvent::Ready {
-                                            scene_label: scene_label.clone(),
-                                            target_count: fade_config.targets.len(),
-                                        },
-                                    ));
-                                    event_bus.publish(AppEvent::SceneRecall(
-                                        crate::scene_recall::events::SceneRecallEvent::StartRequested {
-                                            scene_label: scene_label.clone(),
-                                        },
-                                    ));
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    if command_bus.start_fade(fade_config).await.is_err() {
-                                        if command_bus.get_generation().await != generation {
-                                            continue;
-                                        }
-                                        event_bus.publish(AppEvent::SceneRecall(
-                                            crate::scene_recall::events::SceneRecallEvent::Blocked {
-                                                scene_label,
-                                                reason: "failed to start fade".to_string(),
-                                            },
-                                        ));
-                                    }
-                                }
-                                RecallPolicyDecision::Skip { reason } => {
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    if reason != "duration is 0" || duration_zero_logged.insert(scene_id) {
-                                        event_bus.publish(AppEvent::SceneRecall(
-                                            crate::scene_recall::events::SceneRecallEvent::Skipped {
-                                                scene_label: scene_label(&scene),
-                                                reason,
-                                            },
-                                        ));
-                                    }
-                                }
-                                RecallPolicyDecision::Blocked { reason } => {
-                                    if command_bus.get_generation().await != generation {
-                                        continue;
-                                    }
-                                    event_bus.publish(AppEvent::SceneRecall(
-                                        crate::scene_recall::events::SceneRecallEvent::Blocked {
-                                            scene_label: scene_label(&scene),
-                                            reason,
-                                        },
-                                    ));
-                                }
-                            }
+                        if let Some(observation) = pending_scene.take() {
+                            process_scene_observation(
+                                generation,
+                                &command_bus,
+                                &event_bus,
+                                &mut recall_state,
+                                &mut duration_zero_logged,
+                                observation,
+                            ).await;
                         }
                     }
                 }
@@ -175,9 +75,10 @@ pub fn spawn_scene_recall_fader(
                     recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
                 }
                 Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
-                    pending_scene = Some((scene, tokio::time::Instant::now()));
-                    pending_settle_after =
-                        Some(tokio::time::Instant::now() + std::time::Duration::from_millis(25));
+                    pending_scene = Some(PendingSceneObservation::new(
+                        scene,
+                        tokio::time::Instant::now(),
+                    ));
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -187,6 +88,141 @@ pub fn spawn_scene_recall_fader(
             }
         }
     })
+}
+
+async fn process_scene_observation(
+    generation: u64,
+    command_bus: &AppCommandBus,
+    event_bus: &AppEventBus,
+    recall_state: &mut SceneRecallState,
+    duration_zero_logged: &mut HashSet<String>,
+    observation: PendingSceneObservation,
+) {
+    let now = tokio::time::Instant::now();
+    if recall_state.is_scene_list_edit_suppressed(observation.seen_at)
+        || recall_state.is_scene_list_edit_suppressed(now)
+    {
+        return;
+    }
+    if !recall_state.accepts(&observation.scene) {
+        return;
+    }
+
+    if command_bus.get_generation().await != generation {
+        return;
+    }
+
+    let lv1_snapshot = match fresh_lv1_snapshot(command_bus, &observation.scene).await {
+        Ok(snapshot) => snapshot,
+        Err(err) => {
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                    scene_label: scene_label(&observation.scene),
+                    reason: format!("LV1 state is unavailable: {err}"),
+                },
+            ));
+            return;
+        }
+    };
+
+    let scene_id = format!("{}::{}", observation.scene.index, observation.scene.name);
+    let scene_config = match command_bus.get_scene_config(scene_id.clone()).await {
+        Ok(scene_config) => scene_config,
+        Err(err) => {
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                    scene_label: scene_label(&observation.scene),
+                    reason: format!("failed to fetch scene config: {err}"),
+                },
+            ));
+            return;
+        }
+    };
+
+    let lockout = match command_bus.get_lockout().await {
+        Ok(lockout) => lockout,
+        Err(err) => {
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                    scene_label: scene_label(&observation.scene),
+                    reason: format!("failed to fetch lockout: {err}"),
+                },
+            ));
+            return;
+        }
+    };
+
+    match decide_scene_recall(RecallPolicyInput {
+        recalled_scene: observation.scene.clone(),
+        lv1_snapshot,
+        lockout,
+        scene_config,
+    }) {
+        RecallPolicyDecision::Start(fade_config) => {
+            let scene_label = scene_label(&observation.scene);
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::Ready {
+                    scene_label: scene_label.clone(),
+                    target_count: fade_config.targets.len(),
+                },
+            ));
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::StartRequested {
+                    scene_label: scene_label.clone(),
+                },
+            ));
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            if command_bus.start_fade(fade_config).await.is_err() {
+                if command_bus.get_generation().await != generation {
+                    return;
+                }
+                event_bus.publish(AppEvent::SceneRecall(
+                    crate::scene_recall::events::SceneRecallEvent::Blocked {
+                        scene_label,
+                        reason: "failed to start fade".to_string(),
+                    },
+                ));
+            }
+        }
+        RecallPolicyDecision::Skip { reason } => {
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            if reason != "duration is 0" || duration_zero_logged.insert(scene_id) {
+                event_bus.publish(AppEvent::SceneRecall(
+                    crate::scene_recall::events::SceneRecallEvent::Skipped {
+                        scene_label: scene_label(&observation.scene),
+                        reason,
+                    },
+                ));
+            }
+        }
+        RecallPolicyDecision::Blocked { reason } => {
+            if command_bus.get_generation().await != generation {
+                return;
+            }
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                    scene_label: scene_label(&observation.scene),
+                    reason,
+                },
+            ));
+        }
+    }
 }
 
 fn scene_label(scene: &crate::lv1::types::SceneState) -> String {
