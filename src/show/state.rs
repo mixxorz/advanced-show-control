@@ -10,27 +10,23 @@ struct SceneEntry {
 }
 
 fn entries_from_configs(configs: &[SceneConfig]) -> Vec<SceneEntry> {
-    let mut entries: Vec<_> = configs
+    configs
         .iter()
         .map(|scene| SceneEntry {
             index: scene.scene_index,
             name: scene.scene_name.clone(),
         })
-        .collect();
-    entries.sort_by_key(|entry| entry.index);
-    entries
+        .collect()
 }
 
 fn entries_from_scene_list(scenes: &[SceneListEntry]) -> Vec<SceneEntry> {
-    let mut entries: Vec<_> = scenes
+    scenes
         .iter()
         .map(|scene| SceneEntry {
             index: scene.index,
             name: scene.name.clone(),
         })
-        .collect();
-    entries.sort_by_key(|entry| entry.index);
-    entries
+        .collect()
 }
 
 fn default_scene_config(entry: &SceneEntry) -> SceneConfig {
@@ -88,7 +84,6 @@ impl ShowState {
                     })
                 {
                     update_scene_locator(scene, new);
-                    self.scene_configs.sort_by_key(|scene| scene.scene_index);
                     return true;
                 }
             }
@@ -232,6 +227,37 @@ mod tests {
             state.scene_configs[0].channel_configs[0].fader_db,
             Some(-12.0)
         );
+    }
+
+    #[test]
+    fn reconciliation_preserves_incoming_scene_order() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                scene_config("2::Chorus", 300, vec![]),
+                scene_config("0::Intro", 100, vec![]),
+                scene_config("1::Verse", 200, vec![]),
+            ],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[
+            SceneListEntry {
+                index: 1,
+                name: "Verse".to_string(),
+            },
+            SceneListEntry {
+                index: 0,
+                name: "Intro".to_string(),
+            },
+            SceneListEntry {
+                index: 2,
+                name: "Chorus".to_string(),
+            },
+        ]));
+
+        assert_eq!(state.scene_configs[0].scene_id, "1::Verse");
+        assert_eq!(state.scene_configs[1].scene_id, "0::Intro");
+        assert_eq!(state.scene_configs[2].scene_id, "2::Chorus");
     }
 
     #[test]
