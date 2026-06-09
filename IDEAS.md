@@ -3,7 +3,8 @@
 ## New Features
 
 - [ ] Add support for fading pan, balance, and width parameters similar to faders. The app should let scenes scope these parameters explicitly, store their target values, and fade them over the scene duration without changing the existing fader safety model.
-- [ ] Track LV1 scene order changes and renames for the current active show, and add a reconciliation/remapping flow when loading a show file whose stored scene references no longer match the current LV1 scene list. Exact-match load validation exists today; durable rename/reorder handling is still deferred.
+- [ ] Add a reconciliation/remapping flow when loading a show file whose stored scene references no longer match the current LV1 scene list. Active scene-list rename/reorder tracking is planned separately, but load-time relinking still needs explicit UX.
+- [ ] Consider durable app-owned scene IDs if exact `index::name` locators become limiting after active scene tracking ships. This would require a show-file migration and should only be added if the current locator model causes real workflow problems.
 - [ ] Auto-reload the last app show file on startup when reconnecting to the same LV1 console. The app should persist enough console identity metadata to avoid loading fade configuration onto the wrong console, and should make any skipped auto-load visible so the user can choose a file manually.
 - [ ] Add an event trigger/action automation engine. Users should be able to define automations with triggers and actions, so incoming events can drive configured app behavior without hard-coding every workflow into a dedicated runtime task.
 

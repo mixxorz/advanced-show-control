@@ -47,7 +47,9 @@ For `Insert`, create a default `SceneConfig` for the inserted scene. Preserve ex
 
 For `Delete`, remove the deleted scene's config. Preserve remaining configs, shift them as needed, and update each config's locator fields from the new scene-list entry.
 
-For `Ambiguous`, do not destroy existing fade data or silently relink configs. Leave existing configs unchanged and return a result that lets the caller log a visible warning. If the current API only returns `bool`, preserve existing configs and report no state mutation; adding a structured reconciliation result can be part of the implementation if needed to surface the warning cleanly.
+For `Ambiguous`, fall back to the current exact-match reconciliation behavior. There is no deterministic single-operation transform to apply, so exact `(index, name)` matches keep their existing configs and unmatched entries are treated the same way they are today.
+
+The React scene list should also display a persistent warning when the current scene list is hard to track deterministically, such as when duplicate scene names are present. This warning can be derived entirely in React from the scene list or projected scene config data. It does not need new backend state for the first implementation.
 
 ## Safety
 
@@ -66,7 +68,8 @@ Add focused unit tests for `ShowState::reconcile_scene_fade_configs` covering:
 - Insert creates only one default config and preserves existing configs.
 - Delete removes only the deleted config and preserves remaining configs.
 - Duplicate names are handled when the single-operation transform is unique.
-- Duplicate names produce `Ambiguous` when the moved/deleted/inserted scene cannot be distinguished.
-- Multi-operation transitions are `Ambiguous` and preserve existing configs.
+- Duplicate names produce `Ambiguous` when the moved/deleted/inserted scene cannot be distinguished, then use exact-match reconciliation fallback.
+- Multi-operation transitions are `Ambiguous`, then use exact-match reconciliation fallback.
+- The React scene list shows a persistent warning when duplicate scene names make tracking harder.
 
 Existing scene recall policy tests should continue to prove exact index/name validation before fade start.
