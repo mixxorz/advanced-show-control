@@ -3,6 +3,54 @@ use crate::lv1::types::SceneListEntry;
 use super::types::scene_id;
 use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SceneEntry {
+    index: i32,
+    name: String,
+}
+
+fn entries_from_configs(configs: &[SceneConfig]) -> Vec<SceneEntry> {
+    let mut entries: Vec<_> = configs
+        .iter()
+        .map(|scene| SceneEntry {
+            index: scene.scene_index,
+            name: scene.scene_name.clone(),
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.index);
+    entries
+}
+
+fn entries_from_scene_list(scenes: &[SceneListEntry]) -> Vec<SceneEntry> {
+    let mut entries: Vec<_> = scenes
+        .iter()
+        .map(|scene| SceneEntry {
+            index: scene.index,
+            name: scene.name.clone(),
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.index);
+    entries
+}
+
+fn default_scene_config(entry: &SceneEntry) -> SceneConfig {
+    SceneConfig {
+        scene_id: scene_id(entry.index, &entry.name),
+        scene_index: entry.index,
+        scene_name: entry.name.clone(),
+        duration_ms: 0,
+        channel_configs: Vec::new(),
+        scoped_channels: Vec::new(),
+        scope_toggles: SceneScopeToggles::default(),
+    }
+}
+
+fn update_scene_locator(config: &mut SceneConfig, entry: &SceneEntry) {
+    config.scene_id = scene_id(entry.index, &entry.name);
+    config.scene_index = entry.index;
+    config.scene_name = entry.name.clone();
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     pub lockout: bool,
@@ -18,21 +66,41 @@ impl ShowState {
     }
 
     pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) -> bool {
+        let old_entries = entries_from_configs(&self.scene_configs);
+        let new_entries = entries_from_scene_list(scenes);
+
+        if old_entries == new_entries {
+            return false;
+        }
+
+        if old_entries.len() == new_entries.len() {
+            let changed_at: Vec<_> = old_entries
+                .iter()
+                .zip(new_entries.iter())
+                .enumerate()
+                .filter(|(_, (old, new))| old != new)
+                .collect();
+            if changed_at.len() == 1 {
+                let (_, (old, new)) = changed_at[0];
+                if old.index == new.index
+                    && let Some(scene) = self.scene_configs.iter_mut().find(|scene| {
+                        scene.scene_index == old.index && scene.scene_name == old.name
+                    })
+                {
+                    update_scene_locator(scene, new);
+                    self.scene_configs.sort_by_key(|scene| scene.scene_index);
+                    return true;
+                }
+            }
+        }
+
         let mut next = Vec::with_capacity(scenes.len());
-        for entry in scenes {
+        for entry in &new_entries {
             let id = scene_id(entry.index, &entry.name);
             if let Some(existing) = self.scene_configs.iter().find(|scene| scene.scene_id == id) {
                 next.push(existing.clone());
             } else {
-                next.push(SceneConfig {
-                    scene_id: id,
-                    scene_index: entry.index,
-                    scene_name: entry.name.clone(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: SceneScopeToggles::default(),
-                });
+                next.push(default_scene_config(entry));
             }
         }
 
@@ -104,6 +172,37 @@ mod tests {
             scoped_channels: vec![],
             scope_toggles: SceneScopeToggles::default(),
         }
+    }
+
+    #[test]
+    fn reconciliation_tracks_single_scene_rename() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "1::Verse",
+                1_500,
+                vec![ChannelConfig {
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-12.0),
+                }],
+            )],
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
+            index: 1,
+            name: "Verse Big".to_string(),
+        }]));
+
+        assert_eq!(state.scene_configs.len(), 1);
+        assert_eq!(state.scene_configs[0].scene_id, "1::Verse Big");
+        assert_eq!(state.scene_configs[0].scene_index, 1);
+        assert_eq!(state.scene_configs[0].scene_name, "Verse Big");
+        assert_eq!(state.scene_configs[0].duration_ms, 1_500);
+        assert_eq!(
+            state.scene_configs[0].channel_configs[0].fader_db,
+            Some(-12.0)
+        );
     }
 
     #[test]
