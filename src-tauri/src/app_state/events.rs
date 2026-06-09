@@ -121,6 +121,9 @@ impl ShellState {
         drop(inner);
 
         if !scene_list.is_empty() {
+            if !self.is_generation_current(generation).await {
+                return None;
+            }
             let changed = self
                 .show
                 .reconcile_scene_list(scene_list.clone())
@@ -216,6 +219,9 @@ impl ShellState {
                 let generation = inner.generation;
                 drop(inner);
 
+                if !self.is_generation_current(generation).await {
+                    return None;
+                }
                 let before_count = self
                     .show
                     .get_snapshot()
@@ -223,12 +229,18 @@ impl ShellState {
                     .map(|snapshot| snapshot.scene_configs.len())
                     .unwrap_or(0);
 
+                if !self.is_generation_current(generation).await {
+                    return None;
+                }
                 let changed = self
                     .show
                     .reconcile_scene_list(scenes.clone())
                     .await
                     .unwrap_or(false);
 
+                if !self.is_generation_current(generation).await {
+                    return None;
+                }
                 let after_count = self
                     .show
                     .get_snapshot()
@@ -324,6 +336,12 @@ impl ShellState {
         apply_fade_event_locked(&mut inner, event);
         drop(inner);
         self.snapshot_for_generation(generation).await
+    }
+}
+
+impl ShellState {
+    async fn is_generation_current(&self, generation: u64) -> bool {
+        self.inner.lock().await.generation == generation
     }
 }
 

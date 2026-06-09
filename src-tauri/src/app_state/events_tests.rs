@@ -162,6 +162,26 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
     assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
 }
 
+#[tokio::test]
+async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    let _ = state.disconnect().await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::SceneListChanged(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+        )
+        .await;
+
+    assert!(snapshot.is_none());
+    assert_eq!(state.snapshot().await.scene_configs.len(), 0);
+}
+
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
     let mut state = advanced_show_control::show::state::ShowState {
