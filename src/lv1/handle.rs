@@ -1,6 +1,6 @@
 use tokio::sync::{mpsc, oneshot};
 
-use super::commands::Lv1Command;
+use super::commands::{Lv1Command, Lv1ParameterWrite};
 use super::events::Lv1ActorError;
 use super::types::Lv1StateSnapshot;
 
@@ -134,6 +134,17 @@ impl Lv1ActorHandle {
             .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
     }
 
+    pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), Lv1ActorError> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+
+        self.tx
+            .send(Lv1Command::WriteBatch(writes))
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)
+    }
+
     /// Wait until all previously queued commands have been processed.
     pub async fn flush(&self) -> Result<(), Lv1ActorError> {
         let (reply_tx, reply_rx) = oneshot::channel();
@@ -210,5 +221,25 @@ mod tests {
             panic!("expected SetWidth command");
         }
         assert_eq!(width.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn handle_sends_write_batch_without_reply() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let handle = Lv1ActorHandle::new(tx);
+        let writes = vec![crate::lv1::commands::Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: crate::lv1::commands::Lv1WriteParameter::FaderDb,
+            value: -18.0,
+        }];
+
+        assert_eq!(handle.write_batch(writes.clone()).await, Ok(()));
+
+        match rx.recv().await {
+            Some(Lv1Command::WriteBatch(received)) => assert_eq!(received, writes),
+            Some(_) => panic!("expected WriteBatch, got some other command"),
+            None => panic!("expected WriteBatch, got None"),
+        }
     }
 }

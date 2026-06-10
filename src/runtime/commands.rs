@@ -5,6 +5,7 @@ use tokio::sync::Mutex;
 
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
+use crate::lv1::commands::Lv1ParameterWrite;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::types::Lv1StateSnapshot;
@@ -188,6 +189,20 @@ impl AppCommandBus {
             None => Err(AppCommandError::Lv1Unavailable),
         };
         publish_failure(&self.event_bus, "set_width", &result);
+        result
+    }
+
+    pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), AppCommandError> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+
+        let lv1 = self.targets.lock().await.lv1.clone();
+        let result = match lv1 {
+            Some(lv1) => lv1.write_batch(writes).await.map_err(map_lv1_error),
+            None => Err(AppCommandError::Lv1Unavailable),
+        };
+        publish_failure(&self.event_bus, "write_batch", &result);
         result
     }
 
@@ -381,5 +396,33 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn write_batch_routes_to_lv1_without_reply() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let bus = AppCommandBus::new(event_bus);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+
+        let writes = vec![Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: crate::lv1::commands::Lv1WriteParameter::FaderDb,
+            value: -18.0,
+        }];
+        let expected = writes.clone();
+
+        tokio::spawn(async move {
+            if let Some(crate::lv1::commands::Lv1Command::WriteBatch(received)) =
+                lv1_rx.recv().await
+            {
+                assert_eq!(received, expected);
+            }
+        });
+
+        assert_eq!(bus.write_batch(writes).await, Ok(()));
+        assert!(events.try_recv().is_err());
     }
 }
