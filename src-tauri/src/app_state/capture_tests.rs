@@ -109,6 +109,26 @@ async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
 }
 
 #[tokio::test]
+async fn set_scene_scope_pan_enabled_updates_toggle_and_marks_dirty() {
+    let state = ShellState::default();
+    state
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+    state
+        .store_scene_config("1::Intro".to_string())
+        .await
+        .unwrap();
+
+    let snapshot = state
+        .set_scene_scope_pan_enabled("1::Intro".to_string(), true)
+        .await
+        .unwrap();
+
+    assert!(snapshot.scene_configs[0].scope_toggles.pan);
+    assert!(snapshot.show_file_dirty);
+}
+
+#[tokio::test]
 async fn store_scene_config_preserves_existing_scope_on_later_store() {
     let state = ShellState::default();
 

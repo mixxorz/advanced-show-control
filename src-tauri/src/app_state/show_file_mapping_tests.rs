@@ -267,6 +267,133 @@ async fn load_show_file_preserves_disabled_fader_scope_toggle() {
         .unwrap();
 
     assert!(!snapshot.scene_configs[0].scope_toggles.faders);
+    assert!(!snapshot.scene_configs[0].scope_toggles.pan);
+}
+
+#[tokio::test]
+async fn export_and_import_show_file_round_trips_pan_family_fields() {
+    let state = ShellState::default();
+    state
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+    state
+        .show
+        .replace_snapshot(ShowSnapshot {
+            lockout: true,
+            scene_configs: vec![super::view::SceneConfig {
+                scene_id: "1::Intro".to_string(),
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 5000,
+                channel_configs: vec![super::view::ChannelConfig {
+                    group: 0,
+                    channel: 2,
+                    fader_db: Some(-8.0),
+                    pan: Some(-12.0),
+                    balance: Some(3.0),
+                    width: Some(1.2),
+                    pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+                }],
+                scoped_channels: vec![super::view::ChannelRef {
+                    group: 0,
+                    channel: 2,
+                }],
+                scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
+                    faders: true,
+                    pan: true,
+                },
+            }],
+        })
+        .await
+        .unwrap();
+
+    let exported = state.export_show_file("saved".to_string()).await;
+    assert!(exported.scene_configs[0].scope_toggles.pan);
+    assert_eq!(
+        exported.scene_configs[0].channel_configs[0].pan,
+        Some(-12.0)
+    );
+    assert_eq!(
+        exported.scene_configs[0].channel_configs[0].balance,
+        Some(3.0)
+    );
+    assert_eq!(
+        exported.scene_configs[0].channel_configs[0].width,
+        Some(1.2)
+    );
+    assert_eq!(
+        exported.scene_configs[0].channel_configs[0].pan_mode,
+        Some(advanced_show_control::lv1::types::PanMode::Stereo)
+    );
+
+    let mut imported = exported.clone();
+    let snapshot = state
+        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut imported)
+        .await
+        .unwrap();
+
+    assert!(snapshot.scene_configs[0].scope_toggles.pan);
+    assert_eq!(
+        snapshot.scene_configs[0].channel_configs[0].pan,
+        Some(-12.0)
+    );
+    assert_eq!(
+        snapshot.scene_configs[0].channel_configs[0].balance,
+        Some(3.0)
+    );
+    assert_eq!(
+        snapshot.scene_configs[0].channel_configs[0].width,
+        Some(1.2)
+    );
+    assert_eq!(
+        snapshot.scene_configs[0].channel_configs[0].pan_mode,
+        Some(advanced_show_control::lv1::types::PanMode::Stereo)
+    );
+}
+
+#[tokio::test]
+async fn load_show_file_defaults_missing_pan_family_fields() {
+    let state = ShellState::default();
+    state
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+
+    let mut file = ShowFile {
+        schema_version: 1,
+        app_version: "0.1.0".to_string(),
+        saved_at: "123".to_string(),
+        safety: crate::show_file::ShowFileSafety { lockout: false },
+        scene_configs: vec![ShowFileSceneConfig {
+            scene_index: 1,
+            scene_name: "Intro".to_string(),
+            duration_ms: 5000,
+            channel_configs: vec![ShowFileChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-9.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            scoped_channels: vec![ShowFileChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+            scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+        }],
+    };
+
+    let snapshot = state
+        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
+        .await
+        .unwrap();
+
+    assert!(!snapshot.scene_configs[0].scope_toggles.pan);
+    assert_eq!(snapshot.scene_configs[0].channel_configs[0].pan, None);
+    assert_eq!(snapshot.scene_configs[0].channel_configs[0].balance, None);
+    assert_eq!(snapshot.scene_configs[0].channel_configs[0].width, None);
+    assert_eq!(snapshot.scene_configs[0].channel_configs[0].pan_mode, None);
 }
 
 #[tokio::test]

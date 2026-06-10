@@ -38,6 +38,7 @@ fn main() {
             commands::set_channel_scoped,
             commands::set_all_channels_scoped,
             commands::set_scene_scope_faders_enabled,
+            commands::set_scene_scope_pan_enabled,
             commands::set_lockout,
         ])
         .run(tauri::generate_context!())

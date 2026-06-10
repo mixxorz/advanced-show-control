@@ -192,6 +192,18 @@ pub async fn set_scene_scope_faders_enabled(
 }
 
 #[tauri::command]
+pub async fn set_scene_scope_pan_enabled(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+    enabled: bool,
+) -> Result<AppViewState, String> {
+    let snapshot = state.set_scene_scope_pan_enabled(scene_id, enabled).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn save_show_file(
     app: AppHandle,
     state: State<'_, ShellState>,
@@ -845,6 +857,7 @@ mod tests {
         let _ = set_channel_scoped;
         let _ = set_all_channels_scoped;
         let _ = set_scene_scope_faders_enabled;
+        let _ = set_scene_scope_pan_enabled;
     }
 
     #[test]
