@@ -93,6 +93,7 @@ export type AppViewState = {
   showFilePath: string | null;
   showFileDirty: boolean;
   showFileLastSavedAt: string | null;
+  stateVersion: number;
 };
 
 export const disconnectedAppViewState: AppViewState = {
@@ -116,4 +117,5 @@ export const disconnectedAppViewState: AppViewState = {
   showFilePath: null,
   showFileDirty: false,
   showFileLastSavedAt: null,
+  stateVersion: 0,
 };

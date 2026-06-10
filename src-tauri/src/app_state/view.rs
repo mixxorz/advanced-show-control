@@ -87,4 +87,5 @@ pub struct AppViewState {
     pub show_file_last_saved_at: Option<String>,
     pub logs: Vec<AppLogEntry>,
     pub last_event_at: Option<String>,
+    pub state_version: u64,
 }

@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::runtime::commands::AppCommandBus;
@@ -53,6 +54,7 @@ pub(super) struct ShellInner {
     pub(super) logs: VecDeque<AppLogEntry>,
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
+    pub(super) snapshot_counter: AtomicU64,
 }
 
 impl Default for ShellState {
@@ -70,9 +72,10 @@ impl ShellState {
     pub async fn snapshot(&self) -> AppViewState {
         let inner_guard = self.inner.lock().await;
         let inner = snapshot_inner(&inner_guard);
+        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed);
         drop(inner_guard);
         let show = self.show.get_snapshot().await;
-        snapshot_from_parts(inner, show)
+        snapshot_from_parts(inner, show, state_version)
     }
 
     pub async fn snapshot_for_generation(&self, generation: u64) -> Option<AppViewState> {
@@ -82,9 +85,10 @@ impl ShellState {
         }
 
         let inner = snapshot_inner(&inner_guard);
+        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed);
         drop(inner_guard);
         let show = self.show.get_snapshot().await;
-        Some(snapshot_from_parts(inner, show))
+        Some(snapshot_from_parts(inner, show, state_version))
     }
 
     pub async fn set_scene_duration_ms(
@@ -576,7 +580,11 @@ struct InnerSnapshot {
     last_event_at: Option<String>,
 }
 
-fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState {
+fn snapshot_from_parts(
+    inner: InnerSnapshot,
+    show: ShowSnapshot,
+    state_version: u64,
+) -> AppViewState {
     AppViewState {
         connection: inner.connection,
         discovered_lv1_systems: inner.discovered_lv1_systems,
@@ -598,6 +606,7 @@ fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState
         show_file_last_saved_at: inner.show_file_last_saved_at,
         logs: inner.logs,
         last_event_at: inner.last_event_at,
+        state_version,
     }
 }
 
