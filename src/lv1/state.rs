@@ -351,6 +351,10 @@ mod tests {
                 name: "Ch 1".to_string(),
                 gain_db: -9.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -358,6 +362,10 @@ mod tests {
                 name: "Ch 2".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
         ];
         apply_fader_update(&mut channels, 0, 0, -6.0);
@@ -373,6 +381,10 @@ mod tests {
             name: "Ch 1".to_string(),
             gain_db: -9.0,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }];
         apply_fader_update(&mut channels, 0, 99, -3.0);
         assert_eq!(channels[0].gain_db, -9.0);
@@ -387,6 +399,10 @@ mod tests {
                 name: "Ch 1".to_string(),
                 gain_db: -9.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -394,6 +410,10 @@ mod tests {
                 name: "Ch 2".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
         ];
         apply_mute_update(&mut channels, 0, 0, true);
@@ -409,6 +429,10 @@ mod tests {
             name: "Ch 1".to_string(),
             gain_db: -9.0,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }];
         apply_mute_update(&mut channels, 0, 99, true);
         assert!(!channels[0].muted);

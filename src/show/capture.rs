@@ -53,6 +53,10 @@ impl ShowState {
                     group: channel.group,
                     channel: channel.channel,
                     fader_db: Some(channel.gain_db),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 })
                 .collect(),
             scoped_channels,

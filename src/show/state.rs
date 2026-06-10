@@ -329,6 +329,10 @@ mod tests {
             name: name.to_string(),
             gain_db,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }
     }
 
@@ -356,6 +360,10 @@ mod tests {
                 group: 0,
                 channel: index,
                 fader_db: Some(-10.0 - f64::from(index)),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
         )
     }
@@ -378,6 +386,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -409,6 +421,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -469,6 +485,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -490,6 +510,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -731,6 +755,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-9.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -751,6 +779,10 @@ mod tests {
             name: "Ch 1".to_string(),
             gain_db: -7.5,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }];
 
         assert!(state.store_scene_config("1::scene-1", &channels).unwrap());

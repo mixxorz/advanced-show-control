@@ -3,6 +3,7 @@ export type DiscoveredLv1Status = "available" | "connecting" | "connected" | "un
 export type FadeState = "idle" | "running" | "blocked";
 export type LogSource = "app" | "lv1" | "fade";
 export type LogSeverity = "info" | "warning" | "error";
+export type PanMode = "mono" | "stereo";
 
 export type Lv1SystemIdentity = {
   uuid: string | null;
@@ -42,10 +43,15 @@ export type ChannelConfig = {
   group: number;
   channel: number;
   faderDb: number | null;
+  pan: number | null;
+  balance: number | null;
+  width: number | null;
+  panMode: PanMode | null;
 };
 
 export type SceneScopeToggles = {
   faders: boolean;
+  pan: boolean;
 };
 
 export type SceneConfig = {

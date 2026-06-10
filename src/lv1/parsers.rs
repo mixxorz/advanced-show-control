@@ -43,6 +43,10 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
             name,
             gain_db,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         });
     }
 
@@ -108,6 +112,10 @@ mod tests {
                 name: "Channel 1".to_string(),
                 gain_db: -9.1,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }
         );
         assert_eq!(
@@ -118,6 +126,10 @@ mod tests {
                 name: "Fx 1".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }
         );
     }

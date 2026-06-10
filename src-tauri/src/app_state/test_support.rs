@@ -28,6 +28,10 @@ pub(super) fn connected_state_with_scene_and_channel() -> Lv1StateSnapshot {
             name: "Lead".to_string(),
             gain_db: -8.0,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }],
     }
 }

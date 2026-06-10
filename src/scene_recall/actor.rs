@@ -882,6 +882,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -8.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             };
             while let Some(command) = lv1_rx.recv().await {
@@ -932,6 +936,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -8.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             };
             while let Some(command) = lv1_rx.recv().await {
@@ -981,6 +989,10 @@ mod tests {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-12.5),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
                 scoped_channels: vec![ChannelRef {
                     group: 0,

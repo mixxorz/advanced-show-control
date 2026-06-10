@@ -37,13 +37,18 @@ pub struct ShowFileSceneConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[serde(default)]
 pub struct ShowFileSceneScopeToggles {
     pub faders: bool,
+    pub pan: bool,
 }
 
 impl Default for ShowFileSceneScopeToggles {
     fn default() -> Self {
-        Self { faders: true }
+        Self {
+            faders: true,
+            pan: false,
+        }
     }
 }
 
@@ -53,6 +58,10 @@ pub struct ShowFileChannelConfig {
     pub group: i32,
     pub channel: i32,
     pub fader_db: Option<f64>,
+    pub pan: Option<f64>,
+    pub balance: Option<f64>,
+    pub width: Option<f64>,
+    pub pan_mode: Option<advanced_show_control::lv1::types::PanMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -335,6 +344,10 @@ mod tests {
                     name: "Kick".to_string(),
                     gain_db: -5.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 },
                 ChannelInfo {
                     group: 0,
@@ -342,6 +355,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -8.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 },
             ],
         }
@@ -361,6 +378,10 @@ mod tests {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-12.5),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
                 scoped_channels: vec![ShowFileChannelRef {
                     group: 0,

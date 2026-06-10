@@ -601,6 +601,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -6.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )
             .await
@@ -839,6 +843,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -6.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             })
             .await;

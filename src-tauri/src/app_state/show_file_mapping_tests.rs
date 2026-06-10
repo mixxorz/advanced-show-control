@@ -27,6 +27,10 @@ async fn export_show_file_contains_current_configs() {
             group: 0,
             channel: 2,
             fader_db: Some(-8.0),
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }]
     );
     assert_eq!(
@@ -67,6 +71,10 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-8.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
                 scoped_channels: vec![super::view::ChannelRef {
                     group: 0,
@@ -176,6 +184,10 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-9.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
                 scoped_channels: vec![ShowFileChannelRef {
                     group: 0,
@@ -233,12 +245,19 @@ async fn load_show_file_preserves_disabled_fader_scope_toggle() {
                 group: 0,
                 channel: 2,
                 fader_db: Some(-9.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
             scoped_channels: vec![ShowFileChannelRef {
                 group: 0,
                 channel: 2,
             }],
-            scope_toggles: crate::show_file::ShowFileSceneScopeToggles { faders: false },
+            scope_toggles: crate::show_file::ShowFileSceneScopeToggles {
+                faders: false,
+                pan: false,
+            },
         }],
     };
 
@@ -268,6 +287,10 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
                 group: 0,
                 channel: 2,
                 fader_db: Some(-9.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
             scoped_channels: vec![ShowFileChannelRef {
                 group: 0,
