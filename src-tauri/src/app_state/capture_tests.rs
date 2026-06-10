@@ -1,5 +1,6 @@
 use super::shell::ShellState;
 use super::test_support::connected_state_with_scene_and_channel;
+use super::view::ChannelRef;
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
 };
@@ -7,9 +8,13 @@ use advanced_show_control::lv1::types::{
 #[tokio::test]
 async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_store() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
 
     let snapshot = state
         .store_scene_config("1::Intro".to_string())
@@ -30,9 +35,13 @@ async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_stor
 #[tokio::test]
 async fn store_scene_config_rejects_missing_scene_id() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
 
     let err = state
         .store_scene_config("2::Verse".to_string())
@@ -45,17 +54,21 @@ async fn store_scene_config_rejects_missing_scene_id() {
 #[tokio::test]
 async fn store_scene_config_rejects_empty_lv1_channel_list() {
     let state = ShellState::default();
+    let lv1_snapshot = Lv1StateSnapshot {
+        connection: ConnectionStatus::Connected,
+        scene: None,
+        scene_list: vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }],
+        channels: Vec::new(),
+    };
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![SceneListEntry {
-                index: 1,
-                name: "Intro".to_string(),
-            }],
-            channels: Vec::new(),
-        })
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
 
     let err = state
         .store_scene_config("1::Intro".to_string())
@@ -68,9 +81,13 @@ async fn store_scene_config_rejects_empty_lv1_channel_list() {
 #[tokio::test]
 async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
 
     let zero = state
         .set_scene_duration_ms("1::Intro".to_string(), 0)
@@ -91,9 +108,13 @@ async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
 #[tokio::test]
 async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -111,9 +132,13 @@ async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
 #[tokio::test]
 async fn set_scene_scope_pan_enabled_updates_toggle_and_marks_dirty() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -132,48 +157,56 @@ async fn set_scene_scope_pan_enabled_updates_toggle_and_marks_dirty() {
 async fn store_scene_config_preserves_existing_scope_on_later_store() {
     let state = ShellState::default();
 
+    let lv1_snapshot = connected_state_with_three_channels();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_three_channels())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
         .unwrap();
 
+    let lv1_snapshot2 = Lv1StateSnapshot {
+        connection: ConnectionStatus::Connected,
+        scene: None,
+        scene_list: vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }],
+        channels: vec![
+            ChannelInfo {
+                group: 0,
+                channel: 4,
+                name: "Bass".to_string(),
+                gain_db: -10.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            },
+            ChannelInfo {
+                group: 0,
+                channel: 2,
+                name: "Lead".to_string(),
+                gain_db: -8.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            },
+        ],
+    };
+    state.begin_connection(lv1_snapshot2.clone()).await;
     state
-        .begin_connection(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![SceneListEntry {
-                index: 1,
-                name: "Intro".to_string(),
-            }],
-            channels: vec![
-                ChannelInfo {
-                    group: 0,
-                    channel: 4,
-                    name: "Bass".to_string(),
-                    gain_db: -10.0,
-                    muted: false,
-                    pan: None,
-                    balance: None,
-                    width: None,
-                    pan_mode: None,
-                },
-                ChannelInfo {
-                    group: 0,
-                    channel: 2,
-                    name: "Lead".to_string(),
-                    gain_db: -8.0,
-                    muted: false,
-                    pan: None,
-                    balance: None,
-                    width: None,
-                    pan_mode: None,
-                },
-            ],
-        })
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot2.scene_list)
+        .await
+        .ok();
 
     let snapshot = state
         .store_scene_config("1::Intro".to_string())
@@ -192,9 +225,13 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
 #[tokio::test]
 async fn set_channel_scoped_toggles_single_channel_scope_and_marks_dirty() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -219,9 +256,13 @@ async fn set_channel_scoped_toggles_single_channel_scope_and_marks_dirty() {
 #[tokio::test]
 async fn set_channel_scoped_noop_keeps_clean_show_file_clean() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -240,9 +281,13 @@ async fn set_channel_scoped_noop_keeps_clean_show_file_clean() {
 #[tokio::test]
 async fn set_all_channels_scoped_sets_and_clears_scope() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_two_channels();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_two_channels())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -268,9 +313,13 @@ async fn set_all_channels_scoped_sets_and_clears_scope() {
 #[tokio::test]
 async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_two_channels();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_two_channels())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -291,9 +340,13 @@ async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
 #[tokio::test]
 async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() {
     let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_two_channels();
+    state.begin_connection(lv1_snapshot.clone()).await;
     state
-        .begin_connection(connected_state_with_two_channels())
-        .await;
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -301,17 +354,21 @@ async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() 
 
     {
         let mut inner = state.inner.lock().await;
-        inner.scene_configs[0].scoped_channels = vec![
-            super::view::ChannelRef {
+        inner.show_file_dirty = false;
+    }
+    {
+        let mut show_state = state.show.get_snapshot().await.unwrap();
+        show_state.scene_configs[0].scoped_channels = vec![
+            ChannelRef {
                 group: 0,
                 channel: 3,
             },
-            super::view::ChannelRef {
+            ChannelRef {
                 group: 0,
                 channel: 2,
             },
         ];
-        inner.show_file_dirty = false;
+        state.show.replace_snapshot(show_state).await.unwrap();
     }
 
     let snapshot = state
@@ -403,6 +460,91 @@ fn connected_state_with_three_channels() -> Lv1StateSnapshot {
             },
         ],
     }
+}
+
+#[tokio::test]
+async fn set_scene_duration_ms_returns_error_for_unknown_scene() {
+    let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
+    state
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
+
+    let result = state
+        .set_scene_duration_ms("999::DoesNotExist".to_string(), 1000)
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn set_channel_scoped_returns_error_for_unknown_scene() {
+    let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
+    state
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
+
+    let result = state
+        .set_channel_scoped("999::DoesNotExist".to_string(), 0, 2, false)
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn set_all_channels_scoped_returns_error_for_unknown_scene() {
+    let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
+    state
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
+
+    let result = state
+        .set_all_channels_scoped("999::DoesNotExist".to_string(), false)
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn set_scene_scope_faders_enabled_returns_error_for_unknown_scene() {
+    let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
+    state
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
+
+    let result = state
+        .set_scene_scope_faders_enabled("999::DoesNotExist".to_string(), false)
+        .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn set_scene_scope_pan_enabled_returns_error_for_unknown_scene() {
+    let state = ShellState::default();
+    let lv1_snapshot = connected_state_with_scene_and_channel();
+    state.begin_connection(lv1_snapshot.clone()).await;
+    state
+        .show
+        .reconcile_scene_list(lv1_snapshot.scene_list)
+        .await
+        .ok();
+
+    let result = state
+        .set_scene_scope_pan_enabled("999::DoesNotExist".to_string(), true)
+        .await;
+    assert!(result.is_err());
 }
 
 async fn set_show_file_clean(state: &ShellState) {

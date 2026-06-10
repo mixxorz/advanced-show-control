@@ -175,7 +175,15 @@ impl ShowState {
             })
             .collect();
         if scoped {
-            if scene.scoped_channels != refs {
+            // Check if all channels are already scoped (regardless of order)
+            let all_scoped = refs.iter().all(|ref_channel| {
+                scene
+                    .scoped_channels
+                    .iter()
+                    .any(|scoped_channel| scoped_channel == ref_channel)
+            });
+            if !all_scoped || scene.scoped_channels.len() != refs.len() {
+                // Either not all channels are scoped, or there are extra scoped channels
                 scene.scoped_channels = refs;
                 changed = true;
             }

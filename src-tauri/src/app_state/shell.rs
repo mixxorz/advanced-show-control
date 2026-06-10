@@ -95,11 +95,14 @@ impl ShellState {
         scene_id: String,
         duration_ms: u64,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_scene_duration(scene_id, duration_ms)
             .await
-            .map_err(|err| format!("{err:?}"))?;
+            .map_err(|err| format!("{err:?}"))??;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -118,11 +121,27 @@ impl ShellState {
             .lv1_snapshot
             .clone()
             .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
-        let _ = self
+        // Validate that the scene_id matches a scene in the current show (reconciled from LV1)
+        let show_snapshot = self
+            .show
+            .get_snapshot()
+            .await
+            .map_err(|err| format!("{err:?}"))?;
+        if !show_snapshot
+            .scene_configs
+            .iter()
+            .any(|scene| scene.scene_id == scene_id)
+        {
+            return Err("Scene config not found".to_string());
+        }
+        let changed = self
             .show
             .store_scene_config(scene_id, lv1.channels)
             .await
-            .map_err(|err| format!("{err:?}"))?;
+            .map_err(|err| format!("{err:?}"))??;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -133,11 +152,14 @@ impl ShellState {
         channel: i32,
         scoped: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_channel_scoped(scene_id, group, channel, scoped)
             .await
-            .map_err(|err| format!("{err:?}"))?;
+            .map_err(|err| format!("{err:?}"))??;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -146,11 +168,14 @@ impl ShellState {
         scene_id: String,
         scoped: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_all_channels_scoped(scene_id, scoped)
             .await
-            .map_err(|err| format!("{err:?}"))?;
+            .map_err(|err| format!("{err:?}"))??;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -159,11 +184,14 @@ impl ShellState {
         scene_id: String,
         enabled: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_scene_scope_faders_enabled(scene_id, enabled)
             .await
-            .map_err(|err| format!("{err:?}"))?;
+            .map_err(|err| format!("{err:?}"))??;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -172,11 +200,14 @@ impl ShellState {
         scene_id: String,
         enabled: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_scene_scope_pan_enabled(scene_id, enabled)
             .await
-            .map_err(|err| format!("{err:?}"))?;
+            .map_err(|err| format!("{err:?}"))??;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 

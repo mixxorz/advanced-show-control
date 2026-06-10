@@ -1,3 +1,5 @@
+#[cfg(test)]
+mod capture_tests;
 mod events;
 #[cfg(test)]
 mod events_tests;
