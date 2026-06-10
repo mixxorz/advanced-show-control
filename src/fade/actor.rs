@@ -43,6 +43,15 @@ async fn run_engine(
                 match cmd {
                     None => break,
                     Some(FadeCommand::RecallSceneFade { config, reply }) => {
+                        let has_fader_targets = config
+                            .targets
+                            .iter()
+                            .any(|target| target.parameter == FadeParameter::FaderDb);
+                        if !has_fader_targets {
+                            let _ = reply.send(Ok(()));
+                            continue;
+                        }
+
                         if state.has_active_scene(&config.scene) {
                             finish_scene_channels(&mut state, &command_bus, &config.scene).await;
                             if !state.is_active() {

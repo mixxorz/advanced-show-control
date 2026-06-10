@@ -384,6 +384,71 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
 }
 
 #[tokio::test]
+async fn same_scene_non_fader_targets_do_not_finish_active_fader_fade() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(600));
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let intro = scene(1, "Intro");
+    engine
+        .start_fade(fade_config(
+            intro.clone(),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::FaderDb,
+                target: -12.0,
+            }],
+            1_000,
+        ))
+        .await
+        .unwrap();
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |event| matches!(event, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    engine
+        .start_fade(fade_config(
+            intro,
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::Pan,
+                target: -12.0,
+            }],
+            0,
+        ))
+        .await
+        .unwrap();
+
+    no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(250)).await;
+}
+
+#[tokio::test]
 async fn engine_emits_fade_started_and_completed() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
