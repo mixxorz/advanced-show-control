@@ -4,7 +4,7 @@
 
 Scene PAN scope currently treats stored `PanMode::Stereo` as a guarantee that pan, balance, and width values must all exist. Hardware logs show that assumption is too strict:
 
-- `group=12` Link channels and `group=24` `HidLink:0` report pan mode `i:0`, meaning no pan controls.
+- `group=12` Link/DCAs and `group=24` `HidLink:0` report pan mode `i:0`, meaning no pan controls.
 - `group=3 channel=0` LR reports pan mode `i:2`, but its width notification is inactive and the surface does not expose a pan knob.
 - Width is not present in `/Channels`; it only becomes usable from active `/Notify/PanArcWidth` messages.
 
@@ -36,7 +36,7 @@ For PAN scope, recall should build targets only from stored values that are pres
 
 The frontend should label Link channels instead of grouping them as `Unknown` once the group mapping is updated:
 
-- `group=12`: Links
+- `group=12`: Link/DCAs
 - `group=24`: hidden/internal link entry, not user-facing if it appears in topology
 
 PAN summaries may show no pan values for channels that do not expose pan-family controls.
