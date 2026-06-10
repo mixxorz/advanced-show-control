@@ -4,7 +4,7 @@ use crate::runtime::events::{AppEvent, AppEventBus};
 
 pub(crate) struct EngineState {
     pub(crate) channels: Vec<ActiveTarget>,
-    event_bus: AppEventBus,
+    pub(crate) event_bus: AppEventBus,
 }
 
 impl EngineState {

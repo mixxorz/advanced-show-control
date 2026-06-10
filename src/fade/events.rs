@@ -6,4 +6,5 @@ pub enum FadeEvent {
     ChannelCompleted { group: i32, channel: i32 },
     ChannelOverride { group: i32, channel: i32 },
     ChannelCancelled { group: i32, channel: i32 },
+    WriteFailed { reason: String },
 }

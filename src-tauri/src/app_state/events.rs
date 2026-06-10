@@ -438,6 +438,13 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
                 format!("Fade channel cancelled: group {group}, channel {channel}"),
             );
         }
+        FadeEvent::WriteFailed { reason } => {
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Error,
+                format!("Fade write failed: {reason}"),
+            );
+        }
     }
 }
 
