@@ -2,6 +2,7 @@
 
 use std::time::{Duration, Instant};
 
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
 
 use super::commands::Lv1Command;
@@ -9,7 +10,10 @@ use super::events::Lv1ActorError;
 use super::events::Lv1Event;
 use super::handle::Lv1ActorHandle;
 use super::state::{ActorState, handle_message};
-use super::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping, read_next_async, send_async};
+use super::tcp::{
+    Lv1TcpClient, decode_frame_payload, encode_parameter_write_batch, pong_for_ping,
+    read_next_async, send_async,
+};
 use super::types::ConnectionStatus;
 use crate::osc::OscArg;
 use crate::runtime::events::AppEventBus;
@@ -197,7 +201,20 @@ async fn run_connected(
                     Some(Lv1Command::GetState { reply }) => {
                         let _ = reply.send(state.snapshot());
                     }
-                    Some(Lv1Command::WriteBatch(_)) => {}
+                    Some(Lv1Command::WriteBatch(writes)) => {
+                        if writes.is_empty() {
+                            continue;
+                        }
+
+                        let bytes = match encode_parameter_write_batch(&writes) {
+                            Ok(bytes) => bytes,
+                            Err(_) => return DisconnectReason::TcpError,
+                        };
+
+                        if writer.write_all(&bytes).await.is_err() {
+                            return DisconnectReason::TcpError;
+                        }
+                    }
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
                         let result = send_async(
                             writer,
