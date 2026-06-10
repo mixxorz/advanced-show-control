@@ -139,7 +139,7 @@ async fn drain_commands_for(
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
                 Some(Lv1Command::Flush { reply }) => {
-                    let _ = reply.send(Ok(()));
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
             },
         }
@@ -440,6 +440,20 @@ mod tests {
         let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
 
         assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
+    }
+
+    #[tokio::test]
+    async fn drain_commands_reports_not_connected_for_flush_while_disconnected() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut state = ActorState::new(AppEventBus::default());
+        let (reply_tx, reply_rx) = oneshot::channel();
+        tx.try_send(Lv1Command::Flush { reply: reply_tx }).unwrap();
+        drop(tx);
+
+        let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
+
+        assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
+        assert_eq!(reply_rx.await.unwrap(), Err(Lv1ActorError::NotConnected));
     }
 
     #[test]
