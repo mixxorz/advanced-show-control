@@ -352,13 +352,6 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
                     } => {
                         println!("[mute] group={group} ch={channel} muted={muted}");
                     }
-                    Lv1Event::ChannelPanChanged {
-                        group,
-                        channel,
-                        pan,
-                    } => {
-                        println!("[pan] group={group} ch={channel} {pan:.1}");
-                    }
                     Lv1Event::ChannelTopologyChanged(channels) => {
                         println!("[channels] {} channels loaded", channels.len());
                     }

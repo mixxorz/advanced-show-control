@@ -1374,10 +1374,6 @@ impl From<&Lv1Event> for Lv1EventPayload {
                 kind: "MuteChanged".to_string(),
                 message: format!("mute changed: group {group}, channel {channel}, muted {muted}"),
             },
-            Lv1Event::ChannelPanChanged { .. } => Self {
-                kind: "ChannelPanChanged".to_string(),
-                message: "pan family value changed".to_string(),
-            },
             Lv1Event::ChannelTopologyChanged(channels) => Self {
                 kind: "ChannelTopologyChanged".to_string(),
                 message: format!("channel topology updated: {} channels", channels.len()),

@@ -29,10 +29,5 @@ pub enum Lv1Event {
         channel: i32,
         muted: bool,
     },
-    ChannelPanChanged {
-        group: i32,
-        channel: i32,
-        pan: f64,
-    },
     ChannelTopologyChanged(Vec<ChannelInfo>),
 }
