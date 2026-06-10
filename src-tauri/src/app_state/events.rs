@@ -1,6 +1,7 @@
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::show::types::scene_id;
 
 use super::shell::{
     MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses,
@@ -89,7 +90,7 @@ impl ShellState {
                 if inner.selected_scene_id.is_none() {
                     inner.selected_scene_id = scene_list
                         .first()
-                        .map(|scene| format!("{}::{}", scene.index, scene.name));
+                        .map(|scene| scene_id(scene.index, &scene.name));
                 }
             }
             drop(inner);
@@ -137,7 +138,7 @@ impl ShellState {
                 if inner.selected_scene_id.is_none() {
                     inner.selected_scene_id = scene_list
                         .first()
-                        .map(|scene| format!("{}::{}", scene.index, scene.name));
+                        .map(|scene| scene_id(scene.index, &scene.name));
                 }
             }
             drop(inner);

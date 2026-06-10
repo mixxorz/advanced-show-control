@@ -68,6 +68,16 @@ pub fn scene_id(index: i32, name: &str) -> String {
     format!("{index}::{name}")
 }
 
+pub fn parse_scene_id(s: &str) -> Result<(i32, String), String> {
+    let (index_str, name) = s
+        .split_once("::")
+        .ok_or_else(|| format!("invalid scene_id: {s}"))?;
+    let index = index_str
+        .parse::<i32>()
+        .map_err(|e| format!("invalid scene_id index: {e}"))?;
+    Ok((index, name.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

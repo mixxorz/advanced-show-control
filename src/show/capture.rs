@@ -1,7 +1,7 @@
 use crate::lv1::types::ChannelInfo;
 
 use super::state::ShowState;
-use super::types::{ChannelConfig, ChannelRef, SceneConfig};
+use super::types::{ChannelConfig, ChannelRef, SceneConfig, parse_scene_id};
 
 impl ShowState {
     pub fn store_scene_config(
@@ -34,16 +34,12 @@ impl ShowState {
             })
             .unwrap_or_else(|| current_refs.clone());
         let previous = self.get_scene_config(scene_id);
+        let (scene_index, scene_name) =
+            parse_scene_id(scene_id).unwrap_or_else(|_| (0, String::new()));
         let snapshot = SceneConfig {
             scene_id: scene_id.to_string(),
-            scene_index: scene_id
-                .split_once("::")
-                .and_then(|(idx, _)| idx.parse().ok())
-                .unwrap_or_default(),
-            scene_name: scene_id
-                .split_once("::")
-                .map(|(_, name)| name.to_string())
-                .unwrap_or_default(),
+            scene_index,
+            scene_name,
             duration_ms: self
                 .get_scene_config(scene_id)
                 .map(|scene| scene.duration_ms)

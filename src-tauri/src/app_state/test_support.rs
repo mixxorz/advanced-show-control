@@ -1,7 +1,7 @@
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
 };
-use advanced_show_control::show::types::SceneScopeToggles;
+use advanced_show_control::show::types::{SceneScopeToggles, scene_id};
 
 use super::view::{ChannelConfig, ChannelRef, SceneConfig};
 
@@ -43,7 +43,7 @@ pub(super) fn scene_config(
     scoped_channels: Vec<ChannelRef>,
 ) -> SceneConfig {
     SceneConfig {
-        scene_id: format!("{scene_index}::{scene_name}"),
+        scene_id: scene_id(scene_index, scene_name),
         scene_index,
         scene_name: scene_name.to_string(),
         duration_ms: 0,

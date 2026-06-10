@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use advanced_show_control::show::types::scene_id;
+
 use super::shell::ShellState;
 use super::view::AppViewState;
 use crate::show_file::{
@@ -119,7 +121,7 @@ impl ShellState {
                     .scene_configs
                     .iter()
                     .map(|config| advanced_show_control::show::types::SceneConfig {
-                        scene_id: format!("{}::{}", config.scene_index, config.scene_name),
+                        scene_id: scene_id(config.scene_index, &config.scene_name),
                         scene_index: config.scene_index,
                         scene_name: config.scene_name.clone(),
                         duration_ms: config.duration_ms,
@@ -157,7 +159,7 @@ impl ShellState {
         inner.selected_scene_id = file
             .scene_configs
             .first()
-            .map(|config| format!("{}::{}", config.scene_index, config.scene_name));
+            .map(|config| scene_id(config.scene_index, &config.scene_name));
         inner.show_file_path = Some(path);
         inner.show_file_last_saved_at = Some(file.saved_at.clone());
         inner.show_file_dirty = report.removed_anything();

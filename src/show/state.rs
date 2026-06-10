@@ -2,8 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::lv1::types::SceneListEntry;
 
-use super::types::scene_id;
-use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
+use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot, scene_id};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SceneEntry {
@@ -318,6 +317,7 @@ impl ShowState {
 
 #[cfg(test)]
 mod tests {
+    use super::super::types::parse_scene_id;
     use super::*;
     use crate::lv1::types::ChannelInfo;
     use crate::show::ChannelConfig;
@@ -337,10 +337,8 @@ mod tests {
     }
 
     fn scene_config(scene_id: &str, duration_ms: u64, channels: Vec<ChannelConfig>) -> SceneConfig {
-        let (scene_index, scene_name) = scene_id
-            .split_once("::")
-            .map(|(index, name)| (index.parse().unwrap(), name.to_string()))
-            .unwrap();
+        let (scene_index, scene_name) =
+            parse_scene_id(scene_id).unwrap_or_else(|_| (0, String::new()));
         SceneConfig {
             scene_id: scene_id.to_string(),
             scene_index,
@@ -354,7 +352,7 @@ mod tests {
 
     fn named_scene_config(index: i32, name: &str, duration_ms: u64) -> SceneConfig {
         scene_config(
-            &format!("{index}::{name}"),
+            &scene_id(index, name),
             duration_ms,
             vec![ChannelConfig {
                 group: 0,
