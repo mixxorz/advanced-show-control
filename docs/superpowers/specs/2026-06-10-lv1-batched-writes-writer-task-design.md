@@ -22,6 +22,7 @@ In scope:
 - Encode a batch into one contiguous byte buffer before enqueueing it to the writer.
 - Add a bounded per-connection writer channel and treat full writer queues as a degraded TCP connection.
 - Preserve existing disconnect fan-out so active fades abort through the current `Lv1Event::Disconnected` path.
+- Add a dedicated TCP handling document under `docs/` that describes LV1 TCP framing, `TCP_NODELAY`, read/write task ownership, writer-channel backpressure, ping/pong routing, and disconnect behavior.
 
 Out of scope:
 
@@ -160,6 +161,20 @@ For TCP-related failures, the outer actor loop clears mirrored state and fans ou
 
 The writer task does not hold app state, command targets, or generation information. Existing runtime generation guards remain responsible for stale higher-level runtime handles during disconnect/reconnect.
 
+## Documentation
+
+Add a TCP handling document under `docs/`, for example `docs/tcp-handling.md`. The document should be operational rather than speculative and should describe the implemented runtime behavior after this change:
+
+- LV1 OSC-over-TCP frame shape and where encoding/decoding lives.
+- Why `TCP_NODELAY` is enabled.
+- Which task owns the read half and which task owns the write half.
+- How outbound writes move from `FadeEngine` through the command bus, actor, writer channel, and socket.
+- How ping/pong replies are routed through the writer channel.
+- What writer-channel backpressure means and why a full queue is treated as a TCP failure.
+- How TCP failures become `Lv1Event::Disconnected` and abort active fades through the existing safety path.
+
+Update `docs/architecture.md` only if the actor lifecycle or command-bus contract text becomes stale after implementation.
+
 ## Testing
 
 Add or update tests for:
@@ -173,6 +188,7 @@ Add or update tests for:
 - Existing single-value command tests still pass.
 - Actor treats writer queue full as a TCP disconnect.
 - Actor routes ping pongs through the writer channel without awaiting socket writes.
+- The new TCP handling doc exists and matches the implemented actor/writer lifecycle.
 
 Use targeted Rust checks during implementation, then run the relevant workspace verification before claiming completion.
 
@@ -181,6 +197,7 @@ Use targeted Rust checks during implementation, then run the relevant workspace 
 1. Add `TCP_NODELAY`.
 2. Add batch command plumbing and fade-engine batching while the actor still writes directly.
 3. Add the writer task and route all outbound actor writes through it.
-4. Update architecture docs if command-bus semantics or actor lifecycle documentation changes.
+4. Add `docs/tcp-handling.md` for the implemented TCP behavior.
+5. Update architecture docs if command-bus semantics or actor lifecycle documentation changes.
 
 This sequence keeps each behavioral change small and independently testable.
