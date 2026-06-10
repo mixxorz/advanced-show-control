@@ -36,7 +36,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
 
 - `Lv1Actor` owns the LV1 TCP connection and the mirrored LV1 state.
 - `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
-- `ShowState` owns show data only: scene configs, scoped faders, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
+- `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
 - `SceneRecallFader` owns scene recall policy and decision-making.
 - `Tauri Shell` owns UI projection, shell commands, and user-facing state derived from the runtime.
 
@@ -93,6 +93,8 @@ The rule is simple: no module reaches into another module's state directly. Modu
 
 `FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
 
+`FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation and direct linear override thresholds. Pan-family manual override cancels pan, balance, and width for that channel together, but it does not cancel that channel's fader fade.
+
 ## Scene Recall Ownership
 
 `SceneRecallFader` owns recall policy.
@@ -107,15 +109,19 @@ The rule is simple: no module reaches into another module's state directly. Modu
 `ShowState` owns show data only.
 
 - It stores and projects the app's show configuration.
+- It keeps one shared scoped channel list that both `FADERS` and `PAN` toggles reference.
 - It does not decide recall policy.
 - It does not own validation rules for scene recall.
 
 `FadeEngine` owns overlap behavior.
 
 - It starts fades from live values.
+- It fades pan, balance, and width with direct linear interpolation and threshold checks.
 - It overlaps on unrelated faders.
 - It takes over only overlapping channels for a new recall.
 - It does not expose a finish-now command.
+
+`Lv1Actor` mirrors `/Notify/Track/Pan`, `/Notify/Balance`, and `/Notify/PanArcWidth`, and it sends the matching `/Set/Track/Pan*` commands for pan-family writes.
 
 ## Runtime Lifecycle
 
