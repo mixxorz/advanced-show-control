@@ -9,6 +9,7 @@
 
 ## Bugs
 
+- [ ] Balance/rotation fades can still report manual override false positives during timed fades. Investigate whether the cause is an override threshold that is still too tight for LV1 echo timing/rounding, or event-bus lag causing stale expected values to be compared against fresh LV1 reports. Fix should preserve real manual override detection for pan-family controls.
 - [x] Scene recall automation can trigger while scenes are being moved around in the LV1 scene list. Investigate whether scene-list edits emit current-scene notifications or otherwise look like recalls, then suppress recall automation for scene-management-only changes without weakening real recall detection.
 
 ## Optimization
