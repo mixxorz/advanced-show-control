@@ -523,3 +523,71 @@ async fn actor_flush_waits_for_writer_task_to_accept_prior_bytes() {
         }
     }
 }
+
+#[tokio::test(start_paused = true)]
+async fn silent_server_disconnects_after_ping_timeout() {
+    use std::io::Write;
+    use std::sync::mpsc as std_mpsc;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    // Channel to signal the server to stay alive until we're done
+    let (done_tx, done_rx) = std_mpsc::channel::<()>();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+
+        // Send handshake so actor reaches Connected state
+        stream
+            .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+
+        // Hold the connection open (go silent — no pings, no data)
+        // until the test signals we're done
+        let _ = done_rx.recv();
+        drop(stream);
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
+
+    // With paused time, advance a little to let the TCP handshake complete
+    tokio::time::advance(std::time::Duration::from_millis(100)).await;
+    tokio::task::yield_now().await;
+
+    // Wait for Connected event (no timeout needed — TCP I/O drives this)
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Ok(event) = events.recv().await {
+            if matches!(event, AppEvent::Lv1(Lv1Event::Connected)) {
+                return;
+            }
+        }
+    })
+    .await
+    .expect("actor did not connect");
+
+    // Advance time past PING_TIMEOUT (10 seconds) — this fires the sleep_until branch
+    // in the connected loop select!, causing PingTimeout disconnect
+    tokio::time::advance(std::time::Duration::from_secs(11)).await;
+    tokio::task::yield_now().await;
+
+    // Assert Disconnected is published
+    let got_disconnect = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while let Ok(event) = events.recv().await {
+            if matches!(event, AppEvent::Lv1(Lv1Event::Disconnected)) {
+                return true;
+            }
+        }
+        false
+    })
+    .await
+    .expect("timed out waiting for Disconnected after advancing past PING_TIMEOUT");
+
+    assert!(
+        got_disconnect,
+        "Disconnected event not received after ping timeout"
+    );
+    let _ = done_tx.send(());
+}

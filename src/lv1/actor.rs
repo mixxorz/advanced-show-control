@@ -254,12 +254,20 @@ async fn run_connected(
     let (writer_error_tx, mut writer_error_rx) = mpsc::channel(1);
     tokio::spawn(writer_task(writer, writer_rx, writer_error_tx));
 
+    let ping_deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(
+        state.last_ping + PING_TIMEOUT,
+    ));
+    tokio::pin!(ping_deadline);
+
     loop {
         if state.last_ping.elapsed() > PING_TIMEOUT {
             return DisconnectReason::PingTimeout;
         }
 
         tokio::select! {
+            _ = &mut ping_deadline => {
+                return DisconnectReason::PingTimeout;
+            }
             maybe_error = writer_error_rx.recv() => {
                 if maybe_error.is_some() {
                     return DisconnectReason::TcpError;
@@ -280,6 +288,7 @@ async fn run_connected(
                                         return DisconnectReason::TcpError;
                                     }
                                     state.last_ping = Instant::now();
+                                    ping_deadline.as_mut().reset(tokio::time::Instant::from_std(state.last_ping + PING_TIMEOUT));
                                     continue;
                                 }
                                 handle_message(state, &msg);
