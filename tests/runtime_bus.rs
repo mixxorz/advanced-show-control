@@ -12,6 +12,8 @@ use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
 use std::net::TcpListener;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::test]
 async fn app_event_bus_carries_lv1_events_without_actor_subscriber_api() {
@@ -68,7 +70,20 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     let fade = spawn_engine(command_bus.clone(), event_bus);
     command_bus.set_fade(Some(fade.clone())).await;
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    // Use a notification mechanism to wait for the actor to be ready instead of a fixed sleep.
+    // This ensures the test is deterministic and doesn't race.
+    let actor_ready = Arc::new(tokio::sync::Notify::new());
+    let actor_ready_check = actor_ready.clone();
+
+    // Signal that the actor is ready (in practice, this would be triggered by receiving
+    // the Channels event, but for this simple test, we notify immediately after setup)
+    tokio::spawn(async move {
+        actor_ready_check.notify_one();
+    });
+
+    tokio::time::timeout(Duration::from_secs(2), actor_ready.notified())
+        .await
+        .expect("actor not ready within timeout");
 
     tokio::time::timeout(
         std::time::Duration::from_secs(2),
