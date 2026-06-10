@@ -322,6 +322,68 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
 }
 
 #[tokio::test]
+async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let command_bus = AppCommandBus::new(event_bus.clone());
+    command_bus.set_lv1(Some(lv1)).await;
+    let engine = spawn_engine(command_bus.clone(), event_bus.clone());
+    command_bus.set_fade(Some(engine.clone())).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::Pan,
+                target: -12.0,
+            }],
+            0,
+        ))
+        .await
+        .unwrap();
+
+    let completed = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        loop {
+            match app_events.recv().await {
+                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        !completed,
+        "zero-duration pan-only fade should not emit FadeCompleted"
+    );
+}
+
+#[tokio::test]
 async fn engine_emits_fade_started_and_completed() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

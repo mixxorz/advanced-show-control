@@ -64,8 +64,10 @@ async fn run_engine(
                         let duration = Duration::from_millis(config.duration_ms);
 
                         if duration.is_zero() {
+                            let mut completed_fader_target = false;
                             for target in &config.targets {
                                 if target.parameter == FadeParameter::FaderDb {
+                                    completed_fader_target = true;
                                     let _ = command_bus
                                         .set_gain(target.group, target.channel, target.target)
                                         .await;
@@ -77,6 +79,10 @@ async fn run_engine(
                                         channel: target.channel,
                                     });
                                 }
+                            }
+                            if !completed_fader_target {
+                                let _ = reply.send(Ok(()));
+                                continue;
                             }
                             if !state.is_active() {
                                 tick_interval = None;
