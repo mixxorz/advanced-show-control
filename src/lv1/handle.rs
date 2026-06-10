@@ -11,7 +11,7 @@ pub struct Lv1ActorHandle {
 }
 
 impl Lv1ActorHandle {
-    pub fn new(tx: mpsc::Sender<Lv1Command>) -> Self {
+    pub(crate) fn new(tx: mpsc::Sender<Lv1Command>) -> Self {
         Self { tx }
     }
 
