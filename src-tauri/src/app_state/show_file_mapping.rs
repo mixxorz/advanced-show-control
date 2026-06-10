@@ -80,10 +80,10 @@ impl ShellState {
                             group: target.group,
                             channel: target.channel,
                             fader_db: target.fader_db,
-                            pan: None,
-                            balance: None,
-                            width: None,
-                            pan_mode: None,
+                            pan: target.pan,
+                            balance: target.balance,
+                            width: target.width,
+                            pan_mode: target.pan_mode,
                         })
                         .collect(),
                     scoped_channels: config
@@ -96,7 +96,7 @@ impl ShellState {
                         .collect(),
                     scope_toggles: ShowFileSceneScopeToggles {
                         faders: config.scope_toggles.faders,
-                        pan: false,
+                        pan: config.scope_toggles.pan,
                     },
                 })
                 .collect(),
@@ -139,10 +139,10 @@ impl ShellState {
                                 group: target.group,
                                 channel: target.channel,
                                 fader_db: target.fader_db,
-                                pan: None,
-                                balance: None,
-                                width: None,
-                                pan_mode: None,
+                                pan: target.pan,
+                                balance: target.balance,
+                                width: target.width,
+                                pan_mode: target.pan_mode.clone(),
                             })
                             .collect(),
                         scoped_channels: config
@@ -155,7 +155,7 @@ impl ShellState {
                             .collect(),
                         scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
                             faders: config.scope_toggles.faders,
-                            pan: false,
+                            pan: config.scope_toggles.pan,
                         },
                     })
                     .collect(),
