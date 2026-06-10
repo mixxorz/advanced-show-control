@@ -10,6 +10,9 @@ pub const MIN_SEND_DELTA_POS: f64 = 0.002;
 /// Fader position deviation (0.0–1.0) required to declare a manual override.
 /// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
 pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
+pub const PAN_OVERRIDE_THRESHOLD: f64 = 1.8;
+pub const BALANCE_OVERRIDE_THRESHOLD: f64 = 1.8;
+pub const WIDTH_OVERRIDE_THRESHOLD: f64 = 0.056;
 
 pub(crate) struct ActiveTarget {
     #[allow(dead_code)]
@@ -58,11 +61,25 @@ impl ActiveTarget {
         self.key.parameter == FadeParameter::FaderDb
     }
 
+    fn override_threshold(&self) -> f64 {
+        match self.key.parameter {
+            FadeParameter::FaderDb => OVERRIDE_THRESHOLD_POS,
+            FadeParameter::Pan => PAN_OVERRIDE_THRESHOLD,
+            FadeParameter::Balance => BALANCE_OVERRIDE_THRESHOLD,
+            FadeParameter::Width => WIDTH_OVERRIDE_THRESHOLD,
+        }
+    }
+
     /// Returns the interpolated value at `now`.
     pub(crate) fn value_at(&self, now: Instant) -> f64 {
         let elapsed = now.duration_since(self.started_at).as_secs_f64();
         let t = elapsed / self.duration.as_secs_f64();
-        interpolate(self.start_value, self.target_value, t, self.curve)
+        if self.is_fader() {
+            interpolate(self.start_value, self.target_value, t, self.curve)
+        } else {
+            let t = t.clamp(0.0, 1.0);
+            self.start_value + (self.target_value - self.start_value) * t
+        }
     }
 
     /// Returns true if the fade has completed (t >= 1.0).
@@ -80,7 +97,7 @@ impl ActiveTarget {
             let expected_pos = db_to_pos(self.expected_value);
             (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
         } else {
-            (reported_value - self.expected_value).abs() >= OVERRIDE_THRESHOLD_POS
+            (reported_value - self.expected_value).abs() >= self.override_threshold()
         }
     }
 
@@ -183,6 +200,32 @@ mod tests {
         let end = ch.started_at + Duration::from_millis(4000);
         let v = ch.value_at(end);
         assert!((v - -10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn value_at_midpoint_interpolates_pan_linearly() {
+        let ch = ActiveTarget::new(ActiveTargetInit {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::Pan,
+            },
+            group: 0,
+            channel: 0,
+            start_value: -45.0,
+            target_value: 45.0,
+            curve: FadeCurve::Linear,
+            duration: Duration::from_millis(4000),
+            started_at: Instant::now(),
+        });
+
+        let mid = ch.started_at + Duration::from_millis(2000);
+
+        assert!((ch.value_at(mid) - 0.0).abs() < 1e-10);
     }
 
     #[test]

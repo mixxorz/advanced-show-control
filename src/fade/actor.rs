@@ -169,13 +169,13 @@ async fn run_engine(
                         }
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::PanChanged { group, channel, pan })) => {
-                        cancel_pan_family_overrides(&mut state, group, channel, pan, &mut tick_interval);
+                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Pan, pan, &mut tick_interval);
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::BalanceChanged { group, channel, balance })) => {
-                        cancel_pan_family_overrides(&mut state, group, channel, balance, &mut tick_interval);
+                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Balance, balance, &mut tick_interval);
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::WidthChanged { group, channel, width })) => {
-                        cancel_pan_family_overrides(&mut state, group, channel, width, &mut tick_interval);
+                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Width, width, &mut tick_interval);
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected)) => {
                         if state.is_active() {
@@ -226,20 +226,16 @@ fn cancel_pan_family_overrides(
     state: &mut EngineState,
     group: i32,
     channel: i32,
+    parameter: FadeParameter,
     reported_value: f64,
     tick_interval: &mut Option<tokio::time::Interval>,
 ) {
-    let mut cancel = false;
-    for ch in state
-        .channels
-        .iter()
-        .filter(|ch| ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family())
-    {
-        if ch.is_override(reported_value) {
-            cancel = true;
-            break;
-        }
-    }
+    let cancel = state.channels.iter().any(|ch| {
+        ch.group == group
+            && ch.channel == channel
+            && ch.key.parameter == parameter
+            && ch.is_override(reported_value)
+    });
 
     if !cancel {
         return;

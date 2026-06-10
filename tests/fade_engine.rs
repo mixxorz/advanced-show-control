@@ -501,7 +501,7 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                 &[
                     OscArg::Int(0),
                     OscArg::Int(0),
-                    OscArg::Double(0.0),
+                    OscArg::Double(45.0),
                     OscArg::True,
                 ],
             ))
