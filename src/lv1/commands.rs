@@ -7,6 +7,7 @@ pub enum Lv1Command {
     GetState {
         reply: oneshot::Sender<Lv1StateSnapshot>,
     },
+    WriteBatch(Vec<Lv1ParameterWrite>),
     SetGain {
         group: i32,
         channel: i32,
@@ -40,4 +41,20 @@ pub enum Lv1Command {
     Flush {
         reply: oneshot::Sender<Result<(), Lv1ActorError>>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Lv1WriteParameter {
+    FaderDb,
+    Pan,
+    Balance,
+    Width,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lv1ParameterWrite {
+    pub group: i32,
+    pub channel: i32,
+    pub parameter: Lv1WriteParameter,
+    pub value: f64,
 }

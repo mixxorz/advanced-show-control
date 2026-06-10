@@ -47,6 +47,7 @@ async fn drain_commands_for(
                 Some(Lv1Command::GetState { reply }) => {
                     let _ = reply.send(state.snapshot());
                 }
+                Some(Lv1Command::WriteBatch(_)) => {}
                 Some(Lv1Command::SetGain { reply, .. }) => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
@@ -112,6 +113,7 @@ async fn run_actor(
                 Lv1Command::GetState { reply } => {
                     let _ = reply.send(state.snapshot());
                 }
+                Lv1Command::WriteBatch(_) => {}
                 Lv1Command::SetGain { reply, .. } => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
@@ -195,6 +197,7 @@ async fn run_connected(
                     Some(Lv1Command::GetState { reply }) => {
                         let _ = reply.send(state.snapshot());
                     }
+                    Some(Lv1Command::WriteBatch(_)) => {}
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
                         let result = send_async(
                             writer,

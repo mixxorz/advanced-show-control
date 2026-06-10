@@ -1,5 +1,6 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
+use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
 use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
 type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -79,6 +80,30 @@ pub fn decode_frame_payload(frame: &Lv1Frame) -> Result<OscMessage, Lv1TcpError>
     Ok(decode_packet(&frame.payload)?)
 }
 
+pub fn encode_parameter_write_batch(writes: &[Lv1ParameterWrite]) -> Result<Vec<u8>, Lv1TcpError> {
+    let mut out = Vec::new();
+
+    for write in writes {
+        let address = match write.parameter {
+            Lv1WriteParameter::FaderDb => "/Set/Track/Out/Gain",
+            Lv1WriteParameter::Pan => "/Set/Track/Pan",
+            Lv1WriteParameter::Balance => "/Set/Track/Pan/Balance",
+            Lv1WriteParameter::Width => "/Set/Track/Pan/Width",
+        };
+
+        out.extend_from_slice(&encode_frame(
+            address,
+            &[
+                OscArg::Int(write.group),
+                OscArg::Int(write.channel),
+                OscArg::Double(write.value),
+            ],
+        )?);
+    }
+
+    Ok(out)
+}
+
 pub fn build_myfoh_handshake_batch(device_name: &str, uuid: &str) -> Result<Vec<u8>, Lv1TcpError> {
     let mut out = Vec::new();
     out.extend_from_slice(&encode_frame(
@@ -112,6 +137,7 @@ pub struct Lv1TcpClient {
 impl Lv1TcpClient {
     pub async fn connect(host: &str, port: u16) -> std::io::Result<Self> {
         let stream = tokio::net::TcpStream::connect((host, port)).await?;
+        stream.set_nodelay(true)?;
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader,
@@ -389,5 +415,70 @@ mod tests {
 
         assert_eq!(io_err.kind(), std::io::ErrorKind::UnexpectedEof);
         assert_eq!(io_err.to_string(), "LV1 TCP connection closed");
+    }
+
+    #[test]
+    fn encodes_parameter_write_batch_in_order() {
+        let bytes = encode_parameter_write_batch(&[
+            Lv1ParameterWrite {
+                group: 0,
+                channel: 1,
+                parameter: Lv1WriteParameter::FaderDb,
+                value: -12.5,
+            },
+            Lv1ParameterWrite {
+                group: 2,
+                channel: 3,
+                parameter: Lv1WriteParameter::Pan,
+                value: 15.0,
+            },
+            Lv1ParameterWrite {
+                group: 4,
+                channel: 5,
+                parameter: Lv1WriteParameter::Balance,
+                value: -25.0,
+            },
+            Lv1ParameterWrite {
+                group: 6,
+                channel: 7,
+                parameter: Lv1WriteParameter::Width,
+                value: 0.75,
+            },
+        ])
+        .unwrap();
+
+        let mut decoder = FrameDecoder::default();
+        let frames = decoder.push(&bytes).unwrap();
+        let messages = frames
+            .iter()
+            .map(decode_frame_payload)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(messages[0].address, "/Set/Track/Out/Gain");
+        assert_eq!(
+            messages[0].args,
+            vec![OscArg::Int(0), OscArg::Int(1), OscArg::Double(-12.5)]
+        );
+        assert_eq!(messages[1].address, "/Set/Track/Pan");
+        assert_eq!(
+            messages[1].args,
+            vec![OscArg::Int(2), OscArg::Int(3), OscArg::Double(15.0)]
+        );
+        assert_eq!(messages[2].address, "/Set/Track/Pan/Balance");
+        assert_eq!(
+            messages[2].args,
+            vec![OscArg::Int(4), OscArg::Int(5), OscArg::Double(-25.0)]
+        );
+        assert_eq!(messages[3].address, "/Set/Track/Pan/Width");
+        assert_eq!(
+            messages[3].args,
+            vec![OscArg::Int(6), OscArg::Int(7), OscArg::Double(0.75)]
+        );
+    }
+
+    #[test]
+    fn empty_parameter_write_batch_encodes_to_empty_buffer() {
+        assert_eq!(encode_parameter_write_batch(&[]).unwrap(), Vec::<u8>::new());
     }
 }

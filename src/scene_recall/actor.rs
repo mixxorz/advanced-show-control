@@ -894,6 +894,7 @@ mod tests {
                     crate::lv1::commands::Lv1Command::GetState { reply } => {
                         let _ = reply.send(snapshot.clone());
                     }
+                    crate::lv1::commands::Lv1Command::WriteBatch(_) => {}
                     crate::lv1::commands::Lv1Command::SetGain { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
@@ -957,6 +958,7 @@ mod tests {
                     crate::lv1::commands::Lv1Command::GetState { reply } => {
                         let _ = reply.send(snapshot.clone());
                     }
+                    crate::lv1::commands::Lv1Command::WriteBatch(_) => {}
                     crate::lv1::commands::Lv1Command::SetGain { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
