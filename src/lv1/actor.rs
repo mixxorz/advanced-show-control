@@ -105,6 +105,50 @@ fn fail_pending_writer_flushes(rx: &mut mpsc::Receiver<WriterMessage>) {
     }
 }
 
+/// Handles a single command received while the actor is disconnected.
+///
+/// # Flush behavior varies by context:
+/// - During reconnect delays (drain_commands_for): Flush replies Err(NotConnected)
+///   because sends truly cannot be queued yet.
+/// - After connection but before full init (post_connect_stale_drain): Flush replies Ok(())
+///   because the actor is about to enter connected mode and can accept sends.
+///
+/// WriteBatch is silently dropped (fire-and-forget; callers tolerate loss while disconnected).
+/// GetState replies with the current snapshot.
+/// All other commands (SetGain, SetPan, SetBalance, SetWidth, SetMute) reply based on flush_reply.
+fn drain_disconnected_command(
+    cmd: Lv1Command,
+    state: &ActorState,
+    flush_reply: Result<(), Lv1ActorError>,
+) {
+    match cmd {
+        Lv1Command::GetState { reply } => {
+            let _ = reply.send(state.snapshot());
+        }
+        Lv1Command::WriteBatch(_) => {
+            // Fire-and-forget while disconnected; callers expect possible loss
+        }
+        Lv1Command::SetGain { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetPan { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetBalance { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetWidth { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetMute { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::Flush { reply } => {
+            let _ = reply.send(flush_reply.clone());
+        }
+    }
+}
+
 /// Drain pending commands for `duration`, responding to GetState immediately.
 /// Used during reconnect delays so callers are never blocked indefinitely.
 async fn drain_commands_for(
@@ -119,28 +163,7 @@ async fn drain_commands_for(
             _ = &mut deadline => return DrainCommandsResult::TimedOut,
             cmd = cmd_rx.recv() => match cmd {
                 None => return DrainCommandsResult::CommandChannelClosed,
-                Some(Lv1Command::GetState { reply }) => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Some(Lv1Command::WriteBatch(_)) => {}
-                Some(Lv1Command::SetGain { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetPan { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetBalance { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetWidth { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetMute { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::Flush { reply }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
+                Some(cmd) => drain_disconnected_command(cmd, state, Err(Lv1ActorError::NotConnected)),
             },
         }
     }
@@ -183,31 +206,10 @@ async fn run_actor(
         state.last_ping = Instant::now();
 
         tokio::task::yield_now().await;
+        // Drain stale commands that arrived before connection completed.
+        // Flush replies Ok(()) here because the actor is now connected and ready to process.
         while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                Lv1Command::GetState { reply } => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Lv1Command::WriteBatch(_) => {}
-                Lv1Command::SetGain { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetPan { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetBalance { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetWidth { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetMute { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::Flush { reply } => {
-                    let _ = reply.send(Ok(()));
-                }
-            }
+            drain_disconnected_command(cmd, &state, Ok(()));
         }
         state.fan_out(Lv1Event::Connected);
 
