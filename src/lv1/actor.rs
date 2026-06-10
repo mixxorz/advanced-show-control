@@ -45,6 +45,7 @@ async fn writer_task(
         match message {
             WriterMessage::Bytes(bytes) => {
                 if writer.write_all(&bytes).await.is_err() {
+                    fail_pending_writer_flushes(&mut rx);
                     let _ = error_tx.try_send(());
                     return;
                 }
@@ -56,6 +57,7 @@ async fn writer_task(
                     .map_err(|_| Lv1ActorError::CommandSendFailed);
                 let failed = result.is_err();
                 if failed {
+                    fail_pending_writer_flushes(&mut rx);
                     let _ = error_tx.try_send(());
                 }
                 let _ = reply.send(result);
@@ -83,10 +85,24 @@ fn enqueue_writer_bytes(
 fn enqueue_writer_flush(
     writer_tx: &mpsc::Sender<WriterMessage>,
     reply: oneshot::Sender<Result<(), Lv1ActorError>>,
-) -> Result<(), DisconnectReason> {
+) -> Result<(), oneshot::Sender<Result<(), Lv1ActorError>>> {
     writer_tx
         .try_send(WriterMessage::Flush(reply))
-        .map_err(|_| DisconnectReason::TcpError)
+        .map_err(|err| match err {
+            mpsc::error::TrySendError::Full(message)
+            | mpsc::error::TrySendError::Closed(message) => match message {
+                WriterMessage::Flush(reply) => reply,
+                WriterMessage::Bytes(_) => unreachable!(),
+            },
+        })
+}
+
+fn fail_pending_writer_flushes(rx: &mut mpsc::Receiver<WriterMessage>) {
+    while let Ok(message) = rx.try_recv() {
+        if let WriterMessage::Flush(reply) = message {
+            let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
+        }
+    }
 }
 
 /// Drain pending commands for `duration`, responding to GetState immediately.
@@ -398,20 +414,9 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::Flush { reply }) => {
-                        let (flush_tx, flush_rx) = oneshot::channel();
-                        if enqueue_writer_flush(&writer_tx, flush_tx).is_err() {
+                        if let Err(reply) = enqueue_writer_flush(&writer_tx, reply) {
                             let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
                             return DisconnectReason::TcpError;
-                        }
-
-                        match flush_rx.await {
-                            Ok(Ok(())) => {
-                                let _ = reply.send(Ok(()));
-                            }
-                            Ok(Err(_)) | Err(_) => {
-                                let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
-                                return DisconnectReason::TcpError;
-                            }
                         }
                     }
                 }
@@ -424,6 +429,7 @@ async fn run_connected(
 mod tests {
     use super::*;
     use tokio::sync::mpsc;
+    use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn drain_commands_reports_closed_command_channel() {
@@ -457,5 +463,20 @@ mod tests {
         let result = enqueue_writer_bytes(&tx, vec![2]);
 
         assert_eq!(result, Err(DisconnectReason::TcpError));
+    }
+
+    #[tokio::test]
+    async fn fail_pending_writer_flushes_sends_error_to_queued_flush_reply() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let (flush_tx, flush_rx) = oneshot::channel();
+        tx.try_send(WriterMessage::Bytes(vec![1])).unwrap();
+        tx.try_send(WriterMessage::Flush(flush_tx)).unwrap();
+
+        fail_pending_writer_flushes(&mut rx);
+
+        assert_eq!(
+            flush_rx.await.unwrap(),
+            Err(Lv1ActorError::CommandSendFailed)
+        );
     }
 }
