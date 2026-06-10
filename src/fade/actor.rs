@@ -177,6 +177,7 @@ async fn run_engine(
 
                             if !state.is_active() {
                                 tick_interval = None;
+                                state.fan_out(FadeEvent::FadeCompleted);
                             }
                         }
                     }
@@ -277,6 +278,7 @@ fn cancel_pan_family_overrides(
 
     if !state.is_active() {
         *tick_interval = None;
+        state.fan_out(FadeEvent::FadeCompleted);
     }
 }
 
