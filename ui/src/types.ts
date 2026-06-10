@@ -3,7 +3,7 @@ export type DiscoveredLv1Status = "available" | "connecting" | "connected" | "un
 export type FadeState = "idle" | "running" | "blocked";
 export type LogSource = "app" | "lv1" | "fade";
 export type LogSeverity = "info" | "warning" | "error";
-export type PanMode = "mono" | "stereo";
+export type PanMode = "none" | "mono" | "stereo";
 
 export type Lv1SystemIdentity = {
   uuid: string | null;
