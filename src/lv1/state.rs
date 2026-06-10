@@ -86,6 +86,55 @@ pub(super) fn apply_mute_update(
     }
 }
 
+pub(super) fn apply_pan_update(
+    channels: &mut [ChannelInfo],
+    group: i32,
+    channel: i32,
+    pan: f64,
+) -> bool {
+    if let Some(ch) = channels
+        .iter_mut()
+        .find(|c| c.group == group && c.channel == channel)
+    {
+        ch.pan = Some(pan);
+        return true;
+    }
+    false
+}
+
+pub(super) fn apply_balance_update(
+    channels: &mut [ChannelInfo],
+    group: i32,
+    channel: i32,
+    balance: f64,
+) -> bool {
+    if let Some(ch) = channels
+        .iter_mut()
+        .find(|c| c.group == group && c.channel == channel)
+        && matches!(ch.pan_mode, Some(crate::lv1::types::PanMode::Stereo))
+    {
+        ch.balance = Some(balance);
+        return true;
+    }
+    false
+}
+
+pub(super) fn apply_width_update(
+    channels: &mut [ChannelInfo],
+    group: i32,
+    channel: i32,
+    width: f64,
+) -> bool {
+    if let Some(ch) = channels
+        .iter_mut()
+        .find(|c| c.group == group && c.channel == channel)
+    {
+        ch.width = Some(width);
+        return true;
+    }
+    false
+}
+
 pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
     match arg {
         OscArg::Bool(value) => Some(*value),
@@ -225,6 +274,57 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
                 });
             }
         }
+        "/Notify/Track/Pan" => {
+            if let (
+                Some(crate::osc::OscArg::Int(group)),
+                Some(crate::osc::OscArg::Int(channel)),
+                Some(crate::osc::OscArg::Double(pan)),
+            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                && apply_pan_update(&mut state.channels, *group, *channel, *pan)
+            {
+                state.fan_out(Lv1Event::PanChanged {
+                    group: *group,
+                    channel: *channel,
+                    pan: *pan,
+                });
+            }
+        }
+        "/Notify/Balance" => {
+            if let (
+                Some(crate::osc::OscArg::Int(group)),
+                Some(crate::osc::OscArg::Int(channel)),
+                Some(crate::osc::OscArg::Double(balance)),
+            ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                && apply_balance_update(&mut state.channels, *group, *channel, *balance)
+            {
+                state.fan_out(Lv1Event::BalanceChanged {
+                    group: *group,
+                    channel: *channel,
+                    balance: *balance,
+                });
+            }
+        }
+        "/Notify/PanArcWidth" => {
+            if let (
+                Some(crate::osc::OscArg::Int(group)),
+                Some(crate::osc::OscArg::Int(channel)),
+                Some(crate::osc::OscArg::Double(width)),
+                Some(crate::osc::OscArg::Int(active)),
+            ) = (
+                msg.args.first(),
+                msg.args.get(1),
+                msg.args.get(2),
+                msg.args.get(3),
+            ) && *active != 0
+                && apply_width_update(&mut state.channels, *group, *channel, *width)
+            {
+                state.fan_out(Lv1Event::WidthChanged {
+                    group: *group,
+                    channel: *channel,
+                    width: *width,
+                });
+            }
+        }
         _ => {}
     }
 }
@@ -261,7 +361,12 @@ mod tests {
             },
         );
 
-        let event = rx.recv().await.unwrap();
+        let event = loop {
+            let event = rx.recv().await.unwrap();
+            if matches!(event, AppEvent::Lv1(_)) {
+                break event;
+            }
+        };
         match event {
             AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
                 assert_eq!(scene.index, 3);
@@ -284,6 +389,37 @@ mod tests {
             }
         );
         assert!(buf.apply_index(0).is_none());
+    }
+
+    #[test]
+    fn balance_message_does_not_change_mono_channel_balance() {
+        let bus = AppEventBus::new(16);
+        let mut state = ActorState::new(bus);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Mono 1".to_string(),
+            gain_db: -6.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: Some(crate::lv1::types::PanMode::Mono),
+        }];
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/Balance".to_string(),
+                args: vec![
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Double(0.75),
+                ],
+            },
+        );
+
+        assert_eq!(state.channels[0].balance, None);
     }
 
     #[tokio::test]
@@ -312,6 +448,132 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[test]
+    fn track_pan_message_updates_matching_channel() {
+        let bus = AppEventBus::new(16);
+        let mut state = ActorState::new(bus);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Ch 1".to_string(),
+            gain_db: -9.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }];
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/Track/Pan".to_string(),
+                args: vec![
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Double(-15.0),
+                ],
+            },
+        );
+
+        assert_eq!(state.channels[0].pan, Some(-15.0));
+    }
+
+    #[test]
+    fn balance_message_updates_matching_channel() {
+        let bus = AppEventBus::new(16);
+        let mut state = ActorState::new(bus);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Stereo 1".to_string(),
+            gain_db: -6.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+        }];
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/Balance".to_string(),
+                args: vec![
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Double(0.25),
+                ],
+            },
+        );
+
+        assert_eq!(state.channels[0].balance, Some(0.25));
+    }
+
+    #[test]
+    fn inactive_pan_arc_width_is_ignored() {
+        let bus = AppEventBus::new(16);
+        let mut state = ActorState::new(bus);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Stereo 1".to_string(),
+            gain_db: -6.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+        }];
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/PanArcWidth".to_string(),
+                args: vec![
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Double(0.6),
+                    crate::osc::OscArg::Int(0),
+                ],
+            },
+        );
+
+        assert_eq!(state.channels[0].width, None);
+    }
+
+    #[test]
+    fn active_pan_arc_width_updates_matching_channel() {
+        let bus = AppEventBus::new(16);
+        let mut state = ActorState::new(bus);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Stereo 1".to_string(),
+            gain_db: -6.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+        }];
+
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Notify/PanArcWidth".to_string(),
+                args: vec![
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Int(0),
+                    crate::osc::OscArg::Double(1.2),
+                    crate::osc::OscArg::Int(1),
+                ],
+            },
+        );
+
+        assert_eq!(state.channels[0].width, Some(1.2));
     }
 
     #[test]
@@ -346,6 +608,10 @@ mod tests {
                 name: "Ch 1".to_string(),
                 gain_db: -9.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -353,6 +619,10 @@ mod tests {
                 name: "Ch 2".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
         ];
         apply_fader_update(&mut channels, 0, 0, -6.0);
@@ -368,6 +638,10 @@ mod tests {
             name: "Ch 1".to_string(),
             gain_db: -9.0,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }];
         apply_fader_update(&mut channels, 0, 99, -3.0);
         assert_eq!(channels[0].gain_db, -9.0);
@@ -382,6 +656,10 @@ mod tests {
                 name: "Ch 1".to_string(),
                 gain_db: -9.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -389,6 +667,10 @@ mod tests {
                 name: "Ch 2".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
         ];
         apply_mute_update(&mut channels, 0, 0, true);
@@ -404,6 +686,10 @@ mod tests {
             name: "Ch 1".to_string(),
             gain_db: -9.0,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }];
         apply_mute_update(&mut channels, 0, 99, true);
         assert!(!channels[0].muted);

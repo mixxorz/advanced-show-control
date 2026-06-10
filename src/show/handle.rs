@@ -68,6 +68,18 @@ impl ShowStateHandle {
             .set_scene_scope_faders_enabled(&scene_id, enabled))
     }
 
+    pub async fn set_scene_scope_pan_enabled(
+        &self,
+        scene_id: String,
+        enabled: bool,
+    ) -> Result<Result<bool, String>, ShowActorError> {
+        Ok(self
+            .state
+            .lock()
+            .await
+            .set_scene_scope_pan_enabled(&scene_id, enabled))
+    }
+
     pub async fn set_channel_scoped(
         &self,
         scene_id: String,

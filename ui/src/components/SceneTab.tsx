@@ -5,6 +5,7 @@ import {
   channelDisplayGroupOrder,
   channelName,
   formatDb,
+  formatPanFamilySummary,
   formatSceneDurationSummary,
 } from "../format";
 import { DurationInput } from "./DurationInput";
@@ -30,6 +31,7 @@ export function SceneTab(props: {
   selectScene: (sceneId: string) => void;
   setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
   setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => void;
+  setSceneScopePanEnabled: (sceneId: string, enabled: boolean) => void;
   storeSceneConfig: (sceneId: string) => Promise<boolean>;
   setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => void;
   setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
@@ -74,7 +76,7 @@ export function SceneTab(props: {
                       {sceneDisplayIndex(scene.sceneIndex)}: {scene.sceneName}
                     </span>
                     <span className="mt-1 block text-xs text-slate-400">
-                      {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
+                      {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · PAN {scene.scopeToggles.pan ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
                     </span>
                   </button>
                 );
@@ -112,19 +114,31 @@ export function SceneTab(props: {
                 <div>
                   <h3 className="font-semibold text-slate-100">Scene Scope</h3>
                   <p className="mt-1 text-sm text-slate-400">
-                    FADERS controls whether scoped faders move when this LV1 scene is recalled.
+                    FADERS and PAN control whether scoped fader and pan-family values move when this LV1 scene is recalled.
                   </p>
                 </div>
-                <button
-                  className={
-                    selected.scopeToggles.faders
-                      ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
-                      : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
-                  }
-                  onClick={() => props.setSceneScopeFadersEnabled(selected.sceneId, !selected.scopeToggles.faders)}
-                >
-                  FADERS {selected.scopeToggles.faders ? "ON" : "OFF"}
-                </button>
+                <div className="flex flex-wrap gap-3">
+                  <button
+                    className={
+                      selected.scopeToggles.faders
+                        ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
+                        : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
+                    }
+                    onClick={() => props.setSceneScopeFadersEnabled(selected.sceneId, !selected.scopeToggles.faders)}
+                  >
+                    FADERS {selected.scopeToggles.faders ? "ON" : "OFF"}
+                  </button>
+                  <button
+                    className={
+                      selected.scopeToggles.pan
+                        ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
+                        : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
+                    }
+                    onClick={() => props.setSceneScopePanEnabled(selected.sceneId, !selected.scopeToggles.pan)}
+                  >
+                    PAN {selected.scopeToggles.pan ? "ON" : "OFF"}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -200,7 +214,7 @@ function ScopeGrid(props: {
                       }
                       key={key}
                       onClick={() => props.setChannelScoped(props.scene.sceneId, config.group, config.channel, !isScoped)}
-                      title={`${channelName(props.channels, config.group, config.channel)} · ${formatDb(config.faderDb ?? 0)}`}
+                      title={`${channelName(props.channels, config.group, config.channel)} · ${formatDb(config.faderDb ?? 0)} · ${formatPanFamilySummary(config)}`}
                     >
                       {channelButtonLabel(config.group, config.channel)}
                     </button>

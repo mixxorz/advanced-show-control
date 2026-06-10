@@ -82,7 +82,7 @@ cargo nextest run --workspace
 cargo build --workspace
 ```
 
-Use `cargo test ...` for targeted inner-loop checks when nextest would be broader than needed.
+Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks. Avoid `cargo test` unless you specifically need a test harness feature that nextest cannot provide.
 
 Common frontend checks:
 
@@ -94,9 +94,9 @@ npm run build
 Useful targeted Rust checks:
 
 ```bash
-cargo test -p advanced-show-control-tauri scene_recall
-cargo test -p advanced-show-control-tauri commands::tests
-cargo test -p advanced-show-control fade
+cargo nextest run -p advanced-show-control-tauri scene_recall
+cargo nextest run -p advanced-show-control-tauri commands::tests
+cargo nextest run -p advanced-show-control fade
 ```
 
 Before claiming work is complete, run the verification command that proves the claim and read the output.

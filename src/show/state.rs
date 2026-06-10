@@ -329,6 +329,10 @@ mod tests {
             name: name.to_string(),
             gain_db,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }
     }
 
@@ -356,6 +360,10 @@ mod tests {
                 group: 0,
                 channel: index,
                 fader_db: Some(-10.0 - f64::from(index)),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
         )
     }
@@ -378,6 +386,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -409,6 +421,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -469,6 +485,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -490,6 +510,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-12.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -731,6 +755,10 @@ mod tests {
                     group: 0,
                     channel: 1,
                     fader_db: Some(-9.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             )],
         };
@@ -751,6 +779,10 @@ mod tests {
             name: "Ch 1".to_string(),
             gain_db: -7.5,
             muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
         }];
 
         assert!(state.store_scene_config("1::scene-1", &channels).unwrap());
@@ -767,6 +799,131 @@ mod tests {
         );
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].group, 0);
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 1);
+    }
+
+    #[test]
+    fn store_scene_config_preserves_existing_pan_family_fields() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "1::scene-1",
+                1_000,
+                vec![ChannelConfig {
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-9.0),
+                    pan: Some(-12.0),
+                    balance: Some(3.0),
+                    width: Some(1.2),
+                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                }],
+            )],
+        };
+
+        assert!(
+            state
+                .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+                .unwrap()
+        );
+
+        let stored = &state.scene_configs[0].channel_configs[0];
+        assert_eq!(stored.fader_db, Some(-6.0));
+        assert_eq!(stored.pan, Some(-12.0));
+        assert_eq!(stored.balance, Some(3.0));
+        assert_eq!(stored.width, Some(1.2));
+        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Stereo));
+    }
+
+    #[test]
+    fn store_scene_config_updates_fresh_pan_family_fields_when_available() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "1::scene-1",
+                1_000,
+                vec![ChannelConfig {
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-9.0),
+                    pan: Some(-12.0),
+                    balance: Some(3.0),
+                    width: Some(1.2),
+                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                }],
+            )],
+        };
+
+        assert!(
+            state
+                .store_scene_config(
+                    "1::scene-1",
+                    &[ChannelInfo {
+                        group: 0,
+                        channel: 1,
+                        name: "Lead".to_string(),
+                        gain_db: -6.0,
+                        muted: false,
+                        pan: Some(0.25),
+                        balance: Some(-0.5),
+                        width: Some(1.0),
+                        pan_mode: Some(crate::lv1::types::PanMode::Mono),
+                    }]
+                )
+                .unwrap()
+        );
+
+        let stored = &state.scene_configs[0].channel_configs[0];
+        assert_eq!(stored.fader_db, Some(-6.0));
+        assert_eq!(stored.pan, Some(0.25));
+        assert_eq!(stored.balance, Some(-0.5));
+        assert_eq!(stored.width, Some(1.0));
+        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Mono));
+    }
+
+    #[test]
+    fn store_scene_config_preserves_existing_pan_family_fields_when_live_values_missing() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "1::scene-1",
+                1_000,
+                vec![ChannelConfig {
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-9.0),
+                    pan: Some(-12.0),
+                    balance: Some(3.0),
+                    width: Some(1.2),
+                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                }],
+            )],
+        };
+
+        assert!(
+            state
+                .store_scene_config(
+                    "1::scene-1",
+                    &[ChannelInfo {
+                        group: 0,
+                        channel: 1,
+                        name: "Lead".to_string(),
+                        gain_db: -6.0,
+                        muted: false,
+                        pan: None,
+                        balance: None,
+                        width: Some(2.0),
+                        pan_mode: None,
+                    }]
+                )
+                .unwrap()
+        );
+
+        let stored = &state.scene_configs[0].channel_configs[0];
+        assert_eq!(stored.fader_db, Some(-6.0));
+        assert_eq!(stored.pan, Some(-12.0));
+        assert_eq!(stored.balance, Some(3.0));
+        assert_eq!(stored.width, Some(2.0));
+        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Stereo));
     }
 
     #[test]
@@ -817,6 +974,37 @@ mod tests {
                 .unwrap()
         );
         assert!(!state.scene_configs[0].scope_toggles.faders);
+    }
+
+    #[test]
+    fn scene_scope_pan_toggle_mutation_reports_noop() {
+        let mut state = ShowState::default();
+        state
+            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .unwrap();
+
+        assert!(
+            state
+                .set_scene_scope_pan_enabled("1::scene-1", true)
+                .unwrap()
+        );
+        assert!(
+            !state
+                .set_scene_scope_pan_enabled("1::scene-1", true)
+                .unwrap()
+        );
+        assert!(state.scene_configs[0].scope_toggles.pan);
+    }
+
+    #[test]
+    fn scene_scope_pan_toggle_requires_existing_scene_config() {
+        let mut state = ShowState::default();
+
+        let err = state
+            .set_scene_scope_pan_enabled("missing", false)
+            .unwrap_err();
+
+        assert_eq!(err, "Scene config not found");
     }
 
     #[test]

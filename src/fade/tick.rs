@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
-use crate::fade::types::FadeSceneIdentity;
+use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
@@ -10,52 +10,76 @@ pub const MIN_SEND_DELTA_POS: f64 = 0.002;
 /// Fader position deviation (0.0–1.0) required to declare a manual override.
 /// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
 pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
+pub const PAN_OVERRIDE_THRESHOLD: f64 = 1.8;
+pub const BALANCE_OVERRIDE_THRESHOLD: f64 = 1.8;
+pub const WIDTH_OVERRIDE_THRESHOLD: f64 = 0.056;
 
-pub(crate) struct ActiveChannel {
+pub(crate) struct ActiveTarget {
     #[allow(dead_code)]
     pub(crate) scene: FadeSceneIdentity,
+    pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
-    pub(crate) start_db: f64,
-    pub(crate) target_db: f64,
-    /// Last dB value sent — for override detection and min-delta suppression.
-    pub(crate) expected_db: f64,
+    pub(crate) start_value: f64,
+    pub(crate) target_value: f64,
+    /// Last value sent — for override detection and min-delta suppression.
+    pub(crate) expected_value: f64,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
 }
 
-pub(crate) struct ActiveChannelInit {
+pub(crate) struct ActiveTargetInit {
     pub(crate) scene: FadeSceneIdentity,
+    pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
-    pub(crate) start_db: f64,
-    pub(crate) target_db: f64,
+    pub(crate) start_value: f64,
+    pub(crate) target_value: f64,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
 }
 
-impl ActiveChannel {
-    pub(crate) fn new(init: ActiveChannelInit) -> Self {
+impl ActiveTarget {
+    pub(crate) fn new(init: ActiveTargetInit) -> Self {
         Self {
             scene: init.scene,
+            key: init.key,
             group: init.group,
             channel: init.channel,
-            start_db: init.start_db,
-            target_db: init.target_db,
-            expected_db: init.start_db,
+            start_value: init.start_value,
+            target_value: init.target_value,
+            expected_value: init.start_value,
             curve: init.curve,
             duration: init.duration,
             started_at: init.started_at,
         }
     }
 
-    /// Returns the interpolated dB value at `now`.
+    fn is_fader(&self) -> bool {
+        self.key.parameter == FadeParameter::FaderDb
+    }
+
+    fn override_threshold(&self) -> f64 {
+        match self.key.parameter {
+            FadeParameter::FaderDb => OVERRIDE_THRESHOLD_POS,
+            FadeParameter::Pan => PAN_OVERRIDE_THRESHOLD,
+            FadeParameter::Balance => BALANCE_OVERRIDE_THRESHOLD,
+            FadeParameter::Width => WIDTH_OVERRIDE_THRESHOLD,
+        }
+    }
+
+    /// Returns the interpolated value at `now`.
     pub(crate) fn value_at(&self, now: Instant) -> f64 {
         let elapsed = now.duration_since(self.started_at).as_secs_f64();
         let t = elapsed / self.duration.as_secs_f64();
-        interpolate(self.start_db, self.target_db, t, self.curve)
+        if self.is_fader() {
+            interpolate(self.start_value, self.target_value, t, self.curve)
+        } else {
+            let t = t.clamp(0.0, 1.0);
+            self.start_value + (self.target_value - self.start_value) * t
+        }
     }
 
     /// Returns true if the fade has completed (t >= 1.0).
@@ -67,52 +91,70 @@ impl ActiveChannel {
     /// OVERRIDE_THRESHOLD_POS in fader position space. Using position space means
     /// the threshold is proportionally tighter at loud levels and wider at quiet
     /// levels, matching the physical fader resolution.
-    pub(crate) fn is_override(&self, reported_db: f64) -> bool {
-        let reported_pos = db_to_pos(reported_db);
-        let expected_pos = db_to_pos(self.expected_db);
-        (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+    pub(crate) fn is_override(&self, reported_value: f64) -> bool {
+        if self.is_fader() {
+            let reported_pos = db_to_pos(reported_value);
+            let expected_pos = db_to_pos(self.expected_value);
+            (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+        } else {
+            (reported_value - self.expected_value).abs() >= self.override_threshold()
+        }
     }
 
-    /// Returns Some(new_db) if the fader position has moved enough to warrant sending.
+    /// Returns Some(new_value) if the target has moved enough to warrant sending.
     pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
-        let new_db = if self.is_done(now) {
-            self.target_db
+        let new_value = if self.is_done(now) {
+            self.target_value
         } else {
             self.value_at(now)
         };
 
-        let new_pos = db_to_pos(new_db);
-        let expected_pos = db_to_pos(self.expected_db);
-        if (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS {
-            self.expected_db = new_db;
-            Some(new_db)
+        if self.should_send(new_value) {
+            self.expected_value = new_value;
+            Some(new_value)
         } else {
             None
         }
     }
 
+    fn should_send(&self, new_value: f64) -> bool {
+        if self.is_fader() {
+            let new_pos = db_to_pos(new_value);
+            let expected_pos = db_to_pos(self.expected_value);
+            (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS
+        } else {
+            (new_value - self.expected_value).abs() >= MIN_SEND_DELTA_POS
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn exact_final_send(&mut self) -> f64 {
-        self.expected_db = self.target_db;
-        self.target_db
+        self.expected_value = self.target_value;
+        self.target_value
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fade::types::FadeParameter;
     use std::time::Duration;
 
-    fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
-        ActiveChannel::new(ActiveChannelInit {
+    fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveTarget {
+        ActiveTarget::new(ActiveTargetInit {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
             },
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::FaderDb,
+            },
             group: 0,
             channel: 0,
-            start_db,
-            target_db,
+            start_value: start_db,
+            target_value: target_db,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
@@ -125,12 +167,17 @@ mod tests {
             index: 7,
             name: "Bridge".to_string(),
         };
-        let ch = ActiveChannel::new(ActiveChannelInit {
+        let ch = ActiveTarget::new(ActiveTargetInit {
             scene: scene.clone(),
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 3,
+                parameter: FadeParameter::FaderDb,
+            },
             group: 0,
             channel: 3,
-            start_db: -20.0,
-            target_db: -10.0,
+            start_value: -20.0,
+            target_value: -10.0,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
@@ -153,6 +200,32 @@ mod tests {
         let end = ch.started_at + Duration::from_millis(4000);
         let v = ch.value_at(end);
         assert!((v - -10.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn value_at_midpoint_interpolates_pan_linearly() {
+        let ch = ActiveTarget::new(ActiveTargetInit {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::Pan,
+            },
+            group: 0,
+            channel: 0,
+            start_value: -45.0,
+            target_value: 45.0,
+            curve: FadeCurve::Linear,
+            duration: Duration::from_millis(4000),
+            started_at: Instant::now(),
+        });
+
+        let mid = ch.started_at + Duration::from_millis(2000);
+
+        assert!((ch.value_at(mid) - 0.0).abs() < 1e-10);
     }
 
     #[test]
@@ -226,7 +299,7 @@ mod tests {
         let mut ch = make_channel(-20.0, -10.0, 4000);
         let end = ch.started_at + Duration::from_millis(4000);
         ch.next_send(end);
-        assert!((ch.expected_db - -10.0).abs() < 1e-10);
+        assert!((ch.expected_value - -10.0).abs() < 1e-10);
     }
 
     #[test]

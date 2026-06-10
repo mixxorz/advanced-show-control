@@ -109,6 +109,26 @@ async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
 }
 
 #[tokio::test]
+async fn set_scene_scope_pan_enabled_updates_toggle_and_marks_dirty() {
+    let state = ShellState::default();
+    state
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+    state
+        .store_scene_config("1::Intro".to_string())
+        .await
+        .unwrap();
+
+    let snapshot = state
+        .set_scene_scope_pan_enabled("1::Intro".to_string(), true)
+        .await
+        .unwrap();
+
+    assert!(snapshot.scene_configs[0].scope_toggles.pan);
+    assert!(snapshot.show_file_dirty);
+}
+
+#[tokio::test]
 async fn store_scene_config_preserves_existing_scope_on_later_store() {
     let state = ShellState::default();
 
@@ -135,6 +155,10 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
                     name: "Bass".to_string(),
                     gain_db: -10.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 },
                 ChannelInfo {
                     group: 0,
@@ -142,6 +166,10 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
                     name: "Lead".to_string(),
                     gain_db: -8.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 },
             ],
         })
@@ -311,6 +339,10 @@ fn connected_state_with_two_channels() -> Lv1StateSnapshot {
                 name: "Lead".to_string(),
                 gain_db: -8.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -318,6 +350,10 @@ fn connected_state_with_two_channels() -> Lv1StateSnapshot {
                 name: "Harmony".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
         ],
     }
@@ -338,6 +374,10 @@ fn connected_state_with_three_channels() -> Lv1StateSnapshot {
                 name: "Lead".to_string(),
                 gain_db: -8.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -345,6 +385,10 @@ fn connected_state_with_three_channels() -> Lv1StateSnapshot {
                 name: "Pad".to_string(),
                 gain_db: -12.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
             ChannelInfo {
                 group: 0,
@@ -352,6 +396,10 @@ fn connected_state_with_three_channels() -> Lv1StateSnapshot {
                 name: "Bass".to_string(),
                 gain_db: -10.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             },
         ],
     }

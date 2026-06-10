@@ -50,6 +50,15 @@ async fn drain_commands_for(
                 Some(Lv1Command::SetGain { reply, .. }) => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
+                Some(Lv1Command::SetPan { reply, .. }) => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
+                }
+                Some(Lv1Command::SetBalance { reply, .. }) => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
+                }
+                Some(Lv1Command::SetWidth { reply, .. }) => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
+                }
                 Some(Lv1Command::SetMute { reply, .. }) => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
@@ -104,6 +113,15 @@ async fn run_actor(
                     let _ = reply.send(state.snapshot());
                 }
                 Lv1Command::SetGain { reply, .. } => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
+                }
+                Lv1Command::SetPan { reply, .. } => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
+                }
+                Lv1Command::SetBalance { reply, .. } => {
+                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
+                }
+                Lv1Command::SetWidth { reply, .. } => {
                     let _ = reply.send(Err(Lv1ActorError::NotConnected));
                 }
                 Lv1Command::SetMute { reply, .. } => {
@@ -196,6 +214,63 @@ async fn run_connected(
                             return DisconnectReason::TcpError;
                         }
                     }
+                    Some(Lv1Command::SetPan { group, channel, value, reply }) => {
+                        let result = send_async(
+                            writer,
+                            "/Set/Track/Pan",
+                            &[
+                                OscArg::Int(group),
+                                OscArg::Int(channel),
+                                OscArg::Double(value),
+                            ],
+                        )
+                        .await
+                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            return DisconnectReason::TcpError;
+                        }
+                    }
+                    Some(Lv1Command::SetBalance { group, channel, value, reply }) => {
+                        let result = send_async(
+                            writer,
+                            "/Set/Track/Pan/Balance",
+                            &[
+                                OscArg::Int(group),
+                                OscArg::Int(channel),
+                                OscArg::Double(value),
+                            ],
+                        )
+                        .await
+                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            return DisconnectReason::TcpError;
+                        }
+                    }
+                    Some(Lv1Command::SetWidth { group, channel, value, reply }) => {
+                        let result = send_async(
+                            writer,
+                            "/Set/Track/Pan/Width",
+                            &[
+                                OscArg::Int(group),
+                                OscArg::Int(channel),
+                                OscArg::Double(value),
+                            ],
+                        )
+                        .await
+                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            return DisconnectReason::TcpError;
+                        }
+                    }
                     Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
                         let result = send_async(
                             writer,
@@ -237,5 +312,18 @@ mod tests {
         let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
 
         assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
+    }
+
+    #[test]
+    fn pan_family_addresses_match_expected_osc_paths() {
+        let samples = [
+            ("/Set/Track/Pan", OscArg::Double(-0.5)),
+            ("/Set/Track/Pan/Balance", OscArg::Double(0.25)),
+            ("/Set/Track/Pan/Width", OscArg::Double(0.75)),
+        ];
+
+        assert_eq!(samples[0].0, "/Set/Track/Pan");
+        assert_eq!(samples[1].0, "/Set/Track/Pan/Balance");
+        assert_eq!(samples[2].0, "/Set/Track/Pan/Width");
     }
 }

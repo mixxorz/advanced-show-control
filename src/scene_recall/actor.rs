@@ -259,7 +259,7 @@ mod tests {
     use crate::fade::commands::FadeCommand;
     use crate::fade::curve::FadeCurve;
     use crate::fade::handle::FadeEngineHandle;
-    use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+    use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
     use crate::lv1::events::Lv1Event;
     use crate::lv1::handle::Lv1ActorHandle;
     use crate::lv1::types::{Lv1StateSnapshot, SceneListEntry, SceneState};
@@ -450,7 +450,8 @@ mod tests {
             vec![FadeTarget {
                 group: 0,
                 channel: 2,
-                target_db: -12.5
+                parameter: FadeParameter::FaderDb,
+                target: -12.5,
             }]
         );
         assert_eq!(fade_command.duration_ms, 4_000);
@@ -882,6 +883,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -8.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             };
             while let Some(command) = lv1_rx.recv().await {
@@ -890,6 +895,15 @@ mod tests {
                         let _ = reply.send(snapshot.clone());
                     }
                     crate::lv1::commands::Lv1Command::SetGain { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::SetPan { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::SetBalance { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::SetWidth { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
                     crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
@@ -932,6 +946,10 @@ mod tests {
                     name: "Lead".to_string(),
                     gain_db: -8.0,
                     muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
             };
             while let Some(command) = lv1_rx.recv().await {
@@ -940,6 +958,15 @@ mod tests {
                         let _ = reply.send(snapshot.clone());
                     }
                     crate::lv1::commands::Lv1Command::SetGain { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::SetPan { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::SetBalance { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::SetWidth { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
                     crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
@@ -981,6 +1008,10 @@ mod tests {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-12.5),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
                 scoped_channels: vec![ChannelRef {
                     group: 0,

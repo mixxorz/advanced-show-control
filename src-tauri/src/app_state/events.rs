@@ -307,6 +307,45 @@ impl ShellState {
                     existing.muted = *muted;
                 }
             }
+            Lv1Event::PanChanged {
+                group,
+                channel,
+                pan,
+            } => {
+                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
+                {
+                    existing.pan = Some(*pan);
+                }
+            }
+            Lv1Event::BalanceChanged {
+                group,
+                channel,
+                balance,
+            } => {
+                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
+                {
+                    existing.balance = Some(*balance);
+                }
+            }
+            Lv1Event::WidthChanged {
+                group,
+                channel,
+                width,
+            } => {
+                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
+                    .channels
+                    .iter_mut()
+                    .find(|ch| ch.group == *group && ch.channel == *channel)
+                {
+                    existing.width = Some(*width);
+                }
+            }
             Lv1Event::ChannelTopologyChanged(channels) => {
                 ensure_lv1_snapshot(&mut inner).channels = channels.clone();
                 inner.push_log(

@@ -6,8 +6,9 @@ use tokio::sync::mpsc;
 use crate::fade::commands::FadeCommand;
 use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
-use crate::fade::state::{EngineState, finish_scene_channels};
-use crate::fade::tick::{ActiveChannel, ActiveChannelInit, TICK_HZ};
+use crate::fade::state::EngineState;
+use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
+use crate::fade::types::{FadeParameter, FadeTarget};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -41,13 +42,8 @@ async fn run_engine(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None => break,
-                    Some(FadeCommand::RecallSceneFade { config, reply }) => {
-                        if state.has_active_scene(&config.scene) {
-                            finish_scene_channels(&mut state, &command_bus, &config.scene).await;
-                            if !state.is_active() {
-                                tick_interval = None;
-                                state.fan_out(FadeEvent::FadeCompleted);
-                            }
+                Some(FadeCommand::RecallSceneFade { config, reply }) => {
+                        if config.targets.is_empty() {
                             let _ = reply.send(Ok(()));
                             continue;
                         }
@@ -64,12 +60,8 @@ async fn run_engine(
 
                         if duration.is_zero() {
                             for target in &config.targets {
-                                let _ = command_bus
-                                    .set_gain(target.group, target.channel, target.target_db)
-                                    .await;
-                                state.channels.retain(|ch| {
-                                    !(ch.group == target.group && ch.channel == target.channel)
-                                });
+                                send_target(&command_bus, target.group, target.channel, target.parameter, target.target).await;
+                                state.channels.retain(|ch| ch.key != target.key());
                                 state.fan_out(FadeEvent::ChannelCompleted {
                                     group: target.group,
                                     channel: target.channel,
@@ -84,27 +76,28 @@ async fn run_engine(
                         }
 
                         for target in &config.targets {
-                            let start_db = state
+                            let start_value = state
                                 .channels
                                 .iter()
-                                .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                                .map(|ch| if ch.is_done(now) { ch.target_db } else { ch.value_at(now) })
+                                .find(|ch| ch.key == target.key())
+                                .map(|ch| if ch.is_done(now) { ch.target_value } else { ch.value_at(now) })
                                 .or_else(|| {
                                     snapshot
                                         .channels
                                         .iter()
                                         .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                                        .map(|ch| ch.gain_db)
+                                        .and_then(|ch| live_value_for_snapshot(ch, target))
                                 })
-                                .unwrap_or(target.target_db);
+                                .unwrap_or(target.target);
 
-                            state.channels.retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
-                            state.channels.push(ActiveChannel::new(ActiveChannelInit {
+                            state.channels.retain(|ch| ch.key != target.key());
+                            state.channels.push(ActiveTarget::new(ActiveTargetInit {
                                 scene: config.scene.clone(),
+                                key: target.key(),
                                 group: target.group,
                                 channel: target.channel,
-                                start_db,
-                                target_db: target.target_db,
+                                start_value,
+                                target_value: target.target,
                                 curve: config.curve,
                                 duration,
                                 started_at: now,
@@ -135,14 +128,14 @@ async fn run_engine(
                 for (i, ch) in state.channels.iter_mut().enumerate() {
                     if ch.is_done(now) {
                         let target_db = ch.exact_final_send();
-                        let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
+                        send_target(&command_bus, ch.group, ch.channel, ch.key.parameter, target_db).await;
                         completed_events.push(FadeEvent::ChannelCompleted { group: ch.group, channel: ch.channel });
                         done_indices.push(i);
                         continue;
                     }
 
-                    if let Some(new_db) = ch.next_send(now) {
-                        let _ = command_bus.set_gain(ch.group, ch.channel, new_db).await;
+                    if let Some(new_value) = ch.next_send(now) {
+                        send_target(&command_bus, ch.group, ch.channel, ch.key.parameter, new_value).await;
                     }
                 }
 
@@ -163,7 +156,7 @@ async fn run_engine(
             app_event = app_events.recv() => {
                 match app_event {
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::FaderChanged { group, channel, gain_db })) => {
-                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel)
+                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
                             && state.channels[pos].is_override(gain_db)
                         {
                             state.fan_out(FadeEvent::ChannelOverride { group, channel });
@@ -174,6 +167,15 @@ async fn run_engine(
                                 tick_interval = None;
                             }
                         }
+                    }
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::PanChanged { group, channel, pan })) => {
+                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Pan, pan, &mut tick_interval);
+                    }
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::BalanceChanged { group, channel, balance })) => {
+                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Balance, balance, &mut tick_interval);
+                    }
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::WidthChanged { group, channel, width })) => {
+                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Width, width, &mut tick_interval);
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected)) => {
                         if state.is_active() {
@@ -190,5 +192,62 @@ async fn run_engine(
                 }
             }
         }
+    }
+}
+
+fn live_value_for_snapshot(
+    channel: &crate::lv1::types::ChannelInfo,
+    target: &FadeTarget,
+) -> Option<f64> {
+    match target.parameter {
+        FadeParameter::FaderDb => Some(channel.gain_db),
+        FadeParameter::Pan => channel.pan,
+        FadeParameter::Balance => channel.balance,
+        FadeParameter::Width => channel.width,
+    }
+}
+
+async fn send_target(
+    command_bus: &AppCommandBus,
+    group: i32,
+    channel: i32,
+    parameter: FadeParameter,
+    value: f64,
+) {
+    let _ = match parameter {
+        FadeParameter::FaderDb => command_bus.set_gain(group, channel, value).await,
+        FadeParameter::Pan => command_bus.set_pan(group, channel, value).await,
+        FadeParameter::Balance => command_bus.set_balance(group, channel, value).await,
+        FadeParameter::Width => command_bus.set_width(group, channel, value).await,
+    };
+}
+
+fn cancel_pan_family_overrides(
+    state: &mut EngineState,
+    group: i32,
+    channel: i32,
+    parameter: FadeParameter,
+    reported_value: f64,
+    tick_interval: &mut Option<tokio::time::Interval>,
+) {
+    let cancel = state.channels.iter().any(|ch| {
+        ch.group == group
+            && ch.channel == channel
+            && ch.key.parameter == parameter
+            && ch.is_override(reported_value)
+    });
+
+    if !cancel {
+        return;
+    }
+
+    state.channels.retain(|ch| {
+        !(ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family())
+    });
+    state.fan_out(FadeEvent::ChannelOverride { group, channel });
+    state.fan_out(FadeEvent::ChannelCancelled { group, channel });
+
+    if !state.is_active() {
+        *tick_interval = None;
     }
 }

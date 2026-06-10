@@ -26,6 +26,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
 ```
 
+Prefer `cargo nextest run` for Rust tests, including targeted checks such as `cargo nextest run -p advanced-show-control fade`. Use `cargo test` only when a specific Rust test-harness feature is required.
+
 `pre-commit` runs Rust formatting and workspace-wide clippy. It does not run tests.
 
 ## License

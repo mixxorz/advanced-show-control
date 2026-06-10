@@ -146,6 +146,10 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
                 name: "Lead".to_string(),
                 gain_db: -6.0,
                 muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
         )
         .await
@@ -219,6 +223,10 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
                 group: 0,
                 channel: 4,
                 fader_db: Some(-5.5),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
             vec![ChannelRef {
                 group: 0,
@@ -266,6 +274,10 @@ fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
                 group: 0,
                 channel: 2,
                 fader_db: Some(-5.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
             }],
             vec![ChannelRef {
                 group: 0,
@@ -747,6 +759,10 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-8.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
                 }],
                 vec![ChannelRef {
                     group: 0,

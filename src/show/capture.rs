@@ -33,6 +33,7 @@ impl ShowState {
                 }
             })
             .unwrap_or_else(|| current_refs.clone());
+        let previous = self.get_scene_config(scene_id);
         let snapshot = SceneConfig {
             scene_id: scene_id.to_string(),
             scene_index: scene_id
@@ -49,10 +50,30 @@ impl ShowState {
                 .unwrap_or(1_000),
             channel_configs: channels
                 .iter()
-                .map(|channel| ChannelConfig {
-                    group: channel.group,
-                    channel: channel.channel,
-                    fader_db: Some(channel.gain_db),
+                .map(|channel| {
+                    let previous_channel = previous.as_ref().and_then(|scene| {
+                        scene.channel_configs.iter().find(|entry| {
+                            entry.group == channel.group && entry.channel == channel.channel
+                        })
+                    });
+                    ChannelConfig {
+                        group: channel.group,
+                        channel: channel.channel,
+                        fader_db: Some(channel.gain_db),
+                        pan: channel
+                            .pan
+                            .or_else(|| previous_channel.and_then(|entry| entry.pan)),
+                        balance: channel
+                            .balance
+                            .or_else(|| previous_channel.and_then(|entry| entry.balance)),
+                        width: channel
+                            .width
+                            .or_else(|| previous_channel.and_then(|entry| entry.width)),
+                        pan_mode: channel
+                            .pan_mode
+                            .clone()
+                            .or_else(|| previous_channel.and_then(|entry| entry.pan_mode.clone())),
+                    }
                 })
                 .collect(),
             scoped_channels,
@@ -177,6 +198,22 @@ impl ShowState {
             Ok(false)
         } else {
             scene.scope_toggles.faders = enabled;
+            Ok(true)
+        }
+    }
+
+    pub fn set_scene_scope_pan_enabled(
+        &mut self,
+        scene_id: &str,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        let scene = self
+            .get_scene_config_mut(scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        if scene.scope_toggles.pan == enabled {
+            Ok(false)
+        } else {
+            scene.scope_toggles.pan = enabled;
             Ok(true)
         }
     }

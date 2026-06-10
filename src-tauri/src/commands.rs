@@ -192,6 +192,18 @@ pub async fn set_scene_scope_faders_enabled(
 }
 
 #[tauri::command]
+pub async fn set_scene_scope_pan_enabled(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+    enabled: bool,
+) -> Result<AppViewState, String> {
+    let snapshot = state.set_scene_scope_pan_enabled(scene_id, enabled).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn save_show_file(
     app: AppHandle,
     state: State<'_, ShellState>,
@@ -845,6 +857,7 @@ mod tests {
         let _ = set_channel_scoped;
         let _ = set_all_channels_scoped;
         let _ = set_scene_scope_faders_enabled;
+        let _ = set_scene_scope_pan_enabled;
     }
 
     #[test]
@@ -1373,6 +1386,18 @@ impl From<&Lv1Event> for Lv1EventPayload {
             } => Self {
                 kind: "MuteChanged".to_string(),
                 message: format!("mute changed: group {group}, channel {channel}, muted {muted}"),
+            },
+            Lv1Event::PanChanged { .. } => Self {
+                kind: "PanChanged".to_string(),
+                message: "pan changed".to_string(),
+            },
+            Lv1Event::BalanceChanged { .. } => Self {
+                kind: "BalanceChanged".to_string(),
+                message: "balance changed".to_string(),
+            },
+            Lv1Event::WidthChanged { .. } => Self {
+                kind: "WidthChanged".to_string(),
+                message: "width changed".to_string(),
             },
             Lv1Event::ChannelTopologyChanged(channels) => Self {
                 kind: "ChannelTopologyChanged".to_string(),
