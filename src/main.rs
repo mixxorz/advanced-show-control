@@ -63,6 +63,27 @@ enum Command {
         #[arg(long, allow_hyphen_values = true)]
         gain_db: f64,
     },
+    #[command(about = "Experiment: listen, send pan/width/balance candidates, then quit")]
+    PanProbe {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long, default_value_t = 6000)]
+        timeout_ms: u64,
+        #[arg(long, default_value = "logs/pan-write-test")]
+        log_dir: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        group: i32,
+        #[arg(long, default_value_t = 4)]
+        channel: i32,
+        #[arg(long, allow_hyphen_values = true, default_value_t = 5.0)]
+        pan: f64,
+        #[arg(long, allow_hyphen_values = true, default_value_t = 0.5)]
+        width: f64,
+        #[arg(long, allow_hyphen_values = true, default_value_t = 5.0)]
+        balance: f64,
+    },
     #[command(about = "Connect to an LV1 device and print state changes to the terminal")]
     Monitor {
         #[arg(long)]
@@ -146,6 +167,30 @@ async fn main() -> AppResult<()> {
             channel,
             gain_db,
         } => run_set_gain(host, port, group, channel, gain_db).await,
+        Command::PanProbe {
+            host,
+            port,
+            timeout_ms,
+            log_dir,
+            group,
+            channel,
+            pan,
+            width,
+            balance,
+        } => {
+            run_pan_probe(PanProbeOptions {
+                host,
+                port,
+                timeout_ms,
+                log_dir,
+                group,
+                channel,
+                pan,
+                width,
+                balance,
+            })
+            .await
+        }
         Command::Monitor {
             host,
             port,
@@ -306,6 +351,112 @@ async fn run_set_gain(
                 client.send(address, &args).await?;
             }
             println!("received {} {:?}", msg.address, msg.args);
+        }
+    }
+    Ok(())
+}
+
+struct PanProbeOptions {
+    host: Option<String>,
+    port: Option<u16>,
+    timeout_ms: u64,
+    log_dir: PathBuf,
+    group: i32,
+    channel: i32,
+    pan: f64,
+    width: f64,
+    balance: f64,
+}
+
+async fn run_pan_probe(options: PanProbeOptions) -> AppResult<()> {
+    let PanProbeOptions {
+        host,
+        port,
+        timeout_ms,
+        log_dir,
+        group,
+        channel,
+        pan,
+        width,
+        balance,
+    } = options;
+
+    std::fs::create_dir_all(&log_dir)?;
+    let log_path = log_dir.join(format!("lv1-pan-probe-{}.jsonl", unix_timestamp_secs()));
+    let mut logger = JsonlLogger::create(&log_path)?;
+    let (host, port) = resolve_target(host, port, timeout_ms)?;
+    let mut client = Lv1TcpClient::connect(&host, port).await?;
+    client
+        .register_myfoh("lv1-pan-probe", &uuid::Uuid::new_v4().to_string())
+        .await?;
+    eprintln!("pan-probe on {host}:{port}; writing {}", log_path.display());
+    eprintln!("target group={group} channel={channel}");
+
+    drain_probe_messages(&mut client, &mut logger, Duration::from_secs(2)).await?;
+
+    eprintln!("sending /Set/Track/Pan {pan}");
+    client
+        .send(
+            "/Set/Track/Pan",
+            &[
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(pan),
+            ],
+        )
+        .await?;
+    drain_probe_messages(&mut client, &mut logger, Duration::from_secs(2)).await?;
+
+    eprintln!("sending /Set/Track/Pan/Width {width}");
+    client
+        .send(
+            "/Set/Track/Pan/Width",
+            &[
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(width),
+            ],
+        )
+        .await?;
+    drain_probe_messages(&mut client, &mut logger, Duration::from_secs(2)).await?;
+
+    eprintln!("sending /Set/Track/Pan/Balance {balance}");
+    client
+        .send(
+            "/Set/Track/Pan/Balance",
+            &[
+                OscArg::Int(group),
+                OscArg::Int(channel),
+                OscArg::Double(balance),
+            ],
+        )
+        .await?;
+    drain_probe_messages(&mut client, &mut logger, Duration::from_secs(2)).await?;
+
+    eprintln!("pan-probe complete");
+    Ok(())
+}
+
+async fn drain_probe_messages(
+    client: &mut Lv1TcpClient,
+    logger: &mut JsonlLogger,
+    duration: Duration,
+) -> AppResult<()> {
+    let until = Instant::now() + duration;
+    while Instant::now() < until {
+        for frame in client.read_available().await? {
+            let msg = decode_frame_payload(&frame)?;
+            if let Some((address, args)) = pong_for_ping(&msg) {
+                client.send(address, &args).await?;
+            }
+            let entry = entry_for_message(
+                "received",
+                &msg,
+                Some(frame.payload.len()),
+                Some(frame.header),
+            );
+            println!("{} {:?}", msg.address, msg.args);
+            logger.write(entry)?;
         }
     }
     Ok(())
