@@ -16,4 +16,4 @@ mod view;
 #[allow(unused_imports)]
 pub use shell::RuntimeHandles;
 pub use shell::ShellState;
-pub use view::{AppConnectionState, AppViewState};
+pub use view::{AppConnectionState, AppViewState, LogSeverity, LogSource};

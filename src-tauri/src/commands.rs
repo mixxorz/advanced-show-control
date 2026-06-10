@@ -12,7 +12,9 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
+use crate::app_state::{
+    AppConnectionState, AppViewState, LogSeverity, LogSource, RuntimeHandles, ShellState,
+};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
@@ -747,7 +749,10 @@ fn spawn_shell_state_projector<R: Runtime>(
                         }
                     }
                     AppEvent::CommandFailed { command, message } => {
-                        eprintln!("command failed: {command}: {message}");
+                        let log_message = format!("command failed: {command}: {message}");
+                        state
+                            .push_log(LogSource::App, LogSeverity::Error, log_message)
+                            .await;
                     }
                     AppEvent::Diagnostic { source, message } => {
                         if let Err(err) = crate::diagnostics::append_diagnostic(
@@ -770,6 +775,12 @@ fn spawn_shell_state_projector<R: Runtime>(
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     log_lagged_subscriber("shell-state-projector", count);
+                    let log_message = format!(
+                        "shell-state-projector event subscriber lagged and missed {count} events"
+                    );
+                    state
+                        .push_log(LogSource::App, LogSeverity::Warning, log_message)
+                        .await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

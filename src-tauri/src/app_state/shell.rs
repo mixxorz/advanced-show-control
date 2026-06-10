@@ -315,6 +315,11 @@ impl ShellState {
         self.snapshot().await
     }
 
+    pub async fn push_log(&self, source: LogSource, severity: LogSeverity, message: String) {
+        let mut inner = self.inner.lock().await;
+        inner.push_log(source, severity, message);
+    }
+
     #[cfg(test)]
     pub async fn set_reconnect_active(&self, active: bool) -> AppViewState {
         let mut inner = self.inner.lock().await;
