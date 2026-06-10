@@ -1,3 +1,4 @@
+use advanced_show_control::fade::types::FadeParameter;
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::discovery::{DiscoverOptions, discover, resolve_target};
 use advanced_show_control::lv1::events::Lv1Event;
@@ -577,7 +578,8 @@ async fn run_fade_test(
             targets: vec![FadeTarget {
                 group,
                 channel,
-                target_db,
+                parameter: FadeParameter::FaderDb,
+                target: target_db,
             }],
             duration_ms,
             curve: fade_curve,

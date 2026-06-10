@@ -1,10 +1,10 @@
 use crate::fade::events::FadeEvent;
-use crate::fade::tick::ActiveChannel;
+use crate::fade::tick::ActiveTarget;
 use crate::fade::types::FadeSceneIdentity;
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 pub(crate) struct EngineState {
-    pub(crate) channels: Vec<ActiveChannel>,
+    pub(crate) channels: Vec<ActiveTarget>,
     event_bus: AppEventBus,
 }
 

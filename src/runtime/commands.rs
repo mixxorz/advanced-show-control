@@ -230,7 +230,7 @@ mod tests {
     use super::*;
     use crate::fade::commands::FadeCommand;
     use crate::fade::curve::FadeCurve;
-    use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+    use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::handle::ShowStateHandle;
 
@@ -257,7 +257,8 @@ mod tests {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 1,
-                target_db: -12.0,
+                parameter: FadeParameter::FaderDb,
+                target: -12.0,
             }],
             duration_ms: 1_000,
             curve: FadeCurve::Linear,
@@ -300,7 +301,8 @@ mod tests {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 1,
-                target_db: -12.0,
+                parameter: FadeParameter::FaderDb,
+                target: -12.0,
             }],
             duration_ms: 1_000,
             curve: FadeCurve::Linear,

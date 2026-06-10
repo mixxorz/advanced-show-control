@@ -1,5 +1,5 @@
 use crate::fade::curve::FadeCurve;
-use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
 use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneState};
 use crate::show::types::SceneConfig;
 
@@ -81,7 +81,8 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
         targets.push(FadeTarget {
             group: scoped.group,
             channel: scoped.channel,
-            target_db,
+            parameter: FadeParameter::FaderDb,
+            target: target_db,
         });
     }
 
@@ -269,7 +270,7 @@ mod tests {
             RecallPolicyDecision::Start(fade) => {
                 assert_eq!(fade.duration_ms, 4000);
                 assert_eq!(fade.targets.len(), 1);
-                assert_eq!(fade.targets[0].target_db, -12.5);
+                assert_eq!(fade.targets[0].target, -12.5);
             }
             other => panic!("unexpected decision: {other:?}"),
         }
@@ -309,7 +310,7 @@ mod tests {
                     && config.targets.len() == 1
                     && config.targets[0].group == 0
                     && config.targets[0].channel == 2
-                    && config.targets[0].target_db == -12.5
+                    && config.targets[0].target == -12.5
         ));
     }
 

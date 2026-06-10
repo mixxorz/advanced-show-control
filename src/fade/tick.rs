@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
-use crate::fade::types::FadeSceneIdentity;
+use crate::fade::types::{FadeSceneIdentity, FadeTargetKey};
 
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
@@ -11,9 +11,10 @@ pub const MIN_SEND_DELTA_POS: f64 = 0.002;
 /// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
 pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
 
-pub(crate) struct ActiveChannel {
+pub(crate) struct ActiveTarget {
     #[allow(dead_code)]
     pub(crate) scene: FadeSceneIdentity,
+    pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
     pub(crate) start_db: f64,
@@ -25,8 +26,9 @@ pub(crate) struct ActiveChannel {
     pub(crate) started_at: Instant,
 }
 
-pub(crate) struct ActiveChannelInit {
+pub(crate) struct ActiveTargetInit {
     pub(crate) scene: FadeSceneIdentity,
+    pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
     pub(crate) start_db: f64,
@@ -36,10 +38,11 @@ pub(crate) struct ActiveChannelInit {
     pub(crate) started_at: Instant,
 }
 
-impl ActiveChannel {
-    pub(crate) fn new(init: ActiveChannelInit) -> Self {
+impl ActiveTarget {
+    pub(crate) fn new(init: ActiveTargetInit) -> Self {
         Self {
             scene: init.scene,
+            key: init.key,
             group: init.group,
             channel: init.channel,
             start_db: init.start_db,
@@ -101,13 +104,19 @@ impl ActiveChannel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fade::types::FadeParameter;
     use std::time::Duration;
 
-    fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveChannel {
-        ActiveChannel::new(ActiveChannelInit {
+    fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveTarget {
+        ActiveTarget::new(ActiveTargetInit {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
+            },
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::FaderDb,
             },
             group: 0,
             channel: 0,
@@ -125,8 +134,13 @@ mod tests {
             index: 7,
             name: "Bridge".to_string(),
         };
-        let ch = ActiveChannel::new(ActiveChannelInit {
+        let ch = ActiveTarget::new(ActiveTargetInit {
             scene: scene.clone(),
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 3,
+                parameter: FadeParameter::FaderDb,
+            },
             group: 0,
             channel: 3,
             start_db: -20.0,

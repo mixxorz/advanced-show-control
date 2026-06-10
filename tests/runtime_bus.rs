@@ -1,6 +1,8 @@
 use advanced_show_control::fade::actor::spawn_engine;
 use advanced_show_control::fade::curve::FadeCurve;
-use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+use advanced_show_control::fade::types::{
+    FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget,
+};
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::tcp::encode_frame;
@@ -78,7 +80,8 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -10.0,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
             }],
             duration_ms: 500,
             curve: FadeCurve::Linear,

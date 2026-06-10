@@ -259,7 +259,7 @@ mod tests {
     use crate::fade::commands::FadeCommand;
     use crate::fade::curve::FadeCurve;
     use crate::fade::handle::FadeEngineHandle;
-    use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+    use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
     use crate::lv1::events::Lv1Event;
     use crate::lv1::handle::Lv1ActorHandle;
     use crate::lv1::types::{Lv1StateSnapshot, SceneListEntry, SceneState};
@@ -450,7 +450,8 @@ mod tests {
             vec![FadeTarget {
                 group: 0,
                 channel: 2,
-                target_db: -12.5
+                parameter: FadeParameter::FaderDb,
+                target: -12.5,
             }]
         );
         assert_eq!(fade_command.duration_ms, 4_000);

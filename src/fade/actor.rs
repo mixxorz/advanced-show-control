@@ -7,7 +7,8 @@ use crate::fade::commands::FadeCommand;
 use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::{EngineState, finish_scene_channels};
-use crate::fade::tick::{ActiveChannel, ActiveChannelInit, TICK_HZ};
+use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
+use crate::fade::types::FadeParameter;
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -64,16 +65,18 @@ async fn run_engine(
 
                         if duration.is_zero() {
                             for target in &config.targets {
-                                let _ = command_bus
-                                    .set_gain(target.group, target.channel, target.target_db)
-                                    .await;
-                                state.channels.retain(|ch| {
-                                    !(ch.group == target.group && ch.channel == target.channel)
-                                });
-                                state.fan_out(FadeEvent::ChannelCompleted {
-                                    group: target.group,
-                                    channel: target.channel,
-                                });
+                                if target.parameter == FadeParameter::FaderDb {
+                                    let _ = command_bus
+                                        .set_gain(target.group, target.channel, target.target)
+                                        .await;
+                                }
+                                state.channels.retain(|ch| ch.key != target.key());
+                                if target.parameter == FadeParameter::FaderDb {
+                                    state.fan_out(FadeEvent::ChannelCompleted {
+                                        group: target.group,
+                                        channel: target.channel,
+                                    });
+                                }
                             }
                             if !state.is_active() {
                                 tick_interval = None;
@@ -87,7 +90,7 @@ async fn run_engine(
                             let start_db = state
                                 .channels
                                 .iter()
-                                .find(|ch| ch.group == target.group && ch.channel == target.channel)
+                                .find(|ch| ch.key == target.key())
                                 .map(|ch| if ch.is_done(now) { ch.target_db } else { ch.value_at(now) })
                                 .or_else(|| {
                                     snapshot
@@ -96,15 +99,16 @@ async fn run_engine(
                                         .find(|ch| ch.group == target.group && ch.channel == target.channel)
                                         .map(|ch| ch.gain_db)
                                 })
-                                .unwrap_or(target.target_db);
+                                .unwrap_or(target.target);
 
-                            state.channels.retain(|ch| !(ch.group == target.group && ch.channel == target.channel));
-                            state.channels.push(ActiveChannel::new(ActiveChannelInit {
+                            state.channels.retain(|ch| ch.key != target.key());
+                            state.channels.push(ActiveTarget::new(ActiveTargetInit {
                                 scene: config.scene.clone(),
+                                key: target.key(),
                                 group: target.group,
                                 channel: target.channel,
                                 start_db,
-                                target_db: target.target_db,
+                                target_db: target.target,
                                 curve: config.curve,
                                 duration,
                                 started_at: now,

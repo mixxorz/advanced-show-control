@@ -2,7 +2,9 @@ use advanced_show_control::fade::actor::spawn_engine;
 use advanced_show_control::fade::curve::FadeCurve;
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::fade::handle::FadeEngineHandle;
-use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+use advanced_show_control::fade::types::{
+    FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget, FadeTargetKey,
+};
 use advanced_show_control::lv1::actor::spawn_actor;
 use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
 use advanced_show_control::osc::OscArg;
@@ -30,6 +32,32 @@ fn fade_config(scene: FadeSceneIdentity, targets: Vec<FadeTarget>, duration_ms: 
         duration_ms,
         curve: FadeCurve::Linear,
     }
+}
+
+#[test]
+fn fade_target_key_includes_parameter() {
+    let gain_target = FadeTarget {
+        group: 0,
+        channel: 1,
+        parameter: FadeParameter::FaderDb,
+        target: -12.0,
+    };
+    let pan_target = FadeTarget {
+        group: 0,
+        channel: 1,
+        parameter: FadeParameter::Pan,
+        target: 0.0,
+    };
+
+    assert_eq!(
+        gain_target.key(),
+        FadeTargetKey {
+            group: 0,
+            channel: 1,
+            parameter: FadeParameter::FaderDb,
+        }
+    );
+    assert_ne!(gain_target.key(), pan_target.key());
 }
 
 fn channels_args() -> Vec<OscArg> {
@@ -169,7 +197,8 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
             vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -12.5,
+                parameter: FadeParameter::FaderDb,
+                target: -12.5,
             }],
             0,
         ))
@@ -235,7 +264,8 @@ async fn engine_emits_fade_started_and_completed() {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -10.0,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
             }],
             duration_ms: 500,
             curve: FadeCurve::Linear,
@@ -287,7 +317,8 @@ async fn engine_abort_all_stops_fade() {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -30.0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
             }],
             duration_ms: 10_000,
             curve: FadeCurve::Linear,
@@ -353,7 +384,8 @@ async fn engine_detects_manual_override() {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -20.0,
+                parameter: FadeParameter::FaderDb,
+                target: -20.0,
             }],
             duration_ms: 10_000,
             curve: FadeCurve::Linear,
@@ -405,7 +437,8 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -30.0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
             }],
             duration_ms: 30_000,
             curve: FadeCurve::Linear,
@@ -428,7 +461,8 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
             targets: vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -10.0,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
             }],
             duration_ms: 500,
             curve: FadeCurve::Linear,
@@ -477,7 +511,8 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
             vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -30.0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
             }],
             30_000,
         ))
@@ -496,7 +531,8 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
             vec![FadeTarget {
                 group: 0,
                 channel: 1,
-                target_db: -10.0,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
             }],
             500,
         ))
@@ -552,7 +588,8 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
             vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -30.0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
             }],
             30_000,
         ))
@@ -571,7 +608,8 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
             vec![FadeTarget {
                 group: 0,
                 channel: 1,
-                target_db: -10.0,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
             }],
             30_000,
         ))
@@ -590,7 +628,8 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
             vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -30.0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
             }],
             30_000,
         ))
@@ -671,7 +710,8 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
             vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -30.0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
             }],
             1_000,
         ))
@@ -693,7 +733,8 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
             vec![FadeTarget {
                 group: 0,
                 channel: 0,
-                target_db: -10.0,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
             }],
             1_000,
         ))
