@@ -60,10 +60,19 @@ impl ShowState {
                         group: channel.group,
                         channel: channel.channel,
                         fader_db: Some(channel.gain_db),
-                        pan: previous_channel.and_then(|entry| entry.pan),
-                        balance: previous_channel.and_then(|entry| entry.balance),
-                        width: previous_channel.and_then(|entry| entry.width),
-                        pan_mode: previous_channel.and_then(|entry| entry.pan_mode.clone()),
+                        pan: channel
+                            .pan
+                            .or_else(|| previous_channel.and_then(|entry| entry.pan)),
+                        balance: channel
+                            .balance
+                            .or_else(|| previous_channel.and_then(|entry| entry.balance)),
+                        width: channel
+                            .width
+                            .or_else(|| previous_channel.and_then(|entry| entry.width)),
+                        pan_mode: channel
+                            .pan_mode
+                            .clone()
+                            .or_else(|| previous_channel.and_then(|entry| entry.pan_mode.clone())),
                     }
                 })
                 .collect(),
@@ -189,6 +198,22 @@ impl ShowState {
             Ok(false)
         } else {
             scene.scope_toggles.faders = enabled;
+            Ok(true)
+        }
+    }
+
+    pub fn set_scene_scope_pan_enabled(
+        &mut self,
+        scene_id: &str,
+        enabled: bool,
+    ) -> Result<bool, String> {
+        let scene = self
+            .get_scene_config_mut(scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        if scene.scope_toggles.pan == enabled {
+            Ok(false)
+        } else {
+            scene.scope_toggles.pan = enabled;
             Ok(true)
         }
     }
