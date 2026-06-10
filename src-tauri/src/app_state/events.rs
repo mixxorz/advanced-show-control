@@ -114,35 +114,22 @@ impl ShellState {
             .as_ref()
             .map(|snapshot| snapshot.scene_list.clone())
             .unwrap_or_default();
-        let generation = inner.generation;
-        drop(inner);
 
         if !scene_list.is_empty() {
-            if !self.is_generation_current(generation).await {
-                return None;
-            }
+            // Reconcile while holding `inner` so the generation cannot change
+            // between the check above and this show mutation.
+            // Lock ordering: inner then show (consistent with snapshot()).
             let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
-            let mut inner = self.inner.lock().await;
-            if inner.generation != generation {
-                return None;
+            if changed {
+                inner.show_file_dirty = true;
             }
-            if inner
-                .lv1_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.scene_list.clone())
-                == Some(scene_list.clone())
-            {
-                if changed {
-                    inner.show_file_dirty = true;
-                }
-                if inner.selected_scene_id.is_none() {
-                    inner.selected_scene_id = scene_list
-                        .first()
-                        .map(|scene| scene_id(scene.index, &scene.name));
-                }
+            if inner.selected_scene_id.is_none() {
+                inner.selected_scene_id = scene_list
+                    .first()
+                    .map(|scene| scene_id(scene.index, &scene.name));
             }
-            drop(inner);
         }
+        drop(inner);
         Some(self.snapshot().await)
     }
 
@@ -210,9 +197,6 @@ impl ShellState {
             }
             Lv1Event::SceneListChanged(scenes) => {
                 let generation = inner.generation;
-                if inner.generation != generation {
-                    return None;
-                }
 
                 // Gather diagnostics before holding the lock to avoid lock contention
                 drop(inner);
@@ -358,12 +342,6 @@ impl ShellState {
         apply_fade_event_locked(&mut inner, event);
         drop(inner);
         self.snapshot_for_generation(generation).await
-    }
-}
-
-impl ShellState {
-    async fn is_generation_current(&self, generation: u64) -> bool {
-        self.inner.lock().await.generation == generation
     }
 }
 

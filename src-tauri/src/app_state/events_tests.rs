@@ -131,6 +131,31 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
 }
 
 #[tokio::test]
+async fn stale_initial_connection_scene_list_does_not_reconcile_show_configs() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    let _ = state.disconnect().await;
+
+    let snapshot = state
+        .begin_connection_for_generation(
+            generation,
+            Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }],
+                channels: Vec::new(),
+            },
+        )
+        .await;
+
+    assert!(snapshot.is_none());
+    assert_eq!(state.snapshot().await.scene_configs.len(), 0);
+}
+
+#[tokio::test]
 async fn lv1_disconnected_event_snapshot_includes_show_configs() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
