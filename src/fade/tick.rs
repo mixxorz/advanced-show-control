@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
-use crate::fade::types::{FadeSceneIdentity, FadeTargetKey};
+use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
@@ -17,10 +17,10 @@ pub(crate) struct ActiveTarget {
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
-    pub(crate) start_db: f64,
-    pub(crate) target_db: f64,
-    /// Last dB value sent — for override detection and min-delta suppression.
-    pub(crate) expected_db: f64,
+    pub(crate) start_value: f64,
+    pub(crate) target_value: f64,
+    /// Last value sent — for override detection and min-delta suppression.
+    pub(crate) expected_value: f64,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
@@ -31,8 +31,8 @@ pub(crate) struct ActiveTargetInit {
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
-    pub(crate) start_db: f64,
-    pub(crate) target_db: f64,
+    pub(crate) start_value: f64,
+    pub(crate) target_value: f64,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
@@ -45,20 +45,24 @@ impl ActiveTarget {
             key: init.key,
             group: init.group,
             channel: init.channel,
-            start_db: init.start_db,
-            target_db: init.target_db,
-            expected_db: init.start_db,
+            start_value: init.start_value,
+            target_value: init.target_value,
+            expected_value: init.start_value,
             curve: init.curve,
             duration: init.duration,
             started_at: init.started_at,
         }
     }
 
-    /// Returns the interpolated dB value at `now`.
+    fn is_fader(&self) -> bool {
+        self.key.parameter == FadeParameter::FaderDb
+    }
+
+    /// Returns the interpolated value at `now`.
     pub(crate) fn value_at(&self, now: Instant) -> f64 {
         let elapsed = now.duration_since(self.started_at).as_secs_f64();
         let t = elapsed / self.duration.as_secs_f64();
-        interpolate(self.start_db, self.target_db, t, self.curve)
+        interpolate(self.start_value, self.target_value, t, self.curve)
     }
 
     /// Returns true if the fade has completed (t >= 1.0).
@@ -70,34 +74,46 @@ impl ActiveTarget {
     /// OVERRIDE_THRESHOLD_POS in fader position space. Using position space means
     /// the threshold is proportionally tighter at loud levels and wider at quiet
     /// levels, matching the physical fader resolution.
-    pub(crate) fn is_override(&self, reported_db: f64) -> bool {
-        let reported_pos = db_to_pos(reported_db);
-        let expected_pos = db_to_pos(self.expected_db);
-        (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+    pub(crate) fn is_override(&self, reported_value: f64) -> bool {
+        if self.is_fader() {
+            let reported_pos = db_to_pos(reported_value);
+            let expected_pos = db_to_pos(self.expected_value);
+            (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+        } else {
+            (reported_value - self.expected_value).abs() >= OVERRIDE_THRESHOLD_POS
+        }
     }
 
-    /// Returns Some(new_db) if the fader position has moved enough to warrant sending.
+    /// Returns Some(new_value) if the target has moved enough to warrant sending.
     pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
-        let new_db = if self.is_done(now) {
-            self.target_db
+        let new_value = if self.is_done(now) {
+            self.target_value
         } else {
             self.value_at(now)
         };
 
-        let new_pos = db_to_pos(new_db);
-        let expected_pos = db_to_pos(self.expected_db);
-        if (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS {
-            self.expected_db = new_db;
-            Some(new_db)
+        if self.should_send(new_value) {
+            self.expected_value = new_value;
+            Some(new_value)
         } else {
             None
         }
     }
 
+    fn should_send(&self, new_value: f64) -> bool {
+        if self.is_fader() {
+            let new_pos = db_to_pos(new_value);
+            let expected_pos = db_to_pos(self.expected_value);
+            (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS
+        } else {
+            (new_value - self.expected_value).abs() >= MIN_SEND_DELTA_POS
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) fn exact_final_send(&mut self) -> f64 {
-        self.expected_db = self.target_db;
-        self.target_db
+        self.expected_value = self.target_value;
+        self.target_value
     }
 }
 
@@ -120,8 +136,8 @@ mod tests {
             },
             group: 0,
             channel: 0,
-            start_db,
-            target_db,
+            start_value: start_db,
+            target_value: target_db,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
@@ -143,8 +159,8 @@ mod tests {
             },
             group: 0,
             channel: 3,
-            start_db: -20.0,
-            target_db: -10.0,
+            start_value: -20.0,
+            target_value: -10.0,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
@@ -240,7 +256,7 @@ mod tests {
         let mut ch = make_channel(-20.0, -10.0, 4000);
         let end = ch.started_at + Duration::from_millis(4000);
         ch.next_send(end);
-        assert!((ch.expected_db - -10.0).abs() < 1e-10);
+        assert!((ch.expected_value - -10.0).abs() < 1e-10);
     }
 
     #[test]
