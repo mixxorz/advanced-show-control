@@ -83,8 +83,7 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
                 scope_toggles: advanced_show_control::show::types::SceneScopeToggles::default(),
             }],
         })
-        .await
-        .unwrap();
+        .await;
 
     let snapshot = state.new_show_file().await.unwrap();
 
@@ -131,8 +130,7 @@ async fn new_show_file_clears_stale_selection_when_disconnected() {
                 scope_toggles: advanced_show_control::show::types::SceneScopeToggles::default(),
             }],
         })
-        .await
-        .unwrap();
+        .await;
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("stale::scene".to_string());
@@ -304,8 +302,7 @@ async fn export_and_import_show_file_round_trips_pan_family_fields() {
                 },
             }],
         })
-        .await
-        .unwrap();
+        .await;
 
     let exported = state.export_show_file("saved".to_string()).await;
     assert!(exported.scene_configs[0].scope_toggles.pan);

@@ -1098,7 +1098,7 @@ mod tests {
                 scope_toggles: SceneScopeToggles::default(),
             }],
         };
-        handle.replace_snapshot(snapshot).await.unwrap();
+        handle.replace_snapshot(snapshot).await;
     }
 
     fn fake_fade_handle() -> (

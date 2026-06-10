@@ -697,10 +697,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             let message = state
                                 .show
                                 .scene_reconciliation_diagnostic(scenes.clone())
-                                .await
-                                .unwrap_or_else(|_| {
-                                    "scene reconciliation preview unavailable".to_string()
-                                });
+                                .await;
                             let _ = crate::diagnostics::append_diagnostic(
                                 &diagnostics_path,
                                 "show-state",

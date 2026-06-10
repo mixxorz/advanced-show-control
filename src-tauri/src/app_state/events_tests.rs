@@ -70,8 +70,7 @@ async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_emp
             lockout: false,
             scene_configs: vec![scene_config(1, "Intro", Vec::new(), Vec::new())],
         })
-        .await
-        .unwrap();
+        .await;
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("1::Intro".to_string());
@@ -102,8 +101,7 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
             lockout: false,
             scene_configs: vec![scene_config(2, "Verse", Vec::new(), Vec::new())],
         })
-        .await
-        .unwrap();
+        .await;
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("2::Verse".to_string());
@@ -153,7 +151,6 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
             }],
         )
         .await
-        .unwrap()
         .unwrap();
 
     let snapshot = state
@@ -344,8 +341,7 @@ async fn scene_list_event_logs_reconciliation_preview() {
                 scene_config(1, "Verse", Vec::new(), Vec::new()),
             ],
         })
-        .await
-        .unwrap();
+        .await;
     state
         .begin_connection_for_generation(
             generation,
@@ -770,8 +766,7 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
                 }],
             )],
         })
-        .await
-        .unwrap();
+        .await;
 
     let snapshot = state
         .apply_lv1_event_for_generation(

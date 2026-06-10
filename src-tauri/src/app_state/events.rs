@@ -49,7 +49,7 @@ impl ShellState {
     }
 
     pub async fn set_lockout(&self, enabled: bool) -> AppViewState {
-        let _ = self.show.set_lockout(enabled).await;
+        self.show.set_lockout(enabled).await;
         let mut inner = self.inner.lock().await;
         inner.show_file_dirty = true;
         inner.push_log(
@@ -74,11 +74,7 @@ impl ShellState {
         drop(inner);
 
         if !scene_list.is_empty() {
-            let changed = self
-                .show
-                .reconcile_scene_list(scene_list.clone())
-                .await
-                .unwrap_or(false);
+            let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
             let mut inner = self.inner.lock().await;
             if inner.generation == generation
                 && inner
@@ -124,11 +120,7 @@ impl ShellState {
             if !self.is_generation_current(generation).await {
                 return None;
             }
-            let changed = self
-                .show
-                .reconcile_scene_list(scene_list.clone())
-                .await
-                .ok()?;
+            let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
             let mut inner = self.inner.lock().await;
             if inner.generation != generation {
                 return None;
@@ -222,36 +214,21 @@ impl ShellState {
                 if !self.is_generation_current(generation).await {
                     return None;
                 }
-                let before_count = self
-                    .show
-                    .get_snapshot()
-                    .await
-                    .map(|snapshot| snapshot.scene_configs.len())
-                    .unwrap_or(0);
+                let before_count = self.show.get_snapshot().await.scene_configs.len();
                 let reconciliation_diagnostic = self
                     .show
                     .scene_reconciliation_diagnostic(scenes.clone())
-                    .await
-                    .unwrap_or_else(|_| "scene reconciliation preview unavailable".to_string());
+                    .await;
 
                 if !self.is_generation_current(generation).await {
                     return None;
                 }
-                let changed = self
-                    .show
-                    .reconcile_scene_list(scenes.clone())
-                    .await
-                    .unwrap_or(false);
+                let changed = self.show.reconcile_scene_list(scenes.clone()).await;
 
                 if !self.is_generation_current(generation).await {
                     return None;
                 }
-                let after_count = self
-                    .show
-                    .get_snapshot()
-                    .await
-                    .map(|snapshot| snapshot.scene_configs.len())
-                    .unwrap_or(0);
+                let after_count = self.show.get_snapshot().await.scene_configs.len();
 
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {

@@ -13,8 +13,7 @@ async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_stor
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let snapshot = state
         .store_scene_config("1::Intro".to_string())
@@ -40,8 +39,7 @@ async fn store_scene_config_rejects_missing_scene_id() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let err = state
         .store_scene_config("2::Verse".to_string())
@@ -67,8 +65,7 @@ async fn store_scene_config_rejects_empty_lv1_channel_list() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let err = state
         .store_scene_config("1::Intro".to_string())
@@ -86,8 +83,7 @@ async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let zero = state
         .set_scene_duration_ms("1::Intro".to_string(), 0)
@@ -113,8 +109,7 @@ async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -137,8 +132,7 @@ async fn set_scene_scope_pan_enabled_updates_toggle_and_marks_dirty() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -162,8 +156,7 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -205,8 +198,7 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot2.scene_list)
-        .await
-        .ok();
+        .await;
 
     let snapshot = state
         .store_scene_config("1::Intro".to_string())
@@ -230,8 +222,7 @@ async fn set_channel_scoped_toggles_single_channel_scope_and_marks_dirty() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -261,8 +252,7 @@ async fn set_channel_scoped_noop_keeps_clean_show_file_clean() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -286,8 +276,7 @@ async fn set_all_channels_scoped_sets_and_clears_scope() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -318,8 +307,7 @@ async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -345,8 +333,7 @@ async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() 
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
     state
         .store_scene_config("1::Intro".to_string())
         .await
@@ -357,7 +344,7 @@ async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() 
         inner.show_file_dirty = false;
     }
     {
-        let mut show_state = state.show.get_snapshot().await.unwrap();
+        let mut show_state = state.show.get_snapshot().await;
         show_state.scene_configs[0].scoped_channels = vec![
             ChannelRef {
                 group: 0,
@@ -368,7 +355,7 @@ async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() 
                 channel: 2,
             },
         ];
-        state.show.replace_snapshot(show_state).await.unwrap();
+        state.show.replace_snapshot(show_state).await;
     }
 
     let snapshot = state
@@ -470,8 +457,7 @@ async fn set_scene_duration_ms_returns_error_for_unknown_scene() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let result = state
         .set_scene_duration_ms("999::DoesNotExist".to_string(), 1000)
@@ -487,8 +473,7 @@ async fn set_channel_scoped_returns_error_for_unknown_scene() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let result = state
         .set_channel_scoped("999::DoesNotExist".to_string(), 0, 2, false)
@@ -504,8 +489,7 @@ async fn set_all_channels_scoped_returns_error_for_unknown_scene() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let result = state
         .set_all_channels_scoped("999::DoesNotExist".to_string(), false)
@@ -521,8 +505,7 @@ async fn set_scene_scope_faders_enabled_returns_error_for_unknown_scene() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let result = state
         .set_scene_scope_faders_enabled("999::DoesNotExist".to_string(), false)
@@ -538,8 +521,7 @@ async fn set_scene_scope_pan_enabled_returns_error_for_unknown_scene() {
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
-        .await
-        .ok();
+        .await;
 
     let result = state
         .set_scene_scope_pan_enabled("999::DoesNotExist".to_string(), true)

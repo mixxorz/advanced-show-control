@@ -73,8 +73,7 @@ mod tests {
                     },
                 }],
             })
-            .await
-            .unwrap();
+            .await;
 
         let snapshot = state
             .project_event_for_generation(generation, &AppEvent::Show(ShowEvent::StateChanged))

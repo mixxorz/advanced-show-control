@@ -9,10 +9,7 @@ use crate::show_file::{
 
 impl ShellState {
     pub async fn new_show_file(&self) -> Result<AppViewState, String> {
-        self.show
-            .clear()
-            .await
-            .map_err(|err| format!("Failed to reset show data: {err:?}"))?;
+        self.show.clear().await;
 
         let scenes = {
             let inner = self.inner.lock().await;
@@ -24,18 +21,16 @@ impl ShellState {
         };
 
         if !scenes.is_empty() {
-            self.show
-                .reconcile_scene_list(scenes)
-                .await
-                .map_err(|err| format!("Failed to rebuild show data: {err:?}"))?;
+            self.show.reconcile_scene_list(scenes).await;
         }
 
         let selected_scene_id = self
             .show
             .get_snapshot()
             .await
-            .ok()
-            .and_then(|snapshot| snapshot.scene_configs.first().cloned())
+            .scene_configs
+            .first()
+            .cloned()
             .map(|scene| scene.scene_id);
 
         let mut inner = self.inner.lock().await;
@@ -53,11 +48,7 @@ impl ShellState {
     }
 
     pub async fn export_show_file_for_save(&self, saved_at: String) -> Result<ShowFile, String> {
-        let show = self
-            .show
-            .get_snapshot()
-            .await
-            .map_err(|err| format!("Failed to read show snapshot: {err:?}"))?;
+        let show = self.show.get_snapshot().await;
 
         Ok(ShowFile {
             schema_version: SHOW_FILE_SCHEMA_VERSION,
@@ -160,8 +151,7 @@ impl ShellState {
                     })
                     .collect(),
             })
-            .await
-            .map_err(|err| format!("Failed to load show data: {err:?}"))?;
+            .await;
 
         let mut inner = self.inner.lock().await;
         inner.selected_scene_id = file

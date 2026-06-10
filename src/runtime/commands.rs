@@ -79,10 +79,7 @@ impl AppCommandBus {
     pub async fn get_show_snapshot(&self) -> Result<ShowSnapshot, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show
-                .get_snapshot()
-                .await
-                .map_err(|_| AppCommandError::ShowUnavailable),
+            Some(show) => Ok(show.get_snapshot().await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -93,10 +90,7 @@ impl AppCommandBus {
     ) -> Result<Option<SceneConfig>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show
-                .get_scene_config(scene_id)
-                .await
-                .map_err(|_| AppCommandError::ShowUnavailable),
+            Some(show) => Ok(show.get_scene_config(scene_id).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -104,10 +98,7 @@ impl AppCommandBus {
     pub async fn get_lockout(&self) -> Result<bool, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show
-                .get_lockout()
-                .await
-                .map_err(|_| AppCommandError::ShowUnavailable),
+            Some(show) => Ok(show.get_lockout().await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
