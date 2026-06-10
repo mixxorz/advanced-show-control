@@ -802,6 +802,39 @@ mod tests {
     }
 
     #[test]
+    fn store_scene_config_preserves_existing_pan_family_fields() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(
+                "1::scene-1",
+                1_000,
+                vec![ChannelConfig {
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-9.0),
+                    pan: Some(-12.0),
+                    balance: Some(3.0),
+                    width: Some(1.2),
+                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                }],
+            )],
+        };
+
+        assert!(
+            state
+                .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+                .unwrap()
+        );
+
+        let stored = &state.scene_configs[0].channel_configs[0];
+        assert_eq!(stored.fader_db, Some(-6.0));
+        assert_eq!(stored.pan, Some(-12.0));
+        assert_eq!(stored.balance, Some(3.0));
+        assert_eq!(stored.width, Some(1.2));
+        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Stereo));
+    }
+
+    #[test]
     fn store_scene_config_defaults_fader_scope_enabled() {
         let mut state = ShowState::default();
         let changed = state
