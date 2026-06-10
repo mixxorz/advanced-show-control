@@ -87,6 +87,9 @@ async fn run_engine(
                         }
 
                         for target in &config.targets {
+                            if target.parameter != FadeParameter::FaderDb {
+                                continue;
+                            }
                             let start_db = state
                                 .channels
                                 .iter()
@@ -137,6 +140,9 @@ async fn run_engine(
                 let mut completed_events = Vec::new();
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
+                    if ch.key.parameter != FadeParameter::FaderDb {
+                        continue;
+                    }
                     if ch.is_done(now) {
                         let target_db = ch.exact_final_send();
                         let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;

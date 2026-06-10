@@ -1,6 +1,6 @@
 use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
-use crate::fade::types::FadeSceneIdentity;
+use crate::fade::types::{FadeParameter, FadeSceneIdentity};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 pub(crate) struct EngineState {
@@ -40,7 +40,7 @@ pub(crate) async fn finish_scene_channels(
 ) {
     let mut completed = Vec::new();
     for ch in &mut state.channels {
-        if &ch.scene == scene {
+        if &ch.scene == scene && ch.key.parameter == FadeParameter::FaderDb {
             let target_db = ch.exact_final_send();
             let _ = command_bus.set_gain(ch.group, ch.channel, target_db).await;
             completed.push((ch.group, ch.channel));

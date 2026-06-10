@@ -233,6 +233,79 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
 }
 
 #[tokio::test]
+async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (gain_tx, gain_rx) = std::sync::mpsc::channel();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+
+        let mut buf = [0_u8; 1024];
+        let mut decoder = FrameDecoder::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while std::time::Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for frame in decoder.push(&buf[..n]).unwrap() {
+                        let msg = decode_frame_payload(&frame).unwrap();
+                        if msg.address == "/Set/Track/Out/Gain" {
+                            let _ = gain_tx.send(msg.address);
+                        }
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => panic!("server read failed: {err}"),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::Pan,
+                target: -12.0,
+            }],
+            100,
+        ))
+        .await
+        .unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        gain_rx.recv_timeout(std::time::Duration::from_millis(100))
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        result.is_err(),
+        "pan-only fade should not send gain commands"
+    );
+}
+
+#[tokio::test]
 async fn engine_emits_fade_started_and_completed() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
