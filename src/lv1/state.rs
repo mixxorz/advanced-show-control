@@ -261,7 +261,12 @@ mod tests {
             },
         );
 
-        let event = rx.recv().await.unwrap();
+        let event = loop {
+            let event = rx.recv().await.unwrap();
+            if matches!(event, AppEvent::Lv1(_)) {
+                break event;
+            }
+        };
         match event {
             AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
                 assert_eq!(scene.index, 3);
