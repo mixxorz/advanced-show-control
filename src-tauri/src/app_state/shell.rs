@@ -72,7 +72,9 @@ impl ShellState {
     pub async fn snapshot(&self) -> AppViewState {
         let inner_guard = self.inner.lock().await;
         let inner = snapshot_inner(&inner_guard);
-        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed);
+        // +1 so versions start at 1: the UI starts at 0 and drops snapshots
+        // that are not strictly newer.
+        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed) + 1;
         drop(inner_guard);
         let show = self.show.get_snapshot().await;
         snapshot_from_parts(inner, show, state_version)
@@ -85,7 +87,7 @@ impl ShellState {
         }
 
         let inner = snapshot_inner(&inner_guard);
-        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed);
+        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed) + 1;
         drop(inner_guard);
         let show = self.show.get_snapshot().await;
         Some(snapshot_from_parts(inner, show, state_version))
@@ -670,6 +672,27 @@ mod tests {
         assert_eq!(snapshot.show_file_path, None);
         assert!(!snapshot.show_file_dirty);
         assert_eq!(snapshot.show_file_last_saved_at, None);
+    }
+
+    #[tokio::test]
+    async fn first_snapshot_state_version_is_greater_than_initial_ui_version() {
+        let state = ShellState::default();
+
+        // The UI starts at stateVersion 0 and drops snapshots that are not
+        // strictly newer, so the very first snapshot must already exceed 0.
+        let snapshot = state.snapshot().await;
+
+        assert!(snapshot.state_version > 0);
+    }
+
+    #[tokio::test]
+    async fn snapshot_state_versions_are_strictly_increasing() {
+        let state = ShellState::default();
+
+        let first = state.snapshot().await;
+        let second = state.snapshot().await;
+
+        assert!(second.state_version > first.state_version);
     }
 
     #[tokio::test]
