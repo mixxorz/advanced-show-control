@@ -86,6 +86,10 @@ pub fn spawn_scene_recall_fader(
     })
 }
 
+async fn is_generation_current(expected: u64, command_bus: &AppCommandBus) -> bool {
+    command_bus.get_generation().await == expected
+}
+
 async fn process_scene_observation(
     generation: u64,
     command_bus: &AppCommandBus,
@@ -103,14 +107,14 @@ async fn process_scene_observation(
         return;
     }
 
-    if command_bus.get_generation().await != generation {
+    if !is_generation_current(generation, command_bus).await {
         return;
     }
 
     let lv1_snapshot = match fresh_lv1_snapshot(command_bus, &observation.scene).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -132,7 +136,7 @@ async fn process_scene_observation(
     {
         Ok(scene_config) => scene_config,
         Err(err) => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -148,7 +152,7 @@ async fn process_scene_observation(
     let lockout = match command_bus.get_lockout().await {
         Ok(lockout) => lockout,
         Err(err) => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -169,7 +173,7 @@ async fn process_scene_observation(
     }) {
         RecallPolicyDecision::Start(fade_config) => {
             let scene_label = scene_label(&observation.scene);
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -200,7 +204,7 @@ async fn process_scene_observation(
             }
         }
         RecallPolicyDecision::Skip { reason } => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -211,7 +215,7 @@ async fn process_scene_observation(
             ));
         }
         RecallPolicyDecision::Blocked { reason } => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
