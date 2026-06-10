@@ -7,6 +7,12 @@ use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
 pub const MIN_SEND_DELTA_POS: f64 = 0.002;
+/// Minimum pan change (±100) required to send a SetPan command.
+pub const MIN_SEND_DELTA_PAN: f64 = 0.9;
+/// Minimum balance change (±100) required to send a SetBalance command.
+pub const MIN_SEND_DELTA_BALANCE: f64 = 0.9;
+/// Minimum width change required to send a SetWidth command.
+pub const MIN_SEND_DELTA_WIDTH: f64 = 0.028;
 /// Fader position deviation (0.0–1.0) required to declare a manual override.
 /// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
 pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
@@ -118,13 +124,17 @@ impl ActiveTarget {
     }
 
     fn should_send(&self, new_value: f64) -> bool {
-        if self.is_fader() {
-            let new_pos = db_to_pos(new_value);
-            let expected_pos = db_to_pos(self.expected_value);
-            (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS
-        } else {
-            (new_value - self.expected_value).abs() >= MIN_SEND_DELTA_POS
-        }
+        let delta_threshold = match self.key.parameter {
+            FadeParameter::FaderDb => {
+                let new_pos = db_to_pos(new_value);
+                let expected_pos = db_to_pos(self.expected_value);
+                return (new_pos - expected_pos).abs() >= MIN_SEND_DELTA_POS;
+            }
+            FadeParameter::Pan => MIN_SEND_DELTA_PAN,
+            FadeParameter::Balance => MIN_SEND_DELTA_BALANCE,
+            FadeParameter::Width => MIN_SEND_DELTA_WIDTH,
+        };
+        (new_value - self.expected_value).abs() >= delta_threshold
     }
 
     #[allow(dead_code)]
