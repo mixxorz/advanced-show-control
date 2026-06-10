@@ -89,55 +89,50 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
             });
         }
         if pan_enabled {
-            let Some(pan_mode) = stored.pan_mode.as_ref() else {
-                return blocked(format!(
-                    "scoped channel group={} channel={} has no stored pan mode",
-                    scoped.group, scoped.channel
-                ));
-            };
-            let Some(pan) = stored.pan else {
-                return blocked(format!(
-                    "scoped channel group={} channel={} has no stored pan value",
-                    scoped.group, scoped.channel
-                ));
-            };
-            targets.push(FadeTarget {
-                group: scoped.group,
-                channel: scoped.channel,
-                parameter: FadeParameter::Pan,
-                target: pan,
-            });
-            if *pan_mode == crate::lv1::types::PanMode::Stereo {
-                let Some(balance) = stored.balance else {
-                    return blocked(format!(
-                        "scoped channel group={} channel={} has no stored balance value",
-                        scoped.group, scoped.channel
-                    ));
-                };
-                let Some(width) = stored.width else {
-                    return blocked(format!(
-                        "scoped channel group={} channel={} has no stored width value",
-                        scoped.group, scoped.channel
-                    ));
-                };
-                targets.push(FadeTarget {
-                    group: scoped.group,
-                    channel: scoped.channel,
-                    parameter: FadeParameter::Balance,
-                    target: balance,
-                });
-                targets.push(FadeTarget {
-                    group: scoped.group,
-                    channel: scoped.channel,
-                    parameter: FadeParameter::Width,
-                    target: width,
-                });
+            match stored.pan_mode.as_ref() {
+                Some(crate::lv1::types::PanMode::None) | None => {}
+                Some(crate::lv1::types::PanMode::Mono) => {
+                    if let Some(pan) = stored.pan {
+                        targets.push(FadeTarget {
+                            group: scoped.group,
+                            channel: scoped.channel,
+                            parameter: FadeParameter::Pan,
+                            target: pan,
+                        });
+                    }
+                }
+                Some(crate::lv1::types::PanMode::Stereo) => {
+                    if let Some(pan) = stored.pan {
+                        targets.push(FadeTarget {
+                            group: scoped.group,
+                            channel: scoped.channel,
+                            parameter: FadeParameter::Pan,
+                            target: pan,
+                        });
+                    }
+                    if let Some(balance) = stored.balance {
+                        targets.push(FadeTarget {
+                            group: scoped.group,
+                            channel: scoped.channel,
+                            parameter: FadeParameter::Balance,
+                            target: balance,
+                        });
+                    }
+                    if let Some(width) = stored.width {
+                        targets.push(FadeTarget {
+                            group: scoped.group,
+                            channel: scoped.channel,
+                            parameter: FadeParameter::Width,
+                            target: width,
+                        });
+                    }
+                }
             }
         }
     }
 
     if targets.is_empty() {
-        return blocked("no scoped targets");
+        return skipped("no applicable targets");
     }
     RecallPolicyDecision::Start(FadeConfig {
         scene: FadeSceneIdentity {
@@ -452,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn pan_only_stereo_missing_balance_blocks() {
+    fn pan_only_stereo_missing_balance_uses_available_targets() {
         let mut scene_config = config(
             1000,
             None,
@@ -490,13 +485,32 @@ mod tests {
             scene_config: Some(scene_config),
         });
 
+        let RecallPolicyDecision::Start(fade) = decision else {
+            panic!("unexpected decision: {decision:?}");
+        };
+        assert_eq!(fade.targets.len(), 2);
+        assert!(fade.targets.iter().any(|target| {
+            target.group == 0
+                && target.channel == 2
+                && target.parameter == FadeParameter::Pan
+                && target.target == 0.25
+        }));
+        assert!(fade.targets.iter().any(|target| {
+            target.group == 0
+                && target.channel == 2
+                && target.parameter == FadeParameter::Width
+                && target.target == 1.0
+        }));
         assert!(
-            matches!(decision, RecallPolicyDecision::Blocked { reason } if reason == "scoped channel group=0 channel=2 has no stored balance value")
+            !fade
+                .targets
+                .iter()
+                .any(|target| target.parameter == FadeParameter::Balance)
         );
     }
 
     #[test]
-    fn pan_only_stereo_missing_width_blocks() {
+    fn pan_only_stereo_missing_width_uses_available_targets() {
         let mut scene_config = config(
             1000,
             None,
@@ -534,8 +548,108 @@ mod tests {
             scene_config: Some(scene_config),
         });
 
+        let RecallPolicyDecision::Start(fade) = decision else {
+            panic!("unexpected decision: {decision:?}");
+        };
+        assert_eq!(fade.targets.len(), 2);
+        assert!(fade.targets.iter().any(|target| {
+            target.group == 0
+                && target.channel == 2
+                && target.parameter == FadeParameter::Pan
+                && target.target == 0.25
+        }));
+        assert!(fade.targets.iter().any(|target| {
+            target.group == 0
+                && target.channel == 2
+                && target.parameter == FadeParameter::Balance
+                && target.target == -0.5
+        }));
         assert!(
-            matches!(decision, RecallPolicyDecision::Blocked { reason } if reason == "scoped channel group=0 channel=2 has no stored width value")
+            !fade
+                .targets
+                .iter()
+                .any(|target| target.parameter == FadeParameter::Width)
+        );
+    }
+
+    #[test]
+    fn pan_only_no_pan_mode_skips_without_blocking() {
+        let mut scene_config = config(
+            1000,
+            None,
+            None,
+            None,
+            None,
+            Some(crate::lv1::types::PanMode::None),
+        );
+        scene_config.scope_toggles.faders = false;
+        scene_config.scope_toggles.pan = true;
+
+        let decision = decide_scene_recall(RecallPolicyInput {
+            recalled_scene: SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            lv1_snapshot: snapshot(
+                Some(SceneState {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }),
+                vec![ChannelInfo {
+                    group: 0,
+                    channel: 2,
+                    name: "Ch 2".to_string(),
+                    gain_db: 0.0,
+                    muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: Some(crate::lv1::types::PanMode::None),
+                }],
+            ),
+            lockout: false,
+            scene_config: Some(scene_config),
+        });
+
+        assert!(
+            matches!(decision, RecallPolicyDecision::Skip { reason } if reason == "no applicable targets")
+        );
+    }
+
+    #[test]
+    fn fader_scope_still_blocks_missing_fader_value() {
+        let mut scene_config = config(1000, None, None, None, None, None);
+        scene_config.scope_toggles.faders = true;
+        scene_config.scope_toggles.pan = false;
+
+        let decision = decide_scene_recall(RecallPolicyInput {
+            recalled_scene: SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            lv1_snapshot: snapshot(
+                Some(SceneState {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }),
+                vec![ChannelInfo {
+                    group: 0,
+                    channel: 2,
+                    name: "Ch 2".to_string(),
+                    gain_db: 0.0,
+                    muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }],
+            ),
+            lockout: false,
+            scene_config: Some(scene_config),
+        });
+
+        assert!(
+            matches!(decision, RecallPolicyDecision::Blocked { reason } if reason == "scoped channel group=0 channel=2 has no stored fader value")
         );
     }
 
