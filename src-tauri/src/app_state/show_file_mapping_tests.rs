@@ -434,3 +434,137 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
     assert_eq!(snapshot.scene_configs[0].channel_configs.len(), 1);
     assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 1);
 }
+
+#[test]
+fn show_file_structural_round_trip_test() {
+    let original = ShowFile {
+        schema_version: 1,
+        app_version: "0.1.0".to_string(),
+        saved_at: "2026-06-10T12:00:00Z".to_string(),
+        safety: crate::show_file::ShowFileSafety { lockout: true },
+        scene_configs: vec![
+            ShowFileSceneConfig {
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 5000,
+                channel_configs: vec![
+                    ShowFileChannelConfig {
+                        group: 0,
+                        channel: 1,
+                        fader_db: Some(-12.5),
+                        pan: Some(-15.0),
+                        balance: Some(2.5),
+                        width: Some(0.8),
+                        pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+                    },
+                    ShowFileChannelConfig {
+                        group: 1,
+                        channel: 3,
+                        fader_db: Some(-6.0),
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    },
+                ],
+                scoped_channels: vec![
+                    ShowFileChannelRef {
+                        group: 0,
+                        channel: 1,
+                    },
+                    ShowFileChannelRef {
+                        group: 1,
+                        channel: 3,
+                    },
+                ],
+                scope_toggles: crate::show_file::ShowFileSceneScopeToggles {
+                    faders: true,
+                    pan: true,
+                },
+            },
+            ShowFileSceneConfig {
+                scene_index: 2,
+                scene_name: "Verse".to_string(),
+                duration_ms: 10000,
+                channel_configs: vec![ShowFileChannelConfig {
+                    group: 0,
+                    channel: 2,
+                    fader_db: Some(-9.0),
+                    pan: Some(5.5),
+                    balance: Some(-1.0),
+                    width: Some(1.5),
+                    pan_mode: Some(advanced_show_control::lv1::types::PanMode::Mono),
+                }],
+                scoped_channels: vec![ShowFileChannelRef {
+                    group: 0,
+                    channel: 2,
+                }],
+                scope_toggles: crate::show_file::ShowFileSceneScopeToggles {
+                    faders: false,
+                    pan: false,
+                },
+            },
+        ],
+    };
+
+    let json = serde_json::to_string(&original).expect("Failed to serialize");
+    let deserialized: ShowFile = serde_json::from_str(&json).expect("Failed to deserialize");
+
+    assert_eq!(original, deserialized);
+    assert_eq!(deserialized.schema_version, 1);
+    assert_eq!(deserialized.app_version, "0.1.0");
+    assert_eq!(deserialized.saved_at, "2026-06-10T12:00:00Z");
+    assert!(deserialized.safety.lockout);
+    assert_eq!(deserialized.scene_configs.len(), 2);
+
+    let scene_1 = &deserialized.scene_configs[0];
+    assert_eq!(scene_1.scene_index, 1);
+    assert_eq!(scene_1.scene_name, "Intro");
+    assert_eq!(scene_1.duration_ms, 5000);
+    assert_eq!(scene_1.channel_configs.len(), 2);
+    assert_eq!(scene_1.scoped_channels.len(), 2);
+    assert!(scene_1.scope_toggles.faders);
+    assert!(scene_1.scope_toggles.pan);
+
+    let channel_1_1 = &scene_1.channel_configs[0];
+    assert_eq!(channel_1_1.group, 0);
+    assert_eq!(channel_1_1.channel, 1);
+    assert_eq!(channel_1_1.fader_db, Some(-12.5));
+    assert_eq!(channel_1_1.pan, Some(-15.0));
+    assert_eq!(channel_1_1.balance, Some(2.5));
+    assert_eq!(channel_1_1.width, Some(0.8));
+    assert_eq!(
+        channel_1_1.pan_mode,
+        Some(advanced_show_control::lv1::types::PanMode::Stereo)
+    );
+
+    let channel_1_2 = &scene_1.channel_configs[1];
+    assert_eq!(channel_1_2.group, 1);
+    assert_eq!(channel_1_2.channel, 3);
+    assert_eq!(channel_1_2.fader_db, Some(-6.0));
+    assert!(channel_1_2.pan.is_none());
+    assert!(channel_1_2.balance.is_none());
+    assert!(channel_1_2.width.is_none());
+    assert!(channel_1_2.pan_mode.is_none());
+
+    let scene_2 = &deserialized.scene_configs[1];
+    assert_eq!(scene_2.scene_index, 2);
+    assert_eq!(scene_2.scene_name, "Verse");
+    assert_eq!(scene_2.duration_ms, 10000);
+    assert_eq!(scene_2.channel_configs.len(), 1);
+    assert_eq!(scene_2.scoped_channels.len(), 1);
+    assert!(!scene_2.scope_toggles.faders);
+    assert!(!scene_2.scope_toggles.pan);
+
+    let channel_2_1 = &scene_2.channel_configs[0];
+    assert_eq!(channel_2_1.group, 0);
+    assert_eq!(channel_2_1.channel, 2);
+    assert_eq!(channel_2_1.fader_db, Some(-9.0));
+    assert_eq!(channel_2_1.pan, Some(5.5));
+    assert_eq!(channel_2_1.balance, Some(-1.0));
+    assert_eq!(channel_2_1.width, Some(1.5));
+    assert_eq!(
+        channel_2_1.pan_mode,
+        Some(advanced_show_control::lv1::types::PanMode::Mono)
+    );
+}
