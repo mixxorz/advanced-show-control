@@ -9,6 +9,7 @@ use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::EngineState;
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
 use crate::fade::types::{FadeParameter, FadeTarget};
+use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -59,8 +60,14 @@ async fn run_engine(
                         let duration = Duration::from_millis(config.duration_ms);
 
                         if duration.is_zero() {
+                            let writes = config
+                                .targets
+                                .iter()
+                                .map(|target| build_parameter_write(target.group, target.channel, target.parameter, target.target))
+                                .collect();
+                            send_batch(&command_bus, writes).await;
+
                             for target in &config.targets {
-                                send_target(&command_bus, target.group, target.channel, target.parameter, target.target).await;
                                 state.channels.retain(|ch| ch.key != target.key());
                                 state.fan_out(FadeEvent::ChannelCompleted {
                                     group: target.group,
@@ -124,20 +131,23 @@ async fn run_engine(
                 let now = Instant::now();
                 let mut done_indices = Vec::new();
                 let mut completed_events = Vec::new();
+                let mut writes = Vec::new();
 
                 for (i, ch) in state.channels.iter_mut().enumerate() {
                     if ch.is_done(now) {
                         let target_db = ch.exact_final_send();
-                        send_target(&command_bus, ch.group, ch.channel, ch.key.parameter, target_db).await;
+                        writes.push(build_parameter_write(ch.group, ch.channel, ch.key.parameter, target_db));
                         completed_events.push(FadeEvent::ChannelCompleted { group: ch.group, channel: ch.channel });
                         done_indices.push(i);
                         continue;
                     }
 
                     if let Some(new_value) = ch.next_send(now) {
-                        send_target(&command_bus, ch.group, ch.channel, ch.key.parameter, new_value).await;
+                        writes.push(build_parameter_write(ch.group, ch.channel, ch.key.parameter, new_value));
                     }
                 }
+
+                send_batch(&command_bus, writes).await;
 
                 for i in done_indices.into_iter().rev() {
                     state.channels.remove(i);
@@ -207,19 +217,27 @@ fn live_value_for_snapshot(
     }
 }
 
-async fn send_target(
-    command_bus: &AppCommandBus,
+fn build_parameter_write(
     group: i32,
     channel: i32,
     parameter: FadeParameter,
     value: f64,
-) {
-    let _ = match parameter {
-        FadeParameter::FaderDb => command_bus.set_gain(group, channel, value).await,
-        FadeParameter::Pan => command_bus.set_pan(group, channel, value).await,
-        FadeParameter::Balance => command_bus.set_balance(group, channel, value).await,
-        FadeParameter::Width => command_bus.set_width(group, channel, value).await,
-    };
+) -> Lv1ParameterWrite {
+    Lv1ParameterWrite {
+        group,
+        channel,
+        parameter: match parameter {
+            FadeParameter::FaderDb => Lv1WriteParameter::FaderDb,
+            FadeParameter::Pan => Lv1WriteParameter::Pan,
+            FadeParameter::Balance => Lv1WriteParameter::Balance,
+            FadeParameter::Width => Lv1WriteParameter::Width,
+        },
+        value,
+    }
+}
+
+async fn send_batch(command_bus: &AppCommandBus, writes: Vec<Lv1ParameterWrite>) {
+    let _ = command_bus.write_batch(writes).await;
 }
 
 fn cancel_pan_family_overrides(

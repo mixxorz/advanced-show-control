@@ -6,6 +6,8 @@ use advanced_show_control::fade::types::{
     FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget, FadeTargetKey,
 };
 use advanced_show_control::lv1::actor::spawn_actor;
+use advanced_show_control::lv1::commands::{Lv1Command, Lv1WriteParameter};
+use advanced_show_control::lv1::handle::Lv1ActorHandle;
 use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::commands::AppCommandBus;
@@ -136,6 +138,157 @@ async fn spawn_runtime_for_test(
     let engine = spawn_engine(bus.clone(), event_bus);
     bus.set_fade(Some(engine.clone())).await;
     (bus, engine)
+}
+
+#[tokio::test]
+async fn zero_duration_fade_sends_all_parameters_in_one_batch() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+    let lv1 = Lv1ActorHandle::new(tx);
+    let event_bus = AppEventBus::default();
+    let (command_bus, engine) = spawn_runtime_for_test(lv1, event_bus).await;
+    let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+
+    tokio::spawn(async move {
+        let mut result_tx = Some(result_tx);
+        while let Some(command) = rx.recv().await {
+            match command {
+                Lv1Command::GetState { reply } => {
+                    let _ = reply.send(advanced_show_control::lv1::types::Lv1StateSnapshot {
+                        connection: advanced_show_control::lv1::types::ConnectionStatus::Connected,
+                        scene: None,
+                        scene_list: vec![],
+                        channels: vec![],
+                    });
+                }
+                Lv1Command::WriteBatch(writes) => {
+                    let _ = result_tx.take().unwrap().send(Some(writes));
+                    break;
+                }
+                other => {
+                    let _ = result_tx.take().unwrap().send(Some(vec![match other {
+                        Lv1Command::SetGain {
+                            group,
+                            channel,
+                            gain_db,
+                            ..
+                        } => advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                            group,
+                            channel,
+                            parameter: Lv1WriteParameter::FaderDb,
+                            value: gain_db,
+                        },
+                        Lv1Command::SetPan {
+                            group,
+                            channel,
+                            value,
+                            ..
+                        } => advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                            group,
+                            channel,
+                            parameter: Lv1WriteParameter::Pan,
+                            value,
+                        },
+                        Lv1Command::SetBalance {
+                            group,
+                            channel,
+                            value,
+                            ..
+                        } => advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                            group,
+                            channel,
+                            parameter: Lv1WriteParameter::Balance,
+                            value,
+                        },
+                        Lv1Command::SetWidth {
+                            group,
+                            channel,
+                            value,
+                            ..
+                        } => advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                            group,
+                            channel,
+                            parameter: Lv1WriteParameter::Width,
+                            value,
+                        },
+                        _ => unreachable!(),
+                    }]));
+                    break;
+                }
+            }
+        }
+    });
+
+    engine
+        .start_fade(fade_config(
+            scene(1, "Intro"),
+            vec![
+                FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -12.5,
+                },
+                FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Pan,
+                    target: 15.0,
+                },
+                FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Balance,
+                    target: -10.0,
+                },
+                FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Width,
+                    target: 0.75,
+                },
+            ],
+            0,
+        ))
+        .await
+        .unwrap();
+
+    let first_write = tokio::time::timeout(std::time::Duration::from_secs(1), result_rx)
+        .await
+        .unwrap()
+        .unwrap();
+
+    let writes = first_write.expect("expected first LV1 write");
+    assert_eq!(
+        writes,
+        vec![
+            advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::FaderDb,
+                value: -12.5,
+            },
+            advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::Pan,
+                value: 15.0,
+            },
+            advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::Balance,
+                value: -10.0,
+            },
+            advanced_show_control::lv1::commands::Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::Width,
+                value: 0.75,
+            },
+        ]
+    );
+
+    let _ = command_bus;
 }
 
 #[tokio::test]
