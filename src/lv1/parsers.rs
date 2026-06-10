@@ -4,7 +4,8 @@ use super::types::{ChannelInfo, SceneListEntry};
 
 // Each channel record in the /Channels batch has 19 fields:
 // [0] s:name, [1] i:group, [2] i:channel, [3] d:gain_db,
-// [4..18] other fields (phantom sends, colors, flags — not used in Phase 2)
+// [4] stereo balance/rotation initial value for stereo channels,
+// [16] pan mode (1 mono, 2 stereo), [18] pan degrees.
 const CHANNELS_RECORD_STRIDE: usize = 19;
 
 pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'static str> {
@@ -37,16 +38,32 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
             OscArg::Double(v) => v,
             _ => return Err("channel gain must be a double"),
         };
+        let pan_mode = match args[base + 16] {
+            OscArg::Int(1) => Some(crate::lv1::types::PanMode::Mono),
+            OscArg::Int(2) => Some(crate::lv1::types::PanMode::Stereo),
+            OscArg::Int(_) => None,
+            _ => return Err("channel pan mode must be an int"),
+        };
+        let balance = match (pan_mode.as_ref(), &args[base + 4]) {
+            (Some(crate::lv1::types::PanMode::Stereo), OscArg::Double(v)) => Some(*v),
+            (Some(crate::lv1::types::PanMode::Stereo), _) => None,
+            _ => None,
+        };
+        let pan = match args[base + 18] {
+            OscArg::Double(v) => Some(v),
+            OscArg::Int(_) => None,
+            _ => return Err("channel pan must be numeric"),
+        };
         channels.push(ChannelInfo {
             group,
             channel,
             name,
             gain_db,
             muted: false,
-            pan: None,
-            balance: None,
+            pan,
+            balance,
             width: None,
-            pan_mode: None,
+            pan_mode,
         });
     }
 
@@ -85,23 +102,30 @@ pub fn parse_scene_list(args: &[OscArg]) -> Result<Vec<SceneListEntry>, &'static
 mod tests {
     use super::*;
 
-    fn make_channel_args(channels: &[(&str, i32, i32, f64)]) -> Vec<OscArg> {
+    fn make_channel_args(channels: &[(&str, i32, i32, f64, f64, i32, f64)]) -> Vec<OscArg> {
         let mut args = vec![OscArg::Int(channels.len() as i32)];
-        for (name, group, channel, gain_db) in channels {
+        for (name, group, channel, gain_db, balance, pan_mode, pan) in channels {
             args.push(OscArg::String(name.to_string()));
             args.push(OscArg::Int(*group));
             args.push(OscArg::Int(*channel));
             args.push(OscArg::Double(*gain_db));
-            for _ in 0..15 {
+            args.push(OscArg::Double(*balance));
+            for _ in 0..11 {
                 args.push(OscArg::Int(0));
             }
+            args.push(OscArg::Int(*pan_mode));
+            args.push(OscArg::Int(0));
+            args.push(OscArg::Double(*pan));
         }
         args
     }
 
     #[test]
     fn parses_channels_batch() {
-        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1), ("Fx 1", 2, 0, -12.0)]);
+        let args = make_channel_args(&[
+            ("Channel 1", 0, 0, -9.1, 0.0, 1, 0.0),
+            ("Fx 1", 2, 0, -12.0, 0.0, 2, -12.5),
+        ]);
         let channels = parse_channels_batch(&args).unwrap();
         assert_eq!(channels.len(), 2);
         assert_eq!(
@@ -112,10 +136,10 @@ mod tests {
                 name: "Channel 1".to_string(),
                 gain_db: -9.1,
                 muted: false,
-                pan: None,
+                pan: Some(0.0),
                 balance: None,
                 width: None,
-                pan_mode: None,
+                pan_mode: Some(crate::lv1::types::PanMode::Mono),
             }
         );
         assert_eq!(
@@ -126,10 +150,10 @@ mod tests {
                 name: "Fx 1".to_string(),
                 gain_db: -12.0,
                 muted: false,
-                pan: None,
-                balance: None,
+                pan: Some(-12.5),
+                balance: Some(0.0),
                 width: None,
-                pan_mode: None,
+                pan_mode: Some(crate::lv1::types::PanMode::Stereo),
             }
         );
     }
@@ -186,8 +210,15 @@ mod tests {
 
     #[test]
     fn channels_default_to_unmuted_when_batch_has_no_mute_field() {
-        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1)]);
+        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1, 0.0, 1, 0.0)]);
         let channels = parse_channels_batch(&args).unwrap();
         assert!(!channels[0].muted);
+    }
+
+    #[test]
+    fn does_not_treat_mono_field_four_as_balance() {
+        let args = make_channel_args(&[("Channel 1", 0, 0, -9.1, 1.5, 1, 0.0)]);
+        let channels = parse_channels_batch(&args).unwrap();
+        assert_eq!(channels[0].balance, None);
     }
 }

@@ -307,6 +307,7 @@ impl ShellState {
                     existing.muted = *muted;
                 }
             }
+            Lv1Event::ChannelPanChanged { .. } => {}
             Lv1Event::ChannelTopologyChanged(channels) => {
                 ensure_lv1_snapshot(&mut inner).channels = channels.clone();
                 inner.push_log(
