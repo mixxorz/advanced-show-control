@@ -86,10 +86,12 @@ async fn run_engine(
                             continue;
                         }
 
+                        let mut scheduled_fader_target = false;
                         for target in &config.targets {
                             if target.parameter != FadeParameter::FaderDb {
                                 continue;
                             }
+                            scheduled_fader_target = true;
                             let start_db = state
                                 .channels
                                 .iter()
@@ -116,6 +118,11 @@ async fn run_engine(
                                 duration,
                                 started_at: now,
                             }));
+                        }
+
+                        if !scheduled_fader_target {
+                            let _ = reply.send(Ok(()));
+                            continue;
                         }
 
                         let mut interval = tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));

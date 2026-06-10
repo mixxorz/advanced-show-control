@@ -275,6 +275,7 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
     let event_bus = AppEventBus::default();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -303,6 +304,21 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
         result.is_err(),
         "pan-only fade should not send gain commands"
     );
+    no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(150)).await;
+
+    let started = tokio::time::timeout(std::time::Duration::from_millis(150), async {
+        loop {
+            match app_events.recv().await {
+                Ok(AppEvent::Fade(FadeEvent::FadeStarted)) => return true,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+    assert!(!started, "pan-only fade should not emit FadeStarted");
 }
 
 #[tokio::test]
