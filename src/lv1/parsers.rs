@@ -51,7 +51,7 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
         };
         let pan = match args[base + 18] {
             OscArg::Double(v) => Some(v),
-            OscArg::Int(_) => None,
+            OscArg::Int(v) => Some(f64::from(v)),
             _ => return Err("channel pan must be numeric"),
         };
         channels.push(ChannelInfo {
@@ -156,6 +156,16 @@ mod tests {
                 pan_mode: Some(crate::lv1::types::PanMode::Stereo),
             }
         );
+    }
+
+    #[test]
+    fn parses_integer_pan_degrees_in_channels_batch() {
+        let mut args = make_channel_args(&[("Channel 1", 0, 0, -9.1, 0.0, 1, 0.0)]);
+        args[1 + 18] = OscArg::Int(-12);
+
+        let channels = parse_channels_batch(&args).unwrap();
+
+        assert_eq!(channels[0].pan, Some(-12.0));
     }
 
     #[test]
