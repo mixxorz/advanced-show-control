@@ -65,7 +65,7 @@ async fn run_engine(
                                 .iter()
                                 .map(|target| build_parameter_write(target.group, target.channel, target.parameter, target.target))
                                 .collect();
-                            send_batch(&command_bus, writes).await;
+                            send_batch(&command_bus, &state.event_bus, writes).await;
 
                             for target in &config.targets {
                                 state.channels.retain(|ch| ch.key != target.key());
@@ -148,7 +148,7 @@ async fn run_engine(
                 }
 
                 if !writes.is_empty() {
-                    send_batch(&command_bus, writes).await;
+                    send_batch(&command_bus, &state.event_bus, writes).await;
                 }
 
                 for i in done_indices.into_iter().rev() {
@@ -177,6 +177,7 @@ async fn run_engine(
 
                             if !state.is_active() {
                                 tick_interval = None;
+                                state.fan_out(FadeEvent::FadeCompleted);
                             }
                         }
                     }
@@ -189,7 +190,7 @@ async fn run_engine(
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::WidthChanged { group, channel, width })) => {
                         cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Width, width, &mut tick_interval);
                     }
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected)) => {
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected { .. })) => {
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
@@ -238,8 +239,16 @@ fn build_parameter_write(
     }
 }
 
-async fn send_batch(command_bus: &AppCommandBus, writes: Vec<Lv1ParameterWrite>) {
-    let _ = command_bus.write_batch(writes).await;
+async fn send_batch(
+    command_bus: &AppCommandBus,
+    event_bus: &AppEventBus,
+    writes: Vec<Lv1ParameterWrite>,
+) {
+    if let Err(err) = command_bus.write_batch(writes).await {
+        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed {
+            reason: format!("{err:?}"),
+        }));
+    }
 }
 
 fn cancel_pan_family_overrides(
@@ -269,6 +278,7 @@ fn cancel_pan_family_overrides(
 
     if !state.is_active() {
         *tick_interval = None;
+        state.fan_out(FadeEvent::FadeCompleted);
     }
 }
 

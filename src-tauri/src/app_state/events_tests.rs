@@ -70,8 +70,7 @@ async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_emp
             lockout: false,
             scene_configs: vec![scene_config(1, "Intro", Vec::new(), Vec::new())],
         })
-        .await
-        .unwrap();
+        .await;
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("1::Intro".to_string());
@@ -102,8 +101,7 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
             lockout: false,
             scene_configs: vec![scene_config(2, "Verse", Vec::new(), Vec::new())],
         })
-        .await
-        .unwrap();
+        .await;
     {
         let mut inner = state.inner.lock().await;
         inner.selected_scene_id = Some("2::Verse".to_string());
@@ -133,6 +131,31 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
 }
 
 #[tokio::test]
+async fn stale_initial_connection_scene_list_does_not_reconcile_show_configs() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    let _ = state.disconnect().await;
+
+    let snapshot = state
+        .begin_connection_for_generation(
+            generation,
+            Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }],
+                channels: Vec::new(),
+            },
+        )
+        .await;
+
+    assert!(snapshot.is_none());
+    assert_eq!(state.snapshot().await.scene_configs.len(), 0);
+}
+
+#[tokio::test]
 async fn lv1_disconnected_event_snapshot_includes_show_configs() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
@@ -153,11 +176,15 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
             }],
         )
         .await
-        .unwrap()
         .unwrap();
 
     let snapshot = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("disconnect should apply to current generation");
 
@@ -344,8 +371,7 @@ async fn scene_list_event_logs_reconciliation_preview() {
                 scene_config(1, "Verse", Vec::new(), Vec::new()),
             ],
         })
-        .await
-        .unwrap();
+        .await;
     state
         .begin_connection_for_generation(
             generation,
@@ -410,7 +436,12 @@ async fn lv1_disconnected_event_enters_reconnect_state() {
         .await;
     let (generation, _) = state.begin_connecting().await;
     let snapshot = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .unwrap();
 
@@ -439,7 +470,12 @@ async fn lv1_connected_event_refreshes_discovered_row_status() {
         .await;
     let (generation, _) = state.begin_connecting().await;
     let disconnected = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("disconnect should apply to current generation");
     assert_ne!(
@@ -472,7 +508,12 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
     let (generation, _) = state.begin_connecting().await;
 
     let first_disconnect = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("first disconnect should apply to current generation");
     assert!(first_disconnect.reconnect.active);
@@ -485,7 +526,12 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
     assert!(!connected.reconnect.active);
 
     let second_disconnect = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("second disconnect should apply to current generation");
 
@@ -499,7 +545,12 @@ async fn lv1_disconnected_event_without_connected_identity_stays_out_of_reconnec
     let (generation, _) = state.begin_connecting().await;
 
     let snapshot = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("event should apply to current generation");
 
@@ -770,8 +821,7 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
                 }],
             )],
         })
-        .await
-        .unwrap();
+        .await;
 
     let snapshot = state
         .apply_lv1_event_for_generation(

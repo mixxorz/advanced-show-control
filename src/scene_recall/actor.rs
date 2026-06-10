@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use crate::lv1::events::Lv1Event;
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
@@ -33,9 +31,22 @@ pub fn spawn_scene_recall_fader(
 
     tokio::spawn(async move {
         let mut recall_state = SceneRecallState::default();
-        let mut duration_zero_logged: HashSet<String> = HashSet::new();
         let mut pending_scene: Option<PendingSceneObservation> = None;
 
+        // Recall timing windows:
+        //
+        // - 25 ms settle:         Allows LV1 scene-state to stabilize after a scene change event.
+        //                         The scene name/index can arrive in multiple frames; we wait for
+        //                         the dust to settle before evaluating recall policy.
+        //
+        // - 500 ms edit suppression: After the scene list is modified, suppress recall to avoid
+        //                         triggering fades against a partially-edited show file.
+        //
+        // - 2 s arming delay:     The first scene seen after arming is treated as the baseline
+        //                         (current scene at arm time), not a scene change to recall.
+        //
+        // - 500 ms repeat delay:  Prevents the same scene from triggering two consecutive recalls
+        //                         if a bounce or duplicate event arrives.
         loop {
             if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
                 tokio::select! {
@@ -61,7 +72,6 @@ pub fn spawn_scene_recall_fader(
                                 &command_bus,
                                 &event_bus,
                                 &mut recall_state,
-                                &mut duration_zero_logged,
                                 observation,
                             ).await;
                         }
@@ -90,12 +100,15 @@ pub fn spawn_scene_recall_fader(
     })
 }
 
+async fn is_generation_current(expected: u64, command_bus: &AppCommandBus) -> bool {
+    command_bus.get_generation().await == expected
+}
+
 async fn process_scene_observation(
     generation: u64,
     command_bus: &AppCommandBus,
     event_bus: &AppEventBus,
     recall_state: &mut SceneRecallState,
-    duration_zero_logged: &mut HashSet<String>,
     observation: PendingSceneObservation,
 ) {
     let now = tokio::time::Instant::now();
@@ -108,14 +121,14 @@ async fn process_scene_observation(
         return;
     }
 
-    if command_bus.get_generation().await != generation {
+    if !is_generation_current(generation, command_bus).await {
         return;
     }
 
     let lv1_snapshot = match fresh_lv1_snapshot(command_bus, &observation.scene).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -128,11 +141,16 @@ async fn process_scene_observation(
         }
     };
 
-    let scene_id = format!("{}::{}", observation.scene.index, observation.scene.name);
-    let scene_config = match command_bus.get_scene_config(scene_id.clone()).await {
+    let scene_config = match command_bus
+        .get_scene_config(format!(
+            "{}::{}",
+            observation.scene.index, observation.scene.name
+        ))
+        .await
+    {
         Ok(scene_config) => scene_config,
         Err(err) => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -148,7 +166,7 @@ async fn process_scene_observation(
     let lockout = match command_bus.get_lockout().await {
         Ok(lockout) => lockout,
         Err(err) => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -169,7 +187,7 @@ async fn process_scene_observation(
     }) {
         RecallPolicyDecision::Start(fade_config) => {
             let scene_label = scene_label(&observation.scene);
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -183,36 +201,35 @@ async fn process_scene_observation(
                     scene_label: scene_label.clone(),
                 },
             ));
-            if command_bus.get_generation().await != generation {
-                return;
-            }
-            if command_bus.start_fade(fade_config).await.is_err() {
-                if command_bus.get_generation().await != generation {
-                    return;
+            match command_bus
+                .start_fade_if_generation(generation, fade_config)
+                .await
+            {
+                Ok(()) => (),
+                Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
+                Err(err) => {
+                    event_bus.publish(AppEvent::SceneRecall(
+                        crate::scene_recall::events::SceneRecallEvent::Blocked {
+                            scene_label,
+                            reason: format!("failed to start fade: {err:?}"),
+                        },
+                    ));
                 }
-                event_bus.publish(AppEvent::SceneRecall(
-                    crate::scene_recall::events::SceneRecallEvent::Blocked {
-                        scene_label,
-                        reason: "failed to start fade".to_string(),
-                    },
-                ));
             }
         }
         RecallPolicyDecision::Skip { reason } => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            if reason != "duration is 0" || duration_zero_logged.insert(scene_id) {
-                event_bus.publish(AppEvent::SceneRecall(
-                    crate::scene_recall::events::SceneRecallEvent::Skipped {
-                        scene_label: scene_label(&observation.scene),
-                        reason,
-                    },
-                ));
-            }
+            event_bus.publish(AppEvent::SceneRecall(
+                crate::scene_recall::events::SceneRecallEvent::Skipped {
+                    scene_label: scene_label(&observation.scene),
+                    reason,
+                },
+            ));
         }
         RecallPolicyDecision::Blocked { reason } => {
-            if command_bus.get_generation().await != generation {
+            if !is_generation_current(generation, command_bus).await {
                 return;
             }
             event_bus.publish(AppEvent::SceneRecall(
@@ -394,19 +411,95 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn stale_generation_does_not_start_fade() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let command_bus = AppCommandBus::new(event_bus.clone());
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, _fade_rx, fade_starts) = fake_fade_handle();
         command_bus.set_lv1(Some(lv1)).await;
+        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
+
+        // Bump generation BEFORE the scene change — any fade started after this is stale
         command_bus.set_generation(2).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        // Advance past the 25 ms settle delay so the actor processes the scene change
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        // Assert no fade was started (generation guard should have blocked it)
+        assert_eq!(
+            fade_starts.load(Ordering::SeqCst),
+            0,
+            "expected zero fades but generation guard failed"
+        );
+
+        // Assert no StartRequested event was published
+        let mut saw_start_requested = false;
+        while let Ok(event) = events.try_recv() {
+            if matches!(
+                event,
+                AppEvent::SceneRecall(
+                    crate::scene_recall::events::SceneRecallEvent::StartRequested { .. }
+                )
+            ) {
+                saw_start_requested = true;
+            }
+        }
+        assert!(
+            !saw_start_requested,
+            "StartRequested published despite stale generation"
+        );
+
+        handle.abort();
+        command_bus.set_lv1(None).await;
+        server.await.unwrap();
+    }
+
+    // The generation guard is checked before start_fade, but there is still a window between
+    // the guard check and the actual start_fade call. This test pins that the guard fires
+    // even when generation flips after the scene change event is published.
+    #[tokio::test(start_paused = true)]
+    async fn generation_flip_between_scene_change_and_fade_start_blocks_fade() {
+        let event_bus = AppEventBus::default();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        command_bus.set_generation(1).await;
+        let show = show_handle();
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, _fade_rx, fade_starts) = fake_fade_handle();
+        command_bus.set_lv1(Some(lv1)).await;
+        command_bus.set_fade(Some(fade)).await;
+        command_bus.set_show(Some(show.clone())).await;
+        seed_show(&show).await;
+
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        // Publish the scene change with generation still valid
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        yield_to_actor().await;
+
+        // Flip generation while the actor is settling (before it dispatches start_fade)
+        command_bus.set_generation(2).await;
+
+        // Now advance past the settle delay — policy will decide Start but generation is stale
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        assert_eq!(
+            fade_starts.load(Ordering::SeqCst),
+            0,
+            "fade started despite generation flip before dispatch"
+        );
 
         handle.abort();
         command_bus.set_lv1(None).await;
@@ -1022,7 +1115,7 @@ mod tests {
                 scope_toggles: SceneScopeToggles::default(),
             }],
         };
-        handle.replace_snapshot(snapshot).await.unwrap();
+        handle.replace_snapshot(snapshot).await;
     }
 
     fn fake_fade_handle() -> (

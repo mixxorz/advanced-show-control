@@ -25,6 +25,8 @@ pub enum AppCommandError {
     ReplyChannelClosed,
     #[error("command failed: {0}")]
     CommandFailed(String),
+    #[error("generation is stale")]
+    StaleGeneration,
 }
 
 #[derive(Clone, Default)]
@@ -69,20 +71,37 @@ impl AppCommandBus {
         self.targets.lock().await.generation
     }
 
+    pub async fn start_fade_if_generation(
+        &self,
+        expected: u64,
+        config: FadeConfig,
+    ) -> Result<(), AppCommandError> {
+        let targets = self.targets.lock().await;
+        if targets.generation != expected {
+            return Err(AppCommandError::StaleGeneration);
+        }
+        let fade = targets
+            .fade
+            .clone()
+            .ok_or(AppCommandError::FadeUnavailable)?;
+        drop(targets);
+        fade.start_fade(config)
+            .await
+            .map_err(|_| AppCommandError::FadeUnavailable)
+    }
+
     pub async fn clear_targets(&self) {
         let mut targets = self.targets.lock().await;
         targets.lv1 = None;
         targets.fade = None;
         targets.show = None;
+        targets.generation += 1;
     }
 
     pub async fn get_show_snapshot(&self) -> Result<ShowSnapshot, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show
-                .get_snapshot()
-                .await
-                .map_err(|_| AppCommandError::ShowUnavailable),
+            Some(show) => Ok(show.get_snapshot().await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -93,10 +112,7 @@ impl AppCommandBus {
     ) -> Result<Option<SceneConfig>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show
-                .get_scene_config(scene_id)
-                .await
-                .map_err(|_| AppCommandError::ShowUnavailable),
+            Some(show) => Ok(show.get_scene_config(scene_id).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -104,10 +120,7 @@ impl AppCommandBus {
     pub async fn get_lockout(&self) -> Result<bool, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => show
-                .get_lockout()
-                .await
-                .map_err(|_| AppCommandError::ShowUnavailable),
+            Some(show) => Ok(show.get_lockout().await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }

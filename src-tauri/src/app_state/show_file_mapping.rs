@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use advanced_show_control::show::types::scene_id;
+
 use super::shell::ShellState;
 use super::view::AppViewState;
 use crate::show_file::{
@@ -9,10 +11,7 @@ use crate::show_file::{
 
 impl ShellState {
     pub async fn new_show_file(&self) -> Result<AppViewState, String> {
-        self.show
-            .clear()
-            .await
-            .map_err(|err| format!("Failed to reset show data: {err:?}"))?;
+        self.show.clear().await;
 
         let scenes = {
             let inner = self.inner.lock().await;
@@ -24,18 +23,16 @@ impl ShellState {
         };
 
         if !scenes.is_empty() {
-            self.show
-                .reconcile_scene_list(scenes)
-                .await
-                .map_err(|err| format!("Failed to rebuild show data: {err:?}"))?;
+            self.show.reconcile_scene_list(scenes).await;
         }
 
         let selected_scene_id = self
             .show
             .get_snapshot()
             .await
-            .ok()
-            .and_then(|snapshot| snapshot.scene_configs.first().cloned())
+            .scene_configs
+            .first()
+            .cloned()
             .map(|scene| scene.scene_id);
 
         let mut inner = self.inner.lock().await;
@@ -53,11 +50,7 @@ impl ShellState {
     }
 
     pub async fn export_show_file_for_save(&self, saved_at: String) -> Result<ShowFile, String> {
-        let show = self
-            .show
-            .get_snapshot()
-            .await
-            .map_err(|err| format!("Failed to read show snapshot: {err:?}"))?;
+        let show = self.show.get_snapshot().await;
 
         Ok(ShowFile {
             schema_version: SHOW_FILE_SCHEMA_VERSION,
@@ -128,7 +121,7 @@ impl ShellState {
                     .scene_configs
                     .iter()
                     .map(|config| advanced_show_control::show::types::SceneConfig {
-                        scene_id: format!("{}::{}", config.scene_index, config.scene_name),
+                        scene_id: scene_id(config.scene_index, &config.scene_name),
                         scene_index: config.scene_index,
                         scene_name: config.scene_name.clone(),
                         duration_ms: config.duration_ms,
@@ -160,14 +153,13 @@ impl ShellState {
                     })
                     .collect(),
             })
-            .await
-            .map_err(|err| format!("Failed to load show data: {err:?}"))?;
+            .await;
 
         let mut inner = self.inner.lock().await;
         inner.selected_scene_id = file
             .scene_configs
             .first()
-            .map(|config| format!("{}::{}", config.scene_index, config.scene_name));
+            .map(|config| scene_id(config.scene_index, &config.scene_name));
         inner.show_file_path = Some(path);
         inner.show_file_last_saved_at = Some(file.saved_at.clone());
         inner.show_file_dirty = report.removed_anything();

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 import {
@@ -24,6 +24,12 @@ export default function App() {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppViewState>(disconnectedAppViewState);
 
+  const applySnapshot = useCallback((next: AppViewState) => {
+    setAppState(prev =>
+      !prev || next.stateVersion > prev.stateVersion ? next : prev
+    );
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     void startupAutoConnectLv1()
@@ -31,7 +37,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setAppState(snapshot);
+        applySnapshot(snapshot);
         setShowConnection(snapshot.connection !== "connected");
       })
       .catch((error) => {
@@ -46,7 +52,7 @@ export default function App() {
       if (cancelled) {
         return;
       }
-      setAppState(event.payload);
+      applySnapshot(event.payload);
     });
 
     return () => {
@@ -55,7 +61,7 @@ export default function App() {
         void unlisten();
       });
     };
-  }, []);
+  }, [applySnapshot]);
 
   useEffect(() => {
     if (!showConnection) {
@@ -71,7 +77,7 @@ export default function App() {
           return;
         }
         setCommandError(null);
-        setAppState(snapshot);
+        applySnapshot(snapshot);
       } catch (error) {
         if (!cancelled) {
           setCommandError(String(error));
@@ -88,7 +94,7 @@ export default function App() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [showConnection]);
+  }, [showConnection, applySnapshot]);
 
   useEffect(() => {
     if (!appState.reconnect.active) {
@@ -109,7 +115,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setAppState(snapshot);
+        applySnapshot(snapshot);
         if (snapshot.connection === "connected") {
           setCommandError(null);
           setShowConnection(false);
@@ -134,7 +140,7 @@ export default function App() {
         if (cancelled) {
           return;
         }
-        setAppState(snapshot);
+        applySnapshot(snapshot);
         if (!snapshot.reconnect.active && snapshot.connection !== "connected") {
           setShowConnection(true);
         }
@@ -151,7 +157,7 @@ export default function App() {
       window.clearInterval(interval);
       window.clearTimeout(timer);
     };
-  }, [appState.reconnect.active, appState.reconnect.attempt]);
+  }, [appState.reconnect.active, appState.reconnect.attempt, applySnapshot]);
 
   return (
     <>
@@ -160,7 +166,7 @@ export default function App() {
           appState={appState}
           commandError={commandError}
           onDisconnect={async () => {
-            await runSnapshotCommand("disconnect_lv1", undefined, setAppState, setCommandError);
+            await runSnapshotCommand("disconnect_lv1", undefined, applySnapshot, setCommandError);
             setShowConnection(true);
           }}
           onResume={() => setShowConnection(false)}
@@ -168,7 +174,7 @@ export default function App() {
             setCommandError(null);
             try {
               const snapshot = await connectLv1System(identity);
-              setAppState(snapshot);
+              applySnapshot(snapshot);
               if (snapshot.connection === "connected") {
                 setShowConnection(false);
               }
@@ -182,13 +188,13 @@ export default function App() {
           <Header
             appState={appState}
             commandError={commandError}
-            onAbortAll={() => runVoidCommand("abort_all_fades", setAppState, setCommandError)}
-            onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, setAppState, setCommandError)}
+            onAbortAll={() => runVoidCommand("abort_all_fades", applySnapshot, setCommandError)}
+            onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, applySnapshot, setCommandError)}
             onOpenConnection={() => setShowConnection(true)}
-            onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, setAppState, setCommandError)}
-            onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, setAppState, setCommandError)}
-            onSaveShowFileAs={() => runSnapshotCommand("save_show_file_as_dialog", undefined, setAppState, setCommandError)}
-            onToggleLockout={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, setAppState, setCommandError)}
+            onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, applySnapshot, setCommandError)}
+            onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, applySnapshot, setCommandError)}
+            onSaveShowFileAs={() => runSnapshotCommand("save_show_file_as_dialog", undefined, applySnapshot, setCommandError)}
+            onToggleLockout={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, applySnapshot, setCommandError)}
           />
 
           <nav className="border-b border-slate-800 px-6">
@@ -206,24 +212,24 @@ export default function App() {
             {activeTab === "scene" && (
               <SceneTab
                 appState={appState}
-                selectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, setAppState, setCommandError)}
+                selectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, applySnapshot, setCommandError)}
                 setSceneDurationMs={(sceneId: string, durationMs: number) =>
-                  runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, setAppState, setCommandError)
+                  runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, applySnapshot, setCommandError)
                 }
                 setSceneScopeFadersEnabled={(sceneId: string, enabled: boolean) =>
-                  runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, setAppState, setCommandError)
+                  runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, applySnapshot, setCommandError)
                 }
                 setSceneScopePanEnabled={(sceneId: string, enabled: boolean) =>
-                  setSceneScopePanEnabled(sceneId, enabled, setAppState, setCommandError)
+                  setSceneScopePanEnabled(sceneId, enabled, applySnapshot, setCommandError)
                 }
                 storeSceneConfig={(sceneId: string) =>
-                  runSnapshotCommand("store_scene_config", { sceneId }, setAppState, setCommandError)
+                  runSnapshotCommand("store_scene_config", { sceneId }, applySnapshot, setCommandError)
                 }
                 setAllChannelsScoped={(sceneId: string, scoped: boolean) =>
-                  runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, setAppState, setCommandError)
+                  runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, applySnapshot, setCommandError)
                 }
                 setChannelScoped={(sceneId: string, group: number, channel: number, scoped: boolean) =>
-                  runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, setAppState, setCommandError)
+                  runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, applySnapshot, setCommandError)
                 }
               />
             )}

@@ -204,12 +204,15 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
     }
 
     match msg.address.as_str() {
-        "/Channels" => {
-            if let Ok(channels) = parse_channels_batch(&msg.args) {
+        "/Channels" => match parse_channels_batch(&msg.args) {
+            Ok(channels) => {
                 state.channels = channels.clone();
                 state.fan_out(Lv1Event::ChannelTopologyChanged(channels));
             }
-        }
+            Err(err) => {
+                state.diagnose(format!("failed to parse /Channels: {err}"));
+            }
+        },
         "/Notify/CurSceneIndex" => {
             if let Some(crate::osc::OscArg::Int(index)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_index(*index)
@@ -374,6 +377,36 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn channels_parse_failure_publishes_diagnostic() {
+        use crate::runtime::events::{AppEvent, AppEventBus};
+
+        let bus = AppEventBus::new(16);
+        let mut rx = bus.subscribe();
+        let mut state = ActorState::new(bus.clone());
+
+        // Declares one channel record but carries none.
+        handle_message(
+            &mut state,
+            &crate::osc::OscMessage {
+                address: "/Channels".to_string(),
+                args: vec![crate::osc::OscArg::Int(1)],
+            },
+        );
+
+        assert!(state.channels.is_empty());
+
+        let mut saw_parse_failure = false;
+        while let Ok(event) = rx.try_recv() {
+            if let AppEvent::Diagnostic { message, .. } = event
+                && message.contains("failed to parse /Channels")
+            {
+                saw_parse_failure = true;
+            }
+        }
+        assert!(saw_parse_failure);
     }
 
     #[test]

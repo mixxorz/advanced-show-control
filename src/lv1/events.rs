@@ -16,7 +16,11 @@ pub enum Lv1ActorError {
 #[derive(Debug, Clone)]
 pub enum Lv1Event {
     Connected,
-    Disconnected,
+    Disconnected {
+        /// Human-readable cause (e.g. "ping timeout", "TCP error: ..."),
+        /// surfaced in logs so reconnect loops are diagnosable in the field.
+        reason: String,
+    },
     SceneChanged(SceneState),
     SceneListChanged(Vec<SceneListEntry>),
     FaderChanged {

@@ -1172,3 +1172,149 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
         "replacement fade should continue from the active mid-fade value, got {replacement_first_gain}"
     );
 }
+
+#[tokio::test]
+async fn disconnect_aborts_active_fade() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Connection drops by closing the stream
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let _ = engine
+        .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            targets: vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::FaderDb,
+                target: -30.0,
+            }],
+            duration_ms: 10_000,
+            curve: FadeCurve::Linear,
+        })
+        .await;
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |e| matches!(e, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    // Let the server's disconnect happen and propagate
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(2), |e| {
+        matches!(e, FadeEvent::FadeAborted)
+    })
+    .await;
+
+    // Verify no FadeCompleted event after abort
+    let completed = tokio::time::timeout(std::time::Duration::from_millis(250), async {
+        loop {
+            match app_events.recv().await {
+                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+            }
+        }
+    })
+    .await
+    .unwrap_or(false);
+
+    assert!(
+        !completed,
+        "FadeCompleted should not be emitted after disconnect aborts fade"
+    );
+}
+
+#[tokio::test]
+async fn override_of_last_target_emits_terminal_event() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&lv1_frame("/Channels", &channels_args()))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        stream
+            .write_all(&lv1_frame(
+                "/Notify/Track/Out/Gain",
+                &[
+                    OscArg::Int(0),
+                    OscArg::Int(0),
+                    OscArg::Double(0.0),
+                    OscArg::True,
+                ],
+            ))
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(3));
+    });
+
+    let event_bus = AppEventBus::default();
+    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let mut app_events = event_bus.subscribe();
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let _ = engine
+        .start_fade(FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            targets: vec![FadeTarget {
+                group: 0,
+                channel: 0,
+                parameter: FadeParameter::FaderDb,
+                target: -20.0,
+            }],
+            duration_ms: 10_000,
+            curve: FadeCurve::Linear,
+        })
+        .await;
+
+    wait_for_app_fade_event(
+        &mut app_events,
+        std::time::Duration::from_millis(500),
+        |e| matches!(e, FadeEvent::FadeStarted),
+    )
+    .await;
+
+    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(3), |e| {
+        matches!(e, FadeEvent::ChannelOverride { .. })
+    })
+    .await;
+
+    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(3), |e| {
+        matches!(e, FadeEvent::FadeCompleted)
+    })
+    .await;
+}

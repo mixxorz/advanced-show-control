@@ -1,6 +1,7 @@
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::show::types::scene_id;
 
 use super::shell::{
     MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses,
@@ -49,7 +50,7 @@ impl ShellState {
     }
 
     pub async fn set_lockout(&self, enabled: bool) -> AppViewState {
-        let _ = self.show.set_lockout(enabled).await;
+        self.show.set_lockout(enabled).await;
         let mut inner = self.inner.lock().await;
         inner.show_file_dirty = true;
         inner.push_log(
@@ -74,11 +75,7 @@ impl ShellState {
         drop(inner);
 
         if !scene_list.is_empty() {
-            let changed = self
-                .show
-                .reconcile_scene_list(scene_list.clone())
-                .await
-                .unwrap_or(false);
+            let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
             let mut inner = self.inner.lock().await;
             if inner.generation == generation
                 && inner
@@ -93,7 +90,7 @@ impl ShellState {
                 if inner.selected_scene_id.is_none() {
                     inner.selected_scene_id = scene_list
                         .first()
-                        .map(|scene| format!("{}::{}", scene.index, scene.name));
+                        .map(|scene| scene_id(scene.index, &scene.name));
                 }
             }
             drop(inner);
@@ -117,39 +114,22 @@ impl ShellState {
             .as_ref()
             .map(|snapshot| snapshot.scene_list.clone())
             .unwrap_or_default();
-        let generation = inner.generation;
-        drop(inner);
 
         if !scene_list.is_empty() {
-            if !self.is_generation_current(generation).await {
-                return None;
+            // Reconcile while holding `inner` so the generation cannot change
+            // between the check above and this show mutation.
+            // Lock ordering: inner then show (consistent with snapshot()).
+            let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
+            if changed {
+                inner.show_file_dirty = true;
             }
-            let changed = self
-                .show
-                .reconcile_scene_list(scene_list.clone())
-                .await
-                .ok()?;
-            let mut inner = self.inner.lock().await;
-            if inner.generation != generation {
-                return None;
+            if inner.selected_scene_id.is_none() {
+                inner.selected_scene_id = scene_list
+                    .first()
+                    .map(|scene| scene_id(scene.index, &scene.name));
             }
-            if inner
-                .lv1_snapshot
-                .as_ref()
-                .map(|snapshot| snapshot.scene_list.clone())
-                == Some(scene_list.clone())
-            {
-                if changed {
-                    inner.show_file_dirty = true;
-                }
-                if inner.selected_scene_id.is_none() {
-                    inner.selected_scene_id = scene_list
-                        .first()
-                        .map(|scene| format!("{}::{}", scene.index, scene.name));
-                }
-            }
-            drop(inner);
         }
+        drop(inner);
         Some(self.snapshot().await)
     }
 
@@ -192,7 +172,7 @@ impl ShellState {
                     "LV1 connected".to_string(),
                 );
             }
-            Lv1Event::Disconnected => {
+            Lv1Event::Disconnected { reason } => {
                 let had_connected_identity = inner.connected_lv1_identity.is_some();
                 inner.lv1_snapshot = None;
                 inner.pending_lv1_identity = None;
@@ -204,7 +184,7 @@ impl ShellState {
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Warning,
-                    "LV1 disconnected".to_string(),
+                    format!("LV1 disconnected: {reason}"),
                 );
             }
             Lv1Event::SceneChanged(scene) => {
@@ -217,46 +197,27 @@ impl ShellState {
             }
             Lv1Event::SceneListChanged(scenes) => {
                 let generation = inner.generation;
-                drop(inner);
 
-                if !self.is_generation_current(generation).await {
-                    return None;
-                }
-                let before_count = self
-                    .show
-                    .get_snapshot()
-                    .await
-                    .map(|snapshot| snapshot.scene_configs.len())
-                    .unwrap_or(0);
+                // Gather diagnostics before holding the lock to avoid lock contention
+                drop(inner);
+                let before_count = self.show.get_snapshot().await.scene_configs.len();
                 let reconciliation_diagnostic = self
                     .show
                     .scene_reconciliation_diagnostic(scenes.clone())
-                    .await
-                    .unwrap_or_else(|_| "scene reconciliation preview unavailable".to_string());
+                    .await;
 
-                if !self.is_generation_current(generation).await {
-                    return None;
-                }
-                let changed = self
-                    .show
-                    .reconcile_scene_list(scenes.clone())
-                    .await
-                    .unwrap_or(false);
-
-                if !self.is_generation_current(generation).await {
-                    return None;
-                }
-                let after_count = self
-                    .show
-                    .get_snapshot()
-                    .await
-                    .map(|snapshot| snapshot.scene_configs.len())
-                    .unwrap_or(0);
-
+                // Re-acquire inner lock and hold it across reconciliation to prevent stale mutations.
+                // Lock ordering: inner then show (consistent with snapshot()).
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {
                     return None;
                 }
+
+                // Call reconcile_scene_list while holding inner lock to ensure generation
+                // doesn't change between the check and the mutation
+                let changed = self.show.reconcile_scene_list(scenes.clone()).await;
+                let after_count = self.show.get_snapshot().await.scene_configs.len();
+
                 ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
                 if changed {
                     inner.show_file_dirty = true;
@@ -384,12 +345,6 @@ impl ShellState {
     }
 }
 
-impl ShellState {
-    async fn is_generation_current(&self, generation: u64) -> bool {
-        self.inner.lock().await.generation == generation
-    }
-}
-
 fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
     match event {
         FadeEvent::FadeStarted => {
@@ -436,6 +391,13 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
                 LogSource::Fade,
                 LogSeverity::Warning,
                 format!("Fade channel cancelled: group {group}, channel {channel}"),
+            );
+        }
+        FadeEvent::WriteFailed { reason } => {
+            inner.push_log(
+                LogSource::Fade,
+                LogSeverity::Error,
+                format!("Fade write failed: {reason}"),
             );
         }
     }

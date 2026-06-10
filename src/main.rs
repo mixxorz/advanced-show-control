@@ -480,7 +480,9 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
 
                 match event {
                     Lv1Event::Connected => println!("[connected] {host}:{port}"),
-                    Lv1Event::Disconnected => println!("[disconnected] reconnecting in 3s..."),
+                    Lv1Event::Disconnected { reason } => {
+                        println!("[disconnected] {reason}; reconnecting in 3s...")
+                    }
                     Lv1Event::SceneChanged(scene) => {
                         println!("[scene] index={} name={:?}", scene.index, scene.name);
                     }

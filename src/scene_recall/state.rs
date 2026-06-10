@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -24,23 +23,49 @@ impl From<&SceneState> for RecallSceneIdentity {
     }
 }
 
+/// A scene observation: which scene and when it was seen.
+#[derive(Debug, Clone)]
+struct ObservedScene {
+    scene: RecallSceneIdentity,
+    at: Instant,
+}
+
+/// Gate deciding whether a scene observation is an operator recall.
+///
+/// The LV1 re-broadcasts the already-active scene around (re)connect, so the
+/// gate arms over `RECALL_ARMING_DELAY`: scenes seen while arming are the
+/// pre-existing scene (the baseline), not recalls. The same notify can land
+/// again just after the window closes, so a baseline-equal scene observed
+/// within `SAME_SCENE_REPEAT_DELAY` of the baseline observation is also
+/// suppressed rather than treated as a recall.
+#[derive(Debug, Default)]
+enum RecallGate {
+    /// No scene observed yet; the first observation starts arming.
+    #[default]
+    Unarmed,
+    /// Within `RECALL_ARMING_DELAY` of the first observation. `baseline`
+    /// tracks the most recently observed scene; the last one seen before the
+    /// deadline is the pre-existing scene.
+    Arming {
+        baseline: ObservedScene,
+        deadline: Instant,
+    },
+    /// Observations may trigger recalls, except baseline echoes and repeats
+    /// of `last_trigger` within `SAME_SCENE_REPEAT_DELAY`.
+    Armed {
+        baseline: ObservedScene,
+        last_trigger: Option<ObservedScene>,
+    },
+}
+
 #[derive(Debug, Default)]
 pub struct SceneRecallState {
-    baseline: Option<RecallSceneIdentity>,
-    baseline_at: Option<Instant>,
-    arm_after: Option<Instant>,
-    last_scene: Option<RecallSceneIdentity>,
-    last_triggered_at: Option<Instant>,
+    gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
-    duration_zero_skip_scene_ids: HashSet<String>,
 }
 
 impl SceneRecallState {
-    pub fn reset_for_generation(&mut self) {
-        *self = Self::default();
-    }
-
     pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {
@@ -68,57 +93,67 @@ impl SceneRecallState {
     }
 
     pub(crate) fn accepts_at(&mut self, current_scene: &SceneState, now: Instant) -> bool {
-        let scene_identity = RecallSceneIdentity::from(current_scene);
+        let observed = ObservedScene {
+            scene: RecallSceneIdentity::from(current_scene),
+            at: now,
+        };
 
-        match self.arm_after {
-            None => {
-                self.baseline = Some(scene_identity);
-                self.baseline_at = Some(now);
-                self.arm_after = Some(now + RECALL_ARMING_DELAY);
+        match &mut self.gate {
+            RecallGate::Unarmed => {
+                self.gate = RecallGate::Arming {
+                    baseline: observed,
+                    deadline: now + RECALL_ARMING_DELAY,
+                };
                 false
             }
-            Some(deadline) if now < deadline => {
-                self.baseline = Some(scene_identity);
-                self.baseline_at = Some(now);
-                false
-            }
-            Some(_) => {
-                if self.last_scene.as_ref() == Some(&scene_identity)
-                    && self
-                        .last_triggered_at
-                        .map(|triggered_at| {
-                            now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY
-                        })
-                        .unwrap_or(false)
-                {
+            RecallGate::Arming { baseline, deadline } => {
+                if now < *deadline {
+                    *baseline = observed;
                     return false;
                 }
-
-                let baseline_scene = self
-                    .baseline
-                    .clone()
-                    .unwrap_or_else(|| scene_identity.clone());
-                let triggered_at = self.baseline_at.unwrap_or(now);
-                self.last_scene = Some(baseline_scene);
-                self.last_triggered_at = Some(triggered_at);
-
-                if self.last_scene.as_ref() == Some(&scene_identity)
-                    && now.duration_since(triggered_at) < SAME_SCENE_REPEAT_DELAY
-                {
-                    return false;
-                }
-
-                self.last_scene = Some(scene_identity);
-                self.last_triggered_at = Some(now);
-                true
+                let baseline = baseline.clone();
+                let mut last_trigger = None;
+                let accepted = decide_armed(&baseline, &mut last_trigger, observed);
+                self.gate = RecallGate::Armed {
+                    baseline,
+                    last_trigger,
+                };
+                accepted
             }
+            RecallGate::Armed {
+                baseline,
+                last_trigger,
+            } => decide_armed(baseline, last_trigger, observed),
         }
     }
+}
 
-    pub fn should_log_duration_zero_skip(&mut self, scene_id: &str) -> bool {
-        self.duration_zero_skip_scene_ids
-            .insert(scene_id.to_string())
+/// Armed-state decision: accept unless the observation repeats the last
+/// trigger or echoes the arming baseline within `SAME_SCENE_REPEAT_DELAY`.
+fn decide_armed(
+    baseline: &ObservedScene,
+    last_trigger: &mut Option<ObservedScene>,
+    observed: ObservedScene,
+) -> bool {
+    if let Some(last) = last_trigger.as_ref()
+        && last.scene == observed.scene
+        && observed.at.duration_since(last.at) < SAME_SCENE_REPEAT_DELAY
+    {
+        return false;
     }
+
+    if baseline.scene == observed.scene
+        && observed.at.duration_since(baseline.at) < SAME_SCENE_REPEAT_DELAY
+    {
+        // Baseline echo: the pre-existing scene re-broadcast shortly after
+        // arming. Record it as the last trigger so further echoes fall under
+        // repeat suppression above, measured from the baseline observation.
+        *last_trigger = Some(baseline.clone());
+        return false;
+    }
+
+    *last_trigger = Some(observed);
+    true
 }
 
 #[cfg(test)]
@@ -191,15 +226,51 @@ mod tests {
     }
 
     #[test]
-    fn duration_zero_skip_logs_once_until_reset() {
+    fn baseline_scene_seen_shortly_after_arming_is_suppressed() {
         let mut state = SceneRecallState::default();
+        let start = Instant::now();
 
-        assert!(state.should_log_duration_zero_skip("1::Intro"));
-        assert!(!state.should_log_duration_zero_skip("1::Intro"));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start));
+        // Scene re-observed late in the arming window becomes the baseline.
+        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(1_900)));
+        // The same scene re-broadcast just after arming is the pre-existing
+        // scene, not an operator recall.
+        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_100)));
+    }
 
-        state.reset_for_generation();
+    #[test]
+    fn suppressed_baseline_echo_counts_as_trigger_for_repeat_suppression() {
+        let mut state = SceneRecallState::default();
+        let start = Instant::now();
 
-        assert!(state.should_log_duration_zero_skip("1::Intro"));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(1_900)));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_100)));
+        // Still within the repeat window measured from the baseline observation.
+        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_350)));
+        // Once the repeat window from the baseline observation has elapsed,
+        // the same scene is a real recall again.
+        assert!(state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_500)));
+    }
+
+    #[test]
+    fn last_scene_seen_during_arming_becomes_the_suppressed_baseline() {
+        let mut state = SceneRecallState::default();
+        let start = Instant::now();
+
+        assert!(!state.accepts_at(&scene(1, "Intro"), start));
+        assert!(!state.accepts_at(&scene(2, "Verse"), start + Duration::from_millis(1_900)));
+        // "Verse" is the baseline now, so "Intro" is a real scene change.
+        assert!(state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_100)));
+    }
+
+    #[test]
+    fn different_scene_right_after_arming_is_accepted() {
+        let mut state = SceneRecallState::default();
+        let start = Instant::now();
+
+        assert!(!state.accepts_at(&scene(1, "Intro"), start));
+        assert!(state.accepts_at(&scene(2, "Verse"), start + RECALL_ARMING_DELAY));
     }
 
     #[test]

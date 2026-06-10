@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::runtime::commands::AppCommandBus;
@@ -29,6 +30,7 @@ pub struct RuntimeHandles {
     pub scene_recall_fader: Option<JoinHandle<()>>,
 }
 
+/// Lock ordering: always acquire `inner` before `show.state` to avoid deadlocks.
 #[derive(Clone)]
 pub struct ShellState {
     pub handles: Arc<Mutex<RuntimeHandles>>,
@@ -52,6 +54,7 @@ pub(super) struct ShellInner {
     pub(super) logs: VecDeque<AppLogEntry>,
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
+    pub(super) snapshot_counter: AtomicU64,
 }
 
 impl Default for ShellState {
@@ -69,13 +72,12 @@ impl ShellState {
     pub async fn snapshot(&self) -> AppViewState {
         let inner_guard = self.inner.lock().await;
         let inner = snapshot_inner(&inner_guard);
+        // +1 so versions start at 1: the UI starts at 0 and drops snapshots
+        // that are not strictly newer.
+        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed) + 1;
         drop(inner_guard);
-        let show = self
-            .show
-            .get_snapshot()
-            .await
-            .unwrap_or_else(|_| ShowSnapshot::empty());
-        snapshot_from_parts(inner, show)
+        let show = self.show.get_snapshot().await;
+        snapshot_from_parts(inner, show, state_version)
     }
 
     pub async fn snapshot_for_generation(&self, generation: u64) -> Option<AppViewState> {
@@ -85,9 +87,10 @@ impl ShellState {
         }
 
         let inner = snapshot_inner(&inner_guard);
+        let state_version = inner_guard.snapshot_counter.fetch_add(1, Ordering::Relaxed) + 1;
         drop(inner_guard);
-        let show = self.show.get_snapshot().await.ok()?;
-        Some(snapshot_from_parts(inner, show))
+        let show = self.show.get_snapshot().await;
+        Some(snapshot_from_parts(inner, show, state_version))
     }
 
     pub async fn set_scene_duration_ms(
@@ -95,11 +98,10 @@ impl ShellState {
         scene_id: String,
         duration_ms: u64,
     ) -> Result<AppViewState, String> {
-        let _ = self
-            .show
-            .set_scene_duration(scene_id, duration_ms)
-            .await
-            .map_err(|err| format!("{err:?}"))?;
+        let changed = self.show.set_scene_duration(scene_id, duration_ms).await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -118,11 +120,19 @@ impl ShellState {
             .lv1_snapshot
             .clone()
             .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
-        let _ = self
-            .show
-            .store_scene_config(scene_id, lv1.channels)
-            .await
-            .map_err(|err| format!("{err:?}"))?;
+        // Validate that the scene_id matches a scene in the current show (reconciled from LV1)
+        let show_snapshot = self.show.get_snapshot().await;
+        if !show_snapshot
+            .scene_configs
+            .iter()
+            .any(|scene| scene.scene_id == scene_id)
+        {
+            return Err("Scene config not found".to_string());
+        }
+        let changed = self.show.store_scene_config(scene_id, lv1.channels).await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -133,11 +143,13 @@ impl ShellState {
         channel: i32,
         scoped: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_channel_scoped(scene_id, group, channel, scoped)
-            .await
-            .map_err(|err| format!("{err:?}"))?;
+            .await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -146,11 +158,10 @@ impl ShellState {
         scene_id: String,
         scoped: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
-            .show
-            .set_all_channels_scoped(scene_id, scoped)
-            .await
-            .map_err(|err| format!("{err:?}"))?;
+        let changed = self.show.set_all_channels_scoped(scene_id, scoped).await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -159,11 +170,13 @@ impl ShellState {
         scene_id: String,
         enabled: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_scene_scope_faders_enabled(scene_id, enabled)
-            .await
-            .map_err(|err| format!("{err:?}"))?;
+            .await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -172,11 +185,13 @@ impl ShellState {
         scene_id: String,
         enabled: bool,
     ) -> Result<AppViewState, String> {
-        let _ = self
+        let changed = self
             .show
             .set_scene_scope_pan_enabled(scene_id, enabled)
-            .await
-            .map_err(|err| format!("{err:?}"))?;
+            .await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -304,6 +319,11 @@ impl ShellState {
         refresh_discovered_statuses(&mut inner);
         drop(inner);
         self.snapshot().await
+    }
+
+    pub async fn push_log(&self, source: LogSource, severity: LogSeverity, message: String) {
+        let mut inner = self.inner.lock().await;
+        inner.push_log(source, severity, message);
     }
 
     #[cfg(test)]
@@ -562,7 +582,11 @@ struct InnerSnapshot {
     last_event_at: Option<String>,
 }
 
-fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState {
+fn snapshot_from_parts(
+    inner: InnerSnapshot,
+    show: ShowSnapshot,
+    state_version: u64,
+) -> AppViewState {
     AppViewState {
         connection: inner.connection,
         discovered_lv1_systems: inner.discovered_lv1_systems,
@@ -584,6 +608,7 @@ fn snapshot_from_parts(inner: InnerSnapshot, show: ShowSnapshot) -> AppViewState
         show_file_last_saved_at: inner.show_file_last_saved_at,
         logs: inner.logs,
         last_event_at: inner.last_event_at,
+        state_version,
     }
 }
 
@@ -621,7 +646,6 @@ mod tests {
                 }],
             )
             .await
-            .unwrap()
             .unwrap();
     }
 
@@ -648,6 +672,27 @@ mod tests {
         assert_eq!(snapshot.show_file_path, None);
         assert!(!snapshot.show_file_dirty);
         assert_eq!(snapshot.show_file_last_saved_at, None);
+    }
+
+    #[tokio::test]
+    async fn first_snapshot_state_version_is_greater_than_initial_ui_version() {
+        let state = ShellState::default();
+
+        // The UI starts at stateVersion 0 and drops snapshots that are not
+        // strictly newer, so the very first snapshot must already exceed 0.
+        let snapshot = state.snapshot().await;
+
+        assert!(snapshot.state_version > 0);
+    }
+
+    #[tokio::test]
+    async fn snapshot_state_versions_are_strictly_increasing() {
+        let state = ShellState::default();
+
+        let first = state.snapshot().await;
+        let second = state.snapshot().await;
+
+        assert!(second.state_version > first.state_version);
     }
 
     #[tokio::test]
@@ -772,7 +817,12 @@ mod tests {
             .await;
         let (generation, _) = state.begin_connecting().await;
         let reconnecting = state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("disconnect should enter reconnect state");
 
@@ -811,7 +861,12 @@ mod tests {
             .await;
         let (generation, _) = state.begin_connecting().await;
         let first_reconnect = state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("first disconnect should enter reconnect state");
         state
@@ -819,7 +874,12 @@ mod tests {
             .await
             .expect("connected event should clear first reconnect state");
         let second_reconnect = state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("second disconnect should enter reconnect state");
 

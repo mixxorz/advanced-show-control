@@ -12,7 +12,9 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
+use crate::app_state::{
+    AppConnectionState, AppViewState, LogSeverity, LogSource, RuntimeHandles, ShellState,
+};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
@@ -697,10 +699,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             let message = state
                                 .show
                                 .scene_reconciliation_diagnostic(scenes.clone())
-                                .await
-                                .unwrap_or_else(|_| {
-                                    "scene reconciliation preview unavailable".to_string()
-                                });
+                                .await;
                             let _ = crate::diagnostics::append_diagnostic(
                                 &diagnostics_path,
                                 "show-state",
@@ -730,7 +729,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
                                 eprintln!("failed to emit app-status-changed: {err}");
                             }
-                            if matches!(event, Lv1Event::Disconnected) {
+                            if matches!(event, Lv1Event::Disconnected { .. }) {
                                 state
                                     .clear_runtime_handles_for_generation(
                                         generation,
@@ -750,7 +749,10 @@ fn spawn_shell_state_projector<R: Runtime>(
                         }
                     }
                     AppEvent::CommandFailed { command, message } => {
-                        eprintln!("command failed: {command}: {message}");
+                        let log_message = format!("command failed: {command}: {message}");
+                        state
+                            .push_log(LogSource::App, LogSeverity::Error, log_message)
+                            .await;
                     }
                     AppEvent::Diagnostic { source, message } => {
                         if let Err(err) = crate::diagnostics::append_diagnostic(
@@ -761,7 +763,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             eprintln!("failed to write diagnostic log: {err}");
                         }
                     }
-                    AppEvent::Show(_) | AppEvent::SceneRecall(_) => {
+                    AppEvent::SceneRecall(_) => {
                         if let Some(snapshot) = state
                             .project_event_for_generation(generation, &app_event)
                             .await
@@ -773,6 +775,12 @@ fn spawn_shell_state_projector<R: Runtime>(
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                     log_lagged_subscriber("shell-state-projector", count);
+                    let log_message = format!(
+                        "shell-state-projector event subscriber lagged and missed {count} events"
+                    );
+                    state
+                        .push_log(LogSource::App, LogSeverity::Warning, log_message)
+                        .await;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -818,7 +826,6 @@ mod tests {
     use super::*;
     use advanced_show_control::fade::events::FadeEvent;
     use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
-    use advanced_show_control::show::events::ShowEvent;
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -947,7 +954,12 @@ mod tests {
             .await
             .expect("connected event should apply");
         let second_reconnect = state
-            .apply_lv1_event_for_generation(1, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                1,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("second disconnect should apply");
         assert!(second_reconnect.reconnect.active);
@@ -980,7 +992,12 @@ mod tests {
             .await;
         let (generation, _) = state.begin_connecting().await;
         state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("disconnect should apply")
     }
@@ -1267,46 +1284,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn show_event_emits_fresh_app_status_snapshot() {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let observed_for_listener = observed.clone();
-
-        handle.listen_any("app-status-changed", move |event| {
-            let payload: serde_json::Value = serde_json::from_str(event.payload())
-                .expect("app-status-changed payload should be valid JSON");
-            observed_for_listener.lock().unwrap().push(payload);
-        });
-
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let event_bus = AppEventBus::default();
-        let projector = spawn_shell_state_projector(
-            handle,
-            state,
-            ActiveCommandBus::default(),
-            generation,
-            event_bus.subscribe(),
-        );
-
-        event_bus.publish(AppEvent::Show(ShowEvent::StateChanged));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if !observed.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit snapshot for show refresh");
-
-        projector.abort();
-    }
-
-    #[tokio::test]
     async fn scene_recall_events_emit_fresh_app_status_snapshot() {
         let app = mock_app();
         let handle = app.handle().clone();
@@ -1359,7 +1336,7 @@ impl From<&Lv1Event> for Lv1EventPayload {
                 kind: "Connected".to_string(),
                 message: "LV1 connected".to_string(),
             },
-            Lv1Event::Disconnected => Self {
+            Lv1Event::Disconnected { .. } => Self {
                 kind: "Disconnected".to_string(),
                 message: "LV1 disconnected".to_string(),
             },

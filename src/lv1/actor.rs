@@ -79,7 +79,14 @@ fn enqueue_writer_bytes(
 
     writer_tx
         .try_send(WriterMessage::Bytes(bytes))
-        .map_err(|_| DisconnectReason::TcpError)
+        .map_err(|err| match err {
+            mpsc::error::TrySendError::Full(_) => {
+                DisconnectReason::TcpError("writer queue full".to_string())
+            }
+            mpsc::error::TrySendError::Closed(_) => {
+                DisconnectReason::TcpError("writer task gone".to_string())
+            }
+        })
 }
 
 fn enqueue_writer_flush(
@@ -105,6 +112,50 @@ fn fail_pending_writer_flushes(rx: &mut mpsc::Receiver<WriterMessage>) {
     }
 }
 
+/// Handles a single command received while the actor is disconnected.
+///
+/// # Flush behavior varies by context:
+/// - During reconnect delays (drain_commands_for): Flush replies Err(NotConnected)
+///   because sends truly cannot be queued yet.
+/// - After connection but before full init (post_connect_stale_drain): Flush replies Ok(())
+///   because the actor is about to enter connected mode and can accept sends.
+///
+/// WriteBatch is silently dropped (fire-and-forget; callers tolerate loss while disconnected).
+/// GetState replies with the current snapshot.
+/// All other commands (SetGain, SetPan, SetBalance, SetWidth, SetMute) reply based on flush_reply.
+fn drain_disconnected_command(
+    cmd: Lv1Command,
+    state: &ActorState,
+    flush_reply: Result<(), Lv1ActorError>,
+) {
+    match cmd {
+        Lv1Command::GetState { reply } => {
+            let _ = reply.send(state.snapshot());
+        }
+        Lv1Command::WriteBatch(_) => {
+            // Fire-and-forget while disconnected; callers expect possible loss
+        }
+        Lv1Command::SetGain { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetPan { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetBalance { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetWidth { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::SetMute { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::Flush { reply } => {
+            let _ = reply.send(flush_reply.clone());
+        }
+    }
+}
+
 /// Drain pending commands for `duration`, responding to GetState immediately.
 /// Used during reconnect delays so callers are never blocked indefinitely.
 async fn drain_commands_for(
@@ -119,28 +170,7 @@ async fn drain_commands_for(
             _ = &mut deadline => return DrainCommandsResult::TimedOut,
             cmd = cmd_rx.recv() => match cmd {
                 None => return DrainCommandsResult::CommandChannelClosed,
-                Some(Lv1Command::GetState { reply }) => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Some(Lv1Command::WriteBatch(_)) => {}
-                Some(Lv1Command::SetGain { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetPan { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetBalance { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetWidth { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::SetMute { reply, .. }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Some(Lv1Command::Flush { reply }) => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
+                Some(cmd) => drain_disconnected_command(cmd, state, Err(Lv1ActorError::NotConnected)),
             },
         }
     }
@@ -183,31 +213,10 @@ async fn run_actor(
         state.last_ping = Instant::now();
 
         tokio::task::yield_now().await;
+        // Drain stale commands that arrived before connection completed.
+        // Flush replies Ok(()) here because the actor is now connected and ready to process.
         while let Ok(cmd) = cmd_rx.try_recv() {
-            match cmd {
-                Lv1Command::GetState { reply } => {
-                    let _ = reply.send(state.snapshot());
-                }
-                Lv1Command::WriteBatch(_) => {}
-                Lv1Command::SetGain { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetPan { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetBalance { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetWidth { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::SetMute { reply, .. } => {
-                    let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                }
-                Lv1Command::Flush { reply } => {
-                    let _ = reply.send(Ok(()));
-                }
-            }
+            drain_disconnected_command(cmd, &state, Ok(()));
         }
         state.fan_out(Lv1Event::Connected);
 
@@ -217,7 +226,10 @@ async fn run_actor(
         state.scene = None;
         state.channels.clear();
         state.scene_buf = Default::default();
-        state.fan_out(Lv1Event::Disconnected);
+        state.diagnose(format!("disconnected: {disconnected}"));
+        state.fan_out(Lv1Event::Disconnected {
+            reason: disconnected.to_string(),
+        });
 
         if disconnected == DisconnectReason::CommandChannelClosed {
             break;
@@ -229,9 +241,19 @@ async fn run_actor(
 
 #[derive(Debug, PartialEq)]
 enum DisconnectReason {
-    TcpError,
+    TcpError(String),
     PingTimeout,
     CommandChannelClosed,
+}
+
+impl std::fmt::Display for DisconnectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DisconnectReason::TcpError(detail) => write!(f, "TCP error: {detail}"),
+            DisconnectReason::PingTimeout => write!(f, "ping timeout"),
+            DisconnectReason::CommandChannelClosed => write!(f, "command channel closed"),
+        }
+    }
 }
 
 enum WriterMessage {
@@ -254,32 +276,45 @@ async fn run_connected(
     let (writer_error_tx, mut writer_error_rx) = mpsc::channel(1);
     tokio::spawn(writer_task(writer, writer_rx, writer_error_tx));
 
+    let ping_deadline = tokio::time::sleep_until(tokio::time::Instant::from_std(
+        state.last_ping + PING_TIMEOUT,
+    ));
+    tokio::pin!(ping_deadline);
+
     loop {
         if state.last_ping.elapsed() > PING_TIMEOUT {
             return DisconnectReason::PingTimeout;
         }
 
         tokio::select! {
+            _ = &mut ping_deadline => {
+                return DisconnectReason::PingTimeout;
+            }
             maybe_error = writer_error_rx.recv() => {
                 if maybe_error.is_some() {
-                    return DisconnectReason::TcpError;
+                    return DisconnectReason::TcpError("socket write failed".to_string());
                 }
             }
             frames = read_next_async(reader, decoder) => {
                 match frames {
-                    Err(_) => return DisconnectReason::TcpError,
+                    Err(err) => return DisconnectReason::TcpError(format!("read failed: {err:?}")),
                     Ok(frames) => {
                         for frame in frames {
                             if let Ok(msg) = decode_frame_payload(&frame) {
                                 if let Some((addr, args)) = pong_for_ping(&msg) {
                                     let bytes = match encode_frame(addr, &args) {
                                         Ok(bytes) => bytes,
-                                        Err(_) => return DisconnectReason::TcpError,
+                                        Err(err) => {
+                                            return DisconnectReason::TcpError(format!(
+                                                "encode pong failed: {err:?}"
+                                            ));
+                                        }
                                     };
-                                    if enqueue_writer_bytes(&writer_tx, bytes).is_err() {
-                                        return DisconnectReason::TcpError;
+                                    if let Err(reason) = enqueue_writer_bytes(&writer_tx, bytes) {
+                                        return reason;
                                     }
                                     state.last_ping = Instant::now();
+                                    ping_deadline.as_mut().reset(tokio::time::Instant::from_std(state.last_ping + PING_TIMEOUT));
                                     continue;
                                 }
                                 handle_message(state, &msg);
@@ -301,11 +336,15 @@ async fn run_connected(
 
                         let bytes = match encode_parameter_write_batch(&writes) {
                             Ok(bytes) => bytes,
-                            Err(_) => return DisconnectReason::TcpError,
+                            Err(err) => {
+                                return DisconnectReason::TcpError(format!(
+                                    "encode write batch failed: {err:?}"
+                                ));
+                            }
                         };
 
-                        if enqueue_writer_bytes(&writer_tx, bytes).is_err() {
-                            return DisconnectReason::TcpError;
+                        if let Err(reason) = enqueue_writer_bytes(&writer_tx, bytes) {
+                            return reason;
                         }
                     }
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
@@ -326,7 +365,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetGain send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetPan { group, channel, value, reply }) => {
@@ -347,7 +388,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetPan send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetBalance { group, channel, value, reply }) => {
@@ -368,7 +411,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetBalance send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetWidth { group, channel, value, reply }) => {
@@ -389,7 +434,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetWidth send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
@@ -410,13 +457,17 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetMute send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::Flush { reply }) => {
                         if let Err(reply) = enqueue_writer_flush(&writer_tx, reply) {
                             let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "flush enqueue failed (writer queue full or gone)".to_string(),
+                            );
                         }
                     }
                 }
@@ -476,7 +527,10 @@ mod tests {
 
         let result = enqueue_writer_bytes(&tx, vec![2]);
 
-        assert_eq!(result, Err(DisconnectReason::TcpError));
+        assert_eq!(
+            result,
+            Err(DisconnectReason::TcpError("writer queue full".to_string()))
+        );
     }
 
     #[tokio::test]
