@@ -42,7 +42,7 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
         return skipped("scene config is missing");
     };
     if !config.scope_toggles.faders && !config.scope_toggles.pan {
-        return skipped("fader scope is disabled");
+        return skipped("no applicable targets");
     }
     if lv1_snapshot.channels.is_empty() {
         return blocked("live channel snapshot is empty");
@@ -330,9 +330,10 @@ mod tests {
             scene_config: Some(scene_config),
         });
 
-        assert!(
-            matches!(decision, RecallPolicyDecision::Skip { reason } if reason == "fader scope is disabled")
-        );
+        assert!(matches!(
+            decision,
+            RecallPolicyDecision::Skip { reason } if reason == "no applicable targets"
+        ));
     }
 
     #[test]
@@ -828,7 +829,7 @@ mod tests {
 
         assert!(matches!(
             decision,
-            RecallPolicyDecision::Skip { reason } if reason == "fader scope is disabled"
+            RecallPolicyDecision::Skip { reason } if reason == "no applicable targets"
         ));
     }
 
