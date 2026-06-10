@@ -130,7 +130,7 @@ pub fn pong_for_ping(msg: &OscMessage) -> Option<(&'static str, Vec<OscArg>)> {
 
 pub struct Lv1TcpClient {
     pub(crate) reader: tokio::net::tcp::OwnedReadHalf,
-    pub(crate) writer: tokio::net::tcp::OwnedWriteHalf,
+    pub(crate) writer: Option<tokio::net::tcp::OwnedWriteHalf>,
     pub(crate) decoder: FrameDecoder,
 }
 
@@ -141,22 +141,32 @@ impl Lv1TcpClient {
         let (reader, writer) = stream.into_split();
         Ok(Self {
             reader,
-            writer,
+            writer: Some(writer),
             decoder: FrameDecoder::default(),
         })
     }
 
     pub async fn register_myfoh(&mut self, device_name: &str, uuid: &str) -> TcpResult<()> {
-        send_bytes(
-            &mut self.writer,
-            &build_myfoh_handshake_batch(device_name, uuid)?,
-        )
-        .await
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "LV1 TCP writer is not available",
+            )) as Box<dyn std::error::Error + Send + Sync>
+        })?;
+
+        send_bytes(writer, &build_myfoh_handshake_batch(device_name, uuid)?).await
     }
 
     pub async fn send(&mut self, address: &str, args: &[OscArg]) -> TcpResult<()> {
         let frame = encode_frame(address, args)?;
-        send_bytes(&mut self.writer, &frame).await
+        let writer = self.writer.as_mut().ok_or_else(|| {
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "LV1 TCP writer is not available",
+            )) as Box<dyn std::error::Error + Send + Sync>
+        })?;
+
+        send_bytes(writer, &frame).await
     }
 
     pub async fn read_next(&mut self) -> TcpResult<Vec<Lv1Frame>> {
@@ -169,15 +179,6 @@ impl Lv1TcpClient {
             Err(_) => Ok(Vec::new()),
         }
     }
-}
-
-pub(crate) async fn send_async(
-    writer: &mut tokio::net::tcp::OwnedWriteHalf,
-    address: &str,
-    args: &[OscArg],
-) -> TcpResult<()> {
-    let frame = encode_frame(address, args)?;
-    send_bytes(writer, &frame).await
 }
 
 async fn send_bytes(writer: &mut tokio::net::tcp::OwnedWriteHalf, bytes: &[u8]) -> TcpResult<()> {

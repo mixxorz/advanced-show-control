@@ -11,8 +11,8 @@ use super::events::Lv1Event;
 use super::handle::Lv1ActorHandle;
 use super::state::{ActorState, handle_message};
 use super::tcp::{
-    Lv1TcpClient, decode_frame_payload, encode_parameter_write_batch, pong_for_ping,
-    read_next_async, send_async,
+    Lv1TcpClient, decode_frame_payload, encode_frame, encode_parameter_write_batch, pong_for_ping,
+    read_next_async,
 };
 use super::types::ConnectionStatus;
 use crate::osc::OscArg;
@@ -20,6 +20,7 @@ use crate::runtime::events::AppEventBus;
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
+const WRITER_QUEUE_CAPACITY: usize = 64;
 
 /// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
 pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorHandle {
@@ -32,6 +33,32 @@ pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorH
 enum DrainCommandsResult {
     TimedOut,
     CommandChannelClosed,
+}
+
+async fn writer_task(
+    mut writer: tokio::net::tcp::OwnedWriteHalf,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    error_tx: mpsc::Sender<()>,
+) {
+    while let Some(bytes) = rx.recv().await {
+        if writer.write_all(&bytes).await.is_err() {
+            let _ = error_tx.try_send(());
+            return;
+        }
+    }
+}
+
+fn enqueue_writer_bytes(
+    writer_tx: &mpsc::Sender<Vec<u8>>,
+    bytes: Vec<u8>,
+) -> Result<(), DisconnectReason> {
+    if bytes.is_empty() {
+        return Ok(());
+    }
+
+    writer_tx
+        .try_send(bytes)
+        .map_err(|_| DisconnectReason::TcpError)
 }
 
 /// Drain pending commands for `duration`, responding to GetState immediately.
@@ -156,7 +183,7 @@ async fn run_actor(
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum DisconnectReason {
     TcpError,
     PingTimeout,
@@ -169,8 +196,14 @@ async fn run_connected(
     cmd_rx: &mut mpsc::Receiver<Lv1Command>,
 ) -> DisconnectReason {
     let reader = &mut client.reader;
-    let writer = &mut client.writer;
+    let writer = client
+        .writer
+        .take()
+        .expect("connected LV1 client has a writer before run_connected");
     let decoder = &mut client.decoder;
+    let (writer_tx, writer_rx) = mpsc::channel(WRITER_QUEUE_CAPACITY);
+    let (writer_error_tx, mut writer_error_rx) = mpsc::channel(1);
+    tokio::spawn(writer_task(writer, writer_rx, writer_error_tx));
 
     loop {
         if state.last_ping.elapsed() > PING_TIMEOUT {
@@ -178,6 +211,11 @@ async fn run_connected(
         }
 
         tokio::select! {
+            maybe_error = writer_error_rx.recv() => {
+                if maybe_error.is_some() {
+                    return DisconnectReason::TcpError;
+                }
+            }
             frames = read_next_async(reader, decoder) => {
                 match frames {
                     Err(_) => return DisconnectReason::TcpError,
@@ -185,7 +223,13 @@ async fn run_connected(
                         for frame in frames {
                             if let Ok(msg) = decode_frame_payload(&frame) {
                                 if let Some((addr, args)) = pong_for_ping(&msg) {
-                                    let _ = send_async(writer, addr, &args).await;
+                                    let bytes = match encode_frame(addr, &args) {
+                                        Ok(bytes) => bytes,
+                                        Err(_) => return DisconnectReason::TcpError,
+                                    };
+                                    if enqueue_writer_bytes(&writer_tx, bytes).is_err() {
+                                        return DisconnectReason::TcpError;
+                                    }
                                     state.last_ping = Instant::now();
                                     continue;
                                 }
@@ -211,13 +255,12 @@ async fn run_connected(
                             Err(_) => return DisconnectReason::TcpError,
                         };
 
-                        if writer.write_all(&bytes).await.is_err() {
+                        if enqueue_writer_bytes(&writer_tx, bytes).is_err() {
                             return DisconnectReason::TcpError;
                         }
                     }
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
-                        let result = send_async(
-                            writer,
+                        let result = encode_frame(
                             "/Set/Track/Out/Gain",
                             &[
                                 OscArg::Int(group),
@@ -225,8 +268,11 @@ async fn run_connected(
                                 OscArg::Double(gain_db),
                             ],
                         )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+                        .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        .and_then(|bytes| {
+                            enqueue_writer_bytes(&writer_tx, bytes)
+                                .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        });
 
                         let failed = result.is_err();
                         let _ = reply.send(result);
@@ -235,8 +281,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetPan { group, channel, value, reply }) => {
-                        let result = send_async(
-                            writer,
+                        let result = encode_frame(
                             "/Set/Track/Pan",
                             &[
                                 OscArg::Int(group),
@@ -244,8 +289,11 @@ async fn run_connected(
                                 OscArg::Double(value),
                             ],
                         )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+                        .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        .and_then(|bytes| {
+                            enqueue_writer_bytes(&writer_tx, bytes)
+                                .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        });
 
                         let failed = result.is_err();
                         let _ = reply.send(result);
@@ -254,8 +302,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetBalance { group, channel, value, reply }) => {
-                        let result = send_async(
-                            writer,
+                        let result = encode_frame(
                             "/Set/Track/Pan/Balance",
                             &[
                                 OscArg::Int(group),
@@ -263,8 +310,11 @@ async fn run_connected(
                                 OscArg::Double(value),
                             ],
                         )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+                        .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        .and_then(|bytes| {
+                            enqueue_writer_bytes(&writer_tx, bytes)
+                                .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        });
 
                         let failed = result.is_err();
                         let _ = reply.send(result);
@@ -273,8 +323,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetWidth { group, channel, value, reply }) => {
-                        let result = send_async(
-                            writer,
+                        let result = encode_frame(
                             "/Set/Track/Pan/Width",
                             &[
                                 OscArg::Int(group),
@@ -282,8 +331,11 @@ async fn run_connected(
                                 OscArg::Double(value),
                             ],
                         )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+                        .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        .and_then(|bytes| {
+                            enqueue_writer_bytes(&writer_tx, bytes)
+                                .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        });
 
                         let failed = result.is_err();
                         let _ = reply.send(result);
@@ -292,8 +344,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
-                        let result = send_async(
-                            writer,
+                        let result = super::tcp::encode_frame(
                             "/Set/Track/Out/Mute",
                             &[
                                 OscArg::Int(group),
@@ -301,8 +352,11 @@ async fn run_connected(
                                 OscArg::Bool(muted),
                             ],
                         )
-                        .await
-                        .map_err(|_| Lv1ActorError::CommandSendFailed);
+                        .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        .and_then(|bytes| {
+                            enqueue_writer_bytes(&writer_tx, bytes)
+                                .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        });
 
                         let failed = result.is_err();
                         let _ = reply.send(result);
@@ -322,6 +376,7 @@ async fn run_connected(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn drain_commands_reports_closed_command_channel() {
@@ -345,5 +400,15 @@ mod tests {
         assert_eq!(samples[0].0, "/Set/Track/Pan");
         assert_eq!(samples[1].0, "/Set/Track/Pan/Balance");
         assert_eq!(samples[2].0, "/Set/Track/Pan/Width");
+    }
+
+    #[test]
+    fn enqueue_writer_bytes_reports_tcp_error_when_queue_is_full() {
+        let (tx, _rx) = mpsc::channel(1);
+        tx.try_send(vec![1]).unwrap();
+
+        let result = enqueue_writer_bytes(&tx, vec![2]);
+
+        assert_eq!(result, Err(DisconnectReason::TcpError));
     }
 }

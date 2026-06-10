@@ -308,6 +308,65 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
 }
 
 #[tokio::test]
+async fn actor_routes_pong_without_blocking_read_loop() {
+    use std::io::Read;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (pong_tx, pong_rx) = std::sync::mpsc::channel();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&make_lv1_frame("/ping", &[OscArg::Int64(42)]))
+            .unwrap();
+
+        let mut buf = [0_u8; 1024];
+        let mut decoder = FrameDecoder::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for frame in decoder.push(&buf[..n]).unwrap() {
+                        let msg = decode_frame_payload(&frame).unwrap();
+                        if msg.address == "/pong" {
+                            pong_tx.send(msg.args).unwrap();
+                            return;
+                        }
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => panic!("server read failed: {err}"),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
+    wait_for_connected(&mut events).await;
+
+    let args = tokio::task::spawn_blocking(move || {
+        pong_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(args, vec![OscArg::Int64(42)]);
+}
+
+#[tokio::test]
 async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
