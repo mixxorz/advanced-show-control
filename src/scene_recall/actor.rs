@@ -394,19 +394,95 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn stale_generation_does_not_start_fade() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let command_bus = AppCommandBus::new(event_bus.clone());
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, _fade_rx, fade_starts) = fake_fade_handle();
         command_bus.set_lv1(Some(lv1)).await;
+        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
+
+        // Bump generation BEFORE the scene change — any fade started after this is stale
         command_bus.set_generation(2).await;
         event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+
+        // Advance past the 25 ms settle delay so the actor processes the scene change
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        // Assert no fade was started (generation guard should have blocked it)
+        assert_eq!(
+            fade_starts.load(Ordering::SeqCst),
+            0,
+            "expected zero fades but generation guard failed"
+        );
+
+        // Assert no StartRequested event was published
+        let mut saw_start_requested = false;
+        while let Ok(event) = events.try_recv() {
+            if matches!(
+                event,
+                AppEvent::SceneRecall(
+                    crate::scene_recall::events::SceneRecallEvent::StartRequested { .. }
+                )
+            ) {
+                saw_start_requested = true;
+            }
+        }
+        assert!(
+            !saw_start_requested,
+            "StartRequested published despite stale generation"
+        );
+
+        handle.abort();
+        command_bus.set_lv1(None).await;
+        server.await.unwrap();
+    }
+
+    // The generation guard is checked before start_fade, but there is still a window between
+    // the guard check and the actual start_fade call. This test pins that the guard fires
+    // even when generation flips after the scene change event is published.
+    #[tokio::test(start_paused = true)]
+    async fn generation_flip_between_scene_change_and_fade_start_blocks_fade() {
+        let event_bus = AppEventBus::default();
+        let command_bus = AppCommandBus::new(event_bus.clone());
+        command_bus.set_generation(1).await;
+        let show = show_handle();
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, _fade_rx, fade_starts) = fake_fade_handle();
+        command_bus.set_lv1(Some(lv1)).await;
+        command_bus.set_fade(Some(fade)).await;
+        command_bus.set_show(Some(show.clone())).await;
+        seed_show(&show).await;
+
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        // Publish the scene change with generation still valid
+        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        yield_to_actor().await;
+
+        // Flip generation while the actor is settling (before it dispatches start_fade)
+        command_bus.set_generation(2).await;
+
+        // Now advance past the settle delay — policy will decide Start but generation is stale
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        assert_eq!(
+            fade_starts.load(Ordering::SeqCst),
+            0,
+            "fade started despite generation flip before dispatch"
+        );
 
         handle.abort();
         command_bus.set_lv1(None).await;
