@@ -183,19 +183,20 @@ async fn process_scene_observation(
                     scene_label: scene_label.clone(),
                 },
             ));
-            if command_bus.get_generation().await != generation {
-                return;
-            }
-            if command_bus.start_fade(fade_config).await.is_err() {
-                if command_bus.get_generation().await != generation {
-                    return;
+            match command_bus
+                .start_fade_if_generation(generation, fade_config)
+                .await
+            {
+                Ok(()) => (),
+                Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
+                Err(err) => {
+                    event_bus.publish(AppEvent::SceneRecall(
+                        crate::scene_recall::events::SceneRecallEvent::Blocked {
+                            scene_label,
+                            reason: format!("failed to start fade: {err:?}"),
+                        },
+                    ));
                 }
-                event_bus.publish(AppEvent::SceneRecall(
-                    crate::scene_recall::events::SceneRecallEvent::Blocked {
-                        scene_label,
-                        reason: "failed to start fade".to_string(),
-                    },
-                ));
             }
         }
         RecallPolicyDecision::Skip { reason } => {
