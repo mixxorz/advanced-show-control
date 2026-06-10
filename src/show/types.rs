@@ -155,4 +155,16 @@ mod tests {
         assert!(!toggles.pan);
         assert!(toggles.faders);
     }
+
+    #[test]
+    fn missing_fader_scope_defaults_to_true_when_scope_toggles_exist() {
+        let json = serde_json::json!({
+            "pan": true
+        });
+
+        let toggles: SceneScopeToggles = serde_json::from_value(json).unwrap();
+
+        assert!(toggles.faders);
+        assert!(toggles.pan);
+    }
 }
