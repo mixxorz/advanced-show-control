@@ -80,8 +80,8 @@ fn scene_config_serializes_no_pan_mode_for_frontend_camel_case() {
 Run:
 
 ```bash
-cargo test -p advanced-show-control lv1::parsers::tests::parses_no_pan_mode_in_channels_batch
-cargo test -p advanced-show-control show::types::tests::scene_config_serializes_no_pan_mode_for_frontend_camel_case
+cargo nextest run -p advanced-show-control lv1::parsers::tests::parses_no_pan_mode_in_channels_batch
+cargo nextest run -p advanced-show-control show::types::tests::scene_config_serializes_no_pan_mode_for_frontend_camel_case
 ```
 
 Expected: both tests fail because `PanMode::None` does not exist.
@@ -119,8 +119,8 @@ let pan_mode = match args[base + 16] {
 Run:
 
 ```bash
-cargo test -p advanced-show-control lv1::parsers::tests::parses_no_pan_mode_in_channels_batch
-cargo test -p advanced-show-control show::types::tests::scene_config_serializes_no_pan_mode_for_frontend_camel_case
+cargo nextest run -p advanced-show-control lv1::parsers::tests::parses_no_pan_mode_in_channels_batch
+cargo nextest run -p advanced-show-control show::types::tests::scene_config_serializes_no_pan_mode_for_frontend_camel_case
 ```
 
 Expected: both tests pass.
@@ -130,7 +130,8 @@ Expected: both tests pass.
 Run:
 
 ```bash
-cargo test -p advanced-show-control lv1::parsers::tests show::types::tests
+cargo nextest run -p advanced-show-control lv1::parsers::tests
+cargo nextest run -p advanced-show-control show::types::tests
 ```
 
 Expected: parser and show type tests pass.
@@ -298,7 +299,7 @@ fn fader_scope_still_blocks_missing_fader_value() {
 Run:
 
 ```bash
-cargo test -p advanced-show-control scene_recall::policy::tests
+cargo nextest run -p advanced-show-control scene_recall::policy::tests
 ```
 
 Expected: the new PAN behavior tests fail under current strict validation. The fader strictness test should pass once `PanMode::None` exists.
@@ -365,7 +366,7 @@ if targets.is_empty() {
 Run:
 
 ```bash
-cargo test -p advanced-show-control scene_recall::policy::tests
+cargo nextest run -p advanced-show-control scene_recall::policy::tests
 ```
 
 Expected: all scene recall policy tests pass after updating any tests that still assert PAN missing-value blocks.
