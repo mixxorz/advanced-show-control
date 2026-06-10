@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::time::Duration;
 
 use tokio::time::Instant;
@@ -33,14 +32,9 @@ pub struct SceneRecallState {
     last_triggered_at: Option<Instant>,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
-    duration_zero_skip_scene_ids: HashSet<String>,
 }
 
 impl SceneRecallState {
-    pub fn reset_for_generation(&mut self) {
-        *self = Self::default();
-    }
-
     pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {
@@ -114,11 +108,6 @@ impl SceneRecallState {
             }
         }
     }
-
-    pub fn should_log_duration_zero_skip(&mut self, scene_id: &str) -> bool {
-        self.duration_zero_skip_scene_ids
-            .insert(scene_id.to_string())
-    }
 }
 
 #[cfg(test)]
@@ -188,18 +177,6 @@ mod tests {
             &scene,
             start + RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY
         ));
-    }
-
-    #[test]
-    fn duration_zero_skip_logs_once_until_reset() {
-        let mut state = SceneRecallState::default();
-
-        assert!(state.should_log_duration_zero_skip("1::Intro"));
-        assert!(!state.should_log_duration_zero_skip("1::Intro"));
-
-        state.reset_for_generation();
-
-        assert!(state.should_log_duration_zero_skip("1::Intro"));
     }
 
     #[test]
