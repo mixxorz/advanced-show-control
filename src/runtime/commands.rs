@@ -137,6 +137,60 @@ impl AppCommandBus {
         result
     }
 
+    pub async fn set_pan(
+        &self,
+        group: i32,
+        channel: i32,
+        value: f64,
+    ) -> Result<(), AppCommandError> {
+        let lv1 = self.targets.lock().await.lv1.clone();
+        let result = match lv1 {
+            Some(lv1) => lv1
+                .set_pan(group, channel, value)
+                .await
+                .map_err(map_lv1_error),
+            None => Err(AppCommandError::Lv1Unavailable),
+        };
+        publish_failure(&self.event_bus, "set_pan", &result);
+        result
+    }
+
+    pub async fn set_balance(
+        &self,
+        group: i32,
+        channel: i32,
+        value: f64,
+    ) -> Result<(), AppCommandError> {
+        let lv1 = self.targets.lock().await.lv1.clone();
+        let result = match lv1 {
+            Some(lv1) => lv1
+                .set_balance(group, channel, value)
+                .await
+                .map_err(map_lv1_error),
+            None => Err(AppCommandError::Lv1Unavailable),
+        };
+        publish_failure(&self.event_bus, "set_balance", &result);
+        result
+    }
+
+    pub async fn set_width(
+        &self,
+        group: i32,
+        channel: i32,
+        value: f64,
+    ) -> Result<(), AppCommandError> {
+        let lv1 = self.targets.lock().await.lv1.clone();
+        let result = match lv1 {
+            Some(lv1) => lv1
+                .set_width(group, channel, value)
+                .await
+                .map_err(map_lv1_error),
+            None => Err(AppCommandError::Lv1Unavailable),
+        };
+        publish_failure(&self.event_bus, "set_width", &result);
+        result
+    }
+
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
         let fade = self.targets.lock().await.fade.clone();
         let result = match fade {
@@ -282,5 +336,48 @@ mod tests {
 
         assert!(!snapshot.lockout);
         assert!(snapshot.scene_configs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_pan_routes_to_lv1_and_publishes_no_failure() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let bus = AppCommandBus::new(event_bus);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+
+        tokio::spawn(async move {
+            if let Some(crate::lv1::commands::Lv1Command::SetPan {
+                group,
+                channel,
+                value,
+                reply,
+            }) = lv1_rx.recv().await
+            {
+                assert_eq!((group, channel, value), (2, 7, -18.5));
+                let _ = reply.send(Ok(()));
+            }
+        });
+
+        assert_eq!(bus.set_pan(2, 7, -18.5).await, Ok(()));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn missing_lv1_for_balance_publishes_command_failed() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let bus = AppCommandBus::new(event_bus);
+
+        let err = bus.set_balance(1, 3, 0.25).await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::Lv1Unavailable);
+        match events.recv().await.unwrap() {
+            AppEvent::CommandFailed { command, message } => {
+                assert_eq!(command, "set_balance");
+                assert_eq!(message, AppCommandError::Lv1Unavailable.to_string());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }
