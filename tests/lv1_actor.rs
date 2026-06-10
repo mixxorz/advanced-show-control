@@ -78,7 +78,7 @@ async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while let Ok(event) = events.recv().await {
             match event {
-                AppEvent::Lv1(Lv1Event::Disconnected) => got_disconnect = true,
+                AppEvent::Lv1(Lv1Event::Disconnected { .. }) => got_disconnect = true,
                 AppEvent::Lv1(Lv1Event::Connected) if got_disconnect => {
                     got_reconnect = true;
                     break;
@@ -406,7 +406,7 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Ok(event) = events.recv().await {
-            if matches!(event, AppEvent::Lv1(Lv1Event::Disconnected)) {
+            if matches!(event, AppEvent::Lv1(Lv1Event::Disconnected { .. })) {
                 break;
             }
         }
@@ -573,21 +573,22 @@ async fn silent_server_disconnects_after_ping_timeout() {
     tokio::time::advance(std::time::Duration::from_secs(11)).await;
     tokio::task::yield_now().await;
 
-    // Assert Disconnected is published
-    let got_disconnect = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    // Assert Disconnected is published and names the ping timeout as the reason
+    let disconnect_reason = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Ok(event) = events.recv().await {
-            if matches!(event, AppEvent::Lv1(Lv1Event::Disconnected)) {
-                return true;
+            if let AppEvent::Lv1(Lv1Event::Disconnected { reason }) = event {
+                return Some(reason);
             }
         }
-        false
+        None
     })
     .await
     .expect("timed out waiting for Disconnected after advancing past PING_TIMEOUT");
 
+    let reason = disconnect_reason.expect("Disconnected event not received after ping timeout");
     assert!(
-        got_disconnect,
-        "Disconnected event not received after ping timeout"
+        reason.contains("ping timeout"),
+        "disconnect reason should name the ping timeout, got: {reason}"
     );
     let _ = done_tx.send(());
 }

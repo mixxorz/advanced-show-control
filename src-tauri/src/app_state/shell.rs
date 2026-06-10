@@ -817,7 +817,12 @@ mod tests {
             .await;
         let (generation, _) = state.begin_connecting().await;
         let reconnecting = state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("disconnect should enter reconnect state");
 
@@ -856,7 +861,12 @@ mod tests {
             .await;
         let (generation, _) = state.begin_connecting().await;
         let first_reconnect = state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("first disconnect should enter reconnect state");
         state
@@ -864,7 +874,12 @@ mod tests {
             .await
             .expect("connected event should clear first reconnect state");
         let second_reconnect = state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("second disconnect should enter reconnect state");
 

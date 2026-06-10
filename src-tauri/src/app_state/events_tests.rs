@@ -179,7 +179,12 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
         .unwrap();
 
     let snapshot = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("disconnect should apply to current generation");
 
@@ -431,7 +436,12 @@ async fn lv1_disconnected_event_enters_reconnect_state() {
         .await;
     let (generation, _) = state.begin_connecting().await;
     let snapshot = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .unwrap();
 
@@ -460,7 +470,12 @@ async fn lv1_connected_event_refreshes_discovered_row_status() {
         .await;
     let (generation, _) = state.begin_connecting().await;
     let disconnected = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("disconnect should apply to current generation");
     assert_ne!(
@@ -493,7 +508,12 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
     let (generation, _) = state.begin_connecting().await;
 
     let first_disconnect = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("first disconnect should apply to current generation");
     assert!(first_disconnect.reconnect.active);
@@ -506,7 +526,12 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
     assert!(!connected.reconnect.active);
 
     let second_disconnect = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("second disconnect should apply to current generation");
 
@@ -520,7 +545,12 @@ async fn lv1_disconnected_event_without_connected_identity_stays_out_of_reconnec
     let (generation, _) = state.begin_connecting().await;
 
     let snapshot = state
-        .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::Disconnected {
+                reason: "test".to_string(),
+            },
+        )
         .await
         .expect("event should apply to current generation");
 

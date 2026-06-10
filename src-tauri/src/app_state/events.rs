@@ -172,7 +172,7 @@ impl ShellState {
                     "LV1 connected".to_string(),
                 );
             }
-            Lv1Event::Disconnected => {
+            Lv1Event::Disconnected { reason } => {
                 let had_connected_identity = inner.connected_lv1_identity.is_some();
                 inner.lv1_snapshot = None;
                 inner.pending_lv1_identity = None;
@@ -184,7 +184,7 @@ impl ShellState {
                 inner.push_log(
                     LogSource::Lv1,
                     LogSeverity::Warning,
-                    "LV1 disconnected".to_string(),
+                    format!("LV1 disconnected: {reason}"),
                 );
             }
             Lv1Event::SceneChanged(scene) => {

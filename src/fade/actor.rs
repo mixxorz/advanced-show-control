@@ -190,7 +190,7 @@ async fn run_engine(
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::WidthChanged { group, channel, width })) => {
                         cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Width, width, &mut tick_interval);
                     }
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected)) => {
+                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected { .. })) => {
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;

@@ -79,7 +79,14 @@ fn enqueue_writer_bytes(
 
     writer_tx
         .try_send(WriterMessage::Bytes(bytes))
-        .map_err(|_| DisconnectReason::TcpError)
+        .map_err(|err| match err {
+            mpsc::error::TrySendError::Full(_) => {
+                DisconnectReason::TcpError("writer queue full".to_string())
+            }
+            mpsc::error::TrySendError::Closed(_) => {
+                DisconnectReason::TcpError("writer task gone".to_string())
+            }
+        })
 }
 
 fn enqueue_writer_flush(
@@ -219,7 +226,10 @@ async fn run_actor(
         state.scene = None;
         state.channels.clear();
         state.scene_buf = Default::default();
-        state.fan_out(Lv1Event::Disconnected);
+        state.diagnose(format!("disconnected: {disconnected}"));
+        state.fan_out(Lv1Event::Disconnected {
+            reason: disconnected.to_string(),
+        });
 
         if disconnected == DisconnectReason::CommandChannelClosed {
             break;
@@ -231,9 +241,19 @@ async fn run_actor(
 
 #[derive(Debug, PartialEq)]
 enum DisconnectReason {
-    TcpError,
+    TcpError(String),
     PingTimeout,
     CommandChannelClosed,
+}
+
+impl std::fmt::Display for DisconnectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DisconnectReason::TcpError(detail) => write!(f, "TCP error: {detail}"),
+            DisconnectReason::PingTimeout => write!(f, "ping timeout"),
+            DisconnectReason::CommandChannelClosed => write!(f, "command channel closed"),
+        }
+    }
 }
 
 enum WriterMessage {
@@ -272,22 +292,26 @@ async fn run_connected(
             }
             maybe_error = writer_error_rx.recv() => {
                 if maybe_error.is_some() {
-                    return DisconnectReason::TcpError;
+                    return DisconnectReason::TcpError("socket write failed".to_string());
                 }
             }
             frames = read_next_async(reader, decoder) => {
                 match frames {
-                    Err(_) => return DisconnectReason::TcpError,
+                    Err(err) => return DisconnectReason::TcpError(format!("read failed: {err:?}")),
                     Ok(frames) => {
                         for frame in frames {
                             if let Ok(msg) = decode_frame_payload(&frame) {
                                 if let Some((addr, args)) = pong_for_ping(&msg) {
                                     let bytes = match encode_frame(addr, &args) {
                                         Ok(bytes) => bytes,
-                                        Err(_) => return DisconnectReason::TcpError,
+                                        Err(err) => {
+                                            return DisconnectReason::TcpError(format!(
+                                                "encode pong failed: {err:?}"
+                                            ));
+                                        }
                                     };
-                                    if enqueue_writer_bytes(&writer_tx, bytes).is_err() {
-                                        return DisconnectReason::TcpError;
+                                    if let Err(reason) = enqueue_writer_bytes(&writer_tx, bytes) {
+                                        return reason;
                                     }
                                     state.last_ping = Instant::now();
                                     ping_deadline.as_mut().reset(tokio::time::Instant::from_std(state.last_ping + PING_TIMEOUT));
@@ -312,11 +336,15 @@ async fn run_connected(
 
                         let bytes = match encode_parameter_write_batch(&writes) {
                             Ok(bytes) => bytes,
-                            Err(_) => return DisconnectReason::TcpError,
+                            Err(err) => {
+                                return DisconnectReason::TcpError(format!(
+                                    "encode write batch failed: {err:?}"
+                                ));
+                            }
                         };
 
-                        if enqueue_writer_bytes(&writer_tx, bytes).is_err() {
-                            return DisconnectReason::TcpError;
+                        if let Err(reason) = enqueue_writer_bytes(&writer_tx, bytes) {
+                            return reason;
                         }
                     }
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
@@ -337,7 +365,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetGain send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetPan { group, channel, value, reply }) => {
@@ -358,7 +388,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetPan send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetBalance { group, channel, value, reply }) => {
@@ -379,7 +411,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetBalance send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetWidth { group, channel, value, reply }) => {
@@ -400,7 +434,9 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetWidth send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
@@ -421,13 +457,17 @@ async fn run_connected(
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "SetMute send failed (encode or writer queue)".to_string(),
+                            );
                         }
                     }
                     Some(Lv1Command::Flush { reply }) => {
                         if let Err(reply) = enqueue_writer_flush(&writer_tx, reply) {
                             let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
-                            return DisconnectReason::TcpError;
+                            return DisconnectReason::TcpError(
+                                "flush enqueue failed (writer queue full or gone)".to_string(),
+                            );
                         }
                     }
                 }
@@ -487,7 +527,10 @@ mod tests {
 
         let result = enqueue_writer_bytes(&tx, vec![2]);
 
-        assert_eq!(result, Err(DisconnectReason::TcpError));
+        assert_eq!(
+            result,
+            Err(DisconnectReason::TcpError("writer queue full".to_string()))
+        );
     }
 
     #[tokio::test]

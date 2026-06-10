@@ -729,7 +729,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
                                 eprintln!("failed to emit app-status-changed: {err}");
                             }
-                            if matches!(event, Lv1Event::Disconnected) {
+                            if matches!(event, Lv1Event::Disconnected { .. }) {
                                 state
                                     .clear_runtime_handles_for_generation(
                                         generation,
@@ -954,7 +954,12 @@ mod tests {
             .await
             .expect("connected event should apply");
         let second_reconnect = state
-            .apply_lv1_event_for_generation(1, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                1,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("second disconnect should apply");
         assert!(second_reconnect.reconnect.active);
@@ -987,7 +992,12 @@ mod tests {
             .await;
         let (generation, _) = state.begin_connecting().await;
         state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Disconnected)
+            .apply_lv1_event_for_generation(
+                generation,
+                &Lv1Event::Disconnected {
+                    reason: "test".to_string(),
+                },
+            )
             .await
             .expect("disconnect should apply")
     }
@@ -1326,7 +1336,7 @@ impl From<&Lv1Event> for Lv1EventPayload {
                 kind: "Connected".to_string(),
                 message: "LV1 connected".to_string(),
             },
-            Lv1Event::Disconnected => Self {
+            Lv1Event::Disconnected { .. } => Self {
                 kind: "Disconnected".to_string(),
                 message: "LV1 disconnected".to_string(),
             },
