@@ -280,8 +280,13 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
                 Some(crate::osc::OscArg::Int(channel)),
                 Some(crate::osc::OscArg::Double(pan)),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                && apply_pan_update(&mut state.channels, *group, *channel, *pan)
             {
-                apply_pan_update(&mut state.channels, *group, *channel, *pan);
+                state.fan_out(Lv1Event::PanChanged {
+                    group: *group,
+                    channel: *channel,
+                    pan: *pan,
+                });
             }
         }
         "/Notify/Balance" => {
@@ -290,8 +295,13 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
                 Some(crate::osc::OscArg::Int(channel)),
                 Some(crate::osc::OscArg::Double(balance)),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                && apply_balance_update(&mut state.channels, *group, *channel, *balance)
             {
-                apply_balance_update(&mut state.channels, *group, *channel, *balance);
+                state.fan_out(Lv1Event::BalanceChanged {
+                    group: *group,
+                    channel: *channel,
+                    balance: *balance,
+                });
             }
         }
         "/Notify/PanArcWidth" => {
@@ -306,8 +316,13 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
                 msg.args.get(2),
                 msg.args.get(3),
             ) && *active != 0
+                && apply_width_update(&mut state.channels, *group, *channel, *width)
             {
-                apply_width_update(&mut state.channels, *group, *channel, *width);
+                state.fan_out(Lv1Event::WidthChanged {
+                    group: *group,
+                    channel: *channel,
+                    width: *width,
+                });
             }
         }
         _ => {}

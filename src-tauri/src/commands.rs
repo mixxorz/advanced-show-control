@@ -1374,6 +1374,18 @@ impl From<&Lv1Event> for Lv1EventPayload {
                 kind: "MuteChanged".to_string(),
                 message: format!("mute changed: group {group}, channel {channel}, muted {muted}"),
             },
+            Lv1Event::PanChanged { .. } => Self {
+                kind: "PanChanged".to_string(),
+                message: "pan changed".to_string(),
+            },
+            Lv1Event::BalanceChanged { .. } => Self {
+                kind: "BalanceChanged".to_string(),
+                message: "balance changed".to_string(),
+            },
+            Lv1Event::WidthChanged { .. } => Self {
+                kind: "WidthChanged".to_string(),
+                message: "width changed".to_string(),
+            },
             Lv1Event::ChannelTopologyChanged(channels) => Self {
                 kind: "ChannelTopologyChanged".to_string(),
                 message: format!("channel topology updated: {} channels", channels.len()),
