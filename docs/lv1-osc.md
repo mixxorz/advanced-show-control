@@ -4,6 +4,13 @@ This is a reverse-engineered OSC reference for Waves eMotion LV1. The main
 sections describe known protocol behavior. Unconfirmed or version-dependent
 behavior is listed under **Unconfirmed** sections.
 
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or supported by Waves Audio Ltd.
+or the Waves eMotion LV1 product team. Waves, eMotion, and LV1 are trademarks of
+their respective owners. This software and documentation are provided without
+warranty; use them at your own risk.
+
 All group, channel, scene, aux, user-key, and mute-group indices are zero-based on
 the OSC wire.
 

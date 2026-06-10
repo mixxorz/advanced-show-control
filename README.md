@@ -1,5 +1,12 @@
 # Advanced Show Control
 
+## Disclaimer
+
+This project is not affiliated with, endorsed by, or supported by Waves Audio Ltd.
+or the Waves eMotion LV1 product team. Waves, eMotion, and LV1 are trademarks of
+their respective owners. This software and documentation are provided without
+warranty; use them at your own risk.
+
 ## Development Tooling
 
 `rust-toolchain.toml` pins stable Rust and includes `rustfmt` and `clippy`.
