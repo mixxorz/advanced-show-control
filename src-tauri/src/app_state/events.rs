@@ -209,31 +209,30 @@ impl ShellState {
             }
             Lv1Event::SceneListChanged(scenes) => {
                 let generation = inner.generation;
-                drop(inner);
-
-                if !self.is_generation_current(generation).await {
+                if inner.generation != generation {
                     return None;
                 }
+
+                // Gather diagnostics before holding the lock to avoid lock contention
+                drop(inner);
                 let before_count = self.show.get_snapshot().await.scene_configs.len();
                 let reconciliation_diagnostic = self
                     .show
                     .scene_reconciliation_diagnostic(scenes.clone())
                     .await;
 
-                if !self.is_generation_current(generation).await {
-                    return None;
-                }
-                let changed = self.show.reconcile_scene_list(scenes.clone()).await;
-
-                if !self.is_generation_current(generation).await {
-                    return None;
-                }
-                let after_count = self.show.get_snapshot().await.scene_configs.len();
-
+                // Re-acquire inner lock and hold it across reconciliation to prevent stale mutations.
+                // Lock ordering: inner then show (consistent with snapshot()).
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {
                     return None;
                 }
+
+                // Call reconcile_scene_list while holding inner lock to ensure generation
+                // doesn't change between the check and the mutation
+                let changed = self.show.reconcile_scene_list(scenes.clone()).await;
+                let after_count = self.show.get_snapshot().await.scene_configs.len();
+
                 ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
                 if changed {
                     inner.show_file_dirty = true;

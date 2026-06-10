@@ -29,6 +29,7 @@ pub struct RuntimeHandles {
     pub scene_recall_fader: Option<JoinHandle<()>>,
 }
 
+/// Lock ordering: always acquire `inner` before `show.state` to avoid deadlocks.
 #[derive(Clone)]
 pub struct ShellState {
     pub handles: Arc<Mutex<RuntimeHandles>>,
