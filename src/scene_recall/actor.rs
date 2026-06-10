@@ -33,6 +33,20 @@ pub fn spawn_scene_recall_fader(
         let mut recall_state = SceneRecallState::default();
         let mut pending_scene: Option<PendingSceneObservation> = None;
 
+        // Recall timing windows:
+        //
+        // - 25 ms settle:         Allows LV1 scene-state to stabilize after a scene change event.
+        //                         The scene name/index can arrive in multiple frames; we wait for
+        //                         the dust to settle before evaluating recall policy.
+        //
+        // - 500 ms edit suppression: After the scene list is modified, suppress recall to avoid
+        //                         triggering fades against a partially-edited show file.
+        //
+        // - 2 s arming delay:     The first scene seen after arming is treated as the baseline
+        //                         (current scene at arm time), not a scene change to recall.
+        //
+        // - 500 ms repeat delay:  Prevents the same scene from triggering two consecutive recalls
+        //                         if a bounce or duplicate event arrives.
         loop {
             if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
                 tokio::select! {
