@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
+use tokio::sync::oneshot;
 
 use super::commands::Lv1Command;
 use super::events::Lv1ActorError;
@@ -37,19 +38,37 @@ enum DrainCommandsResult {
 
 async fn writer_task(
     mut writer: tokio::net::tcp::OwnedWriteHalf,
-    mut rx: mpsc::Receiver<Vec<u8>>,
+    mut rx: mpsc::Receiver<WriterMessage>,
     error_tx: mpsc::Sender<()>,
 ) {
-    while let Some(bytes) = rx.recv().await {
-        if writer.write_all(&bytes).await.is_err() {
-            let _ = error_tx.try_send(());
-            return;
+    while let Some(message) = rx.recv().await {
+        match message {
+            WriterMessage::Bytes(bytes) => {
+                if writer.write_all(&bytes).await.is_err() {
+                    let _ = error_tx.try_send(());
+                    return;
+                }
+            }
+            WriterMessage::Flush(reply) => {
+                let result = writer
+                    .flush()
+                    .await
+                    .map_err(|_| Lv1ActorError::CommandSendFailed);
+                let failed = result.is_err();
+                if failed {
+                    let _ = error_tx.try_send(());
+                }
+                let _ = reply.send(result);
+                if failed {
+                    return;
+                }
+            }
         }
     }
 }
 
 fn enqueue_writer_bytes(
-    writer_tx: &mpsc::Sender<Vec<u8>>,
+    writer_tx: &mpsc::Sender<WriterMessage>,
     bytes: Vec<u8>,
 ) -> Result<(), DisconnectReason> {
     if bytes.is_empty() {
@@ -57,7 +76,16 @@ fn enqueue_writer_bytes(
     }
 
     writer_tx
-        .try_send(bytes)
+        .try_send(WriterMessage::Bytes(bytes))
+        .map_err(|_| DisconnectReason::TcpError)
+}
+
+fn enqueue_writer_flush(
+    writer_tx: &mpsc::Sender<WriterMessage>,
+    reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+) -> Result<(), DisconnectReason> {
+    writer_tx
+        .try_send(WriterMessage::Flush(reply))
         .map_err(|_| DisconnectReason::TcpError)
 }
 
@@ -188,6 +216,11 @@ enum DisconnectReason {
     TcpError,
     PingTimeout,
     CommandChannelClosed,
+}
+
+enum WriterMessage {
+    Bytes(Vec<u8>),
+    Flush(oneshot::Sender<Result<(), Lv1ActorError>>),
 }
 
 async fn run_connected(
@@ -365,7 +398,21 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::Flush { reply }) => {
-                        let _ = reply.send(Ok(()));
+                        let (flush_tx, flush_rx) = oneshot::channel();
+                        if enqueue_writer_flush(&writer_tx, flush_tx).is_err() {
+                            let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
+                            return DisconnectReason::TcpError;
+                        }
+
+                        match flush_rx.await {
+                            Ok(Ok(())) => {
+                                let _ = reply.send(Ok(()));
+                            }
+                            Ok(Err(_)) | Err(_) => {
+                                let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
+                                return DisconnectReason::TcpError;
+                            }
+                        }
                     }
                 }
             }
@@ -405,7 +452,7 @@ mod tests {
     #[test]
     fn enqueue_writer_bytes_reports_tcp_error_when_queue_is_full() {
         let (tx, _rx) = mpsc::channel(1);
-        tx.try_send(vec![1]).unwrap();
+        tx.try_send(WriterMessage::Bytes(vec![1])).unwrap();
 
         let result = enqueue_writer_bytes(&tx, vec![2]);
 

@@ -470,3 +470,56 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
         }
     }
 }
+
+#[tokio::test]
+async fn actor_flush_waits_for_writer_task_to_accept_prior_bytes() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (address_tx, address_rx) = std::sync::mpsc::channel();
+
+    tokio::task::spawn_blocking(move || {
+        use std::io::Read;
+
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+
+        let mut buf = [0_u8; 1024];
+        let mut decoder = FrameDecoder::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for frame in decoder.push(&buf[..n]).unwrap() {
+                        let msg = decode_frame_payload(&frame).unwrap();
+                        let _ = address_tx.send(msg.address);
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => panic!("server read failed: {err}"),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus);
+
+    wait_for_connected(&mut events).await;
+
+    assert!(handle.set_mute(0, 1, true).await.is_ok());
+    assert!(handle.flush().await.is_ok());
+
+    loop {
+        let address = address_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .expect("SetMute frame was not sent before flush returned");
+        if address == "/Set/Track/Out/Mute" {
+            break;
+        }
+    }
+}
