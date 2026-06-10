@@ -34,7 +34,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
 
 ## Core Ownership
 
-- `Lv1Actor` owns the LV1 TCP connection and the mirrored LV1 state.
+- `Lv1Actor` owns the LV1 TCP connection lifecycle and mirrored LV1 state. During a connected session, a scoped writer task owns the TCP write half and reports write failures back to the actor.
 - `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
 - `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
 - `SceneRecallFader` owns scene recall policy and decision-making.
