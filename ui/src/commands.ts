@@ -63,3 +63,12 @@ export async function runVoidCommand(
     setCommandError(String(error));
   }
 }
+
+export async function setSceneScopePanEnabled(
+  sceneId: string,
+  enabled: boolean,
+  setAppState: (appState: AppViewState) => void,
+  setCommandError: (message: string | null) => void,
+) {
+  return runSnapshotCommand("set_scene_scope_pan_enabled", { sceneId, enabled }, setAppState, setCommandError);
+}

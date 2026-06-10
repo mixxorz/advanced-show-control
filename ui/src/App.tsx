@@ -9,6 +9,7 @@ import {
   runSnapshotCommand,
   runVoidCommand,
   startupAutoConnectLv1,
+  setSceneScopePanEnabled,
 } from "./commands";
 import { ConnectionScreen } from "./components/ConnectionScreen";
 import { Header } from "./components/Header";
@@ -211,6 +212,9 @@ export default function App() {
                 }
                 setSceneScopeFadersEnabled={(sceneId: string, enabled: boolean) =>
                   runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, setAppState, setCommandError)
+                }
+                setSceneScopePanEnabled={(sceneId: string, enabled: boolean) =>
+                  setSceneScopePanEnabled(sceneId, enabled, setAppState, setCommandError)
                 }
                 storeSceneConfig={(sceneId: string) =>
                   runSnapshotCommand("store_scene_config", { sceneId }, setAppState, setCommandError)
