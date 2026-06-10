@@ -39,6 +39,7 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
             _ => return Err("channel gain must be a double"),
         };
         let pan_mode = match args[base + 16] {
+            OscArg::Int(0) => Some(crate::lv1::types::PanMode::None),
             OscArg::Int(1) => Some(crate::lv1::types::PanMode::Mono),
             OscArg::Int(2) => Some(crate::lv1::types::PanMode::Stereo),
             OscArg::Int(_) => None,
@@ -166,6 +167,16 @@ mod tests {
         let channels = parse_channels_batch(&args).unwrap();
 
         assert_eq!(channels[0].pan, Some(-12.0));
+    }
+
+    #[test]
+    fn parses_no_pan_mode_in_channels_batch() {
+        let args = make_channel_args(&[("Link 1", 12, 0, -9.1, 0.0, 0, 0.0)]);
+
+        let channels = parse_channels_batch(&args).unwrap();
+
+        assert_eq!(channels[0].pan_mode, Some(crate::lv1::types::PanMode::None));
+        assert_eq!(channels[0].balance, None);
     }
 
     #[test]

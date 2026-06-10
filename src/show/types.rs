@@ -145,6 +145,37 @@ mod tests {
     }
 
     #[test]
+    fn scene_config_serializes_no_pan_mode_for_frontend_camel_case() {
+        let config = SceneConfig {
+            scene_id: "0::Intro".to_string(),
+            scene_index: 0,
+            scene_name: "Intro".to_string(),
+            duration_ms: 1000,
+            channel_configs: vec![ChannelConfig {
+                group: 12,
+                channel: 0,
+                fader_db: Some(-6.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: Some(crate::lv1::types::PanMode::None),
+            }],
+            scoped_channels: vec![ChannelRef {
+                group: 12,
+                channel: 0,
+            }],
+            scope_toggles: SceneScopeToggles {
+                faders: true,
+                pan: true,
+            },
+        };
+
+        let json = serde_json::to_value(config).unwrap();
+
+        assert_eq!(json["channelConfigs"][0]["panMode"], "none");
+    }
+
+    #[test]
     fn missing_pan_scope_defaults_to_false() {
         let json = serde_json::json!({
             "faders": true

@@ -10,6 +10,7 @@ pub enum ConnectionStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PanMode {
+    None,
     Mono,
     Stereo,
 }
