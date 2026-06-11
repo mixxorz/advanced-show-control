@@ -7,6 +7,7 @@ use crate::runtime::commands::AppCommandError;
 pub enum FadeCommand {
     RecallSceneFade {
         config: FadeConfig,
+        expected_generation: Option<u64>,
         reply: oneshot::Sender<Result<(), AppCommandError>>,
     },
     AbortAll {

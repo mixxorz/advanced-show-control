@@ -1,4 +1,5 @@
 import type { AppViewState } from "../types";
+import { formatSceneNumber } from "../format";
 import { ShowFileControls } from "./ShowFileControls";
 import { StatusBadge } from "./StatusBadge";
 
@@ -20,7 +21,7 @@ export function Header(props: {
           <h1 className="text-xl font-semibold">Advanced Show Control</h1>
           <p className="text-sm text-slate-400">
             {props.appState.currentScene
-              ? `Scene ${props.appState.currentScene.index}: ${props.appState.currentScene.name}`
+              ? `Scene ${formatSceneNumber(props.appState.currentScene.index)}: ${props.appState.currentScene.name}`
               : "No LV1 scene selected"}
           </p>
         </div>

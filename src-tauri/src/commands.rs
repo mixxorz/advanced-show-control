@@ -84,6 +84,16 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     Ok(snapshot)
 }
 
+async fn resolve_connect_target(
+    host: Option<String>,
+    port: Option<u16>,
+    timeout: u64,
+) -> Result<(String, u16), String> {
+    spawn_blocking(move || resolve_target(host, port, timeout).map_err(|err| err.to_string()))
+        .await
+        .map_err(|err| format!("Failed to resolve LV1 target: {err}"))?
+}
+
 #[tauri::command]
 pub async fn new_show_file(
     app: AppHandle,
@@ -326,7 +336,7 @@ pub async fn connect_lv1(
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
     let timeout = timeout_ms.unwrap_or(6000);
-    let (host, port) = resolve_target(host, port, timeout).map_err(|err| err.to_string())?;
+    let (host, port) = resolve_connect_target(host, port, timeout).await?;
     let identity = crate::connection_state::Lv1SystemIdentity {
         uuid: None,
         host: None,
@@ -571,6 +581,7 @@ async fn connect_to_target<R: Runtime>(
         shell_state,
         generation,
         snapshot,
+        event_bus.clone(),
         events,
         runtime_handles,
         &active_command_bus,
@@ -640,6 +651,7 @@ async fn install_connected_runtime<R: Runtime>(
     shell_state: ShellState,
     generation: u64,
     snapshot: AppViewState,
+    event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     mut runtime_handles: RuntimeHandles,
     active_command_bus: &ActiveCommandBus,
@@ -652,6 +664,7 @@ async fn install_connected_runtime<R: Runtime>(
         shell_state,
         active_command_bus.clone(),
         generation,
+        event_bus,
         events,
     ));
 
@@ -679,6 +692,7 @@ fn spawn_shell_state_projector<R: Runtime>(
     state: ShellState,
     active_command_bus: ActiveCommandBus,
     generation: u64,
+    event_bus: AppEventBus,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> tokio::task::JoinHandle<()> {
     let diagnostics_path = app
@@ -755,12 +769,18 @@ fn spawn_shell_state_projector<R: Runtime>(
                             .await;
                     }
                     AppEvent::Diagnostic { source, message } => {
-                        if let Err(err) = crate::diagnostics::append_diagnostic(
+                        if let Some(snapshot) = handle_diagnostic_event(
+                            &app,
+                            &state,
+                            generation,
                             &diagnostics_path,
                             source,
                             message,
-                        ) {
-                            eprintln!("failed to write diagnostic log: {err}");
+                        )
+                        .await
+                            && let Err(err) = app.emit("app-status-changed", &snapshot)
+                        {
+                            eprintln!("failed to emit app-status-changed: {err}");
                         }
                     }
                     AppEvent::SceneRecall(_) => {
@@ -774,13 +794,13 @@ fn spawn_shell_state_projector<R: Runtime>(
                     }
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("shell-state-projector", count);
                     let log_message = format!(
                         "shell-state-projector event subscriber lagged and missed {count} events"
                     );
                     state
                         .push_log(LogSource::App, LogSeverity::Warning, log_message)
                         .await;
+                    log_lagged_subscriber(&event_bus, "shell-state-projector", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -788,11 +808,35 @@ fn spawn_shell_state_projector<R: Runtime>(
     })
 }
 
+async fn handle_diagnostic_event<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &ShellState,
+    generation: u64,
+    diagnostics_path: &std::path::Path,
+    source: &str,
+    message: &str,
+) -> Option<AppViewState> {
+    if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
+        eprintln!("failed to write diagnostic log: {err}");
+    }
+
+    state
+        .push_log(
+            LogSource::App,
+            LogSeverity::Warning,
+            format!("{source}: {message}"),
+        )
+        .await;
+
+    let _ = app;
+    state.snapshot_for_generation(generation).await
+}
+
 async fn save_show_file_to_path(
     state: &State<'_, ShellState>,
     path: PathBuf,
 ) -> Result<AppViewState, String> {
-    let saved_at = current_timestamp_millis();
+    let saved_at = crate::time::current_timestamp_millis();
     let file = state.export_show_file_for_save(saved_at.clone()).await?;
     write_show_file(&path, &file, &backup_folder())?;
     Ok(state.mark_show_file_saved(path, saved_at).await)
@@ -808,16 +852,6 @@ fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBu
 struct Lv1EventPayload {
     kind: String,
     message: String,
-}
-
-fn current_timestamp_millis() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .to_string()
 }
 
 #[cfg(test)]
@@ -874,6 +908,15 @@ mod tests {
         let _ = attempt_reconnect_lv1;
         let _ = startup_auto_connect_lv1;
         let _ = reconnect_timed_out;
+    }
+
+    #[tokio::test]
+    async fn resolve_connect_target_returns_explicit_target() {
+        let target = resolve_connect_target(Some("127.0.0.1".to_string()), Some(1234), 1000)
+            .await
+            .expect("explicit target should resolve");
+
+        assert_eq!(target, ("127.0.0.1".to_string(), 1234));
     }
 
     #[tokio::test]
@@ -1206,6 +1249,7 @@ mod tests {
             state.clone(),
             generation,
             initial_snapshot,
+            event_bus.clone(),
             events,
             RuntimeHandles::default(),
             &active_command_bus,
@@ -1230,6 +1274,86 @@ mod tests {
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[0]["fadeState"], "idle");
         assert_eq!(observed[1]["fadeState"], "running");
+    }
+
+    #[tokio::test]
+    async fn diagnostic_event_updates_shell_state_log_and_snapshot() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+
+        let initial_snapshot = state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let active_command_bus = ActiveCommandBus::default();
+        let _snapshot = install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            generation,
+            initial_snapshot,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            RuntimeHandles::default(),
+            &active_command_bus,
+        )
+        .await
+        .expect("connected runtime should install successfully");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !observed.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("projector should emit the initial snapshot");
+
+        event_bus.publish(AppEvent::Diagnostic {
+            source: "fade-engine".to_string(),
+            message: "event subscriber lagged and missed 3 events".to_string(),
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if observed.lock().unwrap().len() >= 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("projector should emit the diagnostic update");
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 2);
+        assert_eq!(observed[1]["fadeState"], "idle");
+        assert!(observed[1]["logs"].as_array().unwrap().iter().any(|entry| {
+            entry["message"] == "fade-engine: event subscriber lagged and missed 3 events"
+        }));
     }
 
     #[tokio::test]
@@ -1264,6 +1388,7 @@ mod tests {
             state.clone(),
             generation,
             initial_snapshot,
+            event_bus.clone(),
             event_bus.subscribe(),
             RuntimeHandles {
                 active_generation: 0,
@@ -1304,6 +1429,7 @@ mod tests {
             state,
             ActiveCommandBus::default(),
             generation,
+            event_bus.clone(),
             event_bus.subscribe(),
         );
 

@@ -38,7 +38,14 @@ impl Default for AppEventBus {
     }
 }
 
-pub fn log_lagged_subscriber(name: &str, count: u64) {
+pub fn log_lagged_subscriber(bus: &AppEventBus, name: &str, count: u64) {
+    bus.publish(AppEvent::Diagnostic {
+        source: name.to_string(),
+        message: format!("event subscriber lagged and missed {count} events"),
+    });
+}
+
+pub fn eprintln_lagged_subscriber(name: &str, count: u64) {
     eprintln!("{name} event subscriber lagged and missed {count} events");
 }
 
@@ -104,16 +111,27 @@ mod tests {
         let bus = AppEventBus::new(1);
         let mut rx = bus.subscribe();
 
-        bus.publish(AppEvent::CommandFailed {
+        log_lagged_subscriber(&bus, "test", 1);
+
+        let event = rx.recv().await.unwrap();
+        match event {
+            AppEvent::Diagnostic { source, message } => {
+                assert_eq!(source, "test");
+                assert!(message.contains("lagged and missed 1 events"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_publish_without_subscribers_is_safe() {
+        let bus = AppEventBus::new(1);
+
+        let sent = bus.publish(AppEvent::CommandFailed {
             command: "first".to_string(),
             message: "one".to_string(),
         });
-        bus.publish(AppEvent::CommandFailed {
-            command: "second".to_string(),
-            message: "two".to_string(),
-        });
 
-        let err = rx.recv().await.unwrap_err();
-        assert!(matches!(err, broadcast::error::RecvError::Lagged(1)));
+        assert_eq!(sent, 0);
     }
 }

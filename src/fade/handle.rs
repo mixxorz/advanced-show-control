@@ -15,9 +15,30 @@ impl FadeEngineHandle {
     }
 
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
+        self.start_fade_with_generation(None, config).await
+    }
+
+    pub async fn start_fade_if_generation(
+        &self,
+        expected_generation: u64,
+        config: FadeConfig,
+    ) -> Result<(), AppCommandError> {
+        self.start_fade_with_generation(Some(expected_generation), config)
+            .await
+    }
+
+    async fn start_fade_with_generation(
+        &self,
+        expected_generation: Option<u64>,
+        config: FadeConfig,
+    ) -> Result<(), AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(FadeCommand::RecallSceneFade { config, reply })
+            .send(FadeCommand::RecallSceneFade {
+                config,
+                expected_generation,
+                reply,
+            })
             .await
             .map_err(|_| AppCommandError::FadeUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?

@@ -65,7 +65,7 @@ The rule is simple: no module reaches into another module's state directly. Modu
            └────────────┘       └──────────────────┘   └────────────────┘
 ```
 
-`Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on Tauri projection ordering; it reads fresh LV1 state and app show state through `AppCommandBus` before it decides whether a recall should start, skip, or continue.
+`Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on Tauri projection ordering; it reads fresh LV1 state and app show state through `AppCommandBus` before it decides whether a recall should start, skip, or continue. Scene recall fade dispatch is generation-checked at the command-bus boundary. Recall tasks may read state over several awaits, but the final fade start must compare the expected generation while cloning the current fade target so a stale recall cannot land on a newer connection.
 
 ## Command Flow
 
@@ -94,6 +94,8 @@ The rule is simple: no module reaches into another module's state directly. Modu
 `FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
 
 `FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation and direct linear override thresholds. Pan-family manual override cancels pan, balance, and width for that channel together, but it does not cancel that channel's fader fade.
+
+High-rate fade writes use `write_batch`. The command bus reports an unavailable LV1 target when no actor is installed. Once a batch reaches an LV1 actor, the actor may still drop queued writes during disconnect cleanup; this is intentional for the 25 Hz fade stream and must be surfaced through diagnostics rather than retried blindly.
 
 ## Scene Recall Ownership
 

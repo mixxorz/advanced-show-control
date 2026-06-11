@@ -338,7 +338,7 @@ mod tests {
 
     fn scene_config(scene_id: &str, duration_ms: u64, channels: Vec<ChannelConfig>) -> SceneConfig {
         let (scene_index, scene_name) =
-            parse_scene_id(scene_id).unwrap_or_else(|_| (0, String::new()));
+            parse_scene_id(scene_id).expect("test scene_id must be valid");
         SceneConfig {
             scene_id: scene_id.to_string(),
             scene_index,
@@ -797,6 +797,36 @@ mod tests {
         );
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].group, 0);
         assert_eq!(snapshot.scene_configs[0].scoped_channels[0].channel, 1);
+    }
+
+    #[test]
+    fn store_scene_config_rejects_invalid_scene_id() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![],
+        };
+        let channels = vec![channel(0, 1, "Lead", -7.5)];
+
+        let err = state
+            .store_scene_config("not-a-scene-id", &channels)
+            .unwrap_err();
+
+        assert!(err.contains("Invalid scene id"), "unexpected error: {err}");
+        assert!(state.get_scene_config("not-a-scene-id").is_none());
+    }
+
+    #[test]
+    fn store_scene_config_rejects_empty_scene_name() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![],
+        };
+        let channels = vec![channel(0, 1, "Lead", -7.5)];
+
+        let err = state.store_scene_config("0::", &channels).unwrap_err();
+
+        assert!(err.contains("Invalid scene id"), "unexpected error: {err}");
+        assert!(state.get_scene_config("0::").is_none());
     }
 
     #[test]

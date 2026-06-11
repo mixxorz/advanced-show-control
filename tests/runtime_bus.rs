@@ -12,7 +12,6 @@ use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
 use std::net::TcpListener;
-use std::sync::Arc;
 use std::time::Duration;
 
 #[tokio::test]
@@ -64,26 +63,27 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     });
 
     let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
     let command_bus = AppCommandBus::new(event_bus.clone());
     command_bus.set_lv1(Some(lv1)).await;
     let fade = spawn_engine(command_bus.clone(), event_bus);
     command_bus.set_fade(Some(fade.clone())).await;
 
-    // Use a notification mechanism to wait for the actor to be ready instead of a fixed sleep.
-    // This ensures the test is deterministic and doesn't race.
-    let actor_ready = Arc::new(tokio::sync::Notify::new());
-    let actor_ready_check = actor_ready.clone();
-
-    // Signal that the actor is ready (in practice, this would be triggered by receiving
-    // the Channels event, but for this simple test, we notify immediately after setup)
-    tokio::spawn(async move {
-        actor_ready_check.notify_one();
-    });
-
-    tokio::time::timeout(Duration::from_secs(2), actor_ready.notified())
-        .await
-        .expect("actor not ready within timeout");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1(Lv1Event::ChannelTopologyChanged(_))) => break,
+                Ok(_) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed before /Channels was processed")
+                }
+            }
+        }
+    })
+    .await
+    .expect("actor did not process /Channels within timeout");
 
     tokio::time::timeout(
         std::time::Duration::from_secs(2),

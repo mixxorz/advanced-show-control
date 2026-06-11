@@ -612,16 +612,6 @@ fn snapshot_from_parts(
     }
 }
 
-pub(super) fn current_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis();
-    millis.to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

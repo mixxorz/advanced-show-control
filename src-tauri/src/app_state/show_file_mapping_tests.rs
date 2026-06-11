@@ -3,34 +3,60 @@ use super::test_support::connected_state_with_scene_and_channel;
 use super::view::ShowSnapshot;
 use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
 
+fn populated_show_snapshot() -> ShowSnapshot {
+    ShowSnapshot {
+        lockout: true,
+        scene_configs: vec![super::view::SceneConfig {
+            scene_id: "1::Intro".to_string(),
+            scene_index: 1,
+            scene_name: "Intro".to_string(),
+            duration_ms: 5000,
+            channel_configs: vec![super::view::ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-8.0),
+                pan: Some(-12.0),
+                balance: Some(3.0),
+                width: Some(1.2),
+                pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+            }],
+            scoped_channels: vec![super::view::ChannelRef {
+                group: 0,
+                channel: 2,
+            }],
+            scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
+                faders: false,
+                pan: true,
+            },
+        }],
+    }
+}
+
 #[tokio::test]
 async fn export_show_file_contains_current_configs() {
     let state = ShellState::default();
     state
         .begin_connection(connected_state_with_scene_and_channel())
         .await;
-    state
-        .store_scene_config("1::Intro".to_string())
-        .await
-        .unwrap();
+    state.show.replace_snapshot(populated_show_snapshot()).await;
 
     let file = state.export_show_file("saved".to_string()).await;
 
     assert_eq!(file.schema_version, 1);
-    assert!(!file.safety.lockout);
+    assert!(file.safety.lockout);
     assert_eq!(file.saved_at, "saved");
     assert_eq!(file.scene_configs[0].scene_index, 1);
-    assert_eq!(file.scene_configs[0].duration_ms, 0);
+    assert_eq!(file.scene_configs[0].duration_ms, 5000);
     assert_eq!(
         file.scene_configs[0].channel_configs,
         vec![ShowFileChannelConfig {
             group: 0,
             channel: 2,
             fader_db: Some(-8.0),
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
+            pan: Some(-12.0),
+            balance: Some(3.0),
+            width: Some(1.2),
+            pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
         }]
     );
     assert_eq!(
@@ -40,6 +66,38 @@ async fn export_show_file_contains_current_configs() {
             channel: 2
         }]
     );
+    assert!(!file.scene_configs[0].scope_toggles.faders);
+    assert!(file.scene_configs[0].scope_toggles.pan);
+}
+
+#[tokio::test]
+async fn export_load_export_round_trips_show_file_mapping() {
+    let source = ShellState::default();
+    source
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+    source
+        .show
+        .replace_snapshot(populated_show_snapshot())
+        .await;
+
+    let exported = source.export_show_file("saved".to_string()).await;
+
+    let target = ShellState::default();
+    target
+        .begin_connection(connected_state_with_scene_and_channel())
+        .await;
+    let mut imported = exported.clone();
+    target
+        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut imported)
+        .await
+        .unwrap();
+
+    let round_tripped = target.export_show_file("saved-again".to_string()).await;
+
+    assert_eq!(round_tripped.schema_version, exported.schema_version);
+    assert_eq!(round_tripped.safety, exported.safety);
+    assert_eq!(round_tripped.scene_configs, exported.scene_configs);
 }
 
 fn lv1_scene_only_snapshot() -> advanced_show_control::lv1::types::Lv1StateSnapshot {

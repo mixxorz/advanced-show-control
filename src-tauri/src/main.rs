@@ -4,6 +4,7 @@ mod connection_preferences;
 mod connection_state;
 mod diagnostics;
 mod show_file;
+mod time;
 
 use app_state::ShellState;
 use commands::ActiveCommandBus;

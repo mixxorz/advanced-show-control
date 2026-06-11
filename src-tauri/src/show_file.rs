@@ -4,8 +4,10 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
+const MAX_BACKUPS_PER_SHOW_FILE: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -83,7 +85,7 @@ impl LoadValidationReport {
     }
 }
 
-pub fn validate_show_file(
+pub fn prune_show_file_to_lv1_scenes(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
 ) -> Result<LoadValidationReport, String> {
@@ -146,7 +148,7 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
     let parent = path
         .parent()
         .ok_or_else(|| format!("Show file path has no parent: {}", path.display()))?;
-    let timestamp = current_timestamp();
+    let timestamp = crate::time::current_timestamp_millis();
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("show");
     let (temp_path, mut temp_file) = reserve_unique_temp_file(parent, file_name, &timestamp)?;
 
@@ -214,7 +216,7 @@ fn app_data_folder_name() -> &'static str {
 }
 
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
-    let timestamp = current_timestamp();
+    let timestamp = crate::time::current_timestamp_millis();
     let (candidate, mut dest) = reserve_unique_backup_file(backup_dir, path, &timestamp)?;
     let mut source = fs::File::open(path)
         .map_err(|err| format!("Failed to open source show file {}: {err}", path.display()))?;
@@ -235,7 +237,58 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
         )
     })?;
 
+    prune_old_backups(backup_dir, path, MAX_BACKUPS_PER_SHOW_FILE)?;
+
     Ok(())
+}
+
+fn prune_old_backups(
+    backup_dir: &Path,
+    source_path: &Path,
+    max_backups: usize,
+) -> Result<(), String> {
+    let stem = source_path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .unwrap_or("show");
+
+    let backups: Vec<(SystemTime, String, PathBuf)> = fs::read_dir(backup_dir)
+        .map_err(|err| {
+            format!(
+                "Failed to read backup directory {}: {err}",
+                backup_dir.display()
+            )
+        })?
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = path.file_name()?.to_str()?.to_string();
+            if is_backup_for_show_file(&name, stem) {
+                let modified = entry.metadata().ok()?.modified().ok()?;
+                Some((modified, name, path))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for path in prune_backup_entries(backups, max_backups).into_iter() {
+        let _ = fs::remove_file(path);
+    }
+
+    Ok(())
+}
+
+fn is_backup_for_show_file(name: &str, stem: &str) -> bool {
+    let Some(prefix) = name.strip_suffix(".lv1show") else {
+        return false;
+    };
+
+    let Some((_, source)) = prefix.split_once('-') else {
+        return false;
+    };
+
+    source == stem || source.starts_with(&format!("{stem}__backup"))
 }
 
 fn reserve_unique_backup_file(
@@ -259,9 +312,23 @@ fn reserve_unique_backup_file(
         if suffix == 0 {
             format!("{timestamp}-{stem}.lv1show")
         } else {
-            format!("{timestamp}-{stem}-{suffix}.lv1show")
+            format!("{timestamp}-{stem}__backup{suffix}.lv1show")
         }
     })
+}
+
+fn prune_backup_entries(
+    mut backups: Vec<(SystemTime, String, PathBuf)>,
+    max_backups: usize,
+) -> Vec<PathBuf> {
+    backups.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    let prune_count = backups.len().saturating_sub(max_backups);
+    backups
+        .into_iter()
+        .take(prune_count)
+        .map(|(_, _, path)| path)
+        .collect()
 }
 
 fn reserve_unique_temp_file(
@@ -304,16 +371,6 @@ where
     }
 
     unreachable!("suffix loop is unbounded")
-}
-
-fn current_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .to_string()
 }
 
 #[cfg(test)]
@@ -457,7 +514,7 @@ mod tests {
 
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
-            Some("123-test-1.lv1show")
+            Some("123-test__backup1.lv1show")
         );
 
         let _ = fs::remove_dir_all(&backup_dir);
@@ -556,30 +613,30 @@ mod tests {
     }
 
     #[test]
-    fn validation_keeps_exact_scene_matches() {
-        let report = validate_show_file(&mut show_file(), &lv1_snapshot()).unwrap();
+    fn pruning_keeps_exact_scene_matches() {
+        let report = prune_show_file_to_lv1_scenes(&mut show_file(), &lv1_snapshot()).unwrap();
 
         assert_eq!(report.removed_scenes.len(), 0);
     }
 
     #[test]
-    fn validation_deletes_scene_when_name_differs() {
+    fn pruning_deletes_scene_when_name_differs() {
         let mut file = show_file();
         file.scene_configs[0].scene_name = "Renamed Intro".to_string();
 
-        let report = validate_show_file(&mut file, &lv1_snapshot()).unwrap();
+        let report = prune_show_file_to_lv1_scenes(&mut file, &lv1_snapshot()).unwrap();
 
         assert!(file.scene_configs.is_empty());
         assert_eq!(report.removed_scenes, vec!["1: Renamed Intro".to_string()]);
     }
 
     #[test]
-    fn validation_does_not_remove_channel_configs_or_scope() {
+    fn pruning_does_not_remove_channel_configs_or_scope() {
         let mut file = show_file();
         file.scene_configs[0].channel_configs[0].group = 99;
         file.scene_configs[0].scoped_channels[0].group = 99;
 
-        let report = validate_show_file(&mut file, &lv1_snapshot()).unwrap();
+        let report = prune_show_file_to_lv1_scenes(&mut file, &lv1_snapshot()).unwrap();
 
         assert!(!report.removed_anything());
         assert_eq!(file.scene_configs[0].channel_configs.len(), 1);
@@ -587,25 +644,171 @@ mod tests {
     }
 
     #[test]
-    fn validation_requires_scene_list_but_allows_empty_channels() {
+    fn pruning_requires_scene_list_but_allows_empty_channels() {
         let mut file = show_file();
         let mut snapshot = lv1_snapshot();
         snapshot.channels.clear();
 
-        let report = validate_show_file(&mut file, &snapshot).unwrap();
+        let report = prune_show_file_to_lv1_scenes(&mut file, &snapshot).unwrap();
 
         assert_eq!(report.removed_scenes.len(), 0);
     }
 
     #[test]
-    fn validation_still_requires_scene_list() {
+    fn pruning_still_requires_scene_list() {
         let mut file = show_file();
         let mut snapshot = lv1_snapshot();
         snapshot.scene_list.clear();
 
         assert_eq!(
-            validate_show_file(&mut file, &snapshot).unwrap_err(),
+            prune_show_file_to_lv1_scenes(&mut file, &snapshot).unwrap_err(),
             "Open a show file after LV1 scenes are loaded"
         );
+    }
+
+    #[test]
+    fn create_backup_prunes_old_backups_for_same_show_file() {
+        let backup_dir = temp_test_dir("backup-prune");
+        let source = backup_dir.join("show.lv1show");
+        fs::write(&source, "current").unwrap();
+
+        for index in 0..11 {
+            fs::write(
+                backup_dir.join(format!("100{index}-show.lv1show")),
+                format!("old-{index}"),
+            )
+            .unwrap();
+        }
+        fs::write(backup_dir.join("1000-other.lv1show"), "keep").unwrap();
+
+        create_backup(&source, &backup_dir).unwrap();
+
+        let mut entries: Vec<_> = fs::read_dir(&backup_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        entries.sort();
+
+        let show_backups: Vec<_> = entries
+            .iter()
+            .filter(|name| {
+                name.strip_suffix(".lv1show")
+                    .and_then(|prefix| prefix.split_once('-'))
+                    .is_some_and(|(_, source)| source == "show")
+            })
+            .collect();
+
+        assert!(entries.iter().any(|name| name == "1000-other.lv1show"));
+        assert_eq!(show_backups.len(), 10);
+
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn prune_old_backups_does_not_match_hyphenated_neighbor_show_files() {
+        let backup_dir = temp_test_dir("backup-boundary");
+        let source = backup_dir.join("foo.lv1show");
+
+        fs::write(backup_dir.join("100-foo.lv1show"), "foo-old").unwrap();
+        fs::write(backup_dir.join("101-foo-bar.lv1show"), "foo-bar-old").unwrap();
+        fs::write(&source, "current").unwrap();
+
+        prune_old_backups(&backup_dir, &source, 0).unwrap();
+
+        let entries: Vec<_> = fs::read_dir(&backup_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+
+        assert!(entries.contains(&"101-foo-bar.lv1show".to_string()));
+
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn prune_backup_entries_uses_age_not_lexicographic_filename_order() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let older = UNIX_EPOCH + Duration::from_secs(1);
+        let middle = UNIX_EPOCH + Duration::from_secs(2);
+        let newer = UNIX_EPOCH + Duration::from_secs(3);
+
+        let backups = vec![
+            (
+                middle,
+                "10-foo.lv1show".to_string(),
+                PathBuf::from("10-foo.lv1show"),
+            ),
+            (
+                older,
+                "2-foo.lv1show".to_string(),
+                PathBuf::from("2-foo.lv1show"),
+            ),
+            (
+                newer,
+                "11-foo.lv1show".to_string(),
+                PathBuf::from("11-foo.lv1show"),
+            ),
+        ];
+
+        let pruned = prune_backup_entries(backups, 2);
+
+        assert_eq!(pruned, vec![PathBuf::from("2-foo.lv1show")]);
+    }
+
+    #[test]
+    fn prune_backup_entries_keeps_mix_dash_digit_backups_separate_from_mix_backups() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let older = UNIX_EPOCH + Duration::from_secs(1);
+        let newer = UNIX_EPOCH + Duration::from_secs(2);
+
+        let backup_dir = temp_test_dir("backup-mix-boundary");
+        let exact = backup_dir.join("100-mix.lv1show");
+        let hyphenated = backup_dir.join("101-mix-1.lv1show");
+        fs::write(&exact, "mix").unwrap();
+        fs::write(&hyphenated, "mix-1").unwrap();
+
+        let exact_entries = vec![
+            (older, "100-mix.lv1show".to_string(), exact.clone()),
+            (newer, "101-mix-1.lv1show".to_string(), hyphenated.clone()),
+        ];
+
+        assert_eq!(
+            prune_backup_entries(exact_entries, 0),
+            vec![exact.clone(), hyphenated.clone()]
+        );
+        assert!(is_backup_for_show_file("100-mix.lv1show", "mix"));
+        assert!(!is_backup_for_show_file("101-mix-1.lv1show", "mix"));
+        assert!(is_backup_for_show_file("101-mix-1.lv1show", "mix-1"));
+
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
+
+    #[test]
+    fn create_backup_keeps_unrelated_backups() {
+        let backup_dir = temp_test_dir("backup-unrelated");
+        let source = backup_dir.join("setlist.lv1show");
+        fs::write(&source, "current").unwrap();
+
+        for index in 0..2 {
+            fs::write(
+                backup_dir.join(format!("100{index}-setlist.lv1show")),
+                format!("old-{index}"),
+            )
+            .unwrap();
+        }
+        fs::write(backup_dir.join("1000-other.lv1show"), "keep").unwrap();
+
+        create_backup(&source, &backup_dir).unwrap();
+
+        let entries: Vec<_> = fs::read_dir(&backup_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+
+        assert!(entries.iter().any(|name| name == "1000-other.lv1show"));
+
+        let _ = fs::remove_dir_all(&backup_dir);
     }
 }

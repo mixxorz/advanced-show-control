@@ -6,7 +6,7 @@ use super::shell::ShellState;
 use super::view::AppViewState;
 use crate::show_file::{
     SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety,
-    ShowFileSceneConfig, ShowFileSceneScopeToggles, validate_show_file,
+    ShowFileSceneConfig, ShowFileSceneScopeToggles, prune_show_file_to_lv1_scenes,
 };
 
 impl ShellState {
@@ -111,7 +111,7 @@ impl ShellState {
             .lv1_snapshot
             .clone()
             .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
-        let report = validate_show_file(file, &lv1)?;
+        let report = prune_show_file_to_lv1_scenes(file, &lv1)?;
         drop(inner);
 
         self.show

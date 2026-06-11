@@ -7,7 +7,7 @@ use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_mess
 use advanced_show_control::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
 use advanced_show_control::lv1::types::ChannelInfo;
 use advanced_show_control::osc::OscArg;
-use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use advanced_show_control::runtime::events::{AppEvent, AppEventBus, eprintln_lagged_subscriber};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -533,7 +533,7 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                log_lagged_subscriber("monitor", count);
+                eprintln_lagged_subscriber("monitor", count);
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
@@ -693,7 +693,7 @@ async fn run_fade_test(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("fade-test", count);
+                    eprintln_lagged_subscriber("fade-test", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -750,17 +750,17 @@ async fn run_fade_test(
                 println!("[fade-aborted]");
                 break;
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelOverride { group, channel })) => {
+            Ok(AppEvent::Fade(FadeEvent::ChannelOverride { group, channel, .. })) => {
                 println!(
                     "[override] group={group} ch={channel} — manual move detected, channel cancelled"
                 );
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelCancelled { group, channel })) => {
+            Ok(AppEvent::Fade(FadeEvent::ChannelCancelled { group, channel, .. })) => {
                 println!("[cancelled] group={group} ch={channel}");
             }
             Ok(_) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                log_lagged_subscriber("fade-test", count);
+                eprintln_lagged_subscriber("fade-test", count);
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -793,6 +793,7 @@ const INITIAL_MUTE_SETTLE_MS: u64 = 150;
 
 async fn wait_for_channels_with_mute_settle(
     lv1: &Lv1ActorHandle,
+    _event_bus: &AppEventBus,
     events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     timeout_ms: u64,
 ) -> AppResult<Vec<ChannelInfo>> {
@@ -837,7 +838,7 @@ async fn wait_for_channels_with_mute_settle(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("vegas-settle", count);
+                        eprintln_lagged_subscriber("vegas-settle", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 }
@@ -910,7 +911,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("vegas", count);
+                    eprintln_lagged_subscriber("vegas", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -920,7 +921,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     .map_err(|_| "timed out waiting for LV1 connection")?;
 
     let mut original: Vec<ChannelInfo> =
-        wait_for_channels_with_mute_settle(&lv1, &mut events, timeout_ms).await?;
+        wait_for_channels_with_mute_settle(&lv1, &event_bus, &mut events, timeout_ms).await?;
     original.sort_by_key(|ch| (ch.group, ch.channel));
     println!("[vegas] captured {} faders", original.len());
 
@@ -1224,7 +1225,7 @@ mod tests {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("vegas-test", count);
+                        eprintln_lagged_subscriber("vegas-test", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1319,7 +1320,7 @@ mod tests {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("vegas-test", count);
+                        eprintln_lagged_subscriber("vegas-test", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1328,7 +1329,7 @@ mod tests {
         .await
         .unwrap();
 
-        let snapshot = wait_for_channels_with_mute_settle(&handle, &mut events, 2_000)
+        let snapshot = wait_for_channels_with_mute_settle(&handle, &event_bus, &mut events, 2_000)
             .await
             .unwrap();
         assert_eq!(snapshot.len(), 1);

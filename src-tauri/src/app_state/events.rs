@@ -3,9 +3,7 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::show::types::scene_id;
 
-use super::shell::{
-    MAX_LOGS, ShellInner, ShellState, current_timestamp, refresh_discovered_statuses,
-};
+use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
 
 impl ShellState {
@@ -371,14 +369,14 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
                 "Fade aborted".to_string(),
             );
         }
-        FadeEvent::ChannelCompleted { group, channel } => {
+        FadeEvent::ChannelCompleted { group, channel, .. } => {
             inner.push_log(
                 LogSource::Fade,
                 LogSeverity::Info,
                 format!("Fade channel completed: group {group}, channel {channel}"),
             );
         }
-        FadeEvent::ChannelOverride { group, channel } => {
+        FadeEvent::ChannelOverride { group, channel, .. } => {
             inner.fade_state = AppFadeState::Blocked;
             inner.push_log(
                 LogSource::Fade,
@@ -386,7 +384,7 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
                 format!("Fade channel override detected: group={group} channel={channel}"),
             );
         }
-        FadeEvent::ChannelCancelled { group, channel } => {
+        FadeEvent::ChannelCancelled { group, channel, .. } => {
             inner.push_log(
                 LogSource::Fade,
                 LogSeverity::Warning,
@@ -406,7 +404,7 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
 impl ShellInner {
     pub(super) fn push_log(&mut self, source: LogSource, severity: LogSeverity, message: String) {
         self.next_log_id += 1;
-        let timestamp = current_timestamp();
+        let timestamp = crate::time::current_timestamp_millis();
         self.last_event_at = Some(timestamp.clone());
         self.logs.push_back(AppLogEntry {
             id: self.next_log_id,

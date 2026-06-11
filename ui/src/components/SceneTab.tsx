@@ -6,6 +6,7 @@ import {
   channelName,
   formatDb,
   formatPanFamilySummary,
+  formatSceneNumber,
   formatSceneDurationSummary,
 } from "../format";
 import { DurationInput } from "./DurationInput";
@@ -20,10 +21,6 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
     .filter(([, count]) => count > 1)
     .map(([name]) => name)
     .sort((a, b) => a.localeCompare(b));
-}
-
-function sceneDisplayIndex(sceneIndex: number): number {
-  return sceneIndex + 1;
 }
 
 export function SceneTab(props: {
@@ -70,10 +67,10 @@ export function SceneTab(props: {
                     : "block w-full border-b border-slate-800 px-3 py-3 text-left hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 last:border-b-0"
                   }
                   key={scene.sceneId}
-                  onClick={() => props.selectScene(scene.sceneId)}
-                  >
+                    onClick={() => props.selectScene(scene.sceneId)}
+                    >
                     <span className="block text-sm font-semibold text-slate-100">
-                      {sceneDisplayIndex(scene.sceneIndex)}: {scene.sceneName}
+                      {formatSceneNumber(scene.sceneIndex)}: {scene.sceneName}
                     </span>
                     <span className="mt-1 block text-xs text-slate-400">
                       {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · PAN {scene.scopeToggles.pan ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
@@ -90,7 +87,7 @@ export function SceneTab(props: {
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold">
-                  {sceneDisplayIndex(selected.sceneIndex)}: {selected.sceneName}
+                  {formatSceneNumber(selected.sceneIndex)}: {selected.sceneName}
                 </h2>
                 <p className="mt-1 text-sm text-slate-400">Current LV1 scene does not affect which scene config is edited.</p>
               </div>

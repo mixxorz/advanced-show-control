@@ -72,6 +72,9 @@ pub fn parse_scene_id(s: &str) -> Result<(i32, String), String> {
     let (index_str, name) = s
         .split_once("::")
         .ok_or_else(|| format!("invalid scene_id: {s}"))?;
+    if name.is_empty() {
+        return Err(format!("invalid scene_id name: {s}"));
+    }
     let index = index_str
         .parse::<i32>()
         .map_err(|e| format!("invalid scene_id index: {e}"))?;
@@ -207,5 +210,15 @@ mod tests {
 
         assert!(toggles.faders);
         assert!(toggles.pan);
+    }
+
+    #[test]
+    fn parse_scene_id_rejects_empty_name() {
+        let err = parse_scene_id("0::").unwrap_err();
+
+        assert!(
+            err.contains("invalid scene_id name"),
+            "unexpected error: {err}"
+        );
     }
 }

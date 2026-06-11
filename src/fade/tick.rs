@@ -33,6 +33,7 @@ pub(crate) struct ActiveTarget {
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
+    pub(crate) expected_generation: Option<u64>,
 }
 
 pub(crate) struct ActiveTargetInit {
@@ -45,6 +46,7 @@ pub(crate) struct ActiveTargetInit {
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
+    pub(crate) expected_generation: Option<u64>,
 }
 
 impl ActiveTarget {
@@ -60,6 +62,7 @@ impl ActiveTarget {
             curve: init.curve,
             duration: init.duration,
             started_at: init.started_at,
+            expected_generation: init.expected_generation,
         }
     }
 
@@ -168,6 +171,7 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
+            expected_generation: None,
         })
     }
 
@@ -191,6 +195,7 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
+            expected_generation: None,
         });
         assert_eq!(ch.scene, scene);
         assert_eq!(ch.group, 0);
@@ -231,6 +236,7 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
+            expected_generation: None,
         });
 
         let mid = ch.started_at + Duration::from_millis(2000);
@@ -318,5 +324,54 @@ mod tests {
         let end = ch.started_at + Duration::from_millis(5000);
         let result = ch.next_send(end).unwrap();
         assert!((result - -10.0).abs() < 1e-10);
+    }
+
+    fn make_pan_family_target(parameter: FadeParameter) -> ActiveTarget {
+        ActiveTarget::new(ActiveTargetInit {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            key: crate::fade::types::FadeTargetKey {
+                group: 0,
+                channel: 0,
+                parameter,
+            },
+            group: 0,
+            channel: 0,
+            start_value: 0.0,
+            target_value: 10.0,
+            curve: FadeCurve::Linear,
+            duration: Duration::from_millis(4000),
+            started_at: Instant::now(),
+            expected_generation: None,
+        })
+    }
+
+    #[test]
+    fn next_send_pan_respects_minimum_send_delta() {
+        let mut target = make_pan_family_target(FadeParameter::Pan);
+        assert!(target.next_send(target.started_at).is_none());
+
+        let later = target.started_at + Duration::from_millis(400);
+        assert!(target.next_send(later).is_some());
+    }
+
+    #[test]
+    fn next_send_balance_respects_minimum_send_delta() {
+        let mut target = make_pan_family_target(FadeParameter::Balance);
+        assert!(target.next_send(target.started_at).is_none());
+
+        let later = target.started_at + Duration::from_millis(400);
+        assert!(target.next_send(later).is_some());
+    }
+
+    #[test]
+    fn next_send_width_respects_minimum_send_delta() {
+        let mut target = make_pan_family_target(FadeParameter::Width);
+        assert!(target.next_send(target.started_at).is_none());
+
+        let later = target.started_at + Duration::from_millis(200);
+        assert!(target.next_send(later).is_some());
     }
 }

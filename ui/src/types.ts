@@ -1,3 +1,4 @@
+// Keep these types in sync with src-tauri/src/app_state/view.rs; Rust owns AppViewState snapshots; TS mirrors serialized Tauri command/event payloads; update both and run npm run typecheck.
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 export type DiscoveredLv1Status = "available" | "connecting" | "connected" | "unavailable";
 export type FadeState = "idle" | "running" | "blocked";

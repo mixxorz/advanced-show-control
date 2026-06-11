@@ -35,7 +35,7 @@ impl ShowState {
             .unwrap_or_else(|| current_refs.clone());
         let previous = self.get_scene_config(scene_id);
         let (scene_index, scene_name) =
-            parse_scene_id(scene_id).unwrap_or_else(|_| (0, String::new()));
+            parse_scene_id(scene_id).map_err(|err| format!("Invalid scene id: {err}"))?;
         let snapshot = SceneConfig {
             scene_id: scene_id.to_string(),
             scene_index,

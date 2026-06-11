@@ -479,6 +479,9 @@ async fn run_connected(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
+    use crate::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_parameter_write_batch};
+    use crate::runtime::events::AppEventBus;
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
 
@@ -507,17 +510,40 @@ mod tests {
         assert_eq!(reply_rx.await.unwrap(), Err(Lv1ActorError::NotConnected));
     }
 
-    #[test]
-    fn pan_family_addresses_match_expected_osc_paths() {
-        let samples = [
-            ("/Set/Track/Pan", OscArg::Double(-0.5)),
-            ("/Set/Track/Pan/Balance", OscArg::Double(0.25)),
-            ("/Set/Track/Pan/Width", OscArg::Double(0.75)),
-        ];
+    #[tokio::test]
+    async fn pan_family_commands_encode_expected_osc_paths() {
+        let bytes = encode_parameter_write_batch(&[
+            Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::Pan,
+                value: -0.5,
+            },
+            Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::Balance,
+                value: 0.25,
+            },
+            Lv1ParameterWrite {
+                group: 0,
+                channel: 0,
+                parameter: Lv1WriteParameter::Width,
+                value: 0.75,
+            },
+        ])
+        .unwrap();
 
-        assert_eq!(samples[0].0, "/Set/Track/Pan");
-        assert_eq!(samples[1].0, "/Set/Track/Pan/Balance");
-        assert_eq!(samples[2].0, "/Set/Track/Pan/Width");
+        let mut decoder = FrameDecoder::default();
+        let frames = decoder.push(&bytes).unwrap();
+        let addresses: Vec<_> = frames
+            .iter()
+            .map(|frame| decode_frame_payload(frame).unwrap().address)
+            .collect();
+
+        assert!(addresses.contains(&"/Set/Track/Pan".to_string()));
+        assert!(addresses.contains(&"/Set/Track/Pan/Balance".to_string()));
+        assert!(addresses.contains(&"/Set/Track/Pan/Width".to_string()));
     }
 
     #[test]

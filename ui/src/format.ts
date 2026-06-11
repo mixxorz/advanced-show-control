@@ -31,6 +31,14 @@ export function channelButtonLabel(group: number, channel: number) {
   return String(channel);
 }
 
+export function formatSceneNumber(index: number | null | undefined): string {
+  if (index === null || index === undefined) {
+    return "--";
+  }
+
+  return String(index + 1);
+}
+
 export function formatDurationSeconds(durationMs: number) {
   return (durationMs / 1000).toFixed(1);
 }

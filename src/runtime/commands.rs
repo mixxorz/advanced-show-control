@@ -85,7 +85,7 @@ impl AppCommandBus {
             .clone()
             .ok_or(AppCommandError::FadeUnavailable)?;
         drop(targets);
-        fade.start_fade(config)
+        fade.start_fade_if_generation(expected, config)
             .await
             .map_err(|_| AppCommandError::FadeUnavailable)
     }
@@ -206,19 +206,62 @@ impl AppCommandBus {
     }
 
     pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), AppCommandError> {
+        self.write_batch_with_generation(None, writes).await
+    }
+
+    pub async fn write_batch_if_generation(
+        &self,
+        expected: u64,
+        writes: Vec<Lv1ParameterWrite>,
+    ) -> Result<(), AppCommandError> {
+        self.write_batch_with_generation(Some(expected), writes)
+            .await
+    }
+
+    /// Clones the current LV1 handle only after the optional generation check passes.
+    ///
+    /// The actual `lv1.write_batch(...)` call still happens after the mutex guard is dropped,
+    /// because the LV1 actor API is async and must be awaited outside the command-target lock.
+    /// This closes the stale-target selection window, but not the in-flight actor write itself;
+    /// fully eliminating that remaining gap would require moving generation ownership into the
+    /// LV1 actor/write path.
+    async fn write_batch_with_generation(
+        &self,
+        expected: Option<u64>,
+        writes: Vec<Lv1ParameterWrite>,
+    ) -> Result<(), AppCommandError> {
         if writes.is_empty() {
             return Ok(());
         }
 
-        let lv1 = self.targets.lock().await.lv1.clone();
+        let lv1 = {
+            let targets = self.targets.lock().await;
+            if let Some(expected) = expected
+                && targets.generation != expected
+            {
+                let result = Err(AppCommandError::StaleGeneration);
+                publish_failure(&self.event_bus, "write_batch_if_generation", &result);
+                return result;
+            }
+            targets.lv1.clone()
+        };
+
         let result = match lv1 {
             Some(lv1) => lv1.write_batch(writes).await.map_err(map_lv1_error),
             None => Err(AppCommandError::Lv1Unavailable),
         };
-        publish_failure(&self.event_bus, "write_batch", &result);
+        publish_failure(
+            &self.event_bus,
+            expected.map_or("write_batch", |_| "write_batch_if_generation"),
+            &result,
+        );
         result
     }
 
+    /// Starts a fade without any generation check.
+    ///
+    /// Scene recall automation must prefer `start_fade_if_generation` so stale recall tasks
+    /// cannot dispatch after disconnect/reconnect.
     pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
         let fade = self.targets.lock().await.fade.clone();
         let result = match fade {
@@ -303,6 +346,73 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn stale_generation_rejects_before_sending_fade_command() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
+        bus.set_generation(2).await;
+
+        let config = FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            targets: vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+                target: -12.0,
+            }],
+            duration_ms: 1_000,
+            curve: FadeCurve::Linear,
+        };
+
+        let err = bus.start_fade_if_generation(1, config).await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::StaleGeneration);
+        assert!(fade_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn start_fade_if_generation_sends_expected_generation_to_fade_engine() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
+        bus.set_generation(2).await;
+
+        let config = FadeConfig {
+            scene: FadeSceneIdentity {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            targets: vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+                target: -12.0,
+            }],
+            duration_ms: 1_000,
+            curve: FadeCurve::Linear,
+        };
+
+        tokio::spawn(async move {
+            if let Some(FadeCommand::RecallSceneFade {
+                expected_generation,
+                reply,
+                ..
+            }) = fade_rx.recv().await
+            {
+                assert_eq!(expected_generation, Some(2));
+                let _ = reply.send(Ok(()));
+            }
+        });
+
+        assert_eq!(bus.start_fade_if_generation(2, config).await, Ok(()));
     }
 
     #[tokio::test]
@@ -437,5 +547,93 @@ mod tests {
 
         assert_eq!(bus.write_batch(writes).await, Ok(()));
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn write_batch_if_generation_rejects_stale_generation_before_sending() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let bus = AppCommandBus::new(event_bus);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+        bus.set_generation(2).await;
+
+        let writes = vec![Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: crate::lv1::commands::Lv1WriteParameter::FaderDb,
+            value: -18.0,
+        }];
+
+        let err = bus.write_batch_if_generation(1, writes).await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::StaleGeneration);
+        assert!(lv1_rx.try_recv().is_err());
+        match events.recv().await.unwrap() {
+            AppEvent::CommandFailed { command, message } => {
+                assert_eq!(command, "write_batch_if_generation");
+                assert_eq!(message, AppCommandError::StaleGeneration.to_string());
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn write_batch_if_generation_routes_fresh_writes() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let bus = AppCommandBus::new(event_bus);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+        bus.set_generation(2).await;
+
+        let writes = vec![Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: crate::lv1::commands::Lv1WriteParameter::FaderDb,
+            value: -18.0,
+        }];
+        let expected = writes.clone();
+
+        tokio::spawn(async move {
+            if let Some(crate::lv1::commands::Lv1Command::WriteBatch(received)) =
+                lv1_rx.recv().await
+            {
+                assert_eq!(received, expected);
+            }
+        });
+
+        assert_eq!(bus.write_batch_if_generation(2, writes).await, Ok(()));
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn write_batch_if_generation_leaves_lv1_unlocked_during_write() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+        bus.set_generation(2).await;
+
+        let writes = vec![Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: crate::lv1::commands::Lv1WriteParameter::FaderDb,
+            value: -18.0,
+        }];
+
+        let write = tokio::spawn(async move {
+            let _ = bus.write_batch_if_generation(2, writes).await;
+        });
+
+        let command = tokio::time::timeout(std::time::Duration::from_secs(1), lv1_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            command,
+            crate::lv1::commands::Lv1Command::WriteBatch(_)
+        ));
+        write.await.unwrap();
     }
 }

@@ -7,11 +7,13 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
+use advanced_show_control::runtime::events::AppEvent;
 
 #[tokio::test]
 async fn fade_events_update_fade_state() {
     use super::view::AppFadeState;
     use advanced_show_control::fade::events::FadeEvent;
+    use advanced_show_control::fade::types::FadeParameter;
 
     let state = ShellState::default();
 
@@ -28,6 +30,7 @@ async fn fade_events_update_fade_state() {
         .apply_fade_event(&FadeEvent::ChannelOverride {
             group: 3,
             channel: 7,
+            parameter: FadeParameter::FaderDb,
         })
         .await;
     assert_eq!(
@@ -40,6 +43,7 @@ async fn fade_events_update_fade_state() {
 async fn channel_completed_logs_without_clearing_running_state() {
     use super::view::AppFadeState;
     use advanced_show_control::fade::events::FadeEvent;
+    use advanced_show_control::fade::types::FadeParameter;
 
     let state = ShellState::default();
     let started = state.apply_fade_event(&FadeEvent::FadeStarted).await;
@@ -49,6 +53,7 @@ async fn channel_completed_logs_without_clearing_running_state() {
         .apply_fade_event(&FadeEvent::ChannelCompleted {
             group: 0,
             channel: 2,
+            parameter: FadeParameter::FaderDb,
         })
         .await;
 
@@ -211,6 +216,28 @@ async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
 
     assert!(snapshot.is_none());
     assert_eq!(state.snapshot().await.scene_configs.len(), 0);
+}
+
+#[tokio::test]
+async fn diagnostic_event_is_logged_into_shell_state() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+
+    let snapshot = state
+        .project_event_for_generation(
+            generation,
+            &AppEvent::Diagnostic {
+                source: "fade-engine".to_string(),
+                message: "event subscriber lagged and missed 3 events".to_string(),
+            },
+        )
+        .await
+        .expect("diagnostic event should project to current generation");
+
+    assert_eq!(
+        snapshot.logs.last().unwrap().message,
+        "fade-engine: event subscriber lagged and missed 3 events"
+    );
 }
 
 #[test]

@@ -472,7 +472,7 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
 }
 
 #[tokio::test]
-async fn actor_flush_waits_for_writer_task_to_accept_prior_bytes() {
+async fn actor_flush_waits_for_prior_set_gain_command() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     let (address_tx, address_rx) = std::sync::mpsc::channel();
@@ -511,14 +511,14 @@ async fn actor_flush_waits_for_writer_task_to_accept_prior_bytes() {
 
     wait_for_connected(&mut events).await;
 
-    assert!(handle.set_mute(0, 1, true).await.is_ok());
+    assert!(handle.set_gain(0, 1, -9.5).await.is_ok());
     assert!(handle.flush().await.is_ok());
 
     loop {
         let address = address_rx
             .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("SetMute frame was not sent before flush returned");
-        if address == "/Set/Track/Out/Mute" {
+            .expect("SetGain frame was not sent before flush returned");
+        if address == "/Set/Track/Out/Gain" {
             break;
         }
     }
