@@ -1,8 +1,6 @@
 use crate::lv1::events::Lv1Event;
 use crate::runtime::commands::AppCommandBus;
-use crate::runtime::events::{
-    AppEvent, AppEventBus, eprintln_lagged_subscriber, log_lagged_subscriber,
-};
+use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::scene_recall::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scene_recall::state::SceneRecallState;
 
@@ -62,8 +60,7 @@ pub fn spawn_scene_recall_fader(
                             }
                             Ok(_) => {}
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                                eprintln_lagged_subscriber("scene-recall", count);
-                                log_lagged_subscriber(&event_bus, "scene-recall", count);
+                                log_lagged_subscriber("scene-recall", count);
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                         }
@@ -95,8 +92,7 @@ pub fn spawn_scene_recall_fader(
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    eprintln_lagged_subscriber("scene-recall", count);
-                    log_lagged_subscriber(&event_bus, "scene-recall", count);
+                    log_lagged_subscriber("scene-recall", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }

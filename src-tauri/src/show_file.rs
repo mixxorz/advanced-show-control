@@ -79,7 +79,6 @@ pub struct LoadValidationReport {
 }
 
 impl LoadValidationReport {
-    #[allow(dead_code)]
     pub fn removed_anything(&self) -> bool {
         !self.removed_scenes.is_empty()
     }

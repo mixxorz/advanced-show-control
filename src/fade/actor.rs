@@ -11,9 +11,7 @@ use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
 use crate::fade::types::{FadeParameter, FadeTarget};
 use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
 use crate::runtime::commands::AppCommandBus;
-use crate::runtime::events::{
-    AppEvent, AppEventBus, eprintln_lagged_subscriber, log_lagged_subscriber,
-};
+use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
 pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -185,8 +183,7 @@ async fn run_engine(
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        eprintln_lagged_subscriber("fade-engine", count);
-                        log_lagged_subscriber(&event_bus, "fade-engine", count);
+                        log_lagged_subscriber("fade-engine", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -278,7 +275,6 @@ async fn handle_recall_scene_fade(
 
         state.channels.retain(|ch| ch.key != target.key());
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: config.scene.clone(),
             key: target.key(),
             group: target.group,
             channel: target.channel,
@@ -766,7 +762,6 @@ mod tests {
 
         let mut state = EngineState::new(event_bus);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(1, "Intro"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
@@ -845,7 +840,6 @@ mod tests {
 
         let mut state = EngineState::new(event_bus);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(1, "Intro"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
@@ -906,7 +900,6 @@ mod tests {
 
         let mut state = EngineState::new(AppEventBus::default());
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(1, "Intro"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
@@ -924,7 +917,6 @@ mod tests {
             expected_generation: Some(3),
         }));
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(1, "Intro"),
             key: FadeTarget {
                 group: 0,
                 channel: 1,
@@ -964,7 +956,6 @@ mod tests {
 
         let mut state = EngineState::new(event_bus);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(1, "Intro"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
-use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
+use crate::fade::types::{FadeParameter, FadeTargetKey};
 
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
@@ -21,8 +21,6 @@ pub const BALANCE_OVERRIDE_THRESHOLD: f64 = 1.8;
 pub const WIDTH_OVERRIDE_THRESHOLD: f64 = 0.056;
 
 pub(crate) struct ActiveTarget {
-    #[allow(dead_code)]
-    pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
@@ -37,7 +35,6 @@ pub(crate) struct ActiveTarget {
 }
 
 pub(crate) struct ActiveTargetInit {
-    pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
@@ -52,7 +49,6 @@ pub(crate) struct ActiveTargetInit {
 impl ActiveTarget {
     pub(crate) fn new(init: ActiveTargetInit) -> Self {
         Self {
-            scene: init.scene,
             key: init.key,
             group: init.group,
             channel: init.channel,
@@ -140,7 +136,6 @@ impl ActiveTarget {
         (new_value - self.expected_value).abs() >= delta_threshold
     }
 
-    #[allow(dead_code)]
     pub(crate) fn exact_final_send(&mut self) -> f64 {
         self.expected_value = self.target_value;
         self.target_value
@@ -155,10 +150,6 @@ mod tests {
 
     fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveTarget {
         ActiveTarget::new(ActiveTargetInit {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
             key: crate::fade::types::FadeTargetKey {
                 group: 0,
                 channel: 0,
@@ -173,33 +164,6 @@ mod tests {
             started_at: Instant::now(),
             expected_generation: None,
         })
-    }
-
-    #[test]
-    fn active_channel_records_scene_identity() {
-        let scene = crate::fade::types::FadeSceneIdentity {
-            index: 7,
-            name: "Bridge".to_string(),
-        };
-        let ch = ActiveTarget::new(ActiveTargetInit {
-            scene: scene.clone(),
-            key: crate::fade::types::FadeTargetKey {
-                group: 0,
-                channel: 3,
-                parameter: FadeParameter::FaderDb,
-            },
-            group: 0,
-            channel: 3,
-            start_value: -20.0,
-            target_value: -10.0,
-            curve: FadeCurve::Linear,
-            duration: Duration::from_millis(4000),
-            started_at: Instant::now(),
-            expected_generation: None,
-        });
-        assert_eq!(ch.scene, scene);
-        assert_eq!(ch.group, 0);
-        assert_eq!(ch.channel, 3);
     }
 
     #[test]
@@ -220,10 +184,6 @@ mod tests {
     #[test]
     fn value_at_midpoint_interpolates_pan_linearly() {
         let ch = ActiveTarget::new(ActiveTargetInit {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
             key: crate::fade::types::FadeTargetKey {
                 group: 0,
                 channel: 0,
@@ -328,10 +288,6 @@ mod tests {
 
     fn make_pan_family_target(parameter: FadeParameter) -> ActiveTarget {
         ActiveTarget::new(ActiveTargetInit {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
             key: crate::fade::types::FadeTargetKey {
                 group: 0,
                 channel: 0,

@@ -581,7 +581,6 @@ async fn connect_to_target<R: Runtime>(
         shell_state,
         generation,
         snapshot,
-        event_bus.clone(),
         events,
         runtime_handles,
         &active_command_bus,
@@ -651,7 +650,6 @@ async fn install_connected_runtime<R: Runtime>(
     shell_state: ShellState,
     generation: u64,
     snapshot: AppViewState,
-    event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     mut runtime_handles: RuntimeHandles,
     active_command_bus: &ActiveCommandBus,
@@ -664,7 +662,6 @@ async fn install_connected_runtime<R: Runtime>(
         shell_state,
         active_command_bus.clone(),
         generation,
-        event_bus,
         events,
     ));
 
@@ -692,7 +689,6 @@ fn spawn_shell_state_projector<R: Runtime>(
     state: ShellState,
     active_command_bus: ActiveCommandBus,
     generation: u64,
-    event_bus: AppEventBus,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> tokio::task::JoinHandle<()> {
     let diagnostics_path = app
@@ -800,7 +796,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                     state
                         .push_log(LogSource::App, LogSeverity::Warning, log_message)
                         .await;
-                    log_lagged_subscriber(&event_bus, "shell-state-projector", count);
+                    log_lagged_subscriber("shell-state-projector", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -1249,7 +1245,6 @@ mod tests {
             state.clone(),
             generation,
             initial_snapshot,
-            event_bus.clone(),
             events,
             RuntimeHandles::default(),
             &active_command_bus,
@@ -1313,7 +1308,6 @@ mod tests {
             state.clone(),
             generation,
             initial_snapshot,
-            event_bus.clone(),
             event_bus.subscribe(),
             RuntimeHandles::default(),
             &active_command_bus,
@@ -1388,7 +1382,6 @@ mod tests {
             state.clone(),
             generation,
             initial_snapshot,
-            event_bus.clone(),
             event_bus.subscribe(),
             RuntimeHandles {
                 active_generation: 0,
@@ -1429,7 +1422,6 @@ mod tests {
             state,
             ActiveCommandBus::default(),
             generation,
-            event_bus.clone(),
             event_bus.subscribe(),
         );
 

@@ -38,15 +38,12 @@ impl Default for AppEventBus {
     }
 }
 
-pub fn log_lagged_subscriber(bus: &AppEventBus, name: &str, count: u64) {
-    bus.publish(AppEvent::Diagnostic {
-        source: name.to_string(),
-        message: format!("event subscriber lagged and missed {count} events"),
-    });
+pub fn log_lagged_subscriber(name: &str, count: u64) {
+    eprintln!("{name} event subscriber lagged and missed {count} events");
 }
 
 pub fn eprintln_lagged_subscriber(name: &str, count: u64) {
-    eprintln!("{name} event subscriber lagged and missed {count} events");
+    log_lagged_subscriber(name, count);
 }
 
 #[cfg(test)]
@@ -107,20 +104,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lagged_subscriber_reports_missed_events() {
+    async fn lagged_subscriber_does_not_publish_back_to_event_bus() {
         let bus = AppEventBus::new(1);
         let mut rx = bus.subscribe();
 
-        log_lagged_subscriber(&bus, "test", 1);
+        log_lagged_subscriber("test", 1);
 
-        let event = rx.recv().await.unwrap();
-        match event {
-            AppEvent::Diagnostic { source, message } => {
-                assert_eq!(source, "test");
-                assert!(message.contains("lagged and missed 1 events"));
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
