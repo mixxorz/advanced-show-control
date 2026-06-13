@@ -53,6 +53,8 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     state: ShellState,
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
+    tracing::info!("Searching for LV1 systems on the network...");
+
     let started = std::time::Instant::now();
     let timeout = timeout_ms
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
@@ -491,6 +493,12 @@ async fn connect_to_target<R: Runtime>(
     identity: crate::connection_state::Lv1SystemIdentity,
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
+    tracing::info!(
+        "Connecting to LV1 system at {}:{}",
+        identity.address,
+        identity.port
+    );
+
     let event_bus = AppEventBus::default();
     let Some((generation, connecting_snapshot)) = state.try_begin_connecting().await else {
         let snapshot = state.snapshot().await;
