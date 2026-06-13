@@ -40,10 +40,9 @@ Current architecture is actor-oriented:
 
 Read these files before substantial work:
 
-- `PROJECT.md` for product intent and safety model.
-- `PHASES.md` for current project phase and deferred work.
+- `docs/roadmap.md` for product intent, safety model, current MVP roadmap, and deferred work.
 - `docs/architecture.md` for runtime architecture.
-- `IDEAS.md` for follow-up ideas that should not be silently implemented as part of unrelated work.
+- `docs/lv1-osc.md` for LV1 protocol details when touching protocol behavior.
 
 ## Agent Developer Guidance
 
@@ -54,7 +53,7 @@ Read these files before substantial work:
 - Do not make broad refactors while implementing a feature unless they are required for the feature and covered by tests.
 - Do not add backward-compatibility code unless there is a concrete need.
 - Keep docs current when behavior, architecture, or project phase changes.
-- Add future ideas to `IDEAS.md` instead of expanding the current scope.
+- Add future ideas to the appropriate release section in `docs/roadmap.md` instead of expanding the current scope.
 - For UI work, preserve the existing design language unless the task is to redesign it.
 
 ## Safety-Critical Rules
