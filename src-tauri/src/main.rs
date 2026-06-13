@@ -3,6 +3,7 @@ mod commands;
 mod connection_preferences;
 mod connection_state;
 mod diagnostics;
+mod logging;
 mod show_file;
 mod time;
 
@@ -11,6 +12,10 @@ use commands::ActiveCommandBus;
 use tauri::Manager;
 
 fn main() {
+    logging::init_logging();
+
+    tracing::info!("Starting Advanced Show Control");
+
     tauri::Builder::default()
         .manage(ShellState::default())
         .manage(ActiveCommandBus::default())

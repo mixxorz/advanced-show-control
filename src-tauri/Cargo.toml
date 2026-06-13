@@ -16,6 +16,9 @@ serde = { version = "1.0", features = ["derive"] }
 tauri = { version = "2", features = [] }
 rfd = "0.15"
 tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros"] }
+tracing = { version = "0.1.44", features = ["attributes"] }
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt", "json"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
