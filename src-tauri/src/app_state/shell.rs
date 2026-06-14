@@ -326,8 +326,22 @@ impl ShellState {
         inner.push_log(source, severity, message);
     }
 
-    pub async fn generation_matches(&self, generation: u64) -> bool {
-        self.inner.lock().await.generation == generation
+    pub async fn append_diagnostic_for_generation(
+        &self,
+        generation: u64,
+        diagnostics_path: &std::path::Path,
+        source: &str,
+        message: &str,
+    ) -> bool {
+        let inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return false;
+        }
+
+        if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
+            eprintln!("failed to write diagnostic log: {err}");
+        }
+        true
     }
 
     pub async fn push_log_for_generation(

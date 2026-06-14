@@ -789,14 +789,11 @@ async fn apply_projector_event(
                 .await
         }
         AppEvent::Diagnostic { source, message } => {
-            if !state.generation_matches(generation).await {
-                return false;
-            }
-
-            if let Err(err) =
-                crate::diagnostics::append_diagnostic(diagnostics_path, source, message)
+            if !state
+                .append_diagnostic_for_generation(generation, diagnostics_path, source, message)
+                .await
             {
-                eprintln!("failed to write diagnostic log: {err}");
+                return false;
             }
 
             state
@@ -820,12 +817,11 @@ async fn handle_diagnostic_event<R: Runtime>(
     source: &str,
     message: &str,
 ) -> Option<AppViewState> {
-    if !state.generation_matches(generation).await {
+    if !state
+        .append_diagnostic_for_generation(generation, diagnostics_path, source, message)
+        .await
+    {
         return None;
-    }
-
-    if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
-        eprintln!("failed to write diagnostic log: {err}");
     }
 
     if !state
@@ -850,24 +846,13 @@ async fn append_scene_list_diagnostic_for_generation(
     diagnostics_path: &std::path::Path,
     scenes: &[advanced_show_control::lv1::types::SceneListEntry],
 ) -> bool {
-    if !state.generation_matches(generation).await {
-        return false;
-    }
-
     let message = state
         .show
         .scene_reconciliation_diagnostic(scenes.to_vec())
         .await;
-    if !state.generation_matches(generation).await {
-        return false;
-    }
-
-    if let Err(err) =
-        crate::diagnostics::append_diagnostic(diagnostics_path, "show-state", &message)
-    {
-        eprintln!("failed to write diagnostics log: {err}");
-    }
-    true
+    state
+        .append_diagnostic_for_generation(generation, diagnostics_path, "show-state", &message)
+        .await
 }
 
 async fn save_show_file_to_path(
