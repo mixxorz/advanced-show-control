@@ -808,6 +808,8 @@ async fn handle_diagnostic_event<R: Runtime>(
     source: &str,
     message: &str,
 ) -> Option<AppViewState> {
+    state.snapshot_for_generation(generation).await?;
+
     if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
         eprintln!("failed to write diagnostic log: {err}");
     }
@@ -1437,16 +1439,21 @@ mod tests {
             message: "stale projector diagnostic".to_string(),
         });
 
-        tokio::task::yield_now().await;
+        tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            loop {
+                assert_eq!(observed.lock().unwrap().len(), 1);
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect_err("stale diagnostic should not emit another snapshot");
 
-        let observed = observed.lock().unwrap();
-        assert_eq!(observed.len(), 1);
+        let snapshot = state.snapshot().await;
         assert!(
-            observed[0]["logs"]
-                .as_array()
-                .unwrap()
+            snapshot
+                .logs
                 .iter()
-                .all(|entry| { entry["message"] != "fade-engine: stale projector diagnostic" })
+                .all(|entry| { entry.message != "fade-engine: stale projector diagnostic" })
         );
     }
 
