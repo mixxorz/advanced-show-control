@@ -19,9 +19,13 @@ impl ShellState {
             }
             AppEvent::Diagnostic { source, message } => {
                 let log_message = format!("{source}: {message}");
-                self.push_log(LogSource::App, LogSeverity::Warning, log_message)
-                    .await;
-                true
+                self.push_log_for_generation(
+                    generation,
+                    LogSource::App,
+                    LogSeverity::Warning,
+                    log_message,
+                )
+                .await
             }
             _ => false,
         }

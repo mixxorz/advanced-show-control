@@ -326,6 +326,22 @@ impl ShellState {
         inner.push_log(source, severity, message);
     }
 
+    pub async fn push_log_for_generation(
+        &self,
+        generation: u64,
+        source: LogSource,
+        severity: LogSeverity,
+        message: String,
+    ) -> bool {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return false;
+        }
+
+        inner.push_log(source, severity, message);
+        true
+    }
+
     #[cfg(test)]
     pub async fn set_reconnect_active(&self, active: bool) -> AppViewState {
         let mut inner = self.inner.lock().await;

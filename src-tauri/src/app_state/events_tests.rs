@@ -240,6 +240,34 @@ async fn diagnostic_event_is_logged_into_shell_state() {
     );
 }
 
+#[tokio::test]
+async fn stale_diagnostic_event_does_not_mutate_logs_via_projection_helper() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    let _ = state.disconnect().await;
+
+    assert!(
+        !state
+            .project_event_without_snapshot_for_generation(
+                generation,
+                &AppEvent::Diagnostic {
+                    source: "fade-engine".to_string(),
+                    message: "stale diagnostic".to_string(),
+                },
+            )
+            .await
+    );
+
+    assert!(
+        state
+            .snapshot()
+            .await
+            .logs
+            .iter()
+            .all(|entry| { entry.message != "fade-engine: stale diagnostic" })
+    );
+}
+
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
     let mut state = advanced_show_control::show::state::ShowState {
