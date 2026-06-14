@@ -13,6 +13,7 @@ mod show_file_mapping_tests;
 mod test_support;
 mod view;
 
+pub use projection::ProjectionOutcome;
 #[allow(unused_imports)]
 pub use shell::RuntimeHandles;
 pub use shell::ShellState;

@@ -1,3 +1,4 @@
+use super::projection::ProjectionOutcome;
 use super::shell::ShellState;
 use super::test_support::{
     connected_snapshot, connected_state_with_scene_and_channel, scene_config,
@@ -183,7 +184,7 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
         .await
         .unwrap();
 
-    assert!(
+    assert_eq!(
         state
             .apply_lv1_event_to_projection(
                 generation,
@@ -191,7 +192,8 @@ async fn lv1_disconnected_event_snapshot_includes_show_configs() {
                     reason: "test".to_string(),
                 },
             )
-            .await
+            .await,
+        ProjectionOutcome::Applied
     );
     let snapshot = state
         .snapshot_for_generation(generation)
@@ -209,8 +211,8 @@ async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
     let (generation, _) = state.begin_connecting().await;
     let _ = state.disconnect().await;
 
-    assert!(
-        !state
+    assert_eq!(
+        state
             .apply_lv1_event_to_projection(
                 generation,
                 &Lv1Event::SceneListChanged(vec![SceneListEntry {
@@ -218,7 +220,8 @@ async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
                     name: "Intro".to_string(),
                 }]),
             )
-            .await
+            .await,
+        ProjectionOutcome::Stale
     );
     assert_eq!(state.snapshot().await.scene_configs.len(), 0);
 }
@@ -228,7 +231,7 @@ async fn diagnostic_event_is_logged_into_shell_state() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
 
-    assert!(
+    assert_eq!(
         state
             .apply_projector_event_to_projection(
                 generation,
@@ -237,7 +240,8 @@ async fn diagnostic_event_is_logged_into_shell_state() {
                     message: "event subscriber lagged and missed 3 events".to_string(),
                 },
             )
-            .await
+            .await,
+        ProjectionOutcome::Applied
     );
     let snapshot = state
         .snapshot_for_generation(generation)
@@ -256,8 +260,8 @@ async fn stale_diagnostic_event_does_not_mutate_logs_via_projection_helper() {
     let (generation, _) = state.begin_connecting().await;
     let _ = state.disconnect().await;
 
-    assert!(
-        !state
+    assert_eq!(
+        state
             .apply_projector_event_to_projection(
                 generation,
                 &AppEvent::Diagnostic {
@@ -265,7 +269,8 @@ async fn stale_diagnostic_event_does_not_mutate_logs_via_projection_helper() {
                     message: "stale diagnostic".to_string(),
                 },
             )
-            .await
+            .await,
+        ProjectionOutcome::Stale
     );
 
     assert!(
@@ -415,6 +420,7 @@ async fn late_scene_list_event_returns_snapshot_without_deadlock() {
                 }]),
             )
             .await
+            .was_applied()
     );
     let snapshot = state
         .snapshot_for_generation(generation)
@@ -468,6 +474,7 @@ async fn scene_list_event_logs_reconciliation_preview() {
                 ]),
             )
             .await
+            .was_applied()
     );
     let snapshot = state
         .snapshot_for_generation(generation)
@@ -516,6 +523,7 @@ async fn lv1_disconnected_event_enters_reconnect_state() {
                 },
             )
             .await
+            .was_applied()
     );
     let snapshot = state.snapshot_for_generation(generation).await.unwrap();
 
@@ -552,6 +560,7 @@ async fn lv1_connected_event_refreshes_discovered_row_status() {
                 },
             )
             .await
+            .was_applied()
     );
     let disconnected = state
         .snapshot_for_generation(generation)
@@ -566,6 +575,7 @@ async fn lv1_connected_event_refreshes_discovered_row_status() {
         state
             .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
             .await
+            .was_applied()
     );
     let connected = state
         .snapshot_for_generation(generation)
@@ -600,6 +610,7 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
                 },
             )
             .await
+            .was_applied()
     );
     let first_disconnect = state
         .snapshot_for_generation(generation)
@@ -612,6 +623,7 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
         state
             .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
             .await
+            .was_applied()
     );
     let connected = state
         .snapshot_for_generation(generation)
@@ -628,6 +640,7 @@ async fn repeated_lv1_disconnected_events_keep_using_known_reconnect_target() {
                 },
             )
             .await
+            .was_applied()
     );
     let second_disconnect = state
         .snapshot_for_generation(generation)
@@ -652,6 +665,7 @@ async fn lv1_disconnected_event_without_connected_identity_stays_out_of_reconnec
                 },
             )
             .await
+            .was_applied()
     );
     let snapshot = state
         .snapshot_for_generation(generation)
@@ -675,6 +689,7 @@ async fn lv1_scene_event_updates_rust_owned_snapshot() {
                 }),
             )
             .await
+            .was_applied()
     );
 
     let snapshot = state
@@ -763,6 +778,7 @@ async fn lv1_connected_event_clears_reconnect_state() {
         state
             .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
             .await
+            .was_applied()
     );
     let snapshot = state
         .snapshot_for_generation(generation)
@@ -803,7 +819,7 @@ async fn stale_lv1_events_are_ignored_after_generation_change() {
             }),
         )
         .await;
-    assert!(!stale);
+    assert_eq!(stale, ProjectionOutcome::Stale);
 
     let current = state
         .apply_lv1_event_to_projection(
@@ -814,7 +830,7 @@ async fn stale_lv1_events_are_ignored_after_generation_change() {
             }),
         )
         .await;
-    assert!(current);
+    assert_eq!(current, ProjectionOutcome::Applied);
 
     let latest = state
         .snapshot_for_generation(second_generation)
@@ -838,7 +854,7 @@ async fn stale_fade_events_are_ignored_after_generation_change() {
         .apply_fade_event_to_projection(first_generation, &FadeEvent::FadeStarted)
         .await;
 
-    assert!(!stale);
+    assert_eq!(stale, ProjectionOutcome::Stale);
 
     let after = state.snapshot().await;
     assert_eq!(after.fade_state, before.fade_state);
@@ -867,7 +883,7 @@ async fn disconnect_increments_generation_and_ignores_old_events() {
             }),
         )
         .await;
-    assert!(!stale);
+    assert_eq!(stale, ProjectionOutcome::Stale);
 }
 
 #[tokio::test]
@@ -940,7 +956,7 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
         })
         .await;
 
-    assert!(
+    assert_eq!(
         state
             .apply_lv1_event_to_projection(
                 generation,
@@ -950,7 +966,8 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
                     gain_db: -6.5,
                 },
             )
-            .await
+            .await,
+        ProjectionOutcome::Applied
     );
     let snapshot = state
         .snapshot_for_generation(generation)

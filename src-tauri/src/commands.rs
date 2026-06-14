@@ -12,7 +12,8 @@ use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
 use crate::app_state::{
-    AppConnectionState, AppViewState, LogSeverity, LogSource, RuntimeHandles, ShellState,
+    AppConnectionState, AppViewState, LogSeverity, LogSource, ProjectionOutcome, RuntimeHandles,
+    ShellState,
 };
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
@@ -719,7 +720,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                 received = events.recv() => {
                     match received {
                         Ok(app_event) => {
-                            if apply_projector_event(&state, generation, &diagnostics_path, &active_command_bus, &app_event).await {
+                            if apply_projector_event(&state, generation, &diagnostics_path, &active_command_bus, &app_event).await.was_applied() {
                                 dirty = true;
                             }
                         }
@@ -745,7 +746,7 @@ async fn apply_projector_event(
     diagnostics_path: &std::path::Path,
     active_command_bus: &ActiveCommandBus,
     event: &AppEvent,
-) -> bool {
+) -> ProjectionOutcome {
     match event {
         AppEvent::Lv1(event) => {
             if let Lv1Event::SceneListChanged(scenes) = event {
@@ -758,8 +759,9 @@ async fn apply_projector_event(
                 .await;
             }
 
-            if !state.apply_lv1_event_to_projection(generation, event).await {
-                return false;
+            let outcome = state.apply_lv1_event_to_projection(generation, event).await;
+            if !outcome.was_applied() {
+                return outcome;
             }
 
             if matches!(event, Lv1Event::Disconnected { .. }) {
@@ -767,7 +769,7 @@ async fn apply_projector_event(
                     .clear_runtime_handles_for_generation(generation, active_command_bus)
                     .await;
             }
-            true
+            ProjectionOutcome::Applied
         }
         AppEvent::Fade(event) => {
             state
@@ -776,7 +778,7 @@ async fn apply_projector_event(
         }
         AppEvent::CommandFailed { command, message } => {
             let log_message = format!("command failed: {command}: {message}");
-            state
+            if state
                 .push_log_for_generation(
                     generation,
                     LogSource::App,
@@ -784,13 +786,18 @@ async fn apply_projector_event(
                     log_message,
                 )
                 .await
+            {
+                ProjectionOutcome::Applied
+            } else {
+                ProjectionOutcome::Stale
+            }
         }
         AppEvent::Diagnostic { source, message } => {
             if !state
                 .append_diagnostic_for_generation(generation, diagnostics_path, source, message)
                 .await
             {
-                return false;
+                return ProjectionOutcome::Stale;
             }
 
             state
@@ -1037,12 +1044,13 @@ mod tests {
         let handle = app.handle().clone();
         let state = ShellState::default();
         let first_reconnect = enter_reconnect_state(&state).await;
-        assert!(
+        assert_eq!(
             state
                 .apply_lv1_event_to_projection(1, &Lv1Event::Connected)
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
-        assert!(
+        assert_eq!(
             state
                 .apply_lv1_event_to_projection(
                     1,
@@ -1050,7 +1058,8 @@ mod tests {
                         reason: "test".to_string(),
                     },
                 )
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
         let second_reconnect = state
             .snapshot_for_generation(1)
@@ -1085,7 +1094,7 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
-        assert!(
+        assert_eq!(
             state
                 .apply_lv1_event_to_projection(
                     generation,
@@ -1093,7 +1102,8 @@ mod tests {
                         reason: "test".to_string(),
                     },
                 )
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
         state
             .snapshot_for_generation(generation)
@@ -1547,7 +1557,7 @@ mod tests {
         )
         .await;
 
-        assert!(!applied);
+        assert_eq!(applied, ProjectionOutcome::Stale);
         assert!(!diagnostics_path.exists());
 
         let _ = fs::remove_dir_all(&diagnostics_dir);
@@ -1568,7 +1578,7 @@ mod tests {
             )
             .await;
 
-        assert!(applied);
+        assert_eq!(applied, ProjectionOutcome::Applied);
 
         let snapshot = state
             .snapshot_for_generation(generation)

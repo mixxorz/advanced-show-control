@@ -649,6 +649,7 @@ fn snapshot_from_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_state::ProjectionOutcome;
     use advanced_show_control::lv1::events::Lv1Event;
     use advanced_show_control::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
 
@@ -840,7 +841,7 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
-        assert!(
+        assert_eq!(
             state
                 .apply_lv1_event_to_projection(
                     generation,
@@ -848,7 +849,8 @@ mod tests {
                         reason: "test".to_string(),
                     },
                 )
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
         let reconnecting = state
             .snapshot_for_generation(generation)
@@ -889,7 +891,7 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
-        assert!(
+        assert_eq!(
             state
                 .apply_lv1_event_to_projection(
                     generation,
@@ -897,18 +899,21 @@ mod tests {
                         reason: "test".to_string(),
                     },
                 )
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
         let first_reconnect = state
             .snapshot_for_generation(generation)
             .await
             .expect("first disconnect should enter reconnect state");
-        state
-            .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
-            .await
-            .then_some(())
-            .expect("connected event should clear first reconnect state");
-        assert!(
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
+                .await,
+            ProjectionOutcome::Applied,
+            "connected event should clear first reconnect state"
+        );
+        assert_eq!(
             state
                 .apply_lv1_event_to_projection(
                     generation,
@@ -916,7 +921,8 @@ mod tests {
                         reason: "test".to_string(),
                     },
                 )
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
         let second_reconnect = state
             .snapshot_for_generation(generation)

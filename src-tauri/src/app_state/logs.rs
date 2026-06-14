@@ -1,5 +1,6 @@
 use advanced_show_control::scene_recall::events::SceneRecallEvent;
 
+use super::projection::ProjectionOutcome;
 use super::shell::ShellState;
 use super::view::{LogSeverity, LogSource};
 
@@ -8,14 +9,14 @@ impl ShellState {
         &self,
         generation: u64,
         event: &SceneRecallEvent,
-    ) -> bool {
+    ) -> ProjectionOutcome {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return false;
+            return ProjectionOutcome::Stale;
         }
 
         apply_scene_recall_event_locked(&mut inner, event);
-        true
+        ProjectionOutcome::Applied
     }
 }
 
@@ -63,7 +64,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
 
-        assert!(
+        assert_eq!(
             state
                 .apply_scene_recall_event_to_projection(
                     generation,
@@ -72,7 +73,8 @@ mod tests {
                         reason: "locked out".to_string(),
                     },
                 )
-                .await
+                .await,
+            ProjectionOutcome::Applied
         );
 
         let snapshot = state

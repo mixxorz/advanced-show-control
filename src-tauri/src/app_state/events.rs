@@ -1,8 +1,9 @@
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::show::types::scene_id;
 
+use super::projection::ProjectionOutcome;
 use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
 
@@ -149,10 +150,14 @@ impl ShellState {
         (generation, self.snapshot().await)
     }
 
-    pub async fn apply_lv1_event_to_projection(&self, generation: u64, event: &Lv1Event) -> bool {
+    pub async fn apply_lv1_event_to_projection(
+        &self,
+        generation: u64,
+        event: &Lv1Event,
+    ) -> ProjectionOutcome {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return false;
+            return ProjectionOutcome::Stale;
         }
 
         match event {
@@ -204,7 +209,7 @@ impl ShellState {
                 // Lock ordering: inner then show (consistent with snapshot()).
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {
-                    return false;
+                    return ProjectionOutcome::Stale;
                 }
 
                 // Call reconcile_scene_list while holding inner lock to ensure generation
@@ -233,72 +238,52 @@ impl ShellState {
                         after_count
                     ),
                 );
-                return true;
+                return ProjectionOutcome::Applied;
             }
             Lv1Event::FaderChanged {
                 group,
                 channel,
                 gain_db,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.gain_db = *gain_db;
-                }
+                });
             }
             Lv1Event::MuteChanged {
                 group,
                 channel,
                 muted,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.muted = *muted;
-                }
+                });
             }
             Lv1Event::PanChanged {
                 group,
                 channel,
                 pan,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.pan = Some(*pan);
-                }
+                });
             }
             Lv1Event::BalanceChanged {
                 group,
                 channel,
                 balance,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.balance = Some(*balance);
-                }
+                });
             }
             Lv1Event::WidthChanged {
                 group,
                 channel,
                 width,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.width = Some(*width);
-                }
+                });
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
                 ensure_lv1_snapshot(&mut inner).channels = channels.clone();
@@ -310,7 +295,7 @@ impl ShellState {
             }
         }
 
-        true
+        ProjectionOutcome::Applied
     }
 
     #[cfg(test)]
@@ -321,14 +306,33 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn apply_fade_event_to_projection(&self, generation: u64, event: &FadeEvent) -> bool {
+    pub async fn apply_fade_event_to_projection(
+        &self,
+        generation: u64,
+        event: &FadeEvent,
+    ) -> ProjectionOutcome {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return false;
+            return ProjectionOutcome::Stale;
         }
 
         apply_fade_event_locked(&mut inner, event);
-        true
+        ProjectionOutcome::Applied
+    }
+}
+
+fn update_channel(
+    inner: &mut ShellInner,
+    group: i32,
+    channel: i32,
+    apply: impl FnOnce(&mut ChannelInfo),
+) {
+    if let Some(existing) = ensure_lv1_snapshot(inner)
+        .channels
+        .iter_mut()
+        .find(|ch| ch.group == group && ch.channel == channel)
+    {
+        apply(existing);
     }
 }
 
