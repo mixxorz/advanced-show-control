@@ -317,6 +317,7 @@ impl ShellState {
         true
     }
 
+    #[allow(dead_code)]
     pub async fn apply_lv1_event_for_generation(
         &self,
         generation: u64,
@@ -353,6 +354,7 @@ impl ShellState {
         true
     }
 
+    #[allow(dead_code)]
     pub async fn apply_fade_event_for_generation(
         &self,
         generation: u64,

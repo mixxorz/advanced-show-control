@@ -31,6 +31,7 @@ impl ShellState {
         }
     }
 
+    #[allow(dead_code)]
     pub async fn project_event_for_generation(
         &self,
         generation: u64,

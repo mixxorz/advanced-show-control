@@ -683,6 +683,8 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     }
 }
 
+const SHELL_PROJECTION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
+
 fn spawn_shell_state_projector<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
@@ -700,130 +702,112 @@ fn spawn_shell_state_projector<R: Runtime>(
             "tauri-shell",
             &format!("projector started generation={generation}"),
         );
+        let mut projection_interval = tokio::time::interval(SHELL_PROJECTION_INTERVAL);
+        projection_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        projection_interval.tick().await;
+        let mut dirty = false;
         loop {
-            match events.recv().await {
-                Ok(app_event) => match &app_event {
-                    AppEvent::Lv1(event) => {
-                        if let Lv1Event::SceneListChanged(scenes) = event {
-                            let _ = append_scene_list_diagnostic_for_generation(
-                                &state,
-                                generation,
-                                &diagnostics_path,
-                                scenes,
-                            )
-                            .await;
+            tokio::select! {
+                _ = projection_interval.tick() => {
+                    if dirty {
+                        if let Some(snapshot) = state.snapshot_for_generation(generation).await {
+                            emit_snapshot(&app, &snapshot);
                         }
-                        if let Some(snapshot) = state
-                            .apply_lv1_event_for_generation(generation, event)
-                            .await
-                        {
-                            if matches!(event, Lv1Event::SceneListChanged(_)) {
-                                let diagnostics_path = diagnostics_path.clone();
-                                let message = format!(
-                                    "emitting app-status-changed after scene list: scenes={} scene_configs={}",
-                                    snapshot.scenes.len(),
-                                    snapshot.scene_configs.len()
-                                );
-                                let _ = crate::diagnostics::append_diagnostic(
-                                    &diagnostics_path,
-                                    "tauri-shell",
-                                    &message,
-                                );
-                            }
-                            if let Err(err) = app.emit("app-status-changed", &snapshot) {
-                                eprintln!("failed to emit app-status-changed: {err}");
-                            }
-                            if matches!(event, Lv1Event::Disconnected { .. }) {
-                                state
-                                    .clear_runtime_handles_for_generation(
-                                        generation,
-                                        &active_command_bus,
-                                    )
-                                    .await;
-                            }
-                        }
+                        dirty = false;
                     }
-                    AppEvent::Fade(event) => {
-                        if let Some(snapshot) = state
-                            .apply_fade_event_for_generation(generation, event)
-                            .await
-                            && let Err(err) = app.emit("app-status-changed", &snapshot)
-                        {
-                            eprintln!("failed to emit app-status-changed: {err}");
-                        }
-                    }
-                    AppEvent::CommandFailed { command, message } => {
-                        let log_message = format!("command failed: {command}: {message}");
-                        state
-                            .push_log(LogSource::App, LogSeverity::Error, log_message)
-                            .await;
-                    }
-                    AppEvent::Diagnostic { source, message } => {
-                        if let Some(snapshot) = handle_diagnostic_event(
-                            &app,
-                            &state,
-                            generation,
-                            &diagnostics_path,
-                            source,
-                            message,
-                        )
-                        .await
-                            && let Err(err) = app.emit("app-status-changed", &snapshot)
-                        {
-                            eprintln!("failed to emit app-status-changed: {err}");
-                        }
-                    }
-                    AppEvent::SceneRecall(_) => {
-                        if let Some(snapshot) = state
-                            .project_event_for_generation(generation, &app_event)
-                            .await
-                            && let Err(err) = app.emit("app-status-changed", &snapshot)
-                        {
-                            eprintln!("failed to emit app-status-changed: {err}");
-                        }
-                    }
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    let log_message = format!(
-                        "shell-state-projector event subscriber lagged and missed {count} events"
-                    );
-                    state
-                        .push_log(LogSource::App, LogSeverity::Warning, log_message)
-                        .await;
-                    log_lagged_subscriber("shell-state-projector", count);
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                received = events.recv() => {
+                    match received {
+                        Ok(app_event) => {
+                            if apply_projector_event(&state, generation, &diagnostics_path, &active_command_bus, &app_event).await {
+                                dirty = true;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                            let log_message = format!(
+                                "shell-state-projector event subscriber lagged and missed {count} events"
+                            );
+                            state.push_log(LogSource::App, LogSeverity::Warning, log_message).await;
+                            dirty = true;
+                            log_lagged_subscriber("shell-state-projector", count);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
             }
         }
     })
 }
 
-async fn append_scene_list_diagnostic_for_generation(
+async fn apply_projector_event(
     state: &ShellState,
     generation: u64,
     diagnostics_path: &std::path::Path,
-    scenes: &[advanced_show_control::lv1::types::SceneListEntry],
+    active_command_bus: &ActiveCommandBus,
+    event: &AppEvent,
 ) -> bool {
-    if !state.generation_matches(generation).await {
-        return false;
-    }
+    match event {
+        AppEvent::Lv1(event) => {
+            if let Lv1Event::SceneListChanged(scenes) = event {
+                let _ = append_scene_list_diagnostic_for_generation(
+                    state,
+                    generation,
+                    diagnostics_path,
+                    scenes,
+                )
+                .await;
+            }
 
-    let message = state
-        .show
-        .scene_reconciliation_diagnostic(scenes.to_vec())
-        .await;
-    if !state.generation_matches(generation).await {
-        return false;
-    }
+            if !state
+                .apply_lv1_event_without_snapshot_for_generation(generation, event)
+                .await
+            {
+                return false;
+            }
 
-    if let Err(err) =
-        crate::diagnostics::append_diagnostic(diagnostics_path, "show-state", &message)
-    {
-        eprintln!("failed to write diagnostics log: {err}");
+            if matches!(event, Lv1Event::Disconnected { .. }) {
+                state
+                    .clear_runtime_handles_for_generation(generation, active_command_bus)
+                    .await;
+            }
+            true
+        }
+        AppEvent::Fade(event) => {
+            state
+                .apply_fade_event_without_snapshot_for_generation(generation, event)
+                .await
+        }
+        AppEvent::CommandFailed { command, message } => {
+            let log_message = format!("command failed: {command}: {message}");
+            state
+                .push_log_for_generation(
+                    generation,
+                    LogSource::App,
+                    LogSeverity::Error,
+                    log_message,
+                )
+                .await
+        }
+        AppEvent::Diagnostic { source, message } => {
+            if let Err(err) =
+                crate::diagnostics::append_diagnostic(diagnostics_path, source, message)
+            {
+                eprintln!("failed to write diagnostic log: {err}");
+            }
+
+            state
+                .project_event_without_snapshot_for_generation(generation, event)
+                .await
+        }
+        AppEvent::SceneRecall(_) => {
+            state
+                .project_event_without_snapshot_for_generation(generation, event)
+                .await
+        }
     }
-    true
 }
 
+#[cfg(test)]
 async fn handle_diagnostic_event<R: Runtime>(
     app: &AppHandle<R>,
     state: &ShellState,
@@ -854,6 +838,32 @@ async fn handle_diagnostic_event<R: Runtime>(
 
     let _ = app;
     state.snapshot_for_generation(generation).await
+}
+
+async fn append_scene_list_diagnostic_for_generation(
+    state: &ShellState,
+    generation: u64,
+    diagnostics_path: &std::path::Path,
+    scenes: &[advanced_show_control::lv1::types::SceneListEntry],
+) -> bool {
+    if !state.generation_matches(generation).await {
+        return false;
+    }
+
+    let message = state
+        .show
+        .scene_reconciliation_diagnostic(scenes.to_vec())
+        .await;
+    if !state.generation_matches(generation).await {
+        return false;
+    }
+
+    if let Err(err) =
+        crate::diagnostics::append_diagnostic(diagnostics_path, "show-state", &message)
+    {
+        eprintln!("failed to write diagnostics log: {err}");
+    }
+    true
 }
 
 async fn save_show_file_to_path(
@@ -1566,6 +1576,159 @@ mod tests {
                 entry.message == "shell-state-projector: coalesced snapshot pending"
             })
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projector_coalesces_runtime_updates_to_ten_hz() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let _ = state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: vec![advanced_show_control::lv1::types::ChannelInfo {
+                        group: 1,
+                        channel: 1,
+                        name: "Channel 1".to_string(),
+                        gain_db: 0.0,
+                        muted: false,
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    }],
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        for gain_db in [1.0, 2.0, 3.0] {
+            event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
+                group: 1,
+                channel: 1,
+                gain_db,
+            }));
+        }
+
+        tokio::task::yield_now().await;
+        assert!(observed.lock().unwrap().is_empty());
+
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        {
+            let observed_guard = observed.lock().unwrap();
+            assert_eq!(observed_guard.len(), 1);
+        }
+
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(observed.lock().unwrap().len(), 1);
+        projector.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projector_drains_events_while_waiting_for_projection_tick() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let _ = state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: vec![advanced_show_control::lv1::types::ChannelInfo {
+                        group: 1,
+                        channel: 1,
+                        name: "Channel 1".to_string(),
+                        gain_db: 0.0,
+                        muted: false,
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    }],
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::new(4);
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        for gain_db in 0..32 {
+            event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
+                group: 1,
+                channel: 1,
+                gain_db: gain_db as f64,
+            }));
+            tokio::task::yield_now().await;
+        }
+
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        {
+            let observed_guard = observed.lock().unwrap();
+            assert_eq!(observed_guard.len(), 1);
+            assert!(
+                observed_guard[0]["logs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| {
+                        entry["message"]
+                            != "shell-state-projector event subscriber lagged and missed 0 events"
+                            && !entry["message"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains("shell-state-projector event subscriber lagged")
+                    })
+            );
+        }
+        projector.abort();
     }
 
     #[tokio::test]
