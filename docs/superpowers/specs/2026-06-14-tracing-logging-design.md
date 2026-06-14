@@ -102,7 +102,9 @@ Do not add a `LogEvent` enum. The log event field is text in the log output, and
 
 Diagnostic files are JSONL and receive `DEBUG+`.
 
-Each entry should include:
+Use `tracing_subscriber::fmt().json()` or the equivalent JSON formatter layer. The exact JSON object shape may follow `tracing-subscriber`'s native format rather than a custom serializer.
+
+Each entry must preserve:
 
 - timestamp
 - level
@@ -111,22 +113,24 @@ Each entry should include:
 - message
 - structured fields
 
-Example:
+Example shape:
 
 ```json
 {
   "timestamp": "2026-06-14T12:34:56.789Z",
   "level": "WARN",
   "target": "advanced_show_control::scene_recall::actor",
-  "event": "scene_recall_blocked",
-  "message": "Scene recall blocked for 4: Chorus: lockout enabled",
   "fields": {
+    "event": "scene_recall_blocked",
+    "message": "Scene recall blocked for 4: Chorus: lockout enabled",
     "scene": "4: Chorus",
     "reason": "lockout enabled",
     "generation": 7
   }
 }
 ```
+
+If the formatter nests `event` and `message` under `fields`, that is acceptable as long as support logs retain the event name, human message, level, target, timestamp, and contextual fields.
 
 ## Stdout Shape
 
@@ -186,9 +190,9 @@ Example JSONL:
   "timestamp": "2026-06-14T12:34:56.790Z",
   "level": "DEBUG",
   "target": "advanced_show_control::lv1::actor",
-  "event": "osc_message",
-  "message": "OSC RX /Notify/Track/Out/Gain",
   "fields": {
+    "event": "osc_message",
+    "message": "OSC RX /Notify/Track/Out/Gain",
     "direction": "rx",
     "osc_address": "/Notify/Track/Out/Gain"
   }
