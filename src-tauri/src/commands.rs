@@ -5,7 +5,6 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use advanced_show_control::scene_recall::spawn_scene_recall_fader;
-use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -733,9 +732,6 @@ fn spawn_shell_state_projector<R: Runtime>(
                                     &message,
                                 );
                             }
-                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event)) {
-                                eprintln!("failed to emit lv1-event: {err}");
-                            }
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
                                 eprintln!("failed to emit app-status-changed: {err}");
                             }
@@ -844,12 +840,6 @@ fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBu
     Ok(path)
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct Lv1EventPayload {
-    kind: String,
-    message: String,
-}
-
 #[cfg(test)]
 #[allow(clippy::items_after_test_module)]
 mod tests {
@@ -933,6 +923,37 @@ mod tests {
         .expect("timeout command should return snapshot");
 
         assert!(!snapshot.reconnect.active);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projector_does_not_emit_raw_lv1_event() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let raw_events = Arc::new(Mutex::new(0usize));
+        let raw_events_for_listener = raw_events.clone();
+
+        handle.listen_any("lv1-event", move |_| {
+            *raw_events_for_listener.lock().unwrap() += 1;
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let event_bus = AppEventBus::default();
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        event_bus.publish(AppEvent::Lv1(Lv1Event::Connected));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(*raw_events.lock().unwrap(), 0);
+        projector.abort();
     }
 
     #[tokio::test]
@@ -1444,60 +1465,5 @@ mod tests {
         .expect("projector should emit snapshot for scene recall refresh");
 
         projector.abort();
-    }
-}
-
-impl From<&Lv1Event> for Lv1EventPayload {
-    fn from(event: &Lv1Event) -> Self {
-        match event {
-            Lv1Event::Connected => Self {
-                kind: "Connected".to_string(),
-                message: "LV1 connected".to_string(),
-            },
-            Lv1Event::Disconnected { .. } => Self {
-                kind: "Disconnected".to_string(),
-                message: "LV1 disconnected".to_string(),
-            },
-            Lv1Event::SceneChanged(scene) => Self {
-                kind: "SceneChanged".to_string(),
-                message: format!("scene changed to {}: {}", scene.index, scene.name),
-            },
-            Lv1Event::SceneListChanged(scenes) => Self {
-                kind: "SceneListChanged".to_string(),
-                message: format!("scene list updated: {} scenes", scenes.len()),
-            },
-            Lv1Event::FaderChanged {
-                group,
-                channel,
-                gain_db,
-            } => Self {
-                kind: "FaderChanged".to_string(),
-                message: format!("fader changed: group {group}, channel {channel}, gain {gain_db}"),
-            },
-            Lv1Event::MuteChanged {
-                group,
-                channel,
-                muted,
-            } => Self {
-                kind: "MuteChanged".to_string(),
-                message: format!("mute changed: group {group}, channel {channel}, muted {muted}"),
-            },
-            Lv1Event::PanChanged { .. } => Self {
-                kind: "PanChanged".to_string(),
-                message: "pan changed".to_string(),
-            },
-            Lv1Event::BalanceChanged { .. } => Self {
-                kind: "BalanceChanged".to_string(),
-                message: "balance changed".to_string(),
-            },
-            Lv1Event::WidthChanged { .. } => Self {
-                kind: "WidthChanged".to_string(),
-                message: "width changed".to_string(),
-            },
-            Lv1Event::ChannelTopologyChanged(channels) => Self {
-                kind: "ChannelTopologyChanged".to_string(),
-                message: format!("channel topology updated: {} channels", channels.len()),
-            },
-        }
     }
 }
