@@ -71,17 +71,17 @@ pub fn init_logging<R: Runtime>(
     let (ui_tx, ui_rx) = mpsc::channel(64);
     let ui_layer = UiLogLayer { tx: ui_tx }.with_filter(LevelFilter::INFO);
 
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        ui_log_projector(app, state, ui_rx).await;
-    });
-
     tracing_subscriber::registry()
         .with(filter)
         .with(file_layer)
         .with(stdout_layer)
         .with(ui_layer)
         .try_init()?;
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        ui_log_projector(app, state, ui_rx).await;
+    });
 
     Ok(guard)
 }
@@ -95,16 +95,18 @@ where
 {
     fn format_event(
         &self,
-        _ctx: &FmtContext<'_, S, N>,
+        ctx: &FmtContext<'_, S, N>,
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> std::fmt::Result {
         write!(
             writer,
-            "[{}] {}",
+            "[{}] [{}] [{}] ",
+            crate::time::current_timestamp_millis(),
             event.metadata().level(),
             event.metadata().target()
         )
+        .and_then(|_| ctx.field_format().format_fields(writer.by_ref(), event))
     }
 }
 
