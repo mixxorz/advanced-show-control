@@ -56,13 +56,12 @@ async fn run_engine(
                                     let mut interval = tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));
                                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                                     tick_interval = Some(interval);
-                            tracing::info!(event = "fade_started", scene_index = scene_index, scene_name = %scene_name, duration_ms = duration_ms, target_count = target_count, "Fade started for {}: {} ({} targets, {} ms)", scene_index, scene_name, target_count, duration_ms);
-                            state.fan_out(FadeEvent::FadeStarted);
+                                    tracing::info!(event = "fade_started", scene_index = scene_index, scene_name = %scene_name, duration_ms = duration_ms, target_count = target_count, "Fade started for {}: {} ({} targets, {} ms)", scene_index, scene_name, target_count, duration_ms);
+                                    state.fan_out(FadeEvent::FadeStarted);
                                 } else {
                                     tick_interval = None;
-                            tracing::info!(event = "fade_completed", "Fade completed");
-                            state.fan_out(FadeEvent::FadeCompleted);
-                        }
+                                    complete_fade(&mut tick_interval, &mut state);
+                                }
                                 let _ = reply.send(Ok(()));
                             }
                             Err(err) => {
@@ -125,11 +124,7 @@ async fn run_engine(
                             if let Some(expected_generation) = expected_generation {
                                 cancel_generation_owned_targets(&mut state, expected_generation);
                             }
-                            if !state.is_active() {
-                                tick_interval = None;
-                                tracing::info!(event = "fade_completed", "Fade completed");
-                                state.fan_out(FadeEvent::FadeCompleted);
-                            }
+                            maybe_complete_fade(&mut tick_interval, &mut state);
                         }
                     }
                 }
@@ -142,11 +137,7 @@ async fn run_engine(
                     state.fan_out(event);
                 }
 
-                if !state.is_active() {
-                    tick_interval = None;
-                    tracing::info!(event = "fade_completed", "Fade completed");
-                    state.fan_out(FadeEvent::FadeCompleted);
-                }
+                maybe_complete_fade(&mut tick_interval, &mut state);
             }
 
             app_event = app_events.recv() => {
@@ -206,6 +197,18 @@ async fn run_engine(
             }
         }
     }
+}
+
+fn maybe_complete_fade(tick_interval: &mut Option<tokio::time::Interval>, state: &mut EngineState) {
+    if !state.is_active() {
+        complete_fade(tick_interval, state);
+    }
+}
+
+fn complete_fade(tick_interval: &mut Option<tokio::time::Interval>, state: &mut EngineState) {
+    *tick_interval = None;
+    tracing::info!(event = "fade_completed", "Fade completed");
+    state.fan_out(FadeEvent::FadeCompleted);
 }
 
 async fn handle_recall_scene_fade(
