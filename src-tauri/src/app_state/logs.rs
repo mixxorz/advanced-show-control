@@ -4,7 +4,7 @@ use super::shell::ShellState;
 use super::view::{LogSeverity, LogSource};
 
 impl ShellState {
-    pub async fn apply_scene_recall_event_without_snapshot_for_generation(
+    pub async fn apply_scene_recall_event_to_projection(
         &self,
         generation: u64,
         event: &SceneRecallEvent,
@@ -65,7 +65,7 @@ mod tests {
 
         assert!(
             state
-                .apply_scene_recall_event_without_snapshot_for_generation(
+                .apply_scene_recall_event_to_projection(
                     generation,
                     &SceneRecallEvent::Blocked {
                         scene_label: "1: Intro".to_string(),

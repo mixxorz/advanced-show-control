@@ -149,11 +149,7 @@ impl ShellState {
         (generation, self.snapshot().await)
     }
 
-    pub async fn apply_lv1_event_without_snapshot_for_generation(
-        &self,
-        generation: u64,
-        event: &Lv1Event,
-    ) -> bool {
+    pub async fn apply_lv1_event_to_projection(&self, generation: u64, event: &Lv1Event) -> bool {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return false;
@@ -317,21 +313,6 @@ impl ShellState {
         true
     }
 
-    #[allow(dead_code)]
-    pub async fn apply_lv1_event_for_generation(
-        &self,
-        generation: u64,
-        event: &Lv1Event,
-    ) -> Option<AppViewState> {
-        if !self
-            .apply_lv1_event_without_snapshot_for_generation(generation, event)
-            .await
-        {
-            return None;
-        }
-        Some(self.snapshot().await)
-    }
-
     #[cfg(test)]
     pub async fn apply_fade_event(&self, event: &FadeEvent) -> AppViewState {
         let mut inner = self.inner.lock().await;
@@ -340,11 +321,7 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn apply_fade_event_without_snapshot_for_generation(
-        &self,
-        generation: u64,
-        event: &FadeEvent,
-    ) -> bool {
+    pub async fn apply_fade_event_to_projection(&self, generation: u64, event: &FadeEvent) -> bool {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return false;
@@ -352,21 +329,6 @@ impl ShellState {
 
         apply_fade_event_locked(&mut inner, event);
         true
-    }
-
-    #[allow(dead_code)]
-    pub async fn apply_fade_event_for_generation(
-        &self,
-        generation: u64,
-        event: &FadeEvent,
-    ) -> Option<AppViewState> {
-        if !self
-            .apply_fade_event_without_snapshot_for_generation(generation, event)
-            .await
-        {
-            return None;
-        }
-        self.snapshot_for_generation(generation).await
     }
 }
 

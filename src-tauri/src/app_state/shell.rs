@@ -840,13 +840,18 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
+        assert!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await
+        );
         let reconnecting = state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("disconnect should enter reconnect state");
 
@@ -884,26 +889,37 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
+        assert!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await
+        );
         let first_reconnect = state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("first disconnect should enter reconnect state");
         state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
+            .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
             .await
+            .then_some(())
             .expect("connected event should clear first reconnect state");
+        assert!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await
+        );
         let second_reconnect = state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("second disconnect should enter reconnect state");
 

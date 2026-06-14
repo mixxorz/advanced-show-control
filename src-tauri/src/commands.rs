@@ -758,10 +758,7 @@ async fn apply_projector_event(
                 .await;
             }
 
-            if !state
-                .apply_lv1_event_without_snapshot_for_generation(generation, event)
-                .await
-            {
+            if !state.apply_lv1_event_to_projection(generation, event).await {
                 return false;
             }
 
@@ -774,7 +771,7 @@ async fn apply_projector_event(
         }
         AppEvent::Fade(event) => {
             state
-                .apply_fade_event_without_snapshot_for_generation(generation, event)
+                .apply_fade_event_to_projection(generation, event)
                 .await
         }
         AppEvent::CommandFailed { command, message } => {
@@ -797,12 +794,12 @@ async fn apply_projector_event(
             }
 
             state
-                .project_event_without_snapshot_for_generation(generation, event)
+                .apply_projector_event_to_projection(generation, event)
                 .await
         }
         AppEvent::SceneRecall(_) => {
             state
-                .project_event_without_snapshot_for_generation(generation, event)
+                .apply_projector_event_to_projection(generation, event)
                 .await
         }
     }
@@ -1040,17 +1037,23 @@ mod tests {
         let handle = app.handle().clone();
         let state = ShellState::default();
         let first_reconnect = enter_reconnect_state(&state).await;
-        state
-            .apply_lv1_event_for_generation(1, &Lv1Event::Connected)
-            .await
-            .expect("connected event should apply");
+        assert!(
+            state
+                .apply_lv1_event_to_projection(1, &Lv1Event::Connected)
+                .await
+        );
+        assert!(
+            state
+                .apply_lv1_event_to_projection(
+                    1,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await
+        );
         let second_reconnect = state
-            .apply_lv1_event_for_generation(
-                1,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(1)
             .await
             .expect("second disconnect should apply");
         assert!(second_reconnect.reconnect.active);
@@ -1082,13 +1085,18 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
+        assert!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await
+        );
         state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("disconnect should apply")
     }
@@ -1551,7 +1559,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let applied = state
-            .project_event_without_snapshot_for_generation(
+            .apply_projector_event_to_projection(
                 generation,
                 &AppEvent::Diagnostic {
                     source: "shell-state-projector".to_string(),

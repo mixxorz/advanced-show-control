@@ -1,21 +1,18 @@
 use advanced_show_control::runtime::events::AppEvent;
 
 use super::shell::ShellState;
-use super::view::{AppViewState, LogSeverity, LogSource};
+use super::view::{LogSeverity, LogSource};
 
 impl ShellState {
-    pub async fn project_event_without_snapshot_for_generation(
+    pub async fn apply_projector_event_to_projection(
         &self,
         generation: u64,
         event: &AppEvent,
     ) -> bool {
         match event {
             AppEvent::SceneRecall(scene_recall_event) => {
-                self.apply_scene_recall_event_without_snapshot_for_generation(
-                    generation,
-                    scene_recall_event,
-                )
-                .await
+                self.apply_scene_recall_event_to_projection(generation, scene_recall_event)
+                    .await
             }
             AppEvent::Diagnostic { source, message } => {
                 let log_message = format!("{source}: {message}");
@@ -29,21 +26,5 @@ impl ShellState {
             }
             _ => false,
         }
-    }
-
-    #[allow(dead_code)]
-    pub async fn project_event_for_generation(
-        &self,
-        generation: u64,
-        event: &AppEvent,
-    ) -> Option<AppViewState> {
-        if !self
-            .project_event_without_snapshot_for_generation(generation, event)
-            .await
-        {
-            return None;
-        }
-
-        self.snapshot_for_generation(generation).await
     }
 }
