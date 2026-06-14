@@ -246,7 +246,6 @@ use tauri::{AppHandle, Manager, Runtime};
 use tokio::sync::mpsc;
 use tracing::Level;
 use tracing::field::{Field, Visit};
-use tracing::subscriber::SetGlobalDefaultError;
 use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::format::{FormatEvent, FormatFields, Writer};
@@ -281,11 +280,10 @@ pub fn is_missing_event_field(fields: &[(impl AsRef<str>, impl AsRef<str>)]) -> 
 pub fn init_logging<R: Runtime>(
     app: &AppHandle<R>,
     state: ShellState,
-) -> Result<tracing_appender::non_blocking::WorkerGuard, String> {
+) -> Result<tracing_appender::non_blocking::WorkerGuard, Box<dyn std::error::Error>> {
     let diagnostics_path = crate::diagnostics::diagnostic_log_path(app);
     if let Some(parent) = diagnostics_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create diagnostics log directory: {err}"))?;
+        std::fs::create_dir_all(parent)?;
     }
     let file_appender = tracing_appender::rolling::never(
         diagnostics_path
@@ -319,8 +317,7 @@ pub fn init_logging<R: Runtime>(
         .with(stdout_layer)
         .with(file_layer)
         .with(ui_layer)
-        .try_init()
-        .map_err(|err| format_global_subscriber_error(err))?;
+        .try_init()?;
 
     app.manage(crate::diagnostics::DiagnosticLogPath(diagnostics_path));
     Ok(guard)
@@ -350,10 +347,6 @@ where
         ctx.field_format().format_fields(writer.by_ref(), event)?;
         writeln!(writer)
     }
-}
-
-fn format_global_subscriber_error(err: SetGlobalDefaultError) -> String {
-    format!("failed to initialize tracing subscriber: {err}")
 }
 
 struct UiLogLayer {
@@ -453,6 +446,8 @@ let logging_guard = logging::init_logging(app.handle(), shell_state.clone())?;
 app.manage(logging_guard);
 tracing::info!(event = "app_started", "Starting Advanced Show Control");
 ```
+
+`init_logging` returns `Result<_, Box<dyn std::error::Error>>` so this `?` is compatible with Tauri setup's error type.
 
 If `ShellState` is currently created in `commands` or managed elsewhere, ensure the same `ShellState` clone is passed to `init_logging` and managed by Tauri.
 
@@ -776,10 +771,9 @@ Do not remove state changes like `inner.fade_state = AppFadeState::Running`.
 
 - [ ] **Step 5: Add scene recall logs at decision boundary**
 
-In `src/scene_recall/actor.rs`, before publishing state facts, add logs:
+In `src/scene_recall/actor.rs`, add only the remaining non-safety/intermediate recall logs not already added in Task 3. Do not add another `scene_recall_blocked` log here.
 
 ```rust
-tracing::warn!(event = "scene_recall_blocked", scene = %scene_label, reason = %reason, "Scene recall blocked for {scene_label}: {reason}");
 tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
 tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
 tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
@@ -789,15 +783,12 @@ Keep only `WARN` blocked events visible to UI.
 
 - [ ] **Step 6: Add fade outcome logs at fade origin**
 
-In `src/fade/actor.rs` or `src/fade/state.rs`, log outcomes where fade events are emitted:
+In `src/fade/actor.rs` or `src/fade/state.rs`, add only the remaining fade outcome logs not already added in Task 3. Do not add duplicate `fade_aborted`, `fade_manual_override`, or `fade_write_failed` logs.
 
 ```rust
 tracing::info!(event = "fade_started", scene_index = config.scene.index, scene_name = %config.scene.name, duration_ms = config.duration_ms, target_count = config.targets.len(), "Fade started for {}: {} ({} targets, {} ms)", config.scene.index, config.scene.name, config.targets.len(), config.duration_ms);
 tracing::info!(event = "fade_completed", "Fade completed");
-tracing::warn!(event = "fade_aborted", "Fade aborted");
 tracing::debug!(event = "fade_channel_completed", group, channel, parameter = ?parameter, "Fade channel completed: group {group}, channel {channel}");
-tracing::warn!(event = "fade_manual_override", group, channel, parameter = ?parameter, "Fade manual override detected: group {group}, channel {channel}");
-tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
 ```
 
 - [ ] **Step 7: Run targeted tests**
