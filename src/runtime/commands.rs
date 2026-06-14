@@ -76,16 +76,21 @@ impl AppCommandBus {
     ) -> Result<(), AppCommandError> {
         let targets = self.targets.lock().await;
         if targets.generation != expected {
-            return Err(AppCommandError::StaleGeneration);
+            let result = Err(AppCommandError::StaleGeneration);
+            log_failure("start_fade_if_generation", &result);
+            return result;
         }
-        let fade = targets
-            .fade
-            .clone()
-            .ok_or(AppCommandError::FadeUnavailable)?;
+        let fade = targets.fade.clone().ok_or(AppCommandError::FadeUnavailable);
         drop(targets);
-        fade.start_fade_if_generation(expected, config)
-            .await
-            .map_err(|_| AppCommandError::FadeUnavailable)
+        let result = match fade {
+            Ok(fade) => fade
+                .start_fade_if_generation(expected, config)
+                .await
+                .map_err(|_| AppCommandError::FadeUnavailable),
+            Err(error) => Err(error),
+        };
+        log_failure("start_fade_if_generation", &result);
+        result
     }
 
     pub async fn clear_targets(&self) {
