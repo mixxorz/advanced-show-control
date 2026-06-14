@@ -789,6 +789,10 @@ async fn apply_projector_event(
                 .await
         }
         AppEvent::Diagnostic { source, message } => {
+            if !state.generation_matches(generation).await {
+                return false;
+            }
+
             if let Err(err) =
                 crate::diagnostics::append_diagnostic(diagnostics_path, source, message)
             {
@@ -1548,6 +1552,33 @@ mod tests {
                 .iter()
                 .all(|entry| { entry.message != "fade-engine: stale projector diagnostic" })
         );
+    }
+
+    #[tokio::test]
+    async fn stale_diagnostic_event_does_not_write_diagnostics_through_projector() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let diagnostics_dir = temp_dir("stale-projector-diagnostic");
+        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
+
+        let _ = state.disconnect().await;
+
+        let applied = apply_projector_event(
+            &state,
+            generation,
+            &diagnostics_path,
+            &ActiveCommandBus::default(),
+            &AppEvent::Diagnostic {
+                source: "fade-engine".to_string(),
+                message: "stale projector diagnostic".to_string(),
+            },
+        )
+        .await;
+
+        assert!(!applied);
+        assert!(!diagnostics_path.exists());
+
+        let _ = fs::remove_dir_all(&diagnostics_dir);
     }
 
     #[tokio::test]
