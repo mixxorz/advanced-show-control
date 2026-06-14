@@ -7,7 +7,7 @@ use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_mess
 use advanced_show_control::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
 use advanced_show_control::lv1::types::ChannelInfo;
 use advanced_show_control::osc::OscArg;
-use advanced_show_control::runtime::events::{AppEvent, AppEventBus, eprintln_lagged_subscriber};
+use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -533,7 +533,7 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                eprintln_lagged_subscriber("monitor", count);
+                log_lagged_subscriber("monitor", count);
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
         }
@@ -693,7 +693,7 @@ async fn run_fade_test(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    eprintln_lagged_subscriber("fade-test", count);
+                    log_lagged_subscriber("fade-test", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -760,7 +760,7 @@ async fn run_fade_test(
             }
             Ok(_) => {}
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                eprintln_lagged_subscriber("fade-test", count);
+                log_lagged_subscriber("fade-test", count);
                 continue;
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -838,7 +838,7 @@ async fn wait_for_channels_with_mute_settle(
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        eprintln_lagged_subscriber("vegas-settle", count);
+                        log_lagged_subscriber("vegas-settle", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {}
                 }
@@ -911,7 +911,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    eprintln_lagged_subscriber("vegas", count);
+                    log_lagged_subscriber("vegas", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -1225,7 +1225,7 @@ mod tests {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        eprintln_lagged_subscriber("vegas-test", count);
+                        log_lagged_subscriber("vegas-test", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -1320,7 +1320,7 @@ mod tests {
                         }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        eprintln_lagged_subscriber("vegas-test", count);
+                        log_lagged_subscriber("vegas-test", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }

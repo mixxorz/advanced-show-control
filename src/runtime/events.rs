@@ -45,10 +45,6 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
     );
 }
 
-pub fn eprintln_lagged_subscriber(name: &str, count: u64) {
-    log_lagged_subscriber(name, count);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

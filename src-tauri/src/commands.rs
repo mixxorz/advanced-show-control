@@ -761,12 +761,6 @@ fn spawn_shell_state_projector<R: Runtime>(
                     }
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    tracing::debug!(
-                        event = "event_subscriber_lagged",
-                        subscriber = "shell-state-projector",
-                        missed_events = count,
-                        "shell-state-projector event subscriber lagged"
-                    );
                     log_lagged_subscriber("shell-state-projector", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
