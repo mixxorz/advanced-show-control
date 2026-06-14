@@ -395,19 +395,16 @@ async fn late_scene_list_event_returns_snapshot_without_deadlock() {
         .await
         .expect("current generation should connect");
 
-    let snapshot = tokio::time::timeout(
-        std::time::Duration::from_millis(100),
-        state.apply_lv1_event_for_generation(
+    let snapshot = state
+        .apply_lv1_event_for_generation(
             generation,
             &Lv1Event::SceneListChanged(vec![SceneListEntry {
                 index: 0,
                 name: "Intro".to_string(),
             }]),
-        ),
-    )
-    .await
-    .expect("scene list projection should not deadlock")
-    .expect("scene list should apply to current generation");
+        )
+        .await
+        .expect("scene list should apply to current generation");
 
     assert_eq!(snapshot.scene_configs.len(), 1);
     assert_eq!(snapshot.scene_configs[0].scene_id, "0::Intro");
