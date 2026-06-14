@@ -1,6 +1,7 @@
 use std::error::Error;
 use std::fs;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
+use tokio::sync::mpsc;
 use tracing::{Event, Level, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
@@ -67,7 +68,13 @@ pub fn init_logging<R: Runtime>(
         .event_format(BracketedFormat)
         .with_filter(LevelFilter::DEBUG);
 
-    let ui_layer = UiLogLayer { state }.with_filter(LevelFilter::INFO);
+    let (ui_tx, ui_rx) = mpsc::channel(64);
+    let ui_layer = UiLogLayer { tx: ui_tx }.with_filter(LevelFilter::INFO);
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        ui_log_projector(app, state, ui_rx).await;
+    });
 
     tracing_subscriber::registry()
         .with(filter)
@@ -102,7 +109,7 @@ where
 }
 
 struct UiLogLayer {
-    state: ShellState,
+    tx: mpsc::Sender<UiLogEvent>,
 }
 
 impl<S> tracing_subscriber::Layer<S> for UiLogLayer
@@ -119,11 +126,47 @@ where
             event.record(&mut visitor);
             if let Some(message) = visitor.message {
                 let ui_event = UiLogEvent { severity, message };
-                let state = self.state.clone();
-                tauri::async_runtime::spawn(async move {
-                    state.append_log(ui_event.severity, ui_event.message).await;
-                });
+                match self.tx.try_send(ui_event) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(ui_event)) => {
+                        tracing::warn!(
+                            target: UI_SINK_TARGET,
+                            event = "ui_log_channel_full",
+                            severity = ?ui_event.severity,
+                            "UI log channel full; dropping UI log entry"
+                        );
+                    }
+                    Err(mpsc::error::TrySendError::Closed(ui_event)) => {
+                        tracing::error!(
+                            target: UI_SINK_TARGET,
+                            event = "ui_log_channel_closed",
+                            severity = ?ui_event.severity,
+                            "UI log channel closed; dropping UI log entry"
+                        );
+                    }
+                }
             }
+        }
+    }
+}
+
+async fn ui_log_projector<R: Runtime>(
+    app: AppHandle<R>,
+    state: ShellState,
+    mut rx: mpsc::Receiver<UiLogEvent>,
+) {
+    while let Some(ui_event) = rx.recv().await {
+        state
+            .append_log(ui_event.severity.clone(), ui_event.message)
+            .await;
+        let snapshot = state.snapshot().await;
+        if let Err(err) = app.emit("app-status-changed", &snapshot) {
+            tracing::debug!(
+                target: UI_SINK_TARGET,
+                event = "app_status_emit_failed",
+                error = %err,
+                "failed to emit app-status-changed after UI log append"
+            );
         }
     }
 }
@@ -191,5 +234,10 @@ mod tests {
             visitor.message.as_deref(),
             Some("Starting \"Advanced Show Control\"")
         );
+    }
+
+    #[test]
+    fn ui_log_channel_error_targets_are_internal() {
+        assert!(!is_missing_event_field(UI_SINK_TARGET, "event"));
     }
 }
