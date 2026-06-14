@@ -135,6 +135,14 @@ pub(super) fn apply_width_update(
     false
 }
 
+fn diagnostic_received_message(address: &str, arg_count: usize) -> String {
+    format!("received {address} args_count={arg_count}")
+}
+
+fn diagnostic_scene_list_parsed(scene_count: usize) -> String {
+    format!("parsed /Notify/SceneList scenes={scene_count}")
+}
+
 fn log_osc_rx(address: &str) {
     tracing::debug!(
         event = "osc_message",
@@ -200,15 +208,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
     log_osc_rx(&msg.address);
 
     if is_diagnostic_address(&msg.address) {
-        state.diagnose(format!(
-            "received {} args=[{}]",
-            msg.address,
-            msg.args
-                .iter()
-                .map(crate::lv1::probe::format_arg)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
+        state.diagnose(diagnostic_received_message(&msg.address, msg.args.len()));
     }
 
     match msg.address.as_str() {
@@ -239,14 +239,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
             Ok(list) => {
-                state.diagnose(format!(
-                    "parsed /Notify/SceneList scenes={} entries=[{}]",
-                    list.len(),
-                    list.iter()
-                        .map(|entry| format!("{}:{:?}", entry.index, entry.name))
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                ));
+                state.diagnose(diagnostic_scene_list_parsed(list.len()));
                 state.scene_list = list.clone();
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }
@@ -390,6 +383,18 @@ mod tests {
     #[test]
     fn log_osc_rx_helper_is_present_for_osc_addresses() {
         log_osc_rx("/Notify/SceneList");
+    }
+
+    #[test]
+    fn diagnostic_helpers_are_address_and_count_only() {
+        assert_eq!(
+            diagnostic_received_message("/Channels", 3),
+            "received /Channels args_count=3"
+        );
+        assert_eq!(
+            diagnostic_scene_list_parsed(2),
+            "parsed /Notify/SceneList scenes=2"
+        );
     }
 
     #[tokio::test]

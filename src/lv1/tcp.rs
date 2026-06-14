@@ -163,6 +163,8 @@ impl Lv1TcpClient {
             )) as Box<dyn std::error::Error + Send + Sync>
         })?;
 
+        log_osc_tx("/handshake");
+        log_osc_tx("/device_name");
         send_bytes(writer, &build_myfoh_handshake_batch(device_name, uuid)?).await
     }
 
