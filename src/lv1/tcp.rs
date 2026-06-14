@@ -9,6 +9,15 @@ pub const DEFAULT_HEADER: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 const HEADER_LEN: usize = 8;
 const MAX_FRAME_PAYLOAD: usize = 16 * 1024 * 1024;
 
+fn log_osc_tx(address: &str) {
+    tracing::debug!(
+        event = "osc_message",
+        direction = "tx",
+        osc_address = address,
+        "OSC TX {address}"
+    );
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lv1Frame {
     pub header: [u8; 8],
@@ -158,6 +167,7 @@ impl Lv1TcpClient {
     }
 
     pub async fn send(&mut self, address: &str, args: &[OscArg]) -> TcpResult<()> {
+        log_osc_tx(address);
         let frame = encode_frame(address, args)?;
         let writer = self.writer.as_mut().ok_or_else(|| {
             Box::new(std::io::Error::new(
@@ -481,5 +491,10 @@ mod tests {
     #[test]
     fn empty_parameter_write_batch_encodes_to_empty_buffer() {
         assert_eq!(encode_parameter_write_batch(&[]).unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn log_osc_tx_helper_compiles_for_tcp_client_addresses() {
+        log_osc_tx("/custom");
     }
 }

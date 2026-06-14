@@ -23,6 +23,24 @@ const PING_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WRITER_QUEUE_CAPACITY: usize = 64;
 
+fn log_osc_tx(address: &str) {
+    tracing::debug!(
+        event = "osc_message",
+        direction = "tx",
+        osc_address = address,
+        "OSC TX {address}"
+    );
+}
+
+fn write_parameter_address(write: &crate::lv1::commands::Lv1ParameterWrite) -> &'static str {
+    match write.parameter {
+        crate::lv1::commands::Lv1WriteParameter::FaderDb => "/Set/Track/Out/Gain",
+        crate::lv1::commands::Lv1WriteParameter::Pan => "/Set/Track/Pan",
+        crate::lv1::commands::Lv1WriteParameter::Balance => "/Set/Track/Pan/Balance",
+        crate::lv1::commands::Lv1WriteParameter::Width => "/Set/Track/Pan/Width",
+    }
+}
+
 /// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
 pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
@@ -302,6 +320,7 @@ async fn run_connected(
                         for frame in frames {
                             if let Ok(msg) = decode_frame_payload(&frame) {
                                 if let Some((addr, args)) = pong_for_ping(&msg) {
+                                    log_osc_tx(addr);
                                     let bytes = match encode_frame(addr, &args) {
                                         Ok(bytes) => bytes,
                                         Err(err) => {
@@ -334,6 +353,10 @@ async fn run_connected(
                             continue;
                         }
 
+                        for write in &writes {
+                            log_osc_tx(write_parameter_address(write));
+                        }
+
                         let bytes = match encode_parameter_write_batch(&writes) {
                             Ok(bytes) => bytes,
                             Err(err) => {
@@ -348,6 +371,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetGain { group, channel, gain_db, reply }) => {
+                        log_osc_tx("/Set/Track/Out/Gain");
                         let result = encode_frame(
                             "/Set/Track/Out/Gain",
                             &[
@@ -371,6 +395,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetPan { group, channel, value, reply }) => {
+                        log_osc_tx("/Set/Track/Pan");
                         let result = encode_frame(
                             "/Set/Track/Pan",
                             &[
@@ -394,6 +419,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetBalance { group, channel, value, reply }) => {
+                        log_osc_tx("/Set/Track/Pan/Balance");
                         let result = encode_frame(
                             "/Set/Track/Pan/Balance",
                             &[
@@ -417,6 +443,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetWidth { group, channel, value, reply }) => {
+                        log_osc_tx("/Set/Track/Pan/Width");
                         let result = encode_frame(
                             "/Set/Track/Pan/Width",
                             &[
@@ -440,6 +467,7 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::SetMute { group, channel, muted, reply }) => {
+                        log_osc_tx("/Set/Track/Out/Mute");
                         let result = super::tcp::encode_frame(
                             "/Set/Track/Out/Mute",
                             &[
@@ -544,6 +572,20 @@ mod tests {
         assert!(addresses.contains(&"/Set/Track/Pan".to_string()));
         assert!(addresses.contains(&"/Set/Track/Pan/Balance".to_string()));
         assert!(addresses.contains(&"/Set/Track/Pan/Width".to_string()));
+    }
+
+    #[test]
+    fn write_parameter_address_returns_only_osc_address() {
+        use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
+
+        let write = Lv1ParameterWrite {
+            group: 1,
+            channel: 2,
+            parameter: Lv1WriteParameter::FaderDb,
+            value: -12.5,
+        };
+
+        assert_eq!(write_parameter_address(&write), "/Set/Track/Out/Gain");
     }
 
     #[test]
