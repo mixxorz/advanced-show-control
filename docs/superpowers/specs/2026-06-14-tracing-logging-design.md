@@ -14,6 +14,7 @@ The `AppEventBus` remains a runtime facts bus. It should not carry log-only even
 - Project only `INFO`, `WARN`, and `ERROR` events into frontend state.
 - Remove log source from UI log state and frontend types.
 - Replace existing event-bus diagnostic logging with tracing events.
+- Clean up the existing logging infrastructure that becomes obsolete after tracing owns log delivery.
 - Keep runtime facts such as LV1 state, fade state, and scene recall state on `AppEventBus`.
 
 ## Non-Goals
@@ -274,6 +275,36 @@ Expected changes:
 - Keep `AppEvent::Lv1`, `AppEvent::Fade`, and `AppEvent::SceneRecall` as runtime facts for state projection and policy decisions.
 
 If a command failure needs to affect application state, model that as a state/fact event rather than a log event.
+
+## Existing Logging Cleanup
+
+The implementation should remove old logging paths rather than leaving duplicate systems in place.
+
+Clean up:
+
+- `AppEvent::Diagnostic` and all publishers, projectors, and tests that exist only for diagnostic log transport.
+- `AppEvent::CommandFailed` as a log transport. Command failures should be emitted with `tracing` at the command boundary and still returned to the caller as normal `Result` errors.
+- Manual diagnostic append call sites used for log delivery. Diagnostic file writes should come from the tracing file layer.
+- Shell projection logic that turns runtime facts into user logs when the same message belongs at the subsystem decision/action boundary.
+- Direct UI `push_log` call sites outside the tracing UI sink, except for internal test helpers if they remain useful.
+- `eprintln!` logging helpers such as event subscriber lag reporting. Replace with `tracing::debug!` or higher according to the level plan.
+- UI and TypeScript references to log source fields.
+- Tests that assert old event-bus log transport behavior.
+
+Keep or adapt:
+
+- The capped in-memory UI log storage, because the tracing UI sink still needs somewhere to store `INFO+` log entries.
+- Shell state snapshot emission after UI-visible logs are stored.
+- Runtime fact projection from `Lv1Event`, `FadeEvent`, and `SceneRecallEvent` for actual app state changes.
+- Diagnostic log path management, if it is reused by the tracing file appender.
+
+After cleanup, there should be one logging delivery path:
+
+```text
+tracing event -> tracing subscribers -> file/stdout/UI sinks
+```
+
+There should not be a parallel path where runtime events are published only to create logs.
 
 ## Logging Level Guidance
 
