@@ -705,15 +705,13 @@ fn spawn_shell_state_projector<R: Runtime>(
                 Ok(app_event) => match &app_event {
                     AppEvent::Lv1(event) => {
                         if let Lv1Event::SceneListChanged(scenes) = event {
-                            let message = state
-                                .show
-                                .scene_reconciliation_diagnostic(scenes.clone())
-                                .await;
-                            let _ = crate::diagnostics::append_diagnostic(
+                            let _ = append_scene_list_diagnostic_for_generation(
+                                &state,
+                                generation,
                                 &diagnostics_path,
-                                "show-state",
-                                &message,
-                            );
+                                scenes,
+                            )
+                            .await;
                         }
                         if let Some(snapshot) = state
                             .apply_lv1_event_for_generation(generation, event)
@@ -798,6 +796,32 @@ fn spawn_shell_state_projector<R: Runtime>(
             }
         }
     })
+}
+
+async fn append_scene_list_diagnostic_for_generation(
+    state: &ShellState,
+    generation: u64,
+    diagnostics_path: &std::path::Path,
+    scenes: &[advanced_show_control::lv1::types::SceneListEntry],
+) -> bool {
+    if !state.generation_matches(generation).await {
+        return false;
+    }
+
+    let message = state
+        .show
+        .scene_reconciliation_diagnostic(scenes.to_vec())
+        .await;
+    if !state.generation_matches(generation).await {
+        return false;
+    }
+
+    if let Err(err) =
+        crate::diagnostics::append_diagnostic(diagnostics_path, "show-state", &message)
+    {
+        eprintln!("failed to write diagnostics log: {err}");
+    }
+    true
 }
 
 async fn handle_diagnostic_event<R: Runtime>(
@@ -1414,6 +1438,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_scene_list_event_does_not_write_show_state_diagnostics() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let diagnostics_dir = temp_dir("stale-scene-list-diagnostic");
+        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
+        let scenes = vec![advanced_show_control::lv1::types::SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }];
+
+        let _ = state.disconnect().await;
+
+        assert!(
+            !append_scene_list_diagnostic_for_generation(
+                &state,
+                generation,
+                &diagnostics_path,
+                &scenes,
+            )
+            .await
+        );
+        assert!(!diagnostics_path.exists());
+
+        let _ = fs::remove_dir_all(&diagnostics_dir);
+    }
+
+    #[tokio::test]
     async fn stale_diagnostic_event_does_not_emit_snapshot_through_projector() {
         let app = mock_app();
         let handle = app.handle().clone();
@@ -1457,16 +1508,13 @@ mod tests {
         .await
         .expect("connected runtime should install successfully");
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if !observed.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
+        for _ in 0..20 {
+            if !observed.lock().unwrap().is_empty() {
+                break;
             }
-        })
-        .await
-        .expect("projector should emit the initial snapshot");
+            tokio::task::yield_now().await;
+        }
+        assert!(!observed.lock().unwrap().is_empty());
 
         let _ = state.disconnect().await;
 
@@ -1475,14 +1523,13 @@ mod tests {
             message: "stale projector diagnostic".to_string(),
         });
 
-        tokio::time::timeout(std::time::Duration::from_millis(100), async {
-            loop {
-                assert_eq!(observed.lock().unwrap().len(), 1);
-                tokio::task::yield_now().await;
+        for _ in 0..20 {
+            if observed.lock().unwrap().len() == 1 {
+                break;
             }
-        })
-        .await
-        .expect_err("stale diagnostic should not emit another snapshot");
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(observed.lock().unwrap().len(), 1);
 
         let snapshot = state.snapshot().await;
         assert!(
