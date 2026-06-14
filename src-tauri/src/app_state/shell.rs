@@ -326,6 +326,10 @@ impl ShellState {
         inner.push_log(source, severity, message);
     }
 
+    pub async fn generation_matches(&self, generation: u64) -> bool {
+        self.inner.lock().await.generation == generation
+    }
+
     pub async fn push_log_for_generation(
         &self,
         generation: u64,

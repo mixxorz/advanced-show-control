@@ -808,7 +808,9 @@ async fn handle_diagnostic_event<R: Runtime>(
     source: &str,
     message: &str,
 ) -> Option<AppViewState> {
-    state.snapshot_for_generation(generation).await?;
+    if !state.generation_matches(generation).await {
+        return None;
+    }
 
     if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
         eprintln!("failed to write diagnostic log: {err}");
@@ -1375,6 +1377,40 @@ mod tests {
         assert!(observed[1]["logs"].as_array().unwrap().iter().any(|entry| {
             entry["message"] == "fade-engine: event subscriber lagged and missed 3 events"
         }));
+    }
+
+    #[tokio::test]
+    async fn stale_diagnostic_event_does_not_write_diagnostics_or_logs() {
+        let app = mock_app();
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let diagnostics_dir = temp_dir("stale-diagnostic-file");
+        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
+
+        let _ = state.disconnect().await;
+
+        let snapshot = handle_diagnostic_event(
+            &app.handle().clone(),
+            &state,
+            generation,
+            &diagnostics_path,
+            "fade-engine",
+            "stale diagnostic",
+        )
+        .await;
+
+        assert!(snapshot.is_none());
+        assert!(!diagnostics_path.exists());
+        assert!(
+            state
+                .snapshot()
+                .await
+                .logs
+                .iter()
+                .all(|entry| { entry.message != "fade-engine: stale diagnostic" })
+        );
+
+        let _ = fs::remove_dir_all(&diagnostics_dir);
     }
 
     #[tokio::test]
