@@ -1372,6 +1372,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn projector_applies_runtime_events_before_coalesced_snapshot() {
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+
+        let applied = state
+            .project_event_without_snapshot_for_generation(
+                generation,
+                &AppEvent::Diagnostic {
+                    source: "shell-state-projector".to_string(),
+                    message: "coalesced snapshot pending".to_string(),
+                },
+            )
+            .await;
+
+        assert!(applied);
+
+        let snapshot = state
+            .snapshot_for_generation(generation)
+            .await
+            .expect("current generation should still snapshot after projection");
+        assert!(
+            snapshot.logs.iter().any(|entry| {
+                entry.message == "shell-state-projector: coalesced snapshot pending"
+            })
+        );
+    }
+
+    #[tokio::test]
     async fn connected_runtime_installs_scene_recall_fader_handle() {
         let app = mock_app();
         let handle = app.handle().clone();

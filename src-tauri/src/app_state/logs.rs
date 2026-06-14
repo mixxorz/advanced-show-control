@@ -1,22 +1,21 @@
 use advanced_show_control::scene_recall::events::SceneRecallEvent;
 
 use super::shell::ShellState;
-use super::view::{AppViewState, LogSeverity, LogSource};
+use super::view::{LogSeverity, LogSource};
 
 impl ShellState {
-    pub async fn apply_scene_recall_event_for_generation(
+    pub async fn apply_scene_recall_event_without_snapshot_for_generation(
         &self,
         generation: u64,
         event: &SceneRecallEvent,
-    ) -> Option<AppViewState> {
+    ) -> bool {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return None;
+            return false;
         }
 
         apply_scene_recall_event_locked(&mut inner, event);
-        drop(inner);
-        Some(self.snapshot().await)
+        true
     }
 }
 
@@ -64,14 +63,20 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
 
+        assert!(
+            state
+                .apply_scene_recall_event_without_snapshot_for_generation(
+                    generation,
+                    &SceneRecallEvent::Blocked {
+                        scene_label: "1: Intro".to_string(),
+                        reason: "locked out".to_string(),
+                    },
+                )
+                .await
+        );
+
         let snapshot = state
-            .apply_scene_recall_event_for_generation(
-                generation,
-                &SceneRecallEvent::Blocked {
-                    scene_label: "1: Intro".to_string(),
-                    reason: "locked out".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("event should apply to current generation");
 

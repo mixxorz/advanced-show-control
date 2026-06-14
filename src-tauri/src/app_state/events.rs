@@ -149,14 +149,14 @@ impl ShellState {
         (generation, self.snapshot().await)
     }
 
-    pub async fn apply_lv1_event_for_generation(
+    pub async fn apply_lv1_event_without_snapshot_for_generation(
         &self,
         generation: u64,
         event: &Lv1Event,
-    ) -> Option<AppViewState> {
+    ) -> bool {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return None;
+            return false;
         }
 
         match event {
@@ -208,7 +208,7 @@ impl ShellState {
                 // Lock ordering: inner then show (consistent with snapshot()).
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {
-                    return None;
+                    return false;
                 }
 
                 // Call reconcile_scene_list while holding inner lock to ensure generation
@@ -237,8 +237,7 @@ impl ShellState {
                         after_count
                     ),
                 );
-                drop(inner);
-                return Some(self.snapshot().await);
+                return true;
             }
             Lv1Event::FaderChanged {
                 group,
@@ -315,7 +314,20 @@ impl ShellState {
             }
         }
 
-        drop(inner);
+        true
+    }
+
+    pub async fn apply_lv1_event_for_generation(
+        &self,
+        generation: u64,
+        event: &Lv1Event,
+    ) -> Option<AppViewState> {
+        if !self
+            .apply_lv1_event_without_snapshot_for_generation(generation, event)
+            .await
+        {
+            return None;
+        }
         Some(self.snapshot().await)
     }
 
@@ -327,18 +339,31 @@ impl ShellState {
         self.snapshot().await
     }
 
+    pub async fn apply_fade_event_without_snapshot_for_generation(
+        &self,
+        generation: u64,
+        event: &FadeEvent,
+    ) -> bool {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return false;
+        }
+
+        apply_fade_event_locked(&mut inner, event);
+        true
+    }
+
     pub async fn apply_fade_event_for_generation(
         &self,
         generation: u64,
         event: &FadeEvent,
     ) -> Option<AppViewState> {
-        let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if !self
+            .apply_fade_event_without_snapshot_for_generation(generation, event)
+            .await
+        {
             return None;
         }
-
-        apply_fade_event_locked(&mut inner, event);
-        drop(inner);
         self.snapshot_for_generation(generation).await
     }
 }
