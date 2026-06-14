@@ -286,7 +286,12 @@ fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
 
 fn log_failure(command: &str, result: &Result<(), AppCommandError>) {
     if let Err(error) = result {
-        tracing::error!(event = "command_failed", command, error = %error, "Command failed: {command}: {error}");
+        tracing::error!(
+            event = "command_failed",
+            command,
+            error = %error,
+            "Command failed: {command}: {error}"
+        );
     }
 }
 

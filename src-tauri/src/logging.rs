@@ -286,6 +286,23 @@ mod tests {
         let event = rt.block_on(async { rx.recv().await.unwrap() });
         assert_eq!(event.severity, LogSeverity::Warning);
         assert_eq!(event.message, "Scene recall blocked");
+        assert!(rt.block_on(async { rx.try_recv().is_err() }));
+    }
+
+    #[test]
+    fn ui_layer_projects_second_safety_warn_event_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let subscriber = registry().with(UiLogLayer { tx });
+
+        with_default(subscriber, || {
+            tracing::warn!(event = "fade_aborted", message = "Fade aborted");
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let event = rt.block_on(async { rx.recv().await.unwrap() });
+        assert_eq!(event.severity, LogSeverity::Warning);
+        assert_eq!(event.message, "Fade aborted");
+        assert!(rt.block_on(async { rx.try_recv().is_err() }));
     }
 
     #[test]
@@ -301,5 +318,6 @@ mod tests {
         let event = rt.block_on(async { rx.recv().await.unwrap() });
         assert_eq!(event.severity, LogSeverity::Error);
         assert_eq!(event.message, "Command failed");
+        assert!(rt.block_on(async { rx.try_recv().is_err() }));
     }
 }
