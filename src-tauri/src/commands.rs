@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{AppConnectionState, AppViewState, LogSeverity, RuntimeHandles, ShellState};
+use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
@@ -761,10 +761,12 @@ fn spawn_shell_state_projector<R: Runtime>(
                     }
                 },
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    let log_message = format!(
-                        "shell-state-projector event subscriber lagged and missed {count} events"
+                    tracing::debug!(
+                        event = "event_subscriber_lagged",
+                        subscriber = "shell-state-projector",
+                        missed_events = count,
+                        "shell-state-projector event subscriber lagged"
                     );
-                    state.append_log(LogSeverity::Warning, log_message).await;
                     log_lagged_subscriber("shell-state-projector", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
