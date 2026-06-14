@@ -812,13 +812,17 @@ async fn handle_diagnostic_event<R: Runtime>(
         eprintln!("failed to write diagnostic log: {err}");
     }
 
-    state
-        .push_log(
+    if !state
+        .push_log_for_generation(
+            generation,
             LogSource::App,
             LogSeverity::Warning,
             format!("{source}: {message}"),
         )
-        .await;
+        .await
+    {
+        return None;
+    }
 
     let _ = app;
     state.snapshot_for_generation(generation).await
@@ -1369,6 +1373,81 @@ mod tests {
         assert!(observed[1]["logs"].as_array().unwrap().iter().any(|entry| {
             entry["message"] == "fade-engine: event subscriber lagged and missed 3 events"
         }));
+    }
+
+    #[tokio::test]
+    async fn stale_diagnostic_event_does_not_emit_snapshot_through_projector() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+
+        let initial_snapshot = state
+            .begin_connection_for_generation(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let active_command_bus = ActiveCommandBus::default();
+        let _snapshot = install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            generation,
+            initial_snapshot,
+            event_bus.subscribe(),
+            RuntimeHandles::default(),
+            &active_command_bus,
+        )
+        .await
+        .expect("connected runtime should install successfully");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !observed.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("projector should emit the initial snapshot");
+
+        let _ = state.disconnect().await;
+
+        event_bus.publish(AppEvent::Diagnostic {
+            source: "fade-engine".to_string(),
+            message: "stale projector diagnostic".to_string(),
+        });
+
+        tokio::task::yield_now().await;
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert!(
+            observed[0]["logs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|entry| { entry["message"] != "fade-engine: stale projector diagnostic" })
+        );
     }
 
     #[tokio::test]
