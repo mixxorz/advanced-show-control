@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn channels_parse_failure_publishes_diagnostic() {
+    async fn channels_parse_failure_logs_diagnostic_without_event_bus_fact() {
         use crate::runtime::events::AppEventBus;
 
         let bus = AppEventBus::new(16);

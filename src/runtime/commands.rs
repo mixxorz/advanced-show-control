@@ -320,7 +320,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_fade_returns_fade_unavailable_and_publishes_failure() {
+    async fn missing_fade_returns_fade_unavailable_without_event_bus_log() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new(event_bus.clone());
@@ -477,7 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn set_pan_routes_to_lv1_and_publishes_no_failure() {
+    async fn set_pan_routes_to_lv1_without_event_bus_log() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new(event_bus);
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn missing_lv1_for_balance_publishes_command_failed() {
+    async fn missing_lv1_for_balance_returns_error_without_event_bus_log() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new(event_bus);

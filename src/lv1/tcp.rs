@@ -1,6 +1,7 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
 use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
+use crate::lv1::diagnostics::log_osc_tx;
 use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
 type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -8,15 +9,6 @@ type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub const DEFAULT_HEADER: [u8; 8] = [0, 0, 0, 2, 0, 0, 0, 0];
 const HEADER_LEN: usize = 8;
 const MAX_FRAME_PAYLOAD: usize = 16 * 1024 * 1024;
-
-fn log_osc_tx(address: &str) {
-    tracing::debug!(
-        event = "osc_message",
-        direction = "tx",
-        osc_address = address,
-        "OSC TX {address}"
-    );
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lv1Frame {
@@ -496,7 +488,7 @@ mod tests {
     }
 
     #[test]
-    fn log_osc_tx_helper_compiles_for_tcp_client_addresses() {
-        log_osc_tx("/custom");
+    fn shared_log_osc_tx_helper_compiles_for_tcp_client_addresses() {
+        crate::lv1::diagnostics::log_osc_tx("/custom");
     }
 }

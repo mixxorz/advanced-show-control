@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 use super::commands::Lv1Command;
+use super::diagnostics::log_osc_tx;
 use super::events::Lv1ActorError;
 use super::events::Lv1Event;
 use super::handle::Lv1ActorHandle;
@@ -22,15 +23,6 @@ use crate::runtime::events::AppEventBus;
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WRITER_QUEUE_CAPACITY: usize = 64;
-
-fn log_osc_tx(address: &str) {
-    tracing::debug!(
-        event = "osc_message",
-        direction = "tx",
-        osc_address = address,
-        "OSC TX {address}"
-    );
-}
 
 fn write_parameter_address(write: &crate::lv1::commands::Lv1ParameterWrite) -> &'static str {
     match write.parameter {
@@ -586,6 +578,11 @@ mod tests {
         };
 
         assert_eq!(write_parameter_address(&write), "/Set/Track/Out/Gain");
+    }
+
+    #[test]
+    fn shared_log_osc_tx_helper_compiles_for_actor_addresses() {
+        crate::lv1::diagnostics::log_osc_tx("/Set/Track/Out/Gain");
     }
 
     #[test]

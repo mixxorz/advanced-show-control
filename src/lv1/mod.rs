@@ -1,5 +1,6 @@
 pub mod actor;
 pub mod commands;
+pub(crate) mod diagnostics;
 pub mod discovery;
 pub mod events;
 pub mod handle;

@@ -274,7 +274,7 @@ async fn channel_topology_projection_does_not_append_ui_log() {
 }
 
 #[tokio::test]
-async fn scene_recall_event_is_logged_into_shell_state() {
+async fn scene_recall_event_does_not_append_ui_log() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
 
@@ -461,7 +461,7 @@ async fn late_scene_list_event_returns_snapshot_without_deadlock() {
 }
 
 #[tokio::test]
-async fn scene_list_event_logs_reconciliation_preview() {
+async fn scene_list_event_reconciles_without_appending_ui_log() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
     state
