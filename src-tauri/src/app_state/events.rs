@@ -178,13 +178,7 @@ impl ShellState {
             Lv1Event::SceneListChanged(scenes) => {
                 let generation = inner.generation;
 
-                // Gather diagnostics before holding the lock to avoid lock contention
                 drop(inner);
-                let before_count = self.show.get_snapshot().await.scene_configs.len();
-                let reconciliation_diagnostic = self
-                    .show
-                    .scene_reconciliation_diagnostic(scenes.clone())
-                    .await;
 
                 // Re-acquire inner lock and hold it across reconciliation to prevent stale mutations.
                 // Lock ordering: inner then show (consistent with snapshot()).
@@ -196,27 +190,11 @@ impl ShellState {
                 // Call reconcile_scene_list while holding inner lock to ensure generation
                 // doesn't change between the check and the mutation
                 let changed = self.show.reconcile_scene_list(scenes.clone()).await;
-                let after_count = self.show.get_snapshot().await.scene_configs.len();
 
                 ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
                 if changed {
                     inner.show_file_dirty = true;
                 }
-                inner.append_log(
-                    LogSeverity::Info,
-                    format!("Scene list updated: {} scenes", scenes.len()),
-                );
-                inner.append_log(LogSeverity::Info, reconciliation_diagnostic);
-                inner.append_log(
-                    LogSeverity::Info,
-                    format!(
-                        "Diagnostic: scene list projection scenes={} changed={} configs_before={} configs_after={}",
-                        scenes.len(),
-                        changed,
-                        before_count,
-                        after_count
-                    ),
-                );
                 drop(inner);
                 return Some(self.snapshot().await);
             }
@@ -287,10 +265,6 @@ impl ShellState {
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
                 ensure_lv1_snapshot(&mut inner).channels = channels.clone();
-                inner.append_log(
-                    LogSeverity::Info,
-                    format!("Channel topology updated: {} channels", channels.len()),
-                );
             }
         }
 
@@ -326,22 +300,19 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
     match event {
         FadeEvent::FadeStarted => {
             inner.fade_state = AppFadeState::Running;
-            inner.append_log(LogSeverity::Info, "Fade started".to_string());
         }
         FadeEvent::FadeCompleted => {
             inner.fade_state = AppFadeState::Idle;
-            inner.append_log(LogSeverity::Info, "Fade completed".to_string());
         }
         FadeEvent::FadeAborted => {
             inner.fade_state = AppFadeState::Idle;
             inner.append_log(LogSeverity::Warning, "Fade aborted".to_string());
         }
-        FadeEvent::ChannelCompleted { group, channel, .. } => {
-            inner.append_log(
-                LogSeverity::Info,
-                format!("Fade channel completed: group {group}, channel {channel}"),
-            );
-        }
+        FadeEvent::ChannelCompleted {
+            group: _,
+            channel: _,
+            ..
+        } => {}
         FadeEvent::ChannelOverride { group, channel, .. } => {
             inner.fade_state = AppFadeState::Blocked;
             inner.append_log(

@@ -1,7 +1,7 @@
 use advanced_show_control::scene_recall::events::SceneRecallEvent;
 
 use super::shell::ShellState;
-use super::view::{AppViewState, LogSeverity};
+use super::view::AppViewState;
 
 impl ShellState {
     pub async fn apply_scene_recall_event_for_generation(
@@ -20,33 +20,15 @@ impl ShellState {
     }
 }
 
-fn apply_scene_recall_event_locked(inner: &mut super::shell::ShellInner, event: &SceneRecallEvent) {
+fn apply_scene_recall_event_locked(
+    _inner: &mut super::shell::ShellInner,
+    event: &SceneRecallEvent,
+) {
     match event {
-        SceneRecallEvent::Blocked {
-            scene_label,
-            reason,
-        } => inner.append_log(
-            LogSeverity::Warning,
-            format!("Scene recall blocked for {scene_label}: {reason}"),
-        ),
-        SceneRecallEvent::Skipped {
-            scene_label,
-            reason,
-        } => inner.append_log(
-            LogSeverity::Info,
-            format!("Scene recall skipped for {scene_label}: {reason}"),
-        ),
-        SceneRecallEvent::Ready {
-            scene_label,
-            target_count,
-        } => inner.append_log(
-            LogSeverity::Info,
-            format!("Scene recall ready for {scene_label} ({target_count} targets)"),
-        ),
-        SceneRecallEvent::StartRequested { scene_label } => inner.append_log(
-            LogSeverity::Info,
-            format!("Scene recall start requested for {scene_label}"),
-        ),
+        SceneRecallEvent::Blocked { .. }
+        | SceneRecallEvent::Skipped { .. }
+        | SceneRecallEvent::Ready { .. }
+        | SceneRecallEvent::StartRequested { .. } => {}
     }
 }
 
@@ -56,7 +38,7 @@ mod tests {
     use advanced_show_control::scene_recall::events::SceneRecallEvent;
 
     #[tokio::test]
-    async fn scene_recall_blocked_event_is_logged() {
+    async fn scene_recall_blocked_event_does_not_append_ui_log() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
 
@@ -71,9 +53,11 @@ mod tests {
             .await
             .expect("event should apply to current generation");
 
-        assert_eq!(
-            snapshot.logs.last().unwrap().message,
-            "Scene recall blocked for 1: Intro: locked out"
+        assert!(
+            snapshot
+                .logs
+                .iter()
+                .all(|entry| entry.message != "Scene recall blocked for 1: Intro: locked out")
         );
     }
 }

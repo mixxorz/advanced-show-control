@@ -153,9 +153,11 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
     assert_eq!(snapshot.scene_configs[0].duration_ms, 0);
     assert!(snapshot.scene_configs[0].channel_configs.is_empty());
     assert!(snapshot.scene_configs[0].scoped_channels.is_empty());
-    assert_eq!(
-        snapshot.logs.last().unwrap().message,
-        "New show file created"
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .all(|entry| entry.message != "New show file created")
     );
 }
 
@@ -217,7 +219,12 @@ async fn mark_show_file_saved_updates_path_and_clears_dirty() {
     );
     assert_eq!(snapshot.show_file_last_saved_at.as_deref(), Some("999"));
     assert!(!snapshot.show_file_dirty);
-    assert_eq!(snapshot.logs.last().unwrap().message, "Show file saved");
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .all(|entry| entry.message != "Show file saved")
+    );
 }
 
 #[tokio::test]
@@ -277,7 +284,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
         snapshot
             .logs
             .iter()
-            .any(|entry| { entry.message == "Deleted saved scene config during load: 2: Missing" })
+            .all(|entry| entry.message != "Deleted saved scene config during load: 2: Missing")
     );
 }
 

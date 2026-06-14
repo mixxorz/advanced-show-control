@@ -55,6 +55,16 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     let timeout = timeout_ms
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
         .clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS);
+    tracing::debug!(
+        event = "lv1_discovery_requested",
+        timeout_ms = timeout,
+        "LV1 discovery requested"
+    );
+    tracing::info!(
+        event = "lv1_discovery_started",
+        timeout_ms = timeout,
+        "Searching for LV1 systems on the network"
+    );
     let entries = spawn_blocking(move || {
         advanced_show_control::lv1::discovery::discover(
             advanced_show_control::lv1::discovery::DiscoverOptions {
@@ -65,10 +75,13 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     })
     .await
     .map_err(|err| format!("Failed to run LV1 discovery task: {err}"))?
-    .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?;
+    .map_err(|err| {
+        tracing::error!(event = "lv1_discovery_failed", timeout_ms = timeout, error = %err, "LV1 discovery failed: {err}");
+        format!("Failed to discover LV1 systems: {err}")
+    })?;
 
     let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    let systems = entries
+    let systems: Vec<crate::connection_state::DiscoveredLv1System> = entries
         .iter()
         .filter_map(crate::connection_state::identity_from_discovery)
         .map(|identity| crate::connection_state::DiscoveredLv1System {
@@ -77,8 +90,16 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
             status: crate::connection_state::DiscoveredLv1Status::Available,
         })
         .collect();
+    let system_count = systems.len();
     let snapshot = state.set_discovered_lv1_systems(systems).await;
     emit_snapshot(&app, &snapshot);
+    tracing::info!(
+        event = "lv1_discovery_completed",
+        system_count = system_count,
+        elapsed_ms = latency_ms,
+        "LV1 discovery completed: {} systems found",
+        system_count
+    );
     Ok(snapshot)
 }
 
@@ -758,7 +779,10 @@ async fn save_show_file_to_path(
 ) -> Result<AppViewState, String> {
     let saved_at = crate::time::current_timestamp_millis();
     let file = state.export_show_file_for_save(saved_at.clone()).await?;
-    write_show_file(&path, &file, &backup_folder())?;
+    if let Err(err) = write_show_file(&path, &file, &backup_folder()) {
+        tracing::error!(event = "show_file_save_failed", error = %err, "Show file save failed: {err}");
+        return Err(err);
+    }
     Ok(state.mark_show_file_saved(path, saved_at).await)
 }
 

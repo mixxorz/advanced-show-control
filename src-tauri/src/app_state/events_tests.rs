@@ -62,7 +62,7 @@ async fn channel_completed_logs_without_clearing_running_state() {
         completed
             .logs
             .iter()
-            .any(|log| { log.message == "Fade channel completed: group 0, channel 2" })
+            .all(|log| log.message != "Fade channel completed: group 0, channel 2")
     );
 }
 
@@ -219,6 +219,61 @@ async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
 }
 
 #[tokio::test]
+async fn scene_list_projection_does_not_append_ui_log() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::SceneListChanged(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .all(|entry| !entry.message.contains("Scene list updated"))
+    );
+}
+
+#[tokio::test]
+async fn channel_topology_projection_does_not_append_ui_log() {
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+
+    let snapshot = state
+        .apply_lv1_event_for_generation(
+            generation,
+            &Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
+                group: 0,
+                channel: 1,
+                name: "Lead".to_string(),
+                gain_db: -6.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }]),
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .all(|entry| !entry.message.contains("Channel topology updated"))
+    );
+}
+
+#[tokio::test]
 async fn scene_recall_event_is_logged_into_shell_state() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
@@ -239,10 +294,8 @@ async fn scene_recall_event_is_logged_into_shell_state() {
     assert!(
         snapshot
             .logs
-            .last()
-            .unwrap()
-            .message
-            .contains("event subscriber lagged")
+            .iter()
+            .all(|entry| !entry.message.contains("event subscriber lagged"))
     );
 }
 
@@ -451,13 +504,12 @@ async fn scene_list_event_logs_reconciliation_preview() {
         .await
         .expect("scene list should apply to current generation");
 
-    assert!(snapshot.logs.iter().any(|log| {
-        log.message.contains("scene reconciliation preview")
-            && log
-                .message
-                .contains("change=ambiguous exact-match-fallback")
-            && log.message.contains("move_candidates=[0->1,1->0]")
-    }));
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .all(|log| !log.message.contains("scene reconciliation preview"))
+    );
 }
 
 #[tokio::test]
