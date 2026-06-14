@@ -194,6 +194,74 @@ Rules:
 
 The projection path should avoid blocking tracing call sites. If a channel is needed between the tracing layer and async shell state, it should be bounded and should fail visibly in stdout/file diagnostics rather than blocking runtime work.
 
+## Logging Inventory And Level Plan
+
+Use this plan when replacing existing UI pushes, diagnostic events, `eprintln!` calls, and direct tracing calls.
+
+General rules:
+
+- Log requests at `DEBUG`.
+- Log resulting state changes or outcomes at `INFO` or higher when they are user-visible.
+- Do not log both a request and the matching immediate state change at `INFO+`.
+- If a request fails before a state change, log the failure at `WARN` or `ERROR` with the command/action and error.
+- For scene recall automation, UI should show `Scene recall blocked` or the resulting `Fade started`, not intermediate `ready` or `start requested` states.
+
+| Action or Event | Level | UI | Notes |
+| --- | ---: | --- | --- |
+| App started | `INFO` | Yes | Useful session marker. |
+| Discovery requested | `DEBUG` | No | Request only. |
+| Discovery started | `INFO` | Yes | User action feedback. |
+| Discovery completed | `INFO` | Yes | Include system count and elapsed milliseconds. |
+| Discovery failed | `WARN` | Yes | Recoverable, but user needs to know. |
+| Connect requested | `DEBUG` | No | Request only; include host and port. |
+| Connecting state entered | `INFO` | Yes | Resulting state change. Include host and port when known. |
+| Connect succeeded | `INFO` | Yes | Clear connection lifecycle. |
+| Connect failed | `WARN` | Yes | Include host, port, and error. |
+| Disconnect requested by user | `DEBUG` | No | Request only. |
+| Disconnected by user | `INFO` | Yes | Resulting state change. |
+| LV1 disconnected unexpectedly | `WARN` | Yes | Include reason. |
+| Reconnect attempt requested | `DEBUG` | No | Request only. |
+| Reconnect attempt started | `INFO` | Yes | Operator-visible recovery state. |
+| Reconnect failed or timed out | `WARN` | Yes | Include attempt and error or timeout. |
+| Runtime generation stale task ignored | `DEBUG` | No | Proves safety guards without UI noise. |
+| Subscriber lagged | `DEBUG` | No | Recoverable and noisy; resulting errors should have their own logs. |
+| New show file requested | `DEBUG` | No | Request only. |
+| New show file created | `INFO` | Yes | Resulting state change. |
+| Show file open requested | `DEBUG` | No | Request only. |
+| Show file opened | `INFO` | Yes | Include path or file name in structured fields. |
+| Show file open failed | `ERROR` | Yes | User action failed. |
+| Show file save requested | `DEBUG` | No | Request only. |
+| Show file saved | `INFO` | Yes | Include path or file name in structured fields. |
+| Show file save failed | `ERROR` | Yes | User action failed. |
+| Saved scene config pruned on load | `WARN` | Yes | Important data and safety visibility. |
+| Scene config selected | `DEBUG` | No | UI state already shows selection. |
+| Scene config stored or captured | `INFO` | Yes | Include scene and stored channel count. |
+| Scene duration changed | `INFO` | Yes | User changed fade behavior. Include scene and duration. |
+| Individual channel scoped or unscoped | `DEBUG` | No | Too noisy. |
+| All channels scoped or unscoped | `INFO` | Yes | Bulk scope change matters. Include count. |
+| `FADERS` scope toggle changed | `INFO` | Yes | Affects recall behavior. |
+| `PAN` scope toggle changed | `INFO` | Yes | Affects recall behavior. |
+| Lockout toggle requested | `DEBUG` | No | Request only. |
+| Lockout changed | `INFO` | Yes | Safety-relevant setting. |
+| Abort all fades requested | `DEBUG` | No | Request only. |
+| Fade aborted | `WARN` | Yes | Resulting state change and safety action outcome. |
+| Fade started | `INFO` | Yes | Include scene, duration, and target count. |
+| Fade completed | `INFO` | Yes | Resulting state change. |
+| Per-channel fade completed | `DEBUG` | No | Too noisy during multi-channel fades. |
+| Manual override detected | `WARN` | Yes | Safety and user intervention. |
+| Channel cancelled due to manual override | `WARN` | Yes, if not duplicative | If override and cancellation are the same event, log one message. |
+| Channel cancelled due to overlap or takeover | `DEBUG` | No | Normal internal ownership behavior. |
+| Fade write failed | `ERROR` | Yes | Safety and operation failure. |
+| Scene recall blocked | `WARN` | Yes | Safety block must be visible. |
+| Scene recall skipped | `DEBUG` | No | No config or disabled scope should not clutter UI. |
+| Scene recall ready | `DEBUG` | No | Intermediate automation state. |
+| Scene recall start requested | `DEBUG` | No | Duplicate of resulting fade start for UI purposes. |
+| Scene list changed | `DEBUG` | No | UI state already updates. |
+| Scene reconciliation counts with no removals | `DEBUG` | No | File/stdout diagnostics only. |
+| Channel topology changed | `DEBUG` | No | File/stdout diagnostics only. |
+| Raw LV1 diagnostic OSC messages | `DEBUG` | No | File/stdout diagnostics only. |
+| Command failed | `WARN` or `ERROR` | Yes | Include command name, error, and relevant context fields. Use `ERROR` when the command failure prevents a requested operation or indicates a broken runtime target. |
+
 ## Event Bus Changes
 
 Remove log-only variants from `AppEvent`.
@@ -211,7 +279,7 @@ If a command failure needs to affect application state, model that as a state/fa
 
 - `DEBUG`: protocol details, internal decisions, noisy diagnostics, subscriber lag details, state counts, low-level write/drop information.
 - `INFO`: normal user-relevant lifecycle events, scene changes, fade starts/completions, show file open/save, lockout toggles.
-- `WARN`: safety blocks, skipped unsafe work, disconnects, lag, manual override, recoverable failures.
+- `WARN`: safety blocks, unexpected disconnects, manual override, and recoverable failures that need operator attention.
 - `ERROR`: command failures, unrecoverable runtime setup failures, failed file writes that prevent diagnostics or user-requested persistence.
 
 Safety-related blocks must be at least `WARN` so they appear in UI state.
