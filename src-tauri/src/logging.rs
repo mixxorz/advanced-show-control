@@ -17,6 +17,14 @@ use crate::diagnostics::diagnostic_log_path;
 
 const UI_SINK_TARGET: &str = "advanced_show_control_tauri::logging::ui_sink";
 
+fn default_env_filter() -> tracing_subscriber::EnvFilter {
+    tracing_subscriber::EnvFilter::new(default_env_filter_directive())
+}
+
+fn default_env_filter_directive() -> &'static str {
+    "debug"
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UiLogEvent {
     pub severity: LogSeverity,
@@ -57,7 +65,7 @@ pub fn init_logging<R: Runtime>(
     let (non_blocking, guard) = tracing_appender::non_blocking(file);
 
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+        .unwrap_or_else(|_| default_env_filter());
 
     let file_layer = fmt::layer()
         .json()
@@ -319,5 +327,11 @@ mod tests {
         assert_eq!(event.severity, LogSeverity::Error);
         assert_eq!(event.message, "Command failed");
         assert!(rt.block_on(async { rx.try_recv().is_err() }));
+    }
+
+    #[test]
+    fn default_env_filter_uses_debug() {
+        assert_eq!(default_env_filter_directive(), "debug");
+        assert_eq!(default_env_filter().to_string(), "debug");
     }
 }
