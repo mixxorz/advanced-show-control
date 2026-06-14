@@ -33,10 +33,12 @@ pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn is_missing_event_field(target: &str, field_name: &str) -> bool {
-    target.starts_with("advanced_show_control_tauri::")
-        && target != UI_SINK_TARGET
-        && field_name == "event"
+pub fn is_missing_event_field(fields: &[(&str, &str)]) -> bool {
+    let event = fields.iter().find(|(name, _)| *name == "event");
+    match event {
+        Some((_, value)) => value.is_empty(),
+        None => true,
+    }
 }
 
 pub fn init_logging<R: Runtime>(
@@ -201,6 +203,8 @@ impl EventVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::registry;
 
     #[test]
     fn ui_severity_drops_debug() {
@@ -217,15 +221,12 @@ mod tests {
 
     #[test]
     fn event_requires_event_field_for_application_logs() {
-        assert!(is_missing_event_field(
-            "advanced_show_control_tauri::app_log",
-            "event"
-        ));
-        assert!(!is_missing_event_field(
-            "advanced_show_control_tauri::app_log",
-            "message"
-        ));
-        assert!(!is_missing_event_field("other", "event"));
+        assert!(is_missing_event_field(&[]));
+        assert!(is_missing_event_field(&[("message", "hello")]));
+        assert!(!is_missing_event_field(&[
+            ("event", "scene_recall_blocked"),
+            ("message", "Scene recall blocked")
+        ]));
     }
 
     #[test]
@@ -240,6 +241,65 @@ mod tests {
 
     #[test]
     fn ui_log_channel_error_targets_are_internal() {
-        assert!(!is_missing_event_field(UI_SINK_TARGET, "event"));
+        assert!(!is_missing_event_field(&[("event", "ui_log_channel_full")]));
+    }
+
+    #[test]
+    fn safety_log_messages_are_ui_visible_levels() {
+        assert_eq!(ui_severity(&Level::WARN), Some(LogSeverity::Warning));
+        assert_eq!(ui_severity(&Level::ERROR), Some(LogSeverity::Error));
+    }
+
+    #[test]
+    fn safety_events_have_required_event_names() {
+        assert!(!is_missing_event_field(&[
+            ("event", "scene_recall_blocked"),
+            ("message", "Scene recall blocked")
+        ]));
+        assert!(!is_missing_event_field(&[
+            ("event", "fade_aborted"),
+            ("message", "Fade aborted")
+        ]));
+        assert!(!is_missing_event_field(&[
+            ("event", "fade_manual_override"),
+            ("message", "Fade manual override detected")
+        ]));
+        assert!(!is_missing_event_field(&[
+            ("event", "command_failed"),
+            ("message", "Command failed")
+        ]));
+    }
+
+    #[test]
+    fn ui_layer_projects_safety_warn_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let subscriber = registry().with(UiLogLayer { tx });
+
+        with_default(subscriber, || {
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                message = "Scene recall blocked"
+            );
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let event = rt.block_on(async { rx.recv().await.unwrap() });
+        assert_eq!(event.severity, LogSeverity::Warning);
+        assert_eq!(event.message, "Scene recall blocked");
+    }
+
+    #[test]
+    fn ui_layer_projects_command_failure_error_event() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let subscriber = registry().with(UiLogLayer { tx });
+
+        with_default(subscriber, || {
+            tracing::error!(event = "command_failed", message = "Command failed");
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let event = rt.block_on(async { rx.recv().await.unwrap() });
+        assert_eq!(event.severity, LogSeverity::Error);
+        assert_eq!(event.message, "Command failed");
     }
 }

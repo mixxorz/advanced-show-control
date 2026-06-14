@@ -219,24 +219,30 @@ async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
 }
 
 #[tokio::test]
-async fn diagnostic_event_is_logged_into_shell_state() {
+async fn scene_recall_event_is_logged_into_shell_state() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
 
     let snapshot = state
         .project_event_for_generation(
             generation,
-            &AppEvent::Diagnostic {
-                source: "fade-engine".to_string(),
-                message: "event subscriber lagged and missed 3 events".to_string(),
-            },
+            &AppEvent::SceneRecall(
+                advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
+                    scene_label: "1: Intro".to_string(),
+                    reason: "event subscriber lagged and missed 3 events".to_string(),
+                },
+            ),
         )
         .await
-        .expect("diagnostic event should project to current generation");
+        .expect("scene recall event should project to current generation");
 
-    assert_eq!(
-        snapshot.logs.last().unwrap().message,
-        "fade-engine: event subscriber lagged and missed 3 events"
+    assert!(
+        snapshot
+            .logs
+            .last()
+            .unwrap()
+            .message
+            .contains("event subscriber lagged")
     );
 }
 

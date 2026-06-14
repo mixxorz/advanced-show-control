@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, Runtime};
 
+#[allow(dead_code)]
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DiagnosticEntry<'a> {
@@ -28,9 +29,11 @@ pub fn diagnostic_log_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
         ))
 }
 
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct DiagnosticLogPath(pub PathBuf);
 
+#[allow(dead_code)]
 pub fn append_diagnostic(path: &Path, source: &str, message: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)

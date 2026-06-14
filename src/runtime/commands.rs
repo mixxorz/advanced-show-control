@@ -9,7 +9,7 @@ use crate::lv1::commands::Lv1ParameterWrite;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::types::Lv1StateSnapshot;
-use crate::runtime::events::{AppEvent, AppEventBus};
+use crate::runtime::events::AppEventBus;
 use crate::show::handle::ShowStateHandle;
 use crate::show::types::{SceneConfig, ShowSnapshot};
 
@@ -40,14 +40,12 @@ struct AppCommandTargets {
 #[derive(Clone)]
 pub struct AppCommandBus {
     targets: Arc<Mutex<AppCommandTargets>>,
-    event_bus: AppEventBus,
 }
 
 impl AppCommandBus {
-    pub fn new(event_bus: AppEventBus) -> Self {
+    pub fn new(_event_bus: AppEventBus) -> Self {
         Self {
             targets: Arc::new(Mutex::new(AppCommandTargets::default())),
-            event_bus,
         }
     }
 
@@ -147,7 +145,7 @@ impl AppCommandBus {
                 .map_err(map_lv1_error),
             None => Err(AppCommandError::Lv1Unavailable),
         };
-        publish_failure(&self.event_bus, "set_gain", &result);
+        log_failure("set_gain", &result);
         result
     }
 
@@ -165,7 +163,7 @@ impl AppCommandBus {
                 .map_err(map_lv1_error),
             None => Err(AppCommandError::Lv1Unavailable),
         };
-        publish_failure(&self.event_bus, "set_pan", &result);
+        log_failure("set_pan", &result);
         result
     }
 
@@ -183,7 +181,7 @@ impl AppCommandBus {
                 .map_err(map_lv1_error),
             None => Err(AppCommandError::Lv1Unavailable),
         };
-        publish_failure(&self.event_bus, "set_balance", &result);
+        log_failure("set_balance", &result);
         result
     }
 
@@ -201,7 +199,7 @@ impl AppCommandBus {
                 .map_err(map_lv1_error),
             None => Err(AppCommandError::Lv1Unavailable),
         };
-        publish_failure(&self.event_bus, "set_width", &result);
+        log_failure("set_width", &result);
         result
     }
 
@@ -240,7 +238,7 @@ impl AppCommandBus {
                 && targets.generation != expected
             {
                 let result = Err(AppCommandError::StaleGeneration);
-                publish_failure(&self.event_bus, "write_batch_if_generation", &result);
+                log_failure("write_batch_if_generation", &result);
                 return result;
             }
             targets.lv1.clone()
@@ -250,8 +248,7 @@ impl AppCommandBus {
             Some(lv1) => lv1.write_batch(writes).await.map_err(map_lv1_error),
             None => Err(AppCommandError::Lv1Unavailable),
         };
-        publish_failure(
-            &self.event_bus,
+        log_failure(
             expected.map_or("write_batch", |_| "write_batch_if_generation"),
             &result,
         );
@@ -268,7 +265,7 @@ impl AppCommandBus {
             Some(fade) => fade.start_fade(config).await,
             None => Err(AppCommandError::FadeUnavailable),
         };
-        publish_failure(&self.event_bus, "start_fade", &result);
+        log_failure("start_fade", &result);
         result
     }
 
@@ -278,7 +275,7 @@ impl AppCommandBus {
             Some(fade) => fade.abort_all().await,
             None => Err(AppCommandError::FadeUnavailable),
         };
-        publish_failure(&self.event_bus, "abort_all_fades", &result);
+        log_failure("abort_all_fades", &result);
         result
     }
 }
@@ -287,12 +284,9 @@ fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
     AppCommandError::CommandFailed(error.to_string())
 }
 
-fn publish_failure(event_bus: &AppEventBus, command: &str, result: &Result<(), AppCommandError>) {
+fn log_failure(command: &str, result: &Result<(), AppCommandError>) {
     if let Err(error) = result {
-        event_bus.publish(AppEvent::CommandFailed {
-            command: command.to_string(),
-            message: error.to_string(),
-        });
+        tracing::error!(event = "command_failed", command, error = %error, "Command failed: {command}: {error}");
     }
 }
 
@@ -302,7 +296,7 @@ mod tests {
     use crate::fade::commands::FadeCommand;
     use crate::fade::curve::FadeCurve;
     use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
-    use crate::runtime::events::{AppEvent, AppEventBus};
+    use crate::runtime::events::AppEventBus;
     use crate::show::handle::ShowStateHandle;
 
     #[tokio::test]
@@ -339,13 +333,7 @@ mod tests {
 
         assert_eq!(err, AppCommandError::FadeUnavailable);
 
-        match events.recv().await.unwrap() {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "start_fade");
-                assert_eq!(message, AppCommandError::FadeUnavailable.to_string());
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -512,13 +500,7 @@ mod tests {
         let err = bus.set_balance(1, 3, 0.25).await.unwrap_err();
 
         assert_eq!(err, AppCommandError::Lv1Unavailable);
-        match events.recv().await.unwrap() {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "set_balance");
-                assert_eq!(message, AppCommandError::Lv1Unavailable.to_string());
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -569,13 +551,7 @@ mod tests {
 
         assert_eq!(err, AppCommandError::StaleGeneration);
         assert!(lv1_rx.try_recv().is_err());
-        match events.recv().await.unwrap() {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "write_batch_if_generation");
-                assert_eq!(message, AppCommandError::StaleGeneration.to_string());
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]

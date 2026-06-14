@@ -152,6 +152,13 @@ async fn run_engine(
                                 channel,
                                 parameter: FadeParameter::FaderDb,
                             });
+                            tracing::warn!(
+                                event = "fade_manual_override",
+                                group,
+                                channel,
+                                parameter = ?FadeParameter::FaderDb,
+                                "Fade manual override detected: group {group}, channel {channel}"
+                            );
                             state.channels.remove(pos);
                             state.fan_out(FadeEvent::ChannelCancelled {
                                 group,
@@ -178,6 +185,7 @@ async fn run_engine(
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
+                            tracing::warn!(event = "fade_aborted", "Fade aborted");
                             state.fan_out(FadeEvent::FadeAborted);
                         }
                     }
@@ -327,9 +335,9 @@ async fn send_batch(
     writes: Vec<Lv1ParameterWrite>,
 ) {
     if let Err(err) = command_bus.write_batch(writes).await {
-        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed {
-            reason: format!("{err:?}"),
-        }));
+        let reason = format!("{err:?}");
+        tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
+        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed { reason }));
     }
 }
 
@@ -343,9 +351,9 @@ async fn send_batch_if_generation(
         .write_batch_if_generation(expected_generation, writes)
         .await
     {
-        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed {
-            reason: format!("{err:?}"),
-        }));
+        let reason = format!("{err:?}");
+        tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
+        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed { reason }));
         return false;
     }
 
@@ -798,17 +806,11 @@ mod tests {
             .unwrap()
             .unwrap();
         match event {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "write_batch_if_generation");
-                assert_eq!(
-                    message,
-                    crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
-                );
-            }
             AppEvent::Fade(FadeEvent::WriteFailed { reason }) => {
-                assert_eq!(
-                    reason,
-                    crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+                assert!(
+                    reason
+                        == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+                        || reason == "StaleGeneration"
                 );
             }
             other => panic!("unexpected event: {other:?}"),
@@ -868,11 +870,11 @@ mod tests {
         );
 
         match events.recv().await.unwrap() {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "write_batch_if_generation");
-                assert_eq!(
-                    message,
-                    crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+            AppEvent::Fade(FadeEvent::WriteFailed { reason }) => {
+                assert!(
+                    reason
+                        == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+                        || reason == "StaleGeneration"
                 );
             }
             other => panic!("unexpected event: {other:?}"),
@@ -981,20 +983,9 @@ mod tests {
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
-        let mut saw_command_failed = false;
         let mut saw_write_failed = false;
         loop {
             match tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await {
-                Ok(Ok(AppEvent::CommandFailed { command, message })) => {
-                    assert_eq!(command, "write_batch_if_generation");
-                    assert!(
-                        message
-                            == crate::runtime::commands::AppCommandError::StaleGeneration
-                                .to_string()
-                            || message == "StaleGeneration"
-                    );
-                    saw_command_failed = true;
-                }
                 Ok(Ok(AppEvent::Fade(FadeEvent::WriteFailed { reason }))) => {
                     assert!(
                         reason
@@ -1009,7 +1000,6 @@ mod tests {
                 Ok(Err(_)) | Err(_) => break,
             }
         }
-        assert!(saw_command_failed);
         assert!(saw_write_failed);
     }
 }

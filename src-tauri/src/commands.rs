@@ -689,48 +689,21 @@ fn spawn_shell_state_projector<R: Runtime>(
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> tokio::task::JoinHandle<()> {
-    let diagnostics_path = app
-        .try_state::<crate::diagnostics::DiagnosticLogPath>()
-        .map(|path| path.0.clone())
-        .unwrap_or_else(|| crate::diagnostics::diagnostic_log_path(&app));
     tokio::spawn(async move {
-        let _ = crate::diagnostics::append_diagnostic(
-            &diagnostics_path,
-            "tauri-shell",
-            &format!("projector started generation={generation}"),
-        );
         loop {
             match events.recv().await {
                 Ok(app_event) => match &app_event {
                     AppEvent::Lv1(event) => {
                         if let Lv1Event::SceneListChanged(scenes) = event {
-                            let message = state
+                            let _ = state
                                 .show
                                 .scene_reconciliation_diagnostic(scenes.clone())
                                 .await;
-                            let _ = crate::diagnostics::append_diagnostic(
-                                &diagnostics_path,
-                                "show-state",
-                                &message,
-                            );
                         }
                         if let Some(snapshot) = state
                             .apply_lv1_event_for_generation(generation, event)
                             .await
                         {
-                            if matches!(event, Lv1Event::SceneListChanged(_)) {
-                                let diagnostics_path = diagnostics_path.clone();
-                                let message = format!(
-                                    "emitting app-status-changed after scene list: scenes={} scene_configs={}",
-                                    snapshot.scenes.len(),
-                                    snapshot.scene_configs.len()
-                                );
-                                let _ = crate::diagnostics::append_diagnostic(
-                                    &diagnostics_path,
-                                    "tauri-shell",
-                                    &message,
-                                );
-                            }
                             if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event)) {
                                 eprintln!("failed to emit lv1-event: {err}");
                             }
@@ -751,25 +724,6 @@ fn spawn_shell_state_projector<R: Runtime>(
                         if let Some(snapshot) = state
                             .apply_fade_event_for_generation(generation, event)
                             .await
-                            && let Err(err) = app.emit("app-status-changed", &snapshot)
-                        {
-                            eprintln!("failed to emit app-status-changed: {err}");
-                        }
-                    }
-                    AppEvent::CommandFailed { command, message } => {
-                        let log_message = format!("command failed: {command}: {message}");
-                        state.append_log(LogSeverity::Error, log_message).await;
-                    }
-                    AppEvent::Diagnostic { source, message } => {
-                        if let Some(snapshot) = handle_diagnostic_event(
-                            &app,
-                            &state,
-                            generation,
-                            &diagnostics_path,
-                            source,
-                            message,
-                        )
-                        .await
                             && let Err(err) = app.emit("app-status-changed", &snapshot)
                         {
                             eprintln!("failed to emit app-status-changed: {err}");
@@ -796,26 +750,6 @@ fn spawn_shell_state_projector<R: Runtime>(
             }
         }
     })
-}
-
-async fn handle_diagnostic_event<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &ShellState,
-    generation: u64,
-    diagnostics_path: &std::path::Path,
-    source: &str,
-    message: &str,
-) -> Option<AppViewState> {
-    if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
-        eprintln!("failed to write diagnostic log: {err}");
-    }
-
-    state
-        .append_log(LogSeverity::Warning, format!("{source}: {message}"))
-        .await;
-
-    let _ = app;
-    state.snapshot_for_generation(generation).await
 }
 
 async fn save_show_file_to_path(
@@ -1316,10 +1250,12 @@ mod tests {
         .await
         .expect("projector should emit the initial snapshot");
 
-        event_bus.publish(AppEvent::Diagnostic {
-            source: "fade-engine".to_string(),
-            message: "event subscriber lagged and missed 3 events".to_string(),
-        });
+        event_bus.publish(AppEvent::SceneRecall(
+            advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
+                scene_label: "1: Intro".to_string(),
+                reason: "event subscriber lagged and missed 3 events".to_string(),
+            },
+        ));
 
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
@@ -1330,14 +1266,12 @@ mod tests {
             }
         })
         .await
-        .expect("projector should emit the diagnostic update");
+        .expect("projector should emit the scene recall update");
 
         let observed = observed.lock().unwrap();
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[1]["fadeState"], "idle");
-        assert!(observed[1]["logs"].as_array().unwrap().iter().any(|entry| {
-            entry["message"] == "fade-engine: event subscriber lagged and missed 3 events"
-        }));
+        assert!(!observed[1]["logs"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]

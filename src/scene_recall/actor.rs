@@ -232,9 +232,16 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
+            let scene_label = scene_label(&observation.scene);
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene = %scene_label,
+                reason = %reason,
+                "Scene recall blocked for {scene_label}: {reason}"
+            );
             event_bus.publish(AppEvent::SceneRecall(
                 crate::scene_recall::events::SceneRecallEvent::Blocked {
-                    scene_label: scene_label(&observation.scene),
+                    scene_label,
                     reason,
                 },
             ));

@@ -8,8 +8,6 @@ pub enum AppEvent {
     Lv1(Lv1Event),
     Fade(FadeEvent),
     SceneRecall(crate::scene_recall::events::SceneRecallEvent),
-    CommandFailed { command: String, message: String },
-    Diagnostic { source: String, message: String },
 }
 
 #[derive(Clone)]
@@ -39,7 +37,12 @@ impl Default for AppEventBus {
 }
 
 pub fn log_lagged_subscriber(name: &str, count: u64) {
-    eprintln!("{name} event subscriber lagged and missed {count} events");
+    tracing::debug!(
+        event = "event_subscriber_lagged",
+        subscriber = name,
+        missed_events = count,
+        "Event subscriber lagged and missed {count} events"
+    );
 }
 
 pub fn eprintln_lagged_subscriber(name: &str, count: u64) {
@@ -55,10 +58,10 @@ mod tests {
     async fn publish_succeeds_without_subscribers() {
         let bus = AppEventBus::new(16);
 
-        let sent = bus.publish(AppEvent::CommandFailed {
-            command: "test".to_string(),
-            message: "no subscriber".to_string(),
-        });
+        let sent = bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(SceneState {
+            index: 1,
+            name: "test".to_string(),
+        })));
 
         assert_eq!(sent, 0);
     }
@@ -68,16 +71,16 @@ mod tests {
         let bus = AppEventBus::new(0);
         let mut rx = bus.subscribe();
 
-        bus.publish(AppEvent::CommandFailed {
-            command: "zero".to_string(),
-            message: "capacity".to_string(),
-        });
+        bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(SceneState {
+            index: 2,
+            name: "capacity".to_string(),
+        })));
 
         let event = rx.recv().await.unwrap();
         match event {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "zero");
-                assert_eq!(message, "capacity");
+            AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
+                assert_eq!(scene.index, 2);
+                assert_eq!(scene.name, "capacity");
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -114,13 +117,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn diagnostic_publish_without_subscribers_is_safe() {
+    async fn runtime_fact_publish_without_subscribers_is_safe() {
         let bus = AppEventBus::new(1);
 
-        let sent = bus.publish(AppEvent::CommandFailed {
-            command: "first".to_string(),
-            message: "one".to_string(),
-        });
+        let sent = bus.publish(AppEvent::SceneRecall(
+            crate::scene_recall::events::SceneRecallEvent::Skipped {
+                scene_label: "1: Intro".to_string(),
+                reason: "test".to_string(),
+            },
+        ));
 
         assert_eq!(sent, 0);
     }
