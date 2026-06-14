@@ -321,7 +321,7 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn append_log(&self, severity: LogSeverity, message: String) {
+    pub(crate) async fn append_log(&self, severity: LogSeverity, message: String) {
         let mut inner = self.inner.lock().await;
         inner.append_log(severity, message);
     }

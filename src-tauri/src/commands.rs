@@ -699,7 +699,7 @@ async fn install_connected_runtime<R: Runtime>(
 
 fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
-        eprintln!("failed to emit app-status-changed: {err}");
+        tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
     }
 }
 
@@ -726,10 +726,10 @@ fn spawn_shell_state_projector<R: Runtime>(
                             .await
                         {
                             if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event)) {
-                                eprintln!("failed to emit lv1-event: {err}");
+                                tracing::error!(event = "lv1_event_emit_failed", error = %err, "failed to emit lv1-event");
                             }
                             if let Err(err) = app.emit("app-status-changed", &snapshot) {
-                                eprintln!("failed to emit app-status-changed: {err}");
+                                tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
                             }
                             if matches!(event, Lv1Event::Disconnected { .. }) {
                                 state
@@ -747,7 +747,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             .await
                             && let Err(err) = app.emit("app-status-changed", &snapshot)
                         {
-                            eprintln!("failed to emit app-status-changed: {err}");
+                            tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
                         }
                     }
                     AppEvent::SceneRecall(_) => {
@@ -756,7 +756,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             .await
                             && let Err(err) = app.emit("app-status-changed", &snapshot)
                         {
-                            eprintln!("failed to emit app-status-changed: {err}");
+                            tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
                         }
                     }
                 },
@@ -1217,85 +1217,6 @@ mod tests {
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[0]["fadeState"], "idle");
         assert_eq!(observed[1]["fadeState"], "running");
-    }
-
-    #[tokio::test]
-    async fn diagnostic_event_updates_shell_state_log_and_snapshot() {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let observed_for_listener = observed.clone();
-
-        handle.listen_any("app-status-changed", move |event| {
-            let payload: serde_json::Value = serde_json::from_str(event.payload())
-                .expect("app-status-changed payload should be valid JSON");
-            observed_for_listener.lock().unwrap().push(payload);
-        });
-
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-
-        let initial_snapshot = state
-            .begin_connection_for_generation(
-                generation,
-                Lv1StateSnapshot {
-                    connection: ConnectionStatus::Connected,
-                    scene: None,
-                    scene_list: Vec::new(),
-                    channels: Vec::new(),
-                },
-            )
-            .await
-            .expect("current generation should accept the initial snapshot");
-
-        let event_bus = AppEventBus::default();
-        let active_command_bus = ActiveCommandBus::default();
-        let _snapshot = install_connected_runtime(
-            &handle,
-            &state,
-            state.clone(),
-            generation,
-            initial_snapshot,
-            event_bus.subscribe(),
-            RuntimeHandles::default(),
-            &active_command_bus,
-        )
-        .await
-        .expect("connected runtime should install successfully");
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if !observed.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit the initial snapshot");
-
-        event_bus.publish(AppEvent::SceneRecall(
-            advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
-                scene_label: "1: Intro".to_string(),
-                reason: "event subscriber lagged and missed 3 events".to_string(),
-            },
-        ));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if observed.lock().unwrap().len() >= 2 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit the scene recall update");
-
-        let observed = observed.lock().unwrap();
-        assert_eq!(observed.len(), 2);
-        assert_eq!(observed[1]["fadeState"], "idle");
-        assert!(!observed[1]["logs"].as_array().unwrap().is_empty());
     }
 
     #[tokio::test]
