@@ -1205,8 +1205,8 @@ mod tests {
         assert!(holder.current().await.is_none());
     }
 
-    #[tokio::test]
-    async fn initial_connection_snapshot_is_emitted_before_projector_events() {
+    #[tokio::test(start_paused = true)]
+    async fn initial_connection_snapshot_is_emitted_before_coalesced_projector_events() {
         let app = mock_app();
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1254,16 +1254,8 @@ mod tests {
 
         assert_eq!(format!("{:?}", snapshot.connection), "Connected");
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if observed.lock().unwrap().len() >= 2 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit the buffered event");
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
 
         let observed = observed.lock().unwrap();
         assert_eq!(observed.len(), 2);
@@ -1271,8 +1263,8 @@ mod tests {
         assert_eq!(observed[1]["fadeState"], "running");
     }
 
-    #[tokio::test]
-    async fn diagnostic_event_updates_shell_state_log_and_snapshot() {
+    #[tokio::test(start_paused = true)]
+    async fn diagnostic_event_updates_shell_state_log_and_coalesced_snapshot() {
         let app = mock_app();
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1315,32 +1307,18 @@ mod tests {
         .await
         .expect("connected runtime should install successfully");
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if !observed.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit the initial snapshot");
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert!(!observed.lock().unwrap().is_empty());
 
         event_bus.publish(AppEvent::Diagnostic {
             source: "fade-engine".to_string(),
             message: "event subscriber lagged and missed 3 events".to_string(),
         });
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if observed.lock().unwrap().len() >= 2 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit the diagnostic update");
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
 
         let observed = observed.lock().unwrap();
         assert_eq!(observed.len(), 2);
@@ -1401,8 +1379,8 @@ mod tests {
         handles.abort_all().await;
     }
 
-    #[tokio::test]
-    async fn scene_recall_events_emit_fresh_app_status_snapshot() {
+    #[tokio::test(start_paused = true)]
+    async fn scene_recall_events_emit_coalesced_app_status_snapshot() {
         let app = mock_app();
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1432,16 +1410,10 @@ mod tests {
             },
         ));
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if !observed.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit snapshot for scene recall refresh");
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert!(!observed.lock().unwrap().is_empty());
 
         projector.abort();
     }
