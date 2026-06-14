@@ -52,13 +52,13 @@ core + tauri tracing events
 
 ## Event Shape
 
-Every important app log should include a stable event name and a complete human-readable message.
+Every application log should include a stable event name and a complete human-readable message.
 
 Example:
 
 ```rust
 tracing::warn!(
-    event = %LogEvent::SceneRecallBlocked,
+    event = "scene_recall_blocked",
     scene = %scene_label,
     reason = %reason,
     "Scene recall blocked for {scene_label}: {reason}"
@@ -69,37 +69,34 @@ The message must be complete enough to show directly in the UI. Structured field
 
 The Rust tracing target remains available in file/stdout logs to identify the module that emitted the event. There is no separate app log source field.
 
-## Log Event Names
+## Event Names
 
-Use an enum for stable event names where the event is app-owned and significant.
+Use stable snake_case string values for `event`.
 
-Suggested shape:
+Examples:
 
-```rust
-pub enum LogEvent {
-    AppStarted,
-    Lv1DiscoveryStarted,
-    Lv1Connected,
-    Lv1Disconnected,
-    SceneChanged,
-    SceneListChanged,
-    SceneRecallBlocked,
-    SceneRecallSkipped,
-    SceneRecallReady,
-    SceneRecallStartRequested,
-    FadeStarted,
-    FadeCompleted,
-    FadeAborted,
-    FadeWriteFailed,
-    CommandFailed,
-    ShowFileOpened,
-    ShowFileSaved,
-}
+```text
+app_started
+lv1_discovery_started
+lv1_connected
+lv1_disconnected
+scene_changed
+scene_list_changed
+scene_recall_blocked
+scene_recall_skipped
+scene_recall_ready
+scene_recall_start_requested
+fade_started
+fade_completed
+fade_aborted
+fade_write_failed
+command_failed
+show_file_opened
+show_file_saved
+osc_message
 ```
 
-`Display` should serialize values to stable snake_case strings, such as `scene_recall_blocked`.
-
-Small one-off technical debug logs may omit `event` if they are not useful as stable diagnostic events.
+Do not add a `LogEvent` enum. The log event field is text in the log output, and requiring a shared enum creates crate-boundary friction without enough practical benefit. Stability should come from clear naming, code review, and tests for important events.
 
 ## Diagnostic JSONL Shape
 
@@ -110,7 +107,7 @@ Each entry should include:
 - timestamp
 - level
 - target
-- event, when provided
+- event
 - message
 - structured fields
 
@@ -133,13 +130,72 @@ Example:
 
 ## Stdout Shape
 
-Stdout receives `DEBUG+` and may use human-readable text formatting. It does not need to match the JSONL file shape exactly.
+Stdout receives `DEBUG+` and should use human-readable bracketed text formatting. It does not need to match the JSONL file shape exactly.
 
 Example:
 
 ```text
-2026-06-14T12:34:56.789Z WARN advanced_show_control::scene_recall::actor scene_recall_blocked Scene recall blocked for 4: Chorus: lockout enabled scene="4: Chorus" reason="lockout enabled"
+[2026-06-14T12:34:56.789Z] [WARN] [advanced_show_control::scene_recall::actor] Scene recall blocked for 4: Chorus: lockout enabled event="scene_recall_blocked" scene="4: Chorus" reason="lockout enabled"
 ```
+
+## OSC Logging
+
+Log every OSC inbound event and outbound call at `DEBUG`.
+
+Rules:
+
+- Include ping and pong.
+- Log the direction and OSC address/type.
+- Do not log OSC parameters or argument values.
+- Do not project OSC logs to frontend state.
+- Use `event = "osc_message"`.
+- Use structured fields for `direction` and `osc_address`.
+
+Examples:
+
+```rust
+tracing::debug!(
+    event = "osc_message",
+    direction = "rx",
+    osc_address = %message.address,
+    "OSC RX {}",
+    message.address
+);
+
+tracing::debug!(
+    event = "osc_message",
+    direction = "tx",
+    osc_address = %message.address,
+    "OSC TX {}",
+    message.address
+);
+```
+
+Example stdout:
+
+```text
+[2026-06-14T12:34:56.790Z] [DEBUG] [advanced_show_control::lv1::actor] OSC RX /Notify/Track/Out/Gain event="osc_message" direction="rx" osc_address="/Notify/Track/Out/Gain"
+[2026-06-14T12:34:57.000Z] [DEBUG] [advanced_show_control::lv1::actor] OSC TX /Ping event="osc_message" direction="tx" osc_address="/Ping"
+[2026-06-14T12:34:57.001Z] [DEBUG] [advanced_show_control::lv1::actor] OSC RX /Pong event="osc_message" direction="rx" osc_address="/Pong"
+```
+
+Example JSONL:
+
+```json
+{
+  "timestamp": "2026-06-14T12:34:56.790Z",
+  "level": "DEBUG",
+  "target": "advanced_show_control::lv1::actor",
+  "event": "osc_message",
+  "message": "OSC RX /Notify/Track/Out/Gain",
+  "fields": {
+    "direction": "rx",
+    "osc_address": "/Notify/Track/Out/Gain"
+  }
+}
+```
+
+This gives support logs a useful LV1 traffic timeline while avoiding parameter noise and keeping file size under control.
 
 ## Frontend UI Shape
 
