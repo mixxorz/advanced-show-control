@@ -1,7 +1,7 @@
 use advanced_show_control::runtime::events::AppEvent;
 
 use super::shell::ShellState;
-use super::view::{AppViewState, LogSeverity, LogSource};
+use super::view::{AppViewState, LogSeverity};
 
 impl ShellState {
     pub async fn project_event_for_generation(
@@ -16,8 +16,7 @@ impl ShellState {
             }
             AppEvent::Diagnostic { source, message } => {
                 let log_message = format!("{source}: {message}");
-                self.push_log(LogSource::App, LogSeverity::Warning, log_message)
-                    .await;
+                self.append_log(LogSeverity::Warning, log_message).await;
                 Some(self.snapshot().await)
             }
             _ => None,

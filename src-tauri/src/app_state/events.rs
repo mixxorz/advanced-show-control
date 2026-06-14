@@ -4,7 +4,7 @@ use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::show::types::scene_id;
 
 use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
-use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
+use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity};
 
 impl ShellState {
     #[cfg(test)]
@@ -37,11 +37,7 @@ impl ShellState {
             scene_list: Vec::new(),
             channels: Vec::new(),
         });
-        inner.push_log(
-            LogSource::Lv1,
-            LogSeverity::Info,
-            "Connecting to LV1".to_string(),
-        );
+        inner.append_log(LogSeverity::Info, "Connecting to LV1".to_string());
         let generation = inner.generation;
         drop(inner);
         (generation, self.snapshot().await)
@@ -51,8 +47,7 @@ impl ShellState {
         self.show.set_lockout(enabled).await;
         let mut inner = self.inner.lock().await;
         inner.show_file_dirty = true;
-        inner.push_log(
-            LogSource::App,
+        inner.append_log(
             LogSeverity::Info,
             format!("Lockout {}", if enabled { "enabled" } else { "disabled" }),
         );
@@ -139,11 +134,7 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         inner.reconnect_state.active = false;
         refresh_discovered_statuses(&mut inner);
-        inner.push_log(
-            LogSource::App,
-            LogSeverity::Info,
-            "Disconnected from LV1".to_string(),
-        );
+        inner.append_log(LogSeverity::Info, "Disconnected from LV1".to_string());
         let generation = inner.generation;
         drop(inner);
         (generation, self.snapshot().await)
@@ -164,11 +155,7 @@ impl ShellState {
                 ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
                 inner.reconnect_state.active = false;
                 refresh_discovered_statuses(&mut inner);
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    "LV1 connected".to_string(),
-                );
+                inner.append_log(LogSeverity::Info, "LV1 connected".to_string());
             }
             Lv1Event::Disconnected { reason } => {
                 let had_connected_identity = inner.connected_lv1_identity.is_some();
@@ -179,16 +166,11 @@ impl ShellState {
                     inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
                 }
                 refresh_discovered_statuses(&mut inner);
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Warning,
-                    format!("LV1 disconnected: {reason}"),
-                );
+                inner.append_log(LogSeverity::Warning, format!("LV1 disconnected: {reason}"));
             }
             Lv1Event::SceneChanged(scene) => {
                 ensure_lv1_snapshot(&mut inner).scene = Some(scene.clone());
-                inner.push_log(
-                    LogSource::Lv1,
+                inner.append_log(
                     LogSeverity::Info,
                     format!("Scene changed to {}: {}", scene.index, scene.name),
                 );
@@ -220,14 +202,12 @@ impl ShellState {
                 if changed {
                     inner.show_file_dirty = true;
                 }
-                inner.push_log(
-                    LogSource::Lv1,
+                inner.append_log(
                     LogSeverity::Info,
                     format!("Scene list updated: {} scenes", scenes.len()),
                 );
-                inner.push_log(LogSource::App, LogSeverity::Info, reconciliation_diagnostic);
-                inner.push_log(
-                    LogSource::App,
+                inner.append_log(LogSeverity::Info, reconciliation_diagnostic);
+                inner.append_log(
                     LogSeverity::Info,
                     format!(
                         "Diagnostic: scene list projection scenes={} changed={} configs_before={} configs_after={}",
@@ -307,8 +287,7 @@ impl ShellState {
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
                 ensure_lv1_snapshot(&mut inner).channels = channels.clone();
-                inner.push_log(
-                    LogSource::Lv1,
+                inner.append_log(
                     LogSeverity::Info,
                     format!("Channel topology updated: {} channels", channels.len()),
                 );
@@ -347,69 +326,49 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
     match event {
         FadeEvent::FadeStarted => {
             inner.fade_state = AppFadeState::Running;
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Info,
-                "Fade started".to_string(),
-            );
+            inner.append_log(LogSeverity::Info, "Fade started".to_string());
         }
         FadeEvent::FadeCompleted => {
             inner.fade_state = AppFadeState::Idle;
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Info,
-                "Fade completed".to_string(),
-            );
+            inner.append_log(LogSeverity::Info, "Fade completed".to_string());
         }
         FadeEvent::FadeAborted => {
             inner.fade_state = AppFadeState::Idle;
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Warning,
-                "Fade aborted".to_string(),
-            );
+            inner.append_log(LogSeverity::Warning, "Fade aborted".to_string());
         }
         FadeEvent::ChannelCompleted { group, channel, .. } => {
-            inner.push_log(
-                LogSource::Fade,
+            inner.append_log(
                 LogSeverity::Info,
                 format!("Fade channel completed: group {group}, channel {channel}"),
             );
         }
         FadeEvent::ChannelOverride { group, channel, .. } => {
             inner.fade_state = AppFadeState::Blocked;
-            inner.push_log(
-                LogSource::Fade,
+            inner.append_log(
                 LogSeverity::Warning,
                 format!("Fade channel override detected: group={group} channel={channel}"),
             );
         }
         FadeEvent::ChannelCancelled { group, channel, .. } => {
-            inner.push_log(
-                LogSource::Fade,
+            inner.append_log(
                 LogSeverity::Warning,
                 format!("Fade channel cancelled: group {group}, channel {channel}"),
             );
         }
         FadeEvent::WriteFailed { reason } => {
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Error,
-                format!("Fade write failed: {reason}"),
-            );
+            inner.append_log(LogSeverity::Error, format!("Fade write failed: {reason}"));
         }
     }
 }
 
 impl ShellInner {
-    pub(super) fn push_log(&mut self, source: LogSource, severity: LogSeverity, message: String) {
+    pub(super) fn append_log(&mut self, severity: LogSeverity, message: String) {
         self.next_log_id += 1;
         let timestamp = crate::time::current_timestamp_millis();
         self.last_event_at = Some(timestamp.clone());
         self.logs.push_back(AppLogEntry {
             id: self.next_log_id,
             timestamp,
-            source,
             severity,
             message,
         });
@@ -444,5 +403,5 @@ fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) {
         Some(ConnectionStatus::Disconnected) => "LV1 disconnected",
         None => "LV1 disconnected",
     };
-    inner.push_log(LogSource::Lv1, LogSeverity::Info, message.to_string());
+    inner.append_log(LogSeverity::Info, message.to_string());
 }

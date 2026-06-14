@@ -15,7 +15,7 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
-    LogSource, SceneSummary,
+    SceneSummary,
 };
 
 pub(super) const MAX_LOGS: usize = 200;
@@ -287,7 +287,7 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         inner.connected_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
+        inner.append_log(LogSeverity::Warning, message.into());
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
@@ -305,7 +305,7 @@ impl ShellState {
         inner.lv1_snapshot = None;
         inner.pending_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
+        inner.append_log(LogSeverity::Warning, message.into());
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
@@ -321,9 +321,9 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn push_log(&self, source: LogSource, severity: LogSeverity, message: String) {
+    pub async fn append_log(&self, severity: LogSeverity, message: String) {
         let mut inner = self.inner.lock().await;
-        inner.push_log(source, severity, message);
+        inner.append_log(severity, message);
     }
 
     #[cfg(test)]
@@ -445,7 +445,6 @@ fn cover_state_variants() {
     };
 
     let _ = (
-        LogSource::Fade,
         LogSeverity::Error,
         AppFadeState::Running,
         AppFadeState::Blocked,
@@ -1288,7 +1287,6 @@ mod tests {
     #[test]
     fn enum_variants_are_kept_for_state_space_coverage() {
         let _ = (
-            LogSource::Fade,
             LogSeverity::Error,
             AppFadeState::Running,
             AppFadeState::Blocked,

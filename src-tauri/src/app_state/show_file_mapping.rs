@@ -40,8 +40,7 @@ impl ShellState {
         inner.show_file_path = None;
         inner.show_file_dirty = false;
         inner.show_file_last_saved_at = None;
-        inner.push_log(
-            super::view::LogSource::App,
+        inner.append_log(
             super::view::LogSeverity::Info,
             "New show file created".to_string(),
         );
@@ -165,15 +164,13 @@ impl ShellState {
         inner.show_file_dirty = report.removed_anything();
 
         for scene in report.removed_scenes {
-            inner.push_log(
-                super::view::LogSource::App,
+            inner.append_log(
                 super::view::LogSeverity::Warning,
                 format!("Deleted saved scene config during load: {scene}"),
             );
         }
 
-        inner.push_log(
-            super::view::LogSource::App,
+        inner.append_log(
             super::view::LogSeverity::Info,
             "Show file loaded".to_string(),
         );
@@ -187,8 +184,7 @@ impl ShellState {
         inner.show_file_path = Some(path);
         inner.show_file_last_saved_at = Some(saved_at);
         inner.show_file_dirty = false;
-        inner.push_log(
-            super::view::LogSource::App,
+        inner.append_log(
             super::view::LogSeverity::Info,
             "Show file saved".to_string(),
         );

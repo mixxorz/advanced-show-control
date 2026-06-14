@@ -2,7 +2,6 @@
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 export type DiscoveredLv1Status = "available" | "connecting" | "connected" | "unavailable";
 export type FadeState = "idle" | "running" | "blocked";
-export type LogSource = "app" | "lv1" | "fade";
 export type LogSeverity = "info" | "warning" | "error";
 export type PanMode = "none" | "mono" | "stereo";
 
@@ -68,7 +67,6 @@ export type SceneConfig = {
 export type AppLogEntry = {
   id: number;
   timestamp: string;
-  source: LogSource;
   severity: LogSeverity;
   message: string;
 };

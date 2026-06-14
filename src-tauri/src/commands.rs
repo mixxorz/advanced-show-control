@@ -12,9 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{
-    AppConnectionState, AppViewState, LogSeverity, LogSource, RuntimeHandles, ShellState,
-};
+use crate::app_state::{AppConnectionState, AppViewState, LogSeverity, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
@@ -53,8 +51,6 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     state: ShellState,
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
-    tracing::info!("Searching for LV1 systems on the network...");
-
     let started = std::time::Instant::now();
     let timeout = timeout_ms
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
@@ -493,12 +489,6 @@ async fn connect_to_target<R: Runtime>(
     identity: crate::connection_state::Lv1SystemIdentity,
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
-    tracing::info!(
-        "Connecting to LV1 system at {}:{}",
-        identity.address,
-        identity.port
-    );
-
     let event_bus = AppEventBus::default();
     let Some((generation, connecting_snapshot)) = state.try_begin_connecting().await else {
         let snapshot = state.snapshot().await;
@@ -768,9 +758,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                     }
                     AppEvent::CommandFailed { command, message } => {
                         let log_message = format!("command failed: {command}: {message}");
-                        state
-                            .push_log(LogSource::App, LogSeverity::Error, log_message)
-                            .await;
+                        state.append_log(LogSeverity::Error, log_message).await;
                     }
                     AppEvent::Diagnostic { source, message } => {
                         if let Some(snapshot) = handle_diagnostic_event(
@@ -801,9 +789,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                     let log_message = format!(
                         "shell-state-projector event subscriber lagged and missed {count} events"
                     );
-                    state
-                        .push_log(LogSource::App, LogSeverity::Warning, log_message)
-                        .await;
+                    state.append_log(LogSeverity::Warning, log_message).await;
                     log_lagged_subscriber("shell-state-projector", count);
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -825,11 +811,7 @@ async fn handle_diagnostic_event<R: Runtime>(
     }
 
     state
-        .push_log(
-            LogSource::App,
-            LogSeverity::Warning,
-            format!("{source}: {message}"),
-        )
+        .append_log(LogSeverity::Warning, format!("{source}: {message}"))
         .await;
 
     let _ = app;

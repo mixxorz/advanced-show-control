@@ -241,6 +241,22 @@ async fn diagnostic_event_is_logged_into_shell_state() {
 }
 
 #[test]
+fn app_log_entry_serializes_without_source() {
+    let entry = super::view::AppLogEntry {
+        id: 1,
+        timestamp: "2026-06-14T12:34:56.789Z".to_string(),
+        severity: super::view::LogSeverity::Info,
+        message: "LV1 connected".to_string(),
+    };
+
+    let value = serde_json::to_value(entry).unwrap();
+
+    assert!(value.get("source").is_none());
+    assert_eq!(value["severity"], "info");
+    assert_eq!(value["message"], "LV1 connected");
+}
+
+#[test]
 fn scene_list_reconciliation_creates_default_configs() {
     let mut state = advanced_show_control::show::state::ShowState {
         lockout: false,

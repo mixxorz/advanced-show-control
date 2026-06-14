@@ -1,7 +1,7 @@
 use advanced_show_control::scene_recall::events::SceneRecallEvent;
 
 use super::shell::ShellState;
-use super::view::{AppViewState, LogSeverity, LogSource};
+use super::view::{AppViewState, LogSeverity};
 
 impl ShellState {
     pub async fn apply_scene_recall_event_for_generation(
@@ -25,29 +25,25 @@ fn apply_scene_recall_event_locked(inner: &mut super::shell::ShellInner, event: 
         SceneRecallEvent::Blocked {
             scene_label,
             reason,
-        } => inner.push_log(
-            LogSource::App,
+        } => inner.append_log(
             LogSeverity::Warning,
             format!("Scene recall blocked for {scene_label}: {reason}"),
         ),
         SceneRecallEvent::Skipped {
             scene_label,
             reason,
-        } => inner.push_log(
-            LogSource::App,
+        } => inner.append_log(
             LogSeverity::Info,
             format!("Scene recall skipped for {scene_label}: {reason}"),
         ),
         SceneRecallEvent::Ready {
             scene_label,
             target_count,
-        } => inner.push_log(
-            LogSource::App,
+        } => inner.append_log(
             LogSeverity::Info,
             format!("Scene recall ready for {scene_label} ({target_count} targets)"),
         ),
-        SceneRecallEvent::StartRequested { scene_label } => inner.push_log(
-            LogSource::App,
+        SceneRecallEvent::StartRequested { scene_label } => inner.append_log(
             LogSeverity::Info,
             format!("Scene recall start requested for {scene_label}"),
         ),
