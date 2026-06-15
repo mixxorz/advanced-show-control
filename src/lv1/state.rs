@@ -135,14 +135,6 @@ pub(super) fn apply_width_update(
     false
 }
 
-fn diagnostic_received_message(address: &str, arg_count: usize) -> String {
-    format!("received {address} args_count={arg_count}")
-}
-
-fn diagnostic_scene_list_parsed(scene_count: usize) -> String {
-    format!("parsed /Notify/SceneList scenes={scene_count}")
-}
-
 pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
     match arg {
         OscArg::Bool(value) => Some(*value),
@@ -197,7 +189,11 @@ impl ActorState {
 
 pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
     if is_diagnostic_address(&msg.address) {
-        state.diagnose(diagnostic_received_message(&msg.address, msg.args.len()));
+        state.diagnose(format!(
+            "received {} args_count={}",
+            msg.address,
+            msg.args.len()
+        ));
     }
 
     match msg.address.as_str() {
@@ -228,7 +224,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
             Ok(list) => {
-                state.diagnose(diagnostic_scene_list_parsed(list.len()));
+                state.diagnose(format!("parsed /Notify/SceneList scenes={}", list.len()));
                 state.scene_list = list.clone();
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }
@@ -367,18 +363,6 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
-    }
-
-    #[test]
-    fn diagnostic_helpers_are_address_and_count_only() {
-        assert_eq!(
-            diagnostic_received_message("/Channels", 3),
-            "received /Channels args_count=3"
-        );
-        assert_eq!(
-            diagnostic_scene_list_parsed(2),
-            "parsed /Notify/SceneList scenes=2"
-        );
     }
 
     #[tokio::test]

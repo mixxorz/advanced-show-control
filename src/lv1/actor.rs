@@ -547,11 +547,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_log_osc_tx_helper_compiles_for_actor_addresses() {
-        crate::lv1::diagnostics::log_osc_tx("/Set/Track/Out/Gain");
-    }
-
-    #[test]
     fn enqueue_writer_bytes_reports_tcp_error_when_queue_is_full() {
         let (tx, _rx) = mpsc::channel(1);
         tx.try_send(WriterMessage::Bytes(vec![1])).unwrap();

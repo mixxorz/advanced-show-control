@@ -1,7 +1,6 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
 use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
-use crate::lv1::diagnostics::{log_osc_rx, log_osc_tx};
 use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
 type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -30,7 +29,12 @@ pub fn encode_frame(address: &str, args: &[OscArg]) -> Result<Vec<u8>, Lv1TcpErr
         return Err(Lv1TcpError::InvalidLength(payload.len()));
     }
 
-    log_osc_tx(address);
+    tracing::debug!(
+        event = "osc_message",
+        direction = "tx",
+        osc_address = address,
+        "OSC TX {address}"
+    );
 
     let mut frame = Vec::with_capacity(4 + HEADER_LEN + payload.len());
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -81,7 +85,13 @@ impl FrameDecoder {
 
 pub fn decode_frame_payload(frame: &Lv1Frame) -> Result<OscMessage, Lv1TcpError> {
     let message = decode_packet(&frame.payload)?;
-    log_osc_rx(&message.address);
+    tracing::debug!(
+        event = "osc_message",
+        direction = "rx",
+        osc_address = message.address,
+        "OSC RX {}",
+        message.address
+    );
     Ok(message)
 }
 
@@ -587,10 +597,5 @@ mod tests {
     #[test]
     fn empty_parameter_write_batch_encodes_to_empty_buffer() {
         assert_eq!(encode_parameter_write_batch(&[]).unwrap(), Vec::<u8>::new());
-    }
-
-    #[test]
-    fn shared_log_osc_tx_helper_compiles_for_tcp_client_addresses() {
-        crate::lv1::diagnostics::log_osc_tx("/custom");
     }
 }
