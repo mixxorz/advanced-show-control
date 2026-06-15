@@ -720,7 +720,7 @@ fn spawn_shell_state_projector<R: Runtime>(
                             let log_message = format!(
                                 "shell-state-projector event subscriber lagged and missed {count} events"
                             );
-                            state.push_log(LogSource::App, LogSeverity::Warning, log_message).await;
+                            state.push_log_unchecked(LogSource::App, LogSeverity::Warning, log_message).await;
                             dirty = true;
                             log_lagged_subscriber("shell-state-projector", count);
                         }
@@ -771,12 +771,7 @@ async fn apply_projector_event(
         AppEvent::CommandFailed { command, message } => {
             let log_message = format!("command failed: {command}: {message}");
             if state
-                .push_log_for_generation(
-                    generation,
-                    LogSource::App,
-                    LogSeverity::Error,
-                    log_message,
-                )
+                .push_log(generation, LogSource::App, LogSeverity::Error, log_message)
                 .await
             {
                 ProjectionOutcome::Applied
@@ -794,7 +789,7 @@ async fn apply_projector_event(
 
             let log_message = format!("{source}: {message}");
             if state
-                .push_log_for_generation(
+                .push_log(
                     generation,
                     LogSource::App,
                     LogSeverity::Warning,
@@ -828,7 +823,7 @@ async fn handle_diagnostic_event<R: Runtime>(
     }
 
     if !state
-        .push_log_for_generation(
+        .push_log(
             generation,
             LogSource::App,
             LogSeverity::Warning,

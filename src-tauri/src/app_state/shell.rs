@@ -301,7 +301,12 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn push_log(&self, source: LogSource, severity: LogSeverity, message: String) {
+    pub async fn push_log_unchecked(
+        &self,
+        source: LogSource,
+        severity: LogSeverity,
+        message: String,
+    ) {
         let mut inner = self.inner.lock().await;
         inner.push_log(source, severity, message);
     }
@@ -324,7 +329,7 @@ impl ShellState {
         true
     }
 
-    pub async fn push_log_for_generation(
+    pub async fn push_log(
         &self,
         generation: u64,
         source: LogSource,

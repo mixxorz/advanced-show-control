@@ -12,7 +12,6 @@ mod test_support;
 mod view;
 
 pub use events::ProjectionOutcome;
-#[allow(unused_imports)]
 pub use shell::RuntimeHandles;
 pub use shell::ShellState;
 pub use view::{AppConnectionState, AppViewState, LogSeverity, LogSource};
