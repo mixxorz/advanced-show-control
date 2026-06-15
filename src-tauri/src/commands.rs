@@ -5,14 +5,15 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use advanced_show_control::scene_recall::spawn_scene_recall_fader;
-use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
+use crate::app_state::{
+    AppConnectionState, AppViewState, ProjectionOutcome, RuntimeHandles, ShellState,
+};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
@@ -55,16 +56,6 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     let timeout = timeout_ms
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
         .clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS);
-    tracing::debug!(
-        event = "lv1_discovery_requested",
-        timeout_ms = timeout,
-        "LV1 discovery requested"
-    );
-    tracing::info!(
-        event = "lv1_discovery_started",
-        timeout_ms = timeout,
-        "Searching for LV1 systems on the network"
-    );
     let entries = spawn_blocking(move || {
         advanced_show_control::lv1::discovery::discover(
             advanced_show_control::lv1::discovery::DiscoverOptions {
@@ -75,13 +66,10 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     })
     .await
     .map_err(|err| format!("Failed to run LV1 discovery task: {err}"))?
-    .map_err(|err| {
-        tracing::error!(event = "lv1_discovery_failed", timeout_ms = timeout, error = %err, "LV1 discovery failed: {err}");
-        format!("Failed to discover LV1 systems: {err}")
-    })?;
+    .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?;
 
     let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    let systems: Vec<crate::connection_state::DiscoveredLv1System> = entries
+    let systems = entries
         .iter()
         .filter_map(crate::connection_state::identity_from_discovery)
         .map(|identity| crate::connection_state::DiscoveredLv1System {
@@ -90,16 +78,8 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
             status: crate::connection_state::DiscoveredLv1Status::Available,
         })
         .collect();
-    let system_count = systems.len();
     let snapshot = state.set_discovered_lv1_systems(systems).await;
     emit_snapshot(&app, &snapshot);
-    tracing::info!(
-        event = "lv1_discovery_completed",
-        system_count = system_count,
-        elapsed_ms = latency_ms,
-        "LV1 discovery completed: {} systems found",
-        system_count
-    );
     Ok(snapshot)
 }
 
@@ -295,7 +275,7 @@ pub async fn disconnect_lv1(
         command_bus.set_generation(generation).await;
     }
     state
-        .clear_runtime_handles_for_generation(generation, &active_command_bus)
+        .clear_runtime_handles(generation, &active_command_bus)
         .await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -325,7 +305,7 @@ async fn reconnect_timed_out_snapshot<R: Runtime>(
 ) -> Result<AppViewState, String> {
     if let Some(generation) = state.reconnect_timeout_generation(attempt).await {
         state
-            .clear_runtime_handles_for_generation(generation, &active_command_bus)
+            .clear_runtime_handles(generation, &active_command_bus)
             .await;
     }
     let snapshot = state.reconnect_timed_out(attempt).await;
@@ -519,7 +499,7 @@ async fn connect_to_target<R: Runtime>(
     state.abort_current_runtime(&active_command_bus).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
-        .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
+        .set_pending_lv1_identity(generation, Some(identity.clone()))
         .await
     {
         emit_snapshot(&app, &pending_snapshot);
@@ -556,40 +536,25 @@ async fn connect_to_target<R: Runtime>(
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => {
-                state
-                    .fail_connect_for_generation(generation, "LV1 did not connect")
-                    .await
+                state.fail_connect(generation, "LV1 did not connect").await
             }
             ConnectFailureMode::PreserveConnectedIdentity => {
                 state
-                    .fail_reconnect_for_generation(generation, "LV1 did not connect")
+                    .fail_reconnect(generation, "LV1 did not connect")
                     .await
             }
         };
         if let Some(snapshot) = failed_snapshot {
             emit_snapshot(&app, &snapshot);
-        } else {
-            let snapshot = state.snapshot().await;
-            emit_snapshot(&app, &snapshot);
         }
         return Err("LV1 did not connect".to_string());
     }
 
-    let snapshot = match state
-        .begin_connection_for_generation(generation, initial_snapshot)
-        .await
-    {
+    let snapshot = match state.begin_connection(generation, initial_snapshot).await {
         Some(snapshot) => snapshot,
         None => {
             runtime_handles.abort_all().await;
-            if let Some(snapshot) = state
-                .clear_pending_lv1_identity_for_generation(generation)
-                .await
-            {
-                emit_snapshot(&app, &snapshot);
-            }
             let snapshot = state.snapshot().await;
-            emit_snapshot(&app, &snapshot);
             return Ok(snapshot);
         }
     };
@@ -607,14 +572,13 @@ async fn connect_to_target<R: Runtime>(
     .await?;
 
     let Some(snapshot) = state
-        .establish_connected_lv1_identity_for_generation(generation, identity)
+        .establish_connected_lv1_identity(generation, identity)
         .await
     else {
         state
             .clear_runtime_handles_with_active_generation(generation, &active_command_bus)
             .await;
         let snapshot = state.snapshot().await;
-        emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     };
 
@@ -673,8 +637,7 @@ async fn install_connected_runtime<R: Runtime>(
     mut runtime_handles: RuntimeHandles,
     active_command_bus: &ActiveCommandBus,
 ) -> Result<AppViewState, String> {
-    // Emit the initial snapshot before any buffered bus events can be projected.
-    emit_snapshot(app, &snapshot);
+    let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
 
     runtime_handles.projector = Some(spawn_shell_state_projector(
         app.clone(),
@@ -682,26 +645,32 @@ async fn install_connected_runtime<R: Runtime>(
         active_command_bus.clone(),
         generation,
         events,
+        projector_start_rx,
     ));
 
     if let Err(mut stale_handles) = state
-        .install_runtime_handles_for_generation(generation, runtime_handles, active_command_bus)
+        .install_runtime_handles(generation, runtime_handles, active_command_bus)
         .await
     {
         stale_handles.abort_all().await;
         let snapshot = state.snapshot().await;
-        emit_snapshot(app, &snapshot);
         return Ok(snapshot);
     }
+
+    // Emit the initial snapshot before any buffered bus events can be projected.
+    emit_snapshot(app, &snapshot);
+    let _ = projector_start_tx.send(());
 
     Ok(snapshot)
 }
 
 fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
-        tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
+        eprintln!("failed to emit app-status-changed: {err}");
     }
 }
+
+const SHELL_PROJECTION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 fn spawn_shell_state_projector<R: Runtime>(
     app: AppHandle<R>,
@@ -709,64 +678,85 @@ fn spawn_shell_state_projector<R: Runtime>(
     active_command_bus: ActiveCommandBus,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+    projector_start_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        if projector_start_rx.await.is_err() {
+            return;
+        }
+
+        tracing::debug!(
+            event = "shell_state_projector_started",
+            generation = generation,
+            "shell-state projector started"
+        );
+        let mut projection_interval = tokio::time::interval(SHELL_PROJECTION_INTERVAL);
+        projection_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        projection_interval.tick().await;
+        let mut dirty = false;
         loop {
-            match events.recv().await {
-                Ok(app_event) => match &app_event {
-                    AppEvent::Lv1(event) => {
-                        if let Lv1Event::SceneListChanged(scenes) = event {
-                            let _ = state
-                                .show
-                                .scene_reconciliation_diagnostic(scenes.clone())
-                                .await;
+            tokio::select! {
+                _ = projection_interval.tick() => {
+                    if dirty {
+                        if let Some(snapshot) = state.snapshot_for_generation(generation).await {
+                            emit_snapshot(&app, &snapshot);
                         }
-                        if let Some(snapshot) = state
-                            .apply_lv1_event_for_generation(generation, event)
-                            .await
-                        {
-                            if let Err(err) = app.emit("lv1-event", &Lv1EventPayload::from(event)) {
-                                tracing::error!(event = "lv1_event_emit_failed", error = %err, "failed to emit lv1-event");
-                            }
-                            if let Err(err) = app.emit("app-status-changed", &snapshot) {
-                                tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
-                            }
-                            if matches!(event, Lv1Event::Disconnected { .. }) {
-                                state
-                                    .clear_runtime_handles_for_generation(
-                                        generation,
-                                        &active_command_bus,
-                                    )
-                                    .await;
-                            }
-                        }
+                        dirty = false;
                     }
-                    AppEvent::Fade(event) => {
-                        if let Some(snapshot) = state
-                            .apply_fade_event_for_generation(generation, event)
-                            .await
-                            && let Err(err) = app.emit("app-status-changed", &snapshot)
-                        {
-                            tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
-                        }
-                    }
-                    AppEvent::SceneRecall(_) => {
-                        if let Some(snapshot) = state
-                            .project_event_for_generation(generation, &app_event)
-                            .await
-                            && let Err(err) = app.emit("app-status-changed", &snapshot)
-                        {
-                            tracing::error!(event = "app_status_emit_failed", error = %err, "failed to emit app-status-changed");
-                        }
-                    }
-                },
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("shell-state-projector", count);
                 }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                received = events.recv() => {
+                    match received {
+                        Ok(app_event) => {
+                            if apply_projector_event(&state, generation, &active_command_bus, &app_event).await.was_applied() {
+                                dirty = true;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                            dirty = true;
+                            log_lagged_subscriber("shell-state-projector", count);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
             }
         }
     })
+}
+
+async fn apply_projector_event(
+    state: &ShellState,
+    generation: u64,
+    active_command_bus: &ActiveCommandBus,
+    event: &AppEvent,
+) -> ProjectionOutcome {
+    match event {
+        AppEvent::Lv1(event) => {
+            if let Lv1Event::SceneListChanged(scenes) = event {
+                let _ = state
+                    .show
+                    .scene_reconciliation_diagnostic(scenes.clone())
+                    .await;
+            }
+
+            let outcome = state.apply_lv1_event_to_projection(generation, event).await;
+            if !outcome.was_applied() {
+                return outcome;
+            }
+
+            if matches!(event, Lv1Event::Disconnected { .. }) {
+                state
+                    .clear_runtime_handles(generation, active_command_bus)
+                    .await;
+            }
+            ProjectionOutcome::Applied
+        }
+        AppEvent::Fade(event) => {
+            state
+                .apply_fade_event_to_projection(generation, event)
+                .await
+        }
+        AppEvent::SceneRecall(_) => ProjectionOutcome::Ignored,
+    }
 }
 
 async fn save_show_file_to_path(
@@ -775,10 +765,7 @@ async fn save_show_file_to_path(
 ) -> Result<AppViewState, String> {
     let saved_at = crate::time::current_timestamp_millis();
     let file = state.export_show_file_for_save(saved_at.clone()).await?;
-    if let Err(err) = write_show_file(&path, &file, &backup_folder()) {
-        tracing::error!(event = "show_file_save_failed", error = %err, "Show file save failed: {err}");
-        return Err(err);
-    }
+    write_show_file(&path, &file, &backup_folder())?;
     Ok(state.mark_show_file_saved(path, saved_at).await)
 }
 
@@ -786,12 +773,6 @@ fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBu
     std::fs::create_dir_all(&path)
         .map_err(|err| format!("Failed to create show file folder: {err}"))?;
     Ok(path)
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct Lv1EventPayload {
-    kind: String,
-    message: String,
 }
 
 #[cfg(test)]
@@ -818,6 +799,26 @@ mod tests {
         ));
         let _ = fs::remove_dir_all(&path);
         path
+    }
+
+    fn spawn_started_shell_state_projector<R: Runtime>(
+        handle: AppHandle<R>,
+        state: ShellState,
+        active_command_bus: ActiveCommandBus,
+        generation: u64,
+        events: tokio::sync::broadcast::Receiver<AppEvent>,
+    ) -> tokio::task::JoinHandle<()> {
+        let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            active_command_bus,
+            generation,
+            events,
+            projector_start_rx,
+        );
+        let _ = projector_start_tx.send(());
+        projector
     }
 
     #[test]
@@ -879,6 +880,37 @@ mod tests {
         assert!(!snapshot.reconnect.active);
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn projector_does_not_emit_raw_lv1_event() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let raw_events = Arc::new(Mutex::new(0usize));
+        let raw_events_for_listener = raw_events.clone();
+
+        handle.listen_any("lv1-event", move |_| {
+            *raw_events_for_listener.lock().unwrap() += 1;
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let event_bus = AppEventBus::default();
+        let projector = spawn_started_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        event_bus.publish(AppEvent::Lv1(Lv1Event::Connected));
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(*raw_events.lock().unwrap(), 0);
+        projector.abort();
+    }
+
     #[tokio::test]
     async fn reconnect_timed_out_aborts_runtime_and_clears_command_bus_for_matching_attempt() {
         let app = mock_app();
@@ -888,7 +920,7 @@ mod tests {
         let reconnecting = enter_reconnect_state(&state).await;
         let command_bus = AppCommandBus::new(AppEventBus::default());
         let installed = state
-            .install_runtime_handles_for_generation(
+            .install_runtime_handles(
                 1,
                 RuntimeHandles {
                     active_generation: 0,
@@ -932,17 +964,25 @@ mod tests {
         let handle = app.handle().clone();
         let state = ShellState::default();
         let first_reconnect = enter_reconnect_state(&state).await;
-        state
-            .apply_lv1_event_for_generation(1, &Lv1Event::Connected)
-            .await
-            .expect("connected event should apply");
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(1, &Lv1Event::Connected)
+                .await,
+            ProjectionOutcome::Applied
+        );
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(
+                    1,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await,
+            ProjectionOutcome::Applied
+        );
         let second_reconnect = state
-            .apply_lv1_event_for_generation(
-                1,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(1)
             .await
             .expect("second disconnect should apply");
         assert!(second_reconnect.reconnect.active);
@@ -974,13 +1014,19 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await,
+            ProjectionOutcome::Applied
+        );
         state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("disconnect should apply")
     }
@@ -1116,7 +1162,7 @@ mod tests {
 
         let (generation, _) = state.begin_connecting().await;
         state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1128,7 +1174,7 @@ mod tests {
             .await
             .expect("current generation should accept connected snapshot");
         let connected = state
-            .establish_connected_lv1_identity_for_generation(generation, identity.clone())
+            .establish_connected_lv1_identity(generation, identity.clone())
             .await
             .expect("connected snapshot should allow identity establishment");
 
@@ -1149,8 +1195,8 @@ mod tests {
         assert!(holder.current().await.is_none());
     }
 
-    #[tokio::test]
-    async fn initial_connection_snapshot_is_emitted_before_projector_events() {
+    #[tokio::test(start_paused = true)]
+    async fn initial_connection_snapshot_is_emitted_before_coalesced_projector_events() {
         let app = mock_app();
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1166,7 +1212,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let initial_snapshot = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1198,21 +1244,214 @@ mod tests {
 
         assert_eq!(format!("{:?}", snapshot.connection), "Connected");
 
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if observed.lock().unwrap().len() >= 2 {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit the buffered event");
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
 
         let observed = observed.lock().unwrap();
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[0]["fadeState"], "idle");
         assert_eq!(observed[1]["fadeState"], "running");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projector_coalesces_runtime_updates_to_ten_hz() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let _ = state
+            .begin_connection(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: vec![advanced_show_control::lv1::types::ChannelInfo {
+                        group: 1,
+                        channel: 1,
+                        name: "Channel 1".to_string(),
+                        gain_db: 0.0,
+                        muted: false,
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    }],
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let projector = spawn_started_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        for gain_db in [1.0, 2.0, 3.0] {
+            event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
+                group: 1,
+                channel: 1,
+                gain_db,
+            }));
+        }
+
+        tokio::task::yield_now().await;
+        assert!(observed.lock().unwrap().is_empty());
+
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        {
+            let observed_guard = observed.lock().unwrap();
+            assert_eq!(observed_guard.len(), 1);
+        }
+
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        assert_eq!(observed.lock().unwrap().len(), 1);
+        projector.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn projector_drains_events_while_waiting_for_projection_tick() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let _ = state
+            .begin_connection(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: vec![advanced_show_control::lv1::types::ChannelInfo {
+                        group: 1,
+                        channel: 1,
+                        name: "Channel 1".to_string(),
+                        gain_db: 0.0,
+                        muted: false,
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    }],
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::new(4);
+        let projector = spawn_started_shell_state_projector(
+            handle,
+            state,
+            ActiveCommandBus::default(),
+            generation,
+            event_bus.subscribe(),
+        );
+
+        for gain_db in 0..32 {
+            event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
+                group: 1,
+                channel: 1,
+                gain_db: gain_db as f64,
+            }));
+            tokio::task::yield_now().await;
+        }
+
+        tokio::time::advance(std::time::Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        {
+            let observed_guard = observed.lock().unwrap();
+            assert_eq!(observed_guard.len(), 1);
+            assert!(
+                observed_guard[0]["logs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|entry| {
+                        entry["message"]
+                            != "shell-state-projector event subscriber lagged and missed 0 events"
+                            && !entry["message"]
+                                .as_str()
+                                .unwrap_or_default()
+                                .contains("shell-state-projector event subscriber lagged")
+                    })
+            );
+        }
+        projector.abort();
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_install_does_not_emit_current_snapshot() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (stale_generation, _) = state.begin_connecting().await;
+        let stale_snapshot = state
+            .begin_connection(
+                stale_generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("stale setup should first connect");
+        let (_current_generation, _) = state.begin_connecting().await;
+
+        install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            stale_generation,
+            stale_snapshot,
+            AppEventBus::default().subscribe(),
+            RuntimeHandles::default(),
+            &ActiveCommandBus::default(),
+        )
+        .await
+        .expect("stale install should return current snapshot to command caller");
+
+        tokio::task::yield_now().await;
+
+        assert!(observed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -1223,7 +1462,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let initial_snapshot = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1264,105 +1503,5 @@ mod tests {
         let mut handles = state.handles.lock().await;
         assert!(handles.scene_recall_fader.is_some());
         handles.abort_all().await;
-    }
-
-    #[tokio::test]
-    async fn scene_recall_events_emit_fresh_app_status_snapshot() {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let observed_for_listener = observed.clone();
-
-        handle.listen_any("app-status-changed", move |event| {
-            let payload: serde_json::Value = serde_json::from_str(event.payload())
-                .expect("app-status-changed payload should be valid JSON");
-            observed_for_listener.lock().unwrap().push(payload);
-        });
-
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let event_bus = AppEventBus::default();
-        let projector = spawn_shell_state_projector(
-            handle,
-            state,
-            ActiveCommandBus::default(),
-            generation,
-            event_bus.subscribe(),
-        );
-
-        event_bus.publish(AppEvent::SceneRecall(
-            advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
-                scene_label: "1: Intro".to_string(),
-                reason: "locked out".to_string(),
-            },
-        ));
-
-        tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if !observed.lock().unwrap().is_empty() {
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("projector should emit snapshot for scene recall refresh");
-
-        projector.abort();
-    }
-}
-
-impl From<&Lv1Event> for Lv1EventPayload {
-    fn from(event: &Lv1Event) -> Self {
-        match event {
-            Lv1Event::Connected => Self {
-                kind: "Connected".to_string(),
-                message: "LV1 connected".to_string(),
-            },
-            Lv1Event::Disconnected { .. } => Self {
-                kind: "Disconnected".to_string(),
-                message: "LV1 disconnected".to_string(),
-            },
-            Lv1Event::SceneChanged(scene) => Self {
-                kind: "SceneChanged".to_string(),
-                message: format!("scene changed to {}: {}", scene.index, scene.name),
-            },
-            Lv1Event::SceneListChanged(scenes) => Self {
-                kind: "SceneListChanged".to_string(),
-                message: format!("scene list updated: {} scenes", scenes.len()),
-            },
-            Lv1Event::FaderChanged {
-                group,
-                channel,
-                gain_db,
-            } => Self {
-                kind: "FaderChanged".to_string(),
-                message: format!("fader changed: group {group}, channel {channel}, gain {gain_db}"),
-            },
-            Lv1Event::MuteChanged {
-                group,
-                channel,
-                muted,
-            } => Self {
-                kind: "MuteChanged".to_string(),
-                message: format!("mute changed: group {group}, channel {channel}, muted {muted}"),
-            },
-            Lv1Event::PanChanged { .. } => Self {
-                kind: "PanChanged".to_string(),
-                message: "pan changed".to_string(),
-            },
-            Lv1Event::BalanceChanged { .. } => Self {
-                kind: "BalanceChanged".to_string(),
-                message: "balance changed".to_string(),
-            },
-            Lv1Event::WidthChanged { .. } => Self {
-                kind: "WidthChanged".to_string(),
-                message: "width changed".to_string(),
-            },
-            Lv1Event::ChannelTopologyChanged(channels) => Self {
-                kind: "ChannelTopologyChanged".to_string(),
-                message: format!("channel topology updated: {} channels", channels.len()),
-            },
-        }
     }
 }

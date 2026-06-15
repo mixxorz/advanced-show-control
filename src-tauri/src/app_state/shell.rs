@@ -207,7 +207,7 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn establish_connected_lv1_identity_for_generation(
+    pub async fn establish_connected_lv1_identity(
         &self,
         generation: u64,
         identity: Lv1SystemIdentity,
@@ -233,23 +233,11 @@ impl ShellState {
         self.snapshot_for_generation(generation).await
     }
 
-    #[cfg(test)]
-    pub async fn set_pending_lv1_identity(
-        &self,
-        identity: Option<Lv1SystemIdentity>,
-    ) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        inner.pending_lv1_identity = identity;
-        refresh_discovered_statuses(&mut inner);
-        drop(inner);
-        self.snapshot().await
-    }
-
     pub async fn connected_lv1_identity(&self) -> Option<Lv1SystemIdentity> {
         self.inner.lock().await.connected_lv1_identity.clone()
     }
 
-    pub async fn set_pending_lv1_identity_for_generation(
+    pub async fn set_pending_lv1_identity(
         &self,
         generation: u64,
         identity: Option<Lv1SystemIdentity>,
@@ -265,15 +253,7 @@ impl ShellState {
         self.snapshot_for_generation(generation).await
     }
 
-    pub async fn clear_pending_lv1_identity_for_generation(
-        &self,
-        generation: u64,
-    ) -> Option<AppViewState> {
-        self.set_pending_lv1_identity_for_generation(generation, None)
-            .await
-    }
-
-    pub async fn fail_connect_for_generation(
+    pub async fn fail_connect(
         &self,
         generation: u64,
         message: impl Into<String>,
@@ -292,7 +272,7 @@ impl ShellState {
         self.snapshot_for_generation(generation).await
     }
 
-    pub async fn fail_reconnect_for_generation(
+    pub async fn fail_reconnect(
         &self,
         generation: u64,
         message: impl Into<String>,
@@ -356,7 +336,7 @@ impl ShellState {
         }
     }
 
-    pub async fn clear_runtime_handles_for_generation(
+    pub async fn clear_runtime_handles(
         &self,
         generation: u64,
         active_command_bus: &ActiveCommandBus,
@@ -391,7 +371,7 @@ impl ShellState {
         active_command_bus.set(None).await;
     }
 
-    pub async fn install_runtime_handles_for_generation(
+    pub async fn install_runtime_handles(
         &self,
         generation: u64,
         mut next: RuntimeHandles,
@@ -614,6 +594,8 @@ fn snapshot_from_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_state::ProjectionOutcome;
+    use crate::app_state::test_support::begin_test_connection;
     use advanced_show_control::lv1::events::Lv1Event;
     use advanced_show_control::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
 
@@ -720,11 +702,7 @@ mod tests {
         let active_command_bus = crate::commands::ActiveCommandBus::default();
 
         match state
-            .install_runtime_handles_for_generation(
-                generation,
-                current_handles,
-                &active_command_bus,
-            )
+            .install_runtime_handles(generation, current_handles, &active_command_bus)
             .await
         {
             Ok(()) => {}
@@ -741,7 +719,7 @@ mod tests {
         };
 
         let rejected = state
-            .install_runtime_handles_for_generation(
+            .install_runtime_handles(
                 generation.saturating_sub(1),
                 stale_handles,
                 &active_command_bus,
@@ -762,7 +740,7 @@ mod tests {
             AppCommandBus::new(advanced_show_control::runtime::events::AppEventBus::default());
 
         let installed = state
-            .install_runtime_handles_for_generation(
+            .install_runtime_handles(
                 generation,
                 RuntimeHandles {
                     active_generation: 0,
@@ -805,13 +783,19 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await,
+            ProjectionOutcome::Applied
+        );
         let reconnecting = state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("disconnect should enter reconnect state");
 
@@ -823,7 +807,7 @@ mod tests {
         assert!(state.snapshot_for_generation(generation).await.is_none());
         assert!(
             state
-                .begin_connection_for_generation(
+                .begin_connection(
                     generation,
                     Lv1StateSnapshot {
                         connection: ConnectionStatus::Connected,
@@ -849,26 +833,41 @@ mod tests {
             }))
             .await;
         let (generation, _) = state.begin_connecting().await;
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await,
+            ProjectionOutcome::Applied
+        );
         let first_reconnect = state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("first disconnect should enter reconnect state");
-        state
-            .apply_lv1_event_for_generation(generation, &Lv1Event::Connected)
-            .await
-            .expect("connected event should clear first reconnect state");
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
+                .await,
+            ProjectionOutcome::Applied,
+            "connected event should clear first reconnect state"
+        );
+        assert_eq!(
+            state
+                .apply_lv1_event_to_projection(
+                    generation,
+                    &Lv1Event::Disconnected {
+                        reason: "test".to_string(),
+                    },
+                )
+                .await,
+            ProjectionOutcome::Applied
+        );
         let second_reconnect = state
-            .apply_lv1_event_for_generation(
-                generation,
-                &Lv1Event::Disconnected {
-                    reason: "test".to_string(),
-                },
-            )
+            .snapshot_for_generation(generation)
             .await
             .expect("second disconnect should enter reconnect state");
 
@@ -888,8 +887,9 @@ mod tests {
     async fn snapshot_maps_lv1_scene_and_counts() {
         let state = ShellState::default();
 
-        let snapshot = state
-            .begin_connection(Lv1StateSnapshot {
+        let snapshot = begin_test_connection(
+            &state,
+            Lv1StateSnapshot {
                 connection: ConnectionStatus::Connected,
                 scene: Some(SceneState {
                     index: 3,
@@ -910,8 +910,9 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
-            })
-            .await;
+            },
+        )
+        .await;
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Verse");
@@ -975,18 +976,26 @@ mod tests {
             address: "192.168.1.36".to_string(),
             port: 50000,
         };
+        let (generation, _) = state.begin_connecting().await;
         state
-            .begin_connection(Lv1StateSnapshot {
-                connection: ConnectionStatus::Connected,
-                scene: None,
-                scene_list: Vec::new(),
-                channels: Vec::new(),
-            })
-            .await;
+            .begin_connection(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should connect");
         state
             .set_connected_lv1_identity(Some(connected.clone()))
             .await;
-        state.set_pending_lv1_identity(Some(pending.clone())).await;
+        state
+            .set_pending_lv1_identity(generation, Some(pending.clone()))
+            .await
+            .expect("current generation should set pending identity");
 
         let snapshot = state
             .set_discovered_lv1_systems(vec![
@@ -1060,19 +1069,14 @@ mod tests {
         let (stale_generation, _) = state.begin_connecting().await;
         let (current_generation, _) = state.begin_connecting().await;
         state
-            .set_pending_lv1_identity_for_generation(
-                current_generation,
-                Some(current_identity.clone()),
-            )
+            .set_pending_lv1_identity(current_generation, Some(current_identity.clone()))
             .await
             .expect("current generation should set pending identity");
 
         let stale_establish = state
-            .establish_connected_lv1_identity_for_generation(stale_generation, stale_identity)
+            .establish_connected_lv1_identity(stale_generation, stale_identity)
             .await;
-        let stale_clear = state
-            .clear_pending_lv1_identity_for_generation(stale_generation)
-            .await;
+        let stale_clear = state.set_pending_lv1_identity(stale_generation, None).await;
         let snapshot = state.snapshot().await;
 
         assert!(stale_establish.is_none());
@@ -1093,7 +1097,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let snapshot = state
-            .establish_connected_lv1_identity_for_generation(generation, identity)
+            .establish_connected_lv1_identity(generation, identity)
             .await;
 
         assert!(snapshot.is_none());
@@ -1106,7 +1110,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
         store_intro_scene_config(&state).await;
         state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1119,7 +1123,7 @@ mod tests {
             .unwrap();
 
         let snapshot = state
-            .establish_connected_lv1_identity_for_generation(
+            .establish_connected_lv1_identity(
                 generation,
                 crate::connection_state::Lv1SystemIdentity {
                     uuid: Some("uuid-1".to_string()),
@@ -1142,7 +1146,7 @@ mod tests {
         store_intro_scene_config(&state).await;
 
         let snapshot = state
-            .set_pending_lv1_identity_for_generation(
+            .set_pending_lv1_identity(
                 generation,
                 Some(crate::connection_state::Lv1SystemIdentity {
                     uuid: Some("uuid-1".to_string()),
@@ -1165,7 +1169,7 @@ mod tests {
         store_intro_scene_config(&state).await;
 
         let snapshot = state
-            .fail_connect_for_generation(generation, "LV1 did not connect")
+            .fail_connect(generation, "LV1 did not connect")
             .await
             .expect("current generation failure should apply");
 
@@ -1207,12 +1211,12 @@ mod tests {
         };
         let (generation, _) = state.begin_connecting().await;
         state
-            .set_pending_lv1_identity_for_generation(generation, Some(identity))
+            .set_pending_lv1_identity(generation, Some(identity))
             .await
             .expect("current generation should set pending identity");
 
         let snapshot = state
-            .fail_connect_for_generation(generation, "LV1 did not connect")
+            .fail_connect(generation, "LV1 did not connect")
             .await
             .expect("current generation failure should apply");
 
@@ -1238,12 +1242,12 @@ mod tests {
         state.set_reconnect_active(true).await;
         let (generation, _) = state.begin_connecting().await;
         state
-            .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
+            .set_pending_lv1_identity(generation, Some(identity.clone()))
             .await
             .expect("current generation should set pending identity");
 
         let snapshot = state
-            .fail_reconnect_for_generation(generation, "LV1 did not connect")
+            .fail_reconnect(generation, "LV1 did not connect")
             .await
             .expect("current generation reconnect failure should apply");
 
@@ -1267,15 +1271,12 @@ mod tests {
         let (stale_generation, _) = state.begin_connecting().await;
         let (current_generation, _) = state.begin_connecting().await;
         state
-            .set_pending_lv1_identity_for_generation(
-                current_generation,
-                Some(current_identity.clone()),
-            )
+            .set_pending_lv1_identity(current_generation, Some(current_identity.clone()))
             .await
             .expect("current generation should set pending identity");
 
         let stale = state
-            .fail_connect_for_generation(stale_generation, "LV1 did not connect")
+            .fail_connect(stale_generation, "LV1 did not connect")
             .await;
         let snapshot = state.snapshot().await;
 
