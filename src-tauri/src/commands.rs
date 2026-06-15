@@ -276,7 +276,7 @@ pub async fn disconnect_lv1(
         command_bus.set_generation(generation).await;
     }
     state
-        .clear_runtime_handles_for_generation(generation, &active_command_bus)
+        .clear_runtime_handles(generation, &active_command_bus)
         .await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -306,7 +306,7 @@ async fn reconnect_timed_out_snapshot<R: Runtime>(
 ) -> Result<AppViewState, String> {
     if let Some(generation) = state.reconnect_timeout_generation(attempt).await {
         state
-            .clear_runtime_handles_for_generation(generation, &active_command_bus)
+            .clear_runtime_handles(generation, &active_command_bus)
             .await;
     }
     let snapshot = state.reconnect_timed_out(attempt).await;
@@ -500,7 +500,7 @@ async fn connect_to_target<R: Runtime>(
     state.abort_current_runtime(&active_command_bus).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
-        .set_pending_lv1_identity_for_generation(generation, Some(identity.clone()))
+        .set_pending_lv1_identity(generation, Some(identity.clone()))
         .await
     {
         emit_snapshot(&app, &pending_snapshot);
@@ -537,40 +537,25 @@ async fn connect_to_target<R: Runtime>(
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => {
-                state
-                    .fail_connect_for_generation(generation, "LV1 did not connect")
-                    .await
+                state.fail_connect(generation, "LV1 did not connect").await
             }
             ConnectFailureMode::PreserveConnectedIdentity => {
                 state
-                    .fail_reconnect_for_generation(generation, "LV1 did not connect")
+                    .fail_reconnect(generation, "LV1 did not connect")
                     .await
             }
         };
         if let Some(snapshot) = failed_snapshot {
             emit_snapshot(&app, &snapshot);
-        } else {
-            let snapshot = state.snapshot().await;
-            emit_snapshot(&app, &snapshot);
         }
         return Err("LV1 did not connect".to_string());
     }
 
-    let snapshot = match state
-        .begin_connection_for_generation(generation, initial_snapshot)
-        .await
-    {
+    let snapshot = match state.begin_connection(generation, initial_snapshot).await {
         Some(snapshot) => snapshot,
         None => {
             runtime_handles.abort_all().await;
-            if let Some(snapshot) = state
-                .clear_pending_lv1_identity_for_generation(generation)
-                .await
-            {
-                emit_snapshot(&app, &snapshot);
-            }
             let snapshot = state.snapshot().await;
-            emit_snapshot(&app, &snapshot);
             return Ok(snapshot);
         }
     };
@@ -588,14 +573,13 @@ async fn connect_to_target<R: Runtime>(
     .await?;
 
     let Some(snapshot) = state
-        .establish_connected_lv1_identity_for_generation(generation, identity)
+        .establish_connected_lv1_identity(generation, identity)
         .await
     else {
         state
             .clear_runtime_handles_with_active_generation(generation, &active_command_bus)
             .await;
         let snapshot = state.snapshot().await;
-        emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     };
 
@@ -654,8 +638,7 @@ async fn install_connected_runtime<R: Runtime>(
     mut runtime_handles: RuntimeHandles,
     active_command_bus: &ActiveCommandBus,
 ) -> Result<AppViewState, String> {
-    // Emit the initial snapshot before any buffered bus events can be projected.
-    emit_snapshot(app, &snapshot);
+    let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
 
     runtime_handles.projector = Some(spawn_shell_state_projector(
         app.clone(),
@@ -663,17 +646,21 @@ async fn install_connected_runtime<R: Runtime>(
         active_command_bus.clone(),
         generation,
         events,
+        projector_start_rx,
     ));
 
     if let Err(mut stale_handles) = state
-        .install_runtime_handles_for_generation(generation, runtime_handles, active_command_bus)
+        .install_runtime_handles(generation, runtime_handles, active_command_bus)
         .await
     {
         stale_handles.abort_all().await;
         let snapshot = state.snapshot().await;
-        emit_snapshot(app, &snapshot);
         return Ok(snapshot);
     }
+
+    // Emit the initial snapshot before any buffered bus events can be projected.
+    emit_snapshot(app, &snapshot);
+    let _ = projector_start_tx.send(());
 
     Ok(snapshot)
 }
@@ -692,12 +679,17 @@ fn spawn_shell_state_projector<R: Runtime>(
     active_command_bus: ActiveCommandBus,
     generation: u64,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+    projector_start_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> tokio::task::JoinHandle<()> {
     let diagnostics_path = app
         .try_state::<crate::diagnostics::DiagnosticLogPath>()
         .map(|path| path.0.clone())
         .unwrap_or_else(|| crate::diagnostics::diagnostic_log_path(&app));
     tokio::spawn(async move {
+        if projector_start_rx.await.is_err() {
+            return;
+        }
+
         let _ = crate::diagnostics::append_diagnostic(
             &diagnostics_path,
             "tauri-shell",
@@ -766,7 +758,7 @@ async fn apply_projector_event(
 
             if matches!(event, Lv1Event::Disconnected { .. }) {
                 state
-                    .clear_runtime_handles_for_generation(generation, active_command_bus)
+                    .clear_runtime_handles(generation, active_command_bus)
                     .await;
             }
             ProjectionOutcome::Applied
@@ -908,6 +900,26 @@ mod tests {
         path
     }
 
+    fn spawn_started_shell_state_projector<R: Runtime>(
+        handle: AppHandle<R>,
+        state: ShellState,
+        active_command_bus: ActiveCommandBus,
+        generation: u64,
+        events: tokio::sync::broadcast::Receiver<AppEvent>,
+    ) -> tokio::task::JoinHandle<()> {
+        let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
+        let projector = spawn_shell_state_projector(
+            handle,
+            state,
+            active_command_bus,
+            generation,
+            events,
+            projector_start_rx,
+        );
+        let _ = projector_start_tx.send(());
+        projector
+    }
+
     #[test]
     fn ensure_show_file_folder_creates_missing_directory() {
         let folder = temp_dir("show-folder").join("Advanced Show Control");
@@ -981,7 +993,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let event_bus = AppEventBus::default();
-        let projector = spawn_shell_state_projector(
+        let projector = spawn_started_shell_state_projector(
             handle,
             state,
             ActiveCommandBus::default(),
@@ -1007,7 +1019,7 @@ mod tests {
         let reconnecting = enter_reconnect_state(&state).await;
         let command_bus = AppCommandBus::new(AppEventBus::default());
         let installed = state
-            .install_runtime_handles_for_generation(
+            .install_runtime_handles(
                 1,
                 RuntimeHandles {
                     active_generation: 0,
@@ -1249,7 +1261,7 @@ mod tests {
 
         let (generation, _) = state.begin_connecting().await;
         state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1261,7 +1273,7 @@ mod tests {
             .await
             .expect("current generation should accept connected snapshot");
         let connected = state
-            .establish_connected_lv1_identity_for_generation(generation, identity.clone())
+            .establish_connected_lv1_identity(generation, identity.clone())
             .await
             .expect("connected snapshot should allow identity establishment");
 
@@ -1299,7 +1311,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let initial_snapshot = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1358,7 +1370,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let initial_snapshot = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1484,7 +1496,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let initial_snapshot = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1620,7 +1632,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let _ = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1643,7 +1655,7 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::default();
-        let projector = spawn_shell_state_projector(
+        let projector = spawn_started_shell_state_projector(
             handle,
             state,
             ActiveCommandBus::default(),
@@ -1693,7 +1705,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let _ = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
@@ -1716,7 +1728,7 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::new(4);
-        let projector = spawn_shell_state_projector(
+        let projector = spawn_started_shell_state_projector(
             handle,
             state,
             ActiveCommandBus::default(),
@@ -1758,6 +1770,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stale_runtime_install_does_not_emit_current_snapshot() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (stale_generation, _) = state.begin_connecting().await;
+        let stale_snapshot = state
+            .begin_connection(
+                stale_generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: Vec::new(),
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("stale setup should first connect");
+        let (_current_generation, _) = state.begin_connecting().await;
+
+        install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            stale_generation,
+            stale_snapshot,
+            AppEventBus::default().subscribe(),
+            RuntimeHandles::default(),
+            &ActiveCommandBus::default(),
+        )
+        .await
+        .expect("stale install should return current snapshot to command caller");
+
+        tokio::task::yield_now().await;
+
+        assert!(observed.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
     async fn connected_runtime_installs_scene_recall_fader_handle() {
         let app = mock_app();
         let handle = app.handle().clone();
@@ -1765,7 +1824,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
 
         let initial_snapshot = state
-            .begin_connection_for_generation(
+            .begin_connection(
                 generation,
                 Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
