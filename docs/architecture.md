@@ -14,12 +14,16 @@ The runtime is split into seven boundary pieces:
 
 The rule is simple: no module reaches into another module's state directly. Modules publish facts on `AppEventBus` and send requests through `AppCommandBus`.
 
+The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcasts runtime facts used for state projection and policy decisions. Logging uses `tracing`; Tauri installs the desktop sinks for diagnostic files, stdout, and frontend log state.
+
 ## Bus Contracts
 
 - `AppEventBus = facts`
 - `AppCommandBus = commands and queries`
 
 `AppEventBus` carries broadcast facts only.
+
+`AppEventBus` must not carry log-only events. If something is only a diagnostic or user-facing log, emit a `tracing` event instead.
 
 - Non-blocking publish.
 - Independent subscribers.
@@ -66,6 +70,16 @@ The rule is simple: no module reaches into another module's state directly. Modu
 ```
 
 `Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on Tauri projection ordering; it reads fresh LV1 state and app show state through `AppCommandBus` before it decides whether a recall should start, skip, or continue. Scene recall fade dispatch is generation-checked at the command-bus boundary. Recall tasks may read state over several awaits, but the final fade start must compare the expected generation while cloning the current fade target so a stale recall cannot land on a newer connection.
+
+## Logging Flow
+
+```text
+Core + Tauri tracing events
+  -> Tauri tracing subscriber
+    -> DEBUG+ JSONL diagnostic file
+    -> DEBUG+ stdout
+    -> INFO+ frontend app state
+```
 
 ## Command Flow
 

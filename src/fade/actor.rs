@@ -27,6 +27,7 @@ async fn run_engine(
     let mut app_events = event_bus.subscribe();
     let mut state = EngineState::new(event_bus.clone());
     let mut tick_interval: Option<tokio::time::Interval> = None;
+    let mut fade_completed_emitted = false;
 
     loop {
         let tick_fut = async {
@@ -44,6 +45,10 @@ async fn run_engine(
                 match cmd {
                     None => break,
                 Some(FadeCommand::RecallSceneFade { config, expected_generation, reply }) => {
+                        let scene_index = config.scene.index;
+                        let scene_name = config.scene.name.clone();
+                        let duration_ms = config.duration_ms;
+                        let target_count = config.targets.len();
                         let result = handle_recall_scene_fade(&command_bus, &mut state, config, expected_generation).await;
 
                         match result {
@@ -52,10 +57,12 @@ async fn run_engine(
                                     let mut interval = tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));
                                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                                     tick_interval = Some(interval);
+                                    fade_completed_emitted = false;
+                                    tracing::info!(event = "fade_started", scene_index = scene_index, scene_name = %scene_name, duration_ms = duration_ms, target_count = target_count, "Fade started for {}: {} ({} targets, {} ms)", scene_index, scene_name, target_count, duration_ms);
                                     state.fan_out(FadeEvent::FadeStarted);
                                 } else {
                                     tick_interval = None;
-                                    state.fan_out(FadeEvent::FadeCompleted);
+                                    complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
                                 }
                                 let _ = reply.send(Ok(()));
                             }
@@ -119,10 +126,7 @@ async fn run_engine(
                             if let Some(expected_generation) = expected_generation {
                                 cancel_generation_owned_targets(&mut state, expected_generation);
                             }
-                            if !state.is_active() {
-                                tick_interval = None;
-                                state.fan_out(FadeEvent::FadeCompleted);
-                            }
+                            maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
                         }
                     }
                 }
@@ -135,10 +139,7 @@ async fn run_engine(
                     state.fan_out(event);
                 }
 
-                if !state.is_active() {
-                    tick_interval = None;
-                    state.fan_out(FadeEvent::FadeCompleted);
-                }
+                maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
             }
 
             app_event = app_events.recv() => {
@@ -152,6 +153,13 @@ async fn run_engine(
                                 channel,
                                 parameter: FadeParameter::FaderDb,
                             });
+                            tracing::warn!(
+                                event = "fade_manual_override",
+                                group,
+                                channel,
+                                parameter = ?FadeParameter::FaderDb,
+                                "Fade manual override detected: group {group}, channel {channel}"
+                            );
                             state.channels.remove(pos);
                             state.fan_out(FadeEvent::ChannelCancelled {
                                 group,
@@ -161,6 +169,7 @@ async fn run_engine(
 
                             if !state.is_active() {
                                 tick_interval = None;
+                                fade_completed_emitted = false;
                                 state.fan_out(FadeEvent::FadeCompleted);
                             }
                         }
@@ -178,6 +187,8 @@ async fn run_engine(
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
+                            fade_completed_emitted = false;
+                            tracing::warn!(event = "fade_aborted", "Fade aborted");
                             state.fan_out(FadeEvent::FadeAborted);
                         }
                     }
@@ -190,6 +201,30 @@ async fn run_engine(
             }
         }
     }
+}
+
+fn maybe_complete_fade(
+    tick_interval: &mut Option<tokio::time::Interval>,
+    state: &mut EngineState,
+    fade_completed_emitted: &mut bool,
+) {
+    if !state.is_active() {
+        complete_fade(tick_interval, state, fade_completed_emitted);
+    }
+}
+
+fn complete_fade(
+    tick_interval: &mut Option<tokio::time::Interval>,
+    state: &mut EngineState,
+    fade_completed_emitted: &mut bool,
+) {
+    if *fade_completed_emitted {
+        return;
+    }
+    *fade_completed_emitted = true;
+    *tick_interval = None;
+    tracing::info!(event = "fade_completed", "Fade completed");
+    state.fan_out(FadeEvent::FadeCompleted);
 }
 
 async fn handle_recall_scene_fade(
@@ -248,6 +283,7 @@ async fn handle_recall_scene_fade(
                 channel: target.channel,
                 parameter: target.parameter,
             });
+            tracing::debug!(event = "fade_channel_completed", group = target.group, channel = target.channel, parameter = ?target.parameter, "Fade channel completed: group {}, channel {}", target.group, target.channel);
         }
         return Ok(());
     }
@@ -327,9 +363,9 @@ async fn send_batch(
     writes: Vec<Lv1ParameterWrite>,
 ) {
     if let Err(err) = command_bus.write_batch(writes).await {
-        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed {
-            reason: format!("{err:?}"),
-        }));
+        let reason = format!("{err:?}");
+        tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
+        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed { reason }));
     }
 }
 
@@ -343,9 +379,9 @@ async fn send_batch_if_generation(
         .write_batch_if_generation(expected_generation, writes)
         .await
     {
-        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed {
-            reason: format!("{err:?}"),
-        }));
+        let reason = format!("{err:?}");
+        tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
+        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed { reason }));
         return false;
     }
 
@@ -798,21 +834,38 @@ mod tests {
             .unwrap()
             .unwrap();
         match event {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "write_batch_if_generation");
-                assert_eq!(
-                    message,
-                    crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
-                );
-            }
             AppEvent::Fade(FadeEvent::WriteFailed { reason }) => {
-                assert_eq!(
-                    reason,
-                    crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+                assert!(
+                    reason
+                        == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+                        || reason == "StaleGeneration"
                 );
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn complete_fade_is_idempotent() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus.clone());
+        let mut tick_interval = None;
+        let mut emitted = false;
+
+        complete_fade(&mut tick_interval, &mut state, &mut emitted);
+        complete_fade(&mut tick_interval, &mut state, &mut emitted);
+        let event = tokio::time::timeout(std::time::Duration::from_millis(100), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert!(matches!(event, AppEvent::Fade(FadeEvent::FadeCompleted)));
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -868,11 +921,11 @@ mod tests {
         );
 
         match events.recv().await.unwrap() {
-            AppEvent::CommandFailed { command, message } => {
-                assert_eq!(command, "write_batch_if_generation");
-                assert_eq!(
-                    message,
-                    crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+            AppEvent::Fade(FadeEvent::WriteFailed { reason }) => {
+                assert!(
+                    reason
+                        == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
+                        || reason == "StaleGeneration"
                 );
             }
             other => panic!("unexpected event: {other:?}"),
@@ -981,20 +1034,9 @@ mod tests {
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
-        let mut saw_command_failed = false;
         let mut saw_write_failed = false;
         loop {
             match tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await {
-                Ok(Ok(AppEvent::CommandFailed { command, message })) => {
-                    assert_eq!(command, "write_batch_if_generation");
-                    assert!(
-                        message
-                            == crate::runtime::commands::AppCommandError::StaleGeneration
-                                .to_string()
-                            || message == "StaleGeneration"
-                    );
-                    saw_command_failed = true;
-                }
                 Ok(Ok(AppEvent::Fade(FadeEvent::WriteFailed { reason }))) => {
                     assert!(
                         reason
@@ -1009,7 +1051,6 @@ mod tests {
                 Ok(Err(_)) | Err(_) => break,
             }
         }
-        assert!(saw_command_failed);
         assert!(saw_write_failed);
     }
 }

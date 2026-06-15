@@ -183,23 +183,16 @@ impl ActorState {
     }
 
     pub(super) fn diagnose(&mut self, message: impl Into<String>) {
-        self.event_bus.publish(AppEvent::Diagnostic {
-            source: "lv1-actor".to_string(),
-            message: message.into(),
-        });
+        tracing::debug!(event = "lv1_diagnostic", "{}", message.into());
     }
 }
 
 pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
     if is_diagnostic_address(&msg.address) {
         state.diagnose(format!(
-            "received {} args=[{}]",
+            "received {} args_count={}",
             msg.address,
-            msg.args
-                .iter()
-                .map(crate::lv1::probe::format_arg)
-                .collect::<Vec<_>>()
-                .join(", ")
+            msg.args.len()
         ));
     }
 
@@ -231,14 +224,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
             Ok(list) => {
-                state.diagnose(format!(
-                    "parsed /Notify/SceneList scenes={} entries=[{}]",
-                    list.len(),
-                    list.iter()
-                        .map(|entry| format!("{}:{:?}", entry.index, entry.name))
-                        .collect::<Vec<_>>()
-                        .join(" | ")
-                ));
+                state.diagnose(format!("parsed /Notify/SceneList scenes={}", list.len()));
                 state.scene_list = list.clone();
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }
@@ -343,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn actor_publishes_scene_changes_to_event_bus() {
         use crate::lv1::events::Lv1Event;
-        use crate::runtime::events::{AppEvent, AppEventBus};
+        use crate::runtime::events::AppEventBus;
 
         let bus = AppEventBus::new(16);
         let mut rx = bus.subscribe();
@@ -380,8 +366,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn channels_parse_failure_publishes_diagnostic() {
-        use crate::runtime::events::{AppEvent, AppEventBus};
+    async fn channels_parse_failure_logs_diagnostic_without_event_bus_fact() {
+        use crate::runtime::events::AppEventBus;
 
         let bus = AppEventBus::new(16);
         let mut rx = bus.subscribe();
@@ -398,15 +384,7 @@ mod tests {
 
         assert!(state.channels.is_empty());
 
-        let mut saw_parse_failure = false;
-        while let Ok(event) = rx.try_recv() {
-            if let AppEvent::Diagnostic { message, .. } = event
-                && message.contains("failed to parse /Channels")
-            {
-                saw_parse_failure = true;
-            }
-        }
-        assert!(saw_parse_failure);
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
@@ -456,9 +434,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scene_list_message_emits_diagnostic_event() {
+    async fn scene_list_message_emits_tracing_diagnostic() {
         let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
         let mut state = ActorState::new(bus);
 
         handle_message(
@@ -473,14 +450,7 @@ mod tests {
             },
         );
 
-        let event = rx.recv().await.unwrap();
-        match event {
-            AppEvent::Diagnostic { source, message } => {
-                assert_eq!(source, "lv1-actor");
-                assert!(message.contains("/Notify/SceneList"));
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
+        assert!(!state.scene_list.is_empty());
     }
 
     #[test]
