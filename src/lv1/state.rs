@@ -143,15 +143,6 @@ fn diagnostic_scene_list_parsed(scene_count: usize) -> String {
     format!("parsed /Notify/SceneList scenes={scene_count}")
 }
 
-fn log_osc_rx(address: &str) {
-    tracing::debug!(
-        event = "osc_message",
-        direction = "rx",
-        osc_address = address,
-        "OSC RX {address}"
-    );
-}
-
 pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
     match arg {
         OscArg::Bool(value) => Some(*value),
@@ -205,8 +196,6 @@ impl ActorState {
 }
 
 pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
-    log_osc_rx(&msg.address);
-
     if is_diagnostic_address(&msg.address) {
         state.diagnose(diagnostic_received_message(&msg.address, msg.args.len()));
     }
@@ -378,11 +367,6 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
-    }
-
-    #[test]
-    fn log_osc_rx_helper_is_present_for_osc_addresses() {
-        log_osc_rx("/Notify/SceneList");
     }
 
     #[test]

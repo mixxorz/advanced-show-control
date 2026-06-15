@@ -1,7 +1,7 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
 use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
-use crate::lv1::diagnostics::log_osc_tx;
+use crate::lv1::diagnostics::{log_osc_rx, log_osc_tx};
 use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
 type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -29,6 +29,8 @@ pub fn encode_frame(address: &str, args: &[OscArg]) -> Result<Vec<u8>, Lv1TcpErr
     if payload.is_empty() || payload.len() > MAX_FRAME_PAYLOAD {
         return Err(Lv1TcpError::InvalidLength(payload.len()));
     }
+
+    log_osc_tx(address);
 
     let mut frame = Vec::with_capacity(4 + HEADER_LEN + payload.len());
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -78,7 +80,9 @@ impl FrameDecoder {
 }
 
 pub fn decode_frame_payload(frame: &Lv1Frame) -> Result<OscMessage, Lv1TcpError> {
-    Ok(decode_packet(&frame.payload)?)
+    let message = decode_packet(&frame.payload)?;
+    log_osc_rx(&message.address);
+    Ok(message)
 }
 
 pub fn encode_parameter_write_batch(writes: &[Lv1ParameterWrite]) -> Result<Vec<u8>, Lv1TcpError> {
@@ -155,13 +159,10 @@ impl Lv1TcpClient {
             )) as Box<dyn std::error::Error + Send + Sync>
         })?;
 
-        log_osc_tx("/handshake");
-        log_osc_tx("/device_name");
         send_bytes(writer, &build_myfoh_handshake_batch(device_name, uuid)?).await
     }
 
     pub async fn send(&mut self, address: &str, args: &[OscArg]) -> TcpResult<()> {
-        log_osc_tx(address);
         let frame = encode_frame(address, args)?;
         let writer = self.writer.as_mut().ok_or_else(|| {
             Box::new(std::io::Error::new(
@@ -212,6 +213,70 @@ pub(crate) async fn read_next_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Clone, Default)]
+    struct CapturedOscLogs(Arc<Mutex<Vec<CapturedOscLog>>>);
+
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    struct CapturedOscLog {
+        event: Option<String>,
+        direction: Option<String>,
+        osc_address: Option<String>,
+    }
+
+    impl<S> Layer<S> for CapturedOscLogs
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = OscLogVisitor::default();
+            event.record(&mut visitor);
+            if visitor.log.event.as_deref() == Some("osc_message") {
+                self.0.lock().unwrap().push(visitor.log);
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct OscLogVisitor {
+        log: CapturedOscLog,
+    }
+
+    impl Visit for OscLogVisitor {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            match field.name() {
+                "event" => self.log.event = Some(value.to_string()),
+                "direction" => self.log.direction = Some(value.to_string()),
+                "osc_address" => self.log.osc_address = Some(value.to_string()),
+                _ => {}
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            let value = format!("{value:?}");
+            match field.name() {
+                "event" => self.log.event = Some(value.trim_matches('"').to_string()),
+                "direction" => self.log.direction = Some(value.trim_matches('"').to_string()),
+                "osc_address" => self.log.osc_address = Some(value.trim_matches('"').to_string()),
+                _ => {}
+            }
+        }
+    }
+
+    fn capture_osc_logs(run: impl FnOnce()) -> Vec<CapturedOscLog> {
+        let captured = CapturedOscLogs::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        tracing::subscriber::with_default(subscriber, run);
+        logs.lock().unwrap().clone()
+    }
 
     #[test]
     fn encodes_frame_with_payload_length_and_default_header() {
@@ -220,6 +285,43 @@ mod tests {
         let payload_len = u32::from_be_bytes(frame[0..4].try_into().unwrap()) as usize;
         assert_eq!(&frame[4..12], &DEFAULT_HEADER);
         assert_eq!(payload_len, frame.len() - 12);
+    }
+
+    #[test]
+    fn encode_frame_logs_osc_tx_at_frame_boundary() {
+        let logs = capture_osc_logs(|| {
+            let _ = encode_frame("/ping", &[OscArg::Int64(123)]).unwrap();
+        });
+
+        assert_eq!(
+            logs,
+            vec![CapturedOscLog {
+                event: Some("osc_message".to_string()),
+                direction: Some("tx".to_string()),
+                osc_address: Some("/ping".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn decode_frame_payload_logs_osc_rx_at_frame_boundary() {
+        let frame = Lv1Frame {
+            header: DEFAULT_HEADER,
+            payload: crate::osc::encode_message("/ping", &[OscArg::Int64(123)]).unwrap(),
+        };
+
+        let logs = capture_osc_logs(|| {
+            let _ = decode_frame_payload(&frame).unwrap();
+        });
+
+        assert_eq!(
+            logs,
+            vec![CapturedOscLog {
+                event: Some("osc_message".to_string()),
+                direction: Some("rx".to_string()),
+                osc_address: Some("/ping".to_string()),
+            }]
+        );
     }
 
     #[test]
