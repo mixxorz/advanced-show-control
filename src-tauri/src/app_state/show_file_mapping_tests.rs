@@ -1,5 +1,5 @@
 use super::shell::ShellState;
-use super::test_support::connected_state_with_scene_and_channel;
+use super::test_support::{begin_test_connection, connected_state_with_scene_and_channel};
 use super::view::ShowSnapshot;
 use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
 
@@ -35,9 +35,7 @@ fn populated_show_snapshot() -> ShowSnapshot {
 #[tokio::test]
 async fn export_show_file_contains_current_configs() {
     let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&state, connected_state_with_scene_and_channel()).await;
     state.show.replace_snapshot(populated_show_snapshot()).await;
 
     let file = state.export_show_file("saved".to_string()).await;
@@ -73,9 +71,7 @@ async fn export_show_file_contains_current_configs() {
 #[tokio::test]
 async fn export_load_export_round_trips_show_file_mapping() {
     let source = ShellState::default();
-    source
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&source, connected_state_with_scene_and_channel()).await;
     source
         .show
         .replace_snapshot(populated_show_snapshot())
@@ -84,9 +80,7 @@ async fn export_load_export_round_trips_show_file_mapping() {
     let exported = source.export_show_file("saved".to_string()).await;
 
     let target = ShellState::default();
-    target
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&target, connected_state_with_scene_and_channel()).await;
     let mut imported = exported.clone();
     target
         .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut imported)
@@ -115,7 +109,7 @@ fn lv1_scene_only_snapshot() -> advanced_show_control::lv1::types::Lv1StateSnaps
 #[tokio::test]
 async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
     let state = ShellState::default();
-    state.begin_connection(lv1_scene_only_snapshot()).await;
+    begin_test_connection(&state, lv1_scene_only_snapshot()).await;
     state
         .show
         .replace_snapshot(ShowSnapshot {
@@ -223,9 +217,7 @@ async fn mark_show_file_saved_updates_path_and_clears_dirty() {
 #[tokio::test]
 async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
     let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&state, connected_state_with_scene_and_channel()).await;
     let mut file = ShowFile {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
@@ -284,9 +276,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
 #[tokio::test]
 async fn load_show_file_preserves_disabled_fader_scope_toggle() {
     let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&state, connected_state_with_scene_and_channel()).await;
 
     let mut file = ShowFile {
         schema_version: 1,
@@ -329,9 +319,7 @@ async fn load_show_file_preserves_disabled_fader_scope_toggle() {
 #[tokio::test]
 async fn export_and_import_show_file_round_trips_pan_family_fields() {
     let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&state, connected_state_with_scene_and_channel()).await;
     state
         .show
         .replace_snapshot(ShowSnapshot {
@@ -409,9 +397,7 @@ async fn export_and_import_show_file_round_trips_pan_family_fields() {
 #[tokio::test]
 async fn load_show_file_defaults_missing_pan_family_fields() {
     let state = ShellState::default();
-    state
-        .begin_connection(connected_state_with_scene_and_channel())
-        .await;
+    begin_test_connection(&state, connected_state_with_scene_and_channel()).await;
 
     let mut file = ShowFile {
         schema_version: 1,
@@ -454,7 +440,7 @@ async fn load_show_file_defaults_missing_pan_family_fields() {
 #[tokio::test]
 async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
     let state = ShellState::default();
-    state.begin_connection(lv1_scene_only_snapshot()).await;
+    begin_test_connection(&state, lv1_scene_only_snapshot()).await;
 
     let mut file = ShowFile {
         schema_version: 1,

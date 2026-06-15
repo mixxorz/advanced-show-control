@@ -1,10 +1,23 @@
 use advanced_show_control::fade::events::FadeEvent;
 use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+use advanced_show_control::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::show::types::scene_id;
 
 use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionOutcome {
+    Applied,
+    Stale,
+    Ignored,
+}
+
+impl ProjectionOutcome {
+    pub fn was_applied(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+}
 
 impl ShellState {
     #[cfg(test)]
@@ -60,43 +73,7 @@ impl ShellState {
         self.snapshot().await
     }
 
-    #[cfg(test)]
-    pub async fn begin_connection(&self, snapshot: Lv1StateSnapshot) -> AppViewState {
-        let mut inner = self.inner.lock().await;
-        apply_begin_connection(&mut inner, snapshot);
-        let scene_list = inner
-            .lv1_snapshot
-            .as_ref()
-            .map(|snapshot| snapshot.scene_list.clone())
-            .unwrap_or_default();
-        let generation = inner.generation;
-        drop(inner);
-
-        if !scene_list.is_empty() {
-            let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
-            let mut inner = self.inner.lock().await;
-            if inner.generation == generation
-                && inner
-                    .lv1_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.scene_list.clone())
-                    == Some(scene_list.clone())
-            {
-                if changed {
-                    inner.show_file_dirty = true;
-                }
-                if inner.selected_scene_id.is_none() {
-                    inner.selected_scene_id = scene_list
-                        .first()
-                        .map(|scene| scene_id(scene.index, &scene.name));
-                }
-            }
-            drop(inner);
-        }
-        self.snapshot().await
-    }
-
-    pub async fn begin_connection_for_generation(
+    pub async fn begin_connection(
         &self,
         generation: u64,
         snapshot: Lv1StateSnapshot,
@@ -114,9 +91,6 @@ impl ShellState {
             .unwrap_or_default();
 
         if !scene_list.is_empty() {
-            // Reconcile while holding `inner` so the generation cannot change
-            // between the check above and this show mutation.
-            // Lock ordering: inner then show (consistent with snapshot()).
             let changed = self.show.reconcile_scene_list(scene_list.clone()).await;
             if changed {
                 inner.show_file_dirty = true;
@@ -128,7 +102,7 @@ impl ShellState {
             }
         }
         drop(inner);
-        Some(self.snapshot().await)
+        self.snapshot_for_generation(generation).await
     }
 
     pub async fn disconnect(&self) -> (u64, AppViewState) {
@@ -149,14 +123,14 @@ impl ShellState {
         (generation, self.snapshot().await)
     }
 
-    pub async fn apply_lv1_event_for_generation(
+    pub async fn apply_lv1_event_to_projection(
         &self,
         generation: u64,
         event: &Lv1Event,
-    ) -> Option<AppViewState> {
+    ) -> ProjectionOutcome {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return None;
+            return ProjectionOutcome::Stale;
         }
 
         match event {
@@ -195,128 +169,71 @@ impl ShellState {
             }
             Lv1Event::SceneListChanged(scenes) => {
                 let generation = inner.generation;
-
-                // Gather diagnostics before holding the lock to avoid lock contention
                 drop(inner);
-                let before_count = self.show.get_snapshot().await.scene_configs.len();
-                let reconciliation_diagnostic = self
-                    .show
-                    .scene_reconciliation_diagnostic(scenes.clone())
-                    .await;
 
-                // Re-acquire inner lock and hold it across reconciliation to prevent stale mutations.
-                // Lock ordering: inner then show (consistent with snapshot()).
                 let mut inner = self.inner.lock().await;
                 if inner.generation != generation {
-                    return None;
+                    return ProjectionOutcome::Stale;
                 }
 
-                // Call reconcile_scene_list while holding inner lock to ensure generation
-                // doesn't change between the check and the mutation
                 let changed = self.show.reconcile_scene_list(scenes.clone()).await;
-                let after_count = self.show.get_snapshot().await.scene_configs.len();
-
                 ensure_lv1_snapshot(&mut inner).scene_list = scenes.clone();
                 if changed {
                     inner.show_file_dirty = true;
                 }
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    format!("Scene list updated: {} scenes", scenes.len()),
-                );
-                inner.push_log(LogSource::App, LogSeverity::Info, reconciliation_diagnostic);
-                inner.push_log(
-                    LogSource::App,
-                    LogSeverity::Info,
-                    format!(
-                        "Diagnostic: scene list projection scenes={} changed={} configs_before={} configs_after={}",
-                        scenes.len(),
-                        changed,
-                        before_count,
-                        after_count
-                    ),
-                );
-                drop(inner);
-                return Some(self.snapshot().await);
+                return ProjectionOutcome::Applied;
             }
             Lv1Event::FaderChanged {
                 group,
                 channel,
                 gain_db,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.gain_db = *gain_db;
-                }
+                });
             }
             Lv1Event::MuteChanged {
                 group,
                 channel,
                 muted,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.muted = *muted;
-                }
+                });
             }
             Lv1Event::PanChanged {
                 group,
                 channel,
                 pan,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.pan = Some(*pan);
-                }
+                });
             }
             Lv1Event::BalanceChanged {
                 group,
                 channel,
                 balance,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.balance = Some(*balance);
-                }
+                });
             }
             Lv1Event::WidthChanged {
                 group,
                 channel,
                 width,
             } => {
-                if let Some(existing) = ensure_lv1_snapshot(&mut inner)
-                    .channels
-                    .iter_mut()
-                    .find(|ch| ch.group == *group && ch.channel == *channel)
-                {
+                update_channel(&mut inner, *group, *channel, |existing| {
                     existing.width = Some(*width);
-                }
+                });
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
                 ensure_lv1_snapshot(&mut inner).channels = channels.clone();
-                inner.push_log(
-                    LogSource::Lv1,
-                    LogSeverity::Info,
-                    format!("Channel topology updated: {} channels", channels.len()),
-                );
             }
         }
 
-        drop(inner);
-        Some(self.snapshot().await)
+        ProjectionOutcome::Applied
     }
 
     #[cfg(test)]
@@ -327,19 +244,33 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn apply_fade_event_for_generation(
+    pub async fn apply_fade_event_to_projection(
         &self,
         generation: u64,
         event: &FadeEvent,
-    ) -> Option<AppViewState> {
+    ) -> ProjectionOutcome {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
-            return None;
+            return ProjectionOutcome::Stale;
         }
 
         apply_fade_event_locked(&mut inner, event);
-        drop(inner);
-        self.snapshot_for_generation(generation).await
+        ProjectionOutcome::Applied
+    }
+}
+
+fn update_channel(
+    inner: &mut ShellInner,
+    group: i32,
+    channel: i32,
+    apply: impl FnOnce(&mut ChannelInfo),
+) {
+    if let Some(existing) = ensure_lv1_snapshot(inner)
+        .channels
+        .iter_mut()
+        .find(|ch| ch.group == group && ch.channel == channel)
+    {
+        apply(existing);
     }
 }
 
@@ -347,19 +278,9 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
     match event {
         FadeEvent::FadeStarted => {
             inner.fade_state = AppFadeState::Running;
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Info,
-                "Fade started".to_string(),
-            );
         }
         FadeEvent::FadeCompleted => {
             inner.fade_state = AppFadeState::Idle;
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Info,
-                "Fade completed".to_string(),
-            );
         }
         FadeEvent::FadeAborted => {
             inner.fade_state = AppFadeState::Idle;
@@ -369,13 +290,7 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
                 "Fade aborted".to_string(),
             );
         }
-        FadeEvent::ChannelCompleted { group, channel, .. } => {
-            inner.push_log(
-                LogSource::Fade,
-                LogSeverity::Info,
-                format!("Fade channel completed: group {group}, channel {channel}"),
-            );
-        }
+        FadeEvent::ChannelCompleted { .. } => {}
         FadeEvent::ChannelOverride { group, channel, .. } => {
             inner.fade_state = AppFadeState::Blocked;
             inner.push_log(

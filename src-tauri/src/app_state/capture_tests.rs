@@ -1,5 +1,5 @@
 use super::shell::ShellState;
-use super::test_support::connected_state_with_scene_and_channel;
+use super::test_support::{begin_test_connection, connected_state_with_scene_and_channel};
 use super::view::ChannelRef;
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
@@ -9,7 +9,7 @@ use advanced_show_control::lv1::types::{
 async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_store() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -35,7 +35,7 @@ async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_stor
 async fn store_scene_config_rejects_missing_scene_id() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -61,7 +61,7 @@ async fn store_scene_config_rejects_empty_lv1_channel_list() {
         }],
         channels: Vec::new(),
     };
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -79,7 +79,7 @@ async fn store_scene_config_rejects_empty_lv1_channel_list() {
 async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -105,7 +105,7 @@ async fn set_scene_duration_ms_updates_duration_and_marks_dirty() {
 async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -128,7 +128,7 @@ async fn set_scene_scope_faders_enabled_updates_toggle_and_marks_dirty() {
 async fn set_scene_scope_pan_enabled_updates_toggle_and_marks_dirty() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -152,7 +152,7 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
     let state = ShellState::default();
 
     let lv1_snapshot = connected_state_with_three_channels();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -194,7 +194,7 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
             },
         ],
     };
-    state.begin_connection(lv1_snapshot2.clone()).await;
+    begin_test_connection(&state, lv1_snapshot2.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot2.scene_list)
@@ -218,7 +218,7 @@ async fn store_scene_config_preserves_existing_scope_on_later_store() {
 async fn set_channel_scoped_toggles_single_channel_scope_and_marks_dirty() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -248,7 +248,7 @@ async fn set_channel_scoped_toggles_single_channel_scope_and_marks_dirty() {
 async fn set_channel_scoped_noop_keeps_clean_show_file_clean() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -272,7 +272,7 @@ async fn set_channel_scoped_noop_keeps_clean_show_file_clean() {
 async fn set_all_channels_scoped_sets_and_clears_scope() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_two_channels();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -303,7 +303,7 @@ async fn set_all_channels_scoped_sets_and_clears_scope() {
 async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_two_channels();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -329,7 +329,7 @@ async fn set_all_channels_scoped_noop_keeps_clean_show_file_clean() {
 async fn set_all_channels_scoped_reordered_scopes_is_noop_and_preserves_order() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_two_channels();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -453,7 +453,7 @@ fn connected_state_with_three_channels() -> Lv1StateSnapshot {
 async fn set_scene_duration_ms_returns_error_for_unknown_scene() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -469,7 +469,7 @@ async fn set_scene_duration_ms_returns_error_for_unknown_scene() {
 async fn set_channel_scoped_returns_error_for_unknown_scene() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -485,7 +485,7 @@ async fn set_channel_scoped_returns_error_for_unknown_scene() {
 async fn set_all_channels_scoped_returns_error_for_unknown_scene() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -501,7 +501,7 @@ async fn set_all_channels_scoped_returns_error_for_unknown_scene() {
 async fn set_scene_scope_faders_enabled_returns_error_for_unknown_scene() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)
@@ -517,7 +517,7 @@ async fn set_scene_scope_faders_enabled_returns_error_for_unknown_scene() {
 async fn set_scene_scope_pan_enabled_returns_error_for_unknown_scene() {
     let state = ShellState::default();
     let lv1_snapshot = connected_state_with_scene_and_channel();
-    state.begin_connection(lv1_snapshot.clone()).await;
+    begin_test_connection(&state, lv1_snapshot.clone()).await;
     state
         .show
         .reconcile_scene_list(lv1_snapshot.scene_list)

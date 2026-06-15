@@ -3,7 +3,31 @@ use advanced_show_control::lv1::types::{
 };
 use advanced_show_control::show::types::{SceneScopeToggles, scene_id};
 
+use super::shell::ShellState;
+use super::view::AppViewState;
 use super::view::{ChannelConfig, ChannelRef, SceneConfig};
+
+pub(super) async fn begin_test_connection(
+    state: &ShellState,
+    snapshot: Lv1StateSnapshot,
+) -> AppViewState {
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .begin_connection(generation, snapshot)
+        .await
+        .expect("test connection should apply to current generation")
+}
+
+pub(super) async fn set_pending_lv1_identity(
+    state: &ShellState,
+    identity: Option<crate::connection_state::Lv1SystemIdentity>,
+) -> AppViewState {
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .set_pending_lv1_identity(generation, identity)
+        .await
+        .expect("test pending identity should apply to current generation")
+}
 
 pub(super) fn connected_snapshot() -> Lv1StateSnapshot {
     Lv1StateSnapshot {
