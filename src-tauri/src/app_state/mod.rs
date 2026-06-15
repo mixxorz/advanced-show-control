@@ -3,8 +3,6 @@ mod capture_tests;
 mod events;
 #[cfg(test)]
 mod events_tests;
-mod logs;
-mod projection;
 mod shell;
 mod show_file_mapping;
 #[cfg(test)]
@@ -13,7 +11,7 @@ mod show_file_mapping_tests;
 mod test_support;
 mod view;
 
-pub use projection::ProjectionOutcome;
+pub use events::ProjectionOutcome;
 #[allow(unused_imports)]
 pub use shell::RuntimeHandles;
 pub use shell::ShellState;

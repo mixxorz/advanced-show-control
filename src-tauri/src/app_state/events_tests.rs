@@ -1,4 +1,4 @@
-use super::projection::ProjectionOutcome;
+use super::events::ProjectionOutcome;
 use super::shell::ShellState;
 use super::test_support::{
     connected_snapshot, connected_state_with_scene_and_channel, scene_config,
@@ -9,7 +9,6 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
-use advanced_show_control::runtime::events::AppEvent;
 
 #[tokio::test]
 async fn fade_events_update_fade_state() {
@@ -227,18 +226,18 @@ async fn stale_scene_list_changed_event_does_not_mutate_show_configs() {
 }
 
 #[tokio::test]
-async fn diagnostic_event_is_logged_into_shell_state() {
+async fn scene_list_projection_does_not_append_ui_log() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
 
     assert_eq!(
         state
-            .apply_projector_event_to_projection(
+            .apply_lv1_event_to_projection(
                 generation,
-                &AppEvent::Diagnostic {
-                    source: "fade-engine".to_string(),
-                    message: "event subscriber lagged and missed 3 events".to_string(),
-                },
+                &Lv1Event::SceneListChanged(vec![SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }]),
             )
             .await,
         ProjectionOutcome::Applied
@@ -246,40 +245,50 @@ async fn diagnostic_event_is_logged_into_shell_state() {
     let snapshot = state
         .snapshot_for_generation(generation)
         .await
-        .expect("diagnostic event should project to current generation");
+        .expect("event should apply to current generation");
 
-    assert_eq!(
-        snapshot.logs.last().unwrap().message,
-        "fade-engine: event subscriber lagged and missed 3 events"
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .all(|entry| !entry.message.contains("Scene list updated"))
     );
 }
 
 #[tokio::test]
-async fn stale_diagnostic_event_does_not_mutate_logs_via_projection_helper() {
+async fn channel_topology_projection_does_not_append_ui_log() {
     let state = ShellState::default();
     let (generation, _) = state.begin_connecting().await;
-    let _ = state.disconnect().await;
 
     assert_eq!(
         state
-            .apply_projector_event_to_projection(
+            .apply_lv1_event_to_projection(
                 generation,
-                &AppEvent::Diagnostic {
-                    source: "fade-engine".to_string(),
-                    message: "stale diagnostic".to_string(),
-                },
+                &Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
+                    group: 0,
+                    channel: 1,
+                    name: "Lead".to_string(),
+                    gain_db: -6.0,
+                    muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }]),
             )
             .await,
-        ProjectionOutcome::Stale
+        ProjectionOutcome::Applied
     );
+    let snapshot = state
+        .snapshot_for_generation(generation)
+        .await
+        .expect("event should apply to current generation");
 
     assert!(
-        state
-            .snapshot()
-            .await
+        snapshot
             .logs
             .iter()
-            .all(|entry| { entry.message != "fade-engine: stale diagnostic" })
+            .all(|entry| !entry.message.contains("Channel topology updated"))
     );
 }
 

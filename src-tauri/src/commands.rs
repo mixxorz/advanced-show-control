@@ -800,15 +800,22 @@ async fn apply_projector_event(
                 return ProjectionOutcome::Stale;
             }
 
-            state
-                .apply_projector_event_to_projection(generation, event)
+            let log_message = format!("{source}: {message}");
+            if state
+                .push_log_for_generation(
+                    generation,
+                    LogSource::App,
+                    LogSeverity::Warning,
+                    log_message,
+                )
                 .await
+            {
+                ProjectionOutcome::Applied
+            } else {
+                ProjectionOutcome::Stale
+            }
         }
-        AppEvent::SceneRecall(_) => {
-            state
-                .apply_projector_event_to_projection(generation, event)
-                .await
-        }
+        AppEvent::SceneRecall(_) => ProjectionOutcome::Ignored,
     }
 }
 
@@ -1567,16 +1574,20 @@ mod tests {
     async fn projector_applies_runtime_events_before_coalesced_snapshot() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
+        let diagnostics_dir = temp_dir("projector-applies-runtime-events");
+        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
 
-        let applied = state
-            .apply_projector_event_to_projection(
-                generation,
-                &AppEvent::Diagnostic {
-                    source: "shell-state-projector".to_string(),
-                    message: "coalesced snapshot pending".to_string(),
-                },
-            )
-            .await;
+        let applied = apply_projector_event(
+            &state,
+            generation,
+            &diagnostics_path,
+            &ActiveCommandBus::default(),
+            &AppEvent::Diagnostic {
+                source: "shell-state-projector".to_string(),
+                message: "coalesced snapshot pending".to_string(),
+            },
+        )
+        .await;
 
         assert_eq!(applied, ProjectionOutcome::Applied);
 
@@ -1589,6 +1600,8 @@ mod tests {
                 entry.message == "shell-state-projector: coalesced snapshot pending"
             })
         );
+
+        let _ = fs::remove_dir_all(&diagnostics_dir);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1793,45 +1806,5 @@ mod tests {
         let mut handles = state.handles.lock().await;
         assert!(handles.scene_recall_fader.is_some());
         handles.abort_all().await;
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn scene_recall_events_emit_coalesced_app_status_snapshot() {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let observed_for_listener = observed.clone();
-
-        handle.listen_any("app-status-changed", move |event| {
-            let payload: serde_json::Value = serde_json::from_str(event.payload())
-                .expect("app-status-changed payload should be valid JSON");
-            observed_for_listener.lock().unwrap().push(payload);
-        });
-
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let event_bus = AppEventBus::default();
-        let projector = spawn_shell_state_projector(
-            handle,
-            state,
-            ActiveCommandBus::default(),
-            generation,
-            event_bus.subscribe(),
-        );
-
-        event_bus.publish(AppEvent::SceneRecall(
-            advanced_show_control::scene_recall::events::SceneRecallEvent::Blocked {
-                scene_label: "1: Intro".to_string(),
-                reason: "locked out".to_string(),
-            },
-        ));
-
-        tokio::task::yield_now().await;
-        tokio::time::advance(std::time::Duration::from_millis(100)).await;
-        tokio::task::yield_now().await;
-
-        assert!(!observed.lock().unwrap().is_empty());
-
-        projector.abort();
     }
 }

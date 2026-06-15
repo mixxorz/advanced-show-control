@@ -3,9 +3,21 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use advanced_show_control::show::types::scene_id;
 
-use super::projection::ProjectionOutcome;
 use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity, LogSource};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionOutcome {
+    Applied,
+    Stale,
+    Ignored,
+}
+
+impl ProjectionOutcome {
+    pub fn was_applied(self) -> bool {
+        matches!(self, Self::Applied)
+    }
+}
 
 impl ShellState {
     #[cfg(test)]
