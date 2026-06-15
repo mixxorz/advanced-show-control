@@ -3,6 +3,7 @@ mod commands;
 mod connection_preferences;
 mod connection_state;
 mod diagnostics;
+mod logging;
 mod show_file;
 mod time;
 
@@ -15,8 +16,12 @@ fn main() {
         .manage(ShellState::default())
         .manage(ActiveCommandBus::default())
         .setup(|app| {
+            let shell_state = (*app.state::<ShellState>()).clone();
             let path = diagnostics::diagnostic_log_path(app.handle());
             app.manage(diagnostics::DiagnosticLogPath(path));
+            let logging_guard = logging::init_logging(app.handle(), shell_state.clone())?;
+            app.manage(logging_guard);
+            tracing::info!(event = "app_started", "Starting Advanced Show Control");
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

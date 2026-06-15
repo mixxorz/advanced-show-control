@@ -26,17 +26,8 @@ pub struct ChannelSummary {
 pub struct AppLogEntry {
     pub id: u64,
     pub timestamp: String,
-    pub source: LogSource,
     pub severity: LogSeverity,
     pub message: String,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum LogSource {
-    App,
-    Lv1,
-    Fade,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

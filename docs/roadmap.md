@@ -41,37 +41,41 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 3. Reduce false-positive manual override reports for balance/rotation fades.
    - Revisit pan-family override ownership, possibly limiting override authority to pan control instead of pan, balance, and width together.
    - Preserve clear manual override logs and cancellation behavior for safety-relevant moves.
-4. Add show-file scene reconciliation/remapping.
+4. Evaluate forbidding dead code for MVP crates.
+   - Remove or refactor current dead-code suppressions instead of replacing them with broader lint allowances.
+   - Decide whether `#![forbid(dead_code)]` should apply to normal builds only or to test targets as well.
+   - Enable the lint only after the core, Tauri, and CLI/probe crates can pass without suppressions.
+5. Add show-file scene reconciliation/remapping.
    - Handle loaded show files whose stored scene references no longer match the current LV1 scene list.
    - Make mismatches and any skipped or unresolved mappings visible to the user.
-5. Create a Storybook setup and start real frontend development.
+6. Create a Storybook setup and start real frontend development.
    - Treat the current frontend as a test bed, not the final UI.
    - Establish component development outside the live Tauri runtime.
-6. Set up frontend testing.
+7. Set up frontend testing.
    - Add the test tooling needed for UI behavior and component coverage.
-7. Build the frontend app shell.
+8. Build the frontend app shell.
    - Replace the test-bed layout with the real application frame.
    - Keep global safety controls prominent.
-8. Build the frontend Scenes tab.
+9. Build the frontend Scenes tab.
    - Support scene status, stored scene config review, scope editing, duration editing, and clear mismatch or safety warnings.
-9. Build the frontend connection controls.
+10. Build the frontend connection controls.
    - Support discovery, connect/disconnect, current LV1 status, and startup/reconnect clarity.
-10. Build the frontend Settings tab.
+11. Build the frontend Settings tab.
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session/show file when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
-11. Build the frontend Sessions tab.
+12. Build the frontend Sessions tab.
    - Support session management for app show/session files.
    - Provide clear import/export flows for engineers moving sessions between systems.
    - Surface save/load state, dirty state, current file location, and any import/export warnings.
    - Preserve manual session import/export as the explicit fallback path for automatic session handling.
-12. Add auto-session recall.
+13. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session/show file only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
-13. Build the frontend Logs tab.
+14. Build the frontend Logs tab.
    - Show frontend-facing info logs, safety blocks, recalls, fade starts, fade completions, manual overrides, and connection events.
-14. Sort out bundling.
+15. Sort out bundling.
    - Produce a practical app package for MVP testing.
    - Document the packaging path and any platform limitations.
 
@@ -86,6 +90,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 - Logging is split appropriately between diagnostic files and frontend-facing operational events.
 - Show-file scene mismatches can be reconciled or remapped without silently dropping app-managed fade configuration.
 - Balance/rotation fades do not produce known false-positive manual override reports during normal timed fades.
+- MVP crates have a settled dead-code policy, with dead-code suppressions removed or justified before enabling any strict lint.
 - Frontend development has Storybook and test coverage in place for continued iteration.
 - Shell state projection is bounded so routine LV1 updates do not overload the frontend.
 - Bundling is good enough for MVP rehearsal/testing distribution.

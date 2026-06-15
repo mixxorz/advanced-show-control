@@ -10,6 +10,48 @@ use advanced_show_control::lv1::events::Lv1Event;
 use advanced_show_control::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
+use std::sync::{Arc, Mutex};
+use tracing::field::{Field, Visit};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::{LookupSpan, Registry};
+
+#[derive(Default)]
+struct CapturedEvents(Arc<Mutex<Vec<String>>>);
+
+impl<S> Layer<S> for CapturedEvents
+where
+    S: tracing::Subscriber,
+    S: for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        let mut visitor = EventNameVisitor::default();
+        event.record(&mut visitor);
+        if let Some(event_name) = visitor.event_name {
+            self.0.lock().unwrap().push(event_name);
+        }
+    }
+}
+
+#[derive(Default)]
+struct EventNameVisitor {
+    event_name: Option<String>,
+}
+
+impl Visit for EventNameVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "event" {
+            self.event_name = Some(value.to_string());
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "event" {
+            self.event_name = Some(format!("{value:?}"));
+        }
+    }
+}
 
 #[tokio::test]
 async fn fade_events_update_fade_state() {
@@ -34,10 +76,7 @@ async fn fade_events_update_fade_state() {
             parameter: FadeParameter::FaderDb,
         })
         .await;
-    assert_eq!(
-        overridden.logs.last().unwrap().message,
-        "Fade channel override detected: group=3 channel=7"
-    );
+    assert!(overridden.logs.is_empty());
 }
 
 #[tokio::test]
@@ -91,6 +130,34 @@ async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_emp
     assert_eq!(snapshot.scene_configs.len(), 1);
     assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
     assert_eq!(snapshot.selected_scene_id.as_deref(), Some("1::Intro"));
+}
+
+#[tokio::test]
+async fn shell_projection_does_not_emit_connection_lifecycle_tracing() {
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = Registry::default().with(CapturedEvents(captured.clone()));
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let state = ShellState::default();
+    let (generation, _) = state.begin_connecting().await;
+    state
+        .begin_connection(generation, connected_snapshot())
+        .await
+        .expect("current generation should connect");
+    assert_eq!(
+        state
+            .apply_lv1_event_to_projection(generation, &Lv1Event::Connected)
+            .await,
+        ProjectionOutcome::Applied
+    );
+
+    let captured = captured.lock().unwrap();
+    assert!(!captured.iter().any(|event| {
+        matches!(
+            event.as_str(),
+            "lv1_connecting" | "lv1_connected" | "lv1_disconnected"
+        )
+    }));
 }
 
 #[tokio::test]
@@ -439,15 +506,14 @@ async fn late_scene_list_event_returns_snapshot_without_deadlock() {
 }
 
 #[tokio::test]
-async fn begin_connecting_sets_connecting_snapshot_and_logs_it() {
+async fn begin_connecting_sets_connecting_snapshot_without_direct_log() {
     let state = ShellState::default();
 
     let (generation, snapshot) = state.begin_connecting().await;
 
     assert_eq!(generation, 1);
     assert_eq!(snapshot.connection, AppConnectionState::Connecting);
-    assert_eq!(snapshot.logs.len(), 1);
-    assert_eq!(snapshot.logs[0].message, "Connecting to LV1");
+    assert!(snapshot.logs.is_empty());
 }
 
 #[tokio::test]
@@ -647,7 +713,7 @@ async fn lv1_scene_event_updates_rust_owned_snapshot() {
 
     assert_eq!(snapshot.connection, AppConnectionState::Connecting);
     assert_eq!(snapshot.current_scene.unwrap().name, "Chorus");
-    assert_eq!(snapshot.logs.len(), 2);
+    assert!(snapshot.logs.is_empty());
 }
 
 #[tokio::test]
@@ -660,12 +726,7 @@ async fn duplicate_connecting_attempt_is_rejected() {
     assert!(second.is_none());
 
     let snapshot = state.snapshot().await;
-    let connecting_logs = snapshot
-        .logs
-        .iter()
-        .filter(|log| log.message == "Connecting to LV1")
-        .count();
-    assert_eq!(connecting_logs, 1);
+    assert!(snapshot.logs.is_empty());
 }
 
 #[tokio::test]
@@ -685,7 +746,7 @@ async fn begin_connection_preserves_incoming_connection_state() {
     .await;
 
     assert_eq!(snapshot.connection, AppConnectionState::Connecting);
-    assert_eq!(snapshot.logs.last().unwrap().message, "Connecting to LV1");
+    assert!(snapshot.logs.is_empty());
 
     let snapshot = begin_test_connection(
         &state,
@@ -699,7 +760,7 @@ async fn begin_connection_preserves_incoming_connection_state() {
     .await;
 
     assert_eq!(snapshot.connection, AppConnectionState::Connected);
-    assert_eq!(snapshot.logs.last().unwrap().message, "LV1 connected");
+    assert!(snapshot.logs.is_empty());
 }
 
 #[tokio::test]

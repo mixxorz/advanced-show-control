@@ -14,4 +14,4 @@ mod view;
 pub use events::ProjectionOutcome;
 pub use shell::RuntimeHandles;
 pub use shell::ShellState;
-pub use view::{AppConnectionState, AppViewState, LogSeverity, LogSource};
+pub use view::{AppConnectionState, AppViewState, LogSeverity};

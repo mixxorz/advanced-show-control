@@ -115,9 +115,15 @@ async fn process_scene_observation(
     if recall_state.is_scene_list_edit_suppressed(observation.seen_at)
         || recall_state.is_scene_list_edit_suppressed(now)
     {
+        let scene_label = scene_label(&observation.scene);
+        let reason = "scene list edit suppression";
+        tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
         return;
     }
     if !recall_state.accepts(&observation.scene) {
+        let scene_label = scene_label(&observation.scene);
+        let reason = "scene not accepted by recall policy";
+        tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
         return;
     }
 
@@ -190,6 +196,8 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
+            tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
+            tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
             event_bus.publish(AppEvent::SceneRecall(
                 crate::scene_recall::events::SceneRecallEvent::Ready {
                     scene_label: scene_label.clone(),
@@ -232,9 +240,16 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
+            let scene_label = scene_label(&observation.scene);
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene = %scene_label,
+                reason = %reason,
+                "Scene recall blocked for {scene_label}: {reason}"
+            );
             event_bus.publish(AppEvent::SceneRecall(
                 crate::scene_recall::events::SceneRecallEvent::Blocked {
-                    scene_label: scene_label(&observation.scene),
+                    scene_label,
                     reason,
                 },
             ));

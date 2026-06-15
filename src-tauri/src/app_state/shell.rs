@@ -15,7 +15,7 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 
 use super::view::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, LogSeverity,
-    LogSource, SceneSummary,
+    SceneSummary,
 };
 
 pub(super) const MAX_LOGS: usize = 200;
@@ -253,11 +253,7 @@ impl ShellState {
         self.snapshot_for_generation(generation).await
     }
 
-    pub async fn fail_connect(
-        &self,
-        generation: u64,
-        message: impl Into<String>,
-    ) -> Option<AppViewState> {
+    pub async fn fail_connect(&self, generation: u64) -> Option<AppViewState> {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return None;
@@ -267,16 +263,11 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         inner.connected_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
 
-    pub async fn fail_reconnect(
-        &self,
-        generation: u64,
-        message: impl Into<String>,
-    ) -> Option<AppViewState> {
+    pub async fn fail_reconnect(&self, generation: u64) -> Option<AppViewState> {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return None;
@@ -285,7 +276,6 @@ impl ShellState {
         inner.lv1_snapshot = None;
         inner.pending_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        inner.push_log(LogSource::App, LogSeverity::Warning, message.into());
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
@@ -301,48 +291,9 @@ impl ShellState {
         self.snapshot().await
     }
 
-    pub async fn push_log_unchecked(
-        &self,
-        source: LogSource,
-        severity: LogSeverity,
-        message: String,
-    ) {
+    pub(crate) async fn append_log(&self, severity: LogSeverity, message: String) {
         let mut inner = self.inner.lock().await;
-        inner.push_log(source, severity, message);
-    }
-
-    pub async fn append_diagnostic_for_generation(
-        &self,
-        generation: u64,
-        diagnostics_path: &std::path::Path,
-        source: &str,
-        message: &str,
-    ) -> bool {
-        let inner = self.inner.lock().await;
-        if inner.generation != generation {
-            return false;
-        }
-
-        if let Err(err) = crate::diagnostics::append_diagnostic(diagnostics_path, source, message) {
-            eprintln!("failed to write diagnostic log: {err}");
-        }
-        true
-    }
-
-    pub async fn push_log(
-        &self,
-        generation: u64,
-        source: LogSource,
-        severity: LogSeverity,
-        message: String,
-    ) -> bool {
-        let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
-            return false;
-        }
-
-        inner.push_log(source, severity, message);
-        true
+        inner.append_log(severity, message);
     }
 
     #[cfg(test)]
@@ -464,7 +415,6 @@ fn cover_state_variants() {
     };
 
     let _ = (
-        LogSource::Fade,
         LogSeverity::Error,
         AppFadeState::Running,
         AppFadeState::Blocked,
@@ -707,13 +657,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lockout_is_owned_by_rust_state() {
+    async fn lockout_is_owned_by_rust_state_without_direct_log() {
         let state = ShellState::default();
         let snapshot = state.set_lockout(true).await;
 
         assert!(snapshot.lockout);
-        assert_eq!(snapshot.logs.len(), 1);
-        assert_eq!(snapshot.logs[0].message, "Lockout enabled");
+        assert!(snapshot.logs.is_empty());
     }
 
     #[tokio::test]
@@ -1209,7 +1158,7 @@ mod tests {
         store_intro_scene_config(&state).await;
 
         let snapshot = state
-            .fail_connect(generation, "LV1 did not connect")
+            .fail_connect(generation)
             .await
             .expect("current generation failure should apply");
 
@@ -1256,15 +1205,14 @@ mod tests {
             .expect("current generation should set pending identity");
 
         let snapshot = state
-            .fail_connect(generation, "LV1 did not connect")
+            .fail_connect(generation)
             .await
             .expect("current generation failure should apply");
 
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert_eq!(snapshot.pending_lv1_identity, None);
         assert_eq!(snapshot.connected_lv1_identity, None);
-        assert_eq!(snapshot.logs.last().unwrap().severity, LogSeverity::Warning);
-        assert_eq!(snapshot.logs.last().unwrap().message, "LV1 did not connect");
+        assert!(snapshot.logs.is_empty());
     }
 
     #[tokio::test]
@@ -1287,7 +1235,7 @@ mod tests {
             .expect("current generation should set pending identity");
 
         let snapshot = state
-            .fail_reconnect(generation, "LV1 did not connect")
+            .fail_reconnect(generation)
             .await
             .expect("current generation reconnect failure should apply");
 
@@ -1315,9 +1263,7 @@ mod tests {
             .await
             .expect("current generation should set pending identity");
 
-        let stale = state
-            .fail_connect(stale_generation, "LV1 did not connect")
-            .await;
+        let stale = state.fail_connect(stale_generation).await;
         let snapshot = state.snapshot().await;
 
         assert!(stale.is_none());
@@ -1328,7 +1274,6 @@ mod tests {
     #[test]
     fn enum_variants_are_kept_for_state_space_coverage() {
         let _ = (
-            LogSource::Fade,
             LogSeverity::Error,
             AppFadeState::Running,
             AppFadeState::Blocked,

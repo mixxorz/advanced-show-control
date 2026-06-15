@@ -12,8 +12,7 @@ use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
 use crate::app_state::{
-    AppConnectionState, AppViewState, LogSeverity, LogSource, ProjectionOutcome, RuntimeHandles,
-    ShellState,
+    AppConnectionState, AppViewState, ProjectionOutcome, RuntimeHandles, ShellState,
 };
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 
@@ -261,6 +260,12 @@ pub async fn set_lockout(
     enabled: bool,
 ) -> Result<AppViewState, String> {
     let snapshot = state.set_lockout(enabled).await;
+    tracing::info!(
+        event = "lockout_changed",
+        enabled = enabled,
+        "Lockout {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -271,6 +276,10 @@ pub async fn disconnect_lv1(
     state: State<'_, ShellState>,
     active_command_bus: State<'_, ActiveCommandBus>,
 ) -> Result<AppViewState, String> {
+    tracing::debug!(
+        event = "lv1_disconnect_requested",
+        "LV1 disconnect requested"
+    );
     let (generation, snapshot) = state.disconnect().await;
     if let Some(command_bus) = active_command_bus.current().await {
         command_bus.set_generation(generation).await;
@@ -278,6 +287,7 @@ pub async fn disconnect_lv1(
     state
         .clear_runtime_handles(generation, &active_command_bus)
         .await;
+    tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -492,11 +502,23 @@ async fn connect_to_target<R: Runtime>(
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
     let event_bus = AppEventBus::default();
+    tracing::debug!(
+        event = "lv1_connect_requested",
+        host = %identity.address,
+        port = identity.port,
+        "LV1 connect requested"
+    );
     let Some((generation, connecting_snapshot)) = state.try_begin_connecting().await else {
         let snapshot = state.snapshot().await;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     };
+    tracing::info!(
+        event = "lv1_connecting",
+        host = %identity.address,
+        port = identity.port,
+        "Connecting to LV1"
+    );
     state.abort_current_runtime(&active_command_bus).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
@@ -536,17 +558,31 @@ async fn connect_to_target<R: Runtime>(
     {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
-            ConnectFailureMode::ClearConnectedIdentity => {
-                state.fail_connect(generation, "LV1 did not connect").await
-            }
-            ConnectFailureMode::PreserveConnectedIdentity => {
-                state
-                    .fail_reconnect(generation, "LV1 did not connect")
-                    .await
-            }
+            ConnectFailureMode::ClearConnectedIdentity => state.fail_connect(generation).await,
+            ConnectFailureMode::PreserveConnectedIdentity => state.fail_reconnect(generation).await,
         };
         if let Some(snapshot) = failed_snapshot {
             emit_snapshot(&app, &snapshot);
+        }
+        match failure_mode {
+            ConnectFailureMode::ClearConnectedIdentity => {
+                tracing::warn!(
+                    event = "lv1_connect_failed",
+                    host = %identity.address,
+                    port = identity.port,
+                    error = "LV1 did not connect",
+                    "LV1 did not connect"
+                );
+            }
+            ConnectFailureMode::PreserveConnectedIdentity => {
+                tracing::warn!(
+                    event = "lv1_reconnect_failed",
+                    host = %identity.address,
+                    port = identity.port,
+                    error = "LV1 did not connect",
+                    "LV1 did not connect"
+                );
+            }
         }
         return Err("LV1 did not connect".to_string());
     }
@@ -572,6 +608,8 @@ async fn connect_to_target<R: Runtime>(
     )
     .await?;
 
+    let connected_host = identity.address.clone();
+    let connected_port = identity.port;
     let Some(snapshot) = state
         .establish_connected_lv1_identity(generation, identity)
         .await
@@ -583,6 +621,12 @@ async fn connect_to_target<R: Runtime>(
         return Ok(snapshot);
     };
 
+    tracing::info!(
+        event = "lv1_connected",
+        host = %connected_host,
+        port = connected_port,
+        "LV1 connected"
+    );
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -681,19 +725,15 @@ fn spawn_shell_state_projector<R: Runtime>(
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
     projector_start_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> tokio::task::JoinHandle<()> {
-    let diagnostics_path = app
-        .try_state::<crate::diagnostics::DiagnosticLogPath>()
-        .map(|path| path.0.clone())
-        .unwrap_or_else(|| crate::diagnostics::diagnostic_log_path(&app));
     tokio::spawn(async move {
         if projector_start_rx.await.is_err() {
             return;
         }
 
-        let _ = crate::diagnostics::append_diagnostic(
-            &diagnostics_path,
-            "tauri-shell",
-            &format!("projector started generation={generation}"),
+        tracing::debug!(
+            event = "shell_state_projector_started",
+            generation = generation,
+            "shell-state projector started"
         );
         let mut projection_interval = tokio::time::interval(SHELL_PROJECTION_INTERVAL);
         projection_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -712,15 +752,11 @@ fn spawn_shell_state_projector<R: Runtime>(
                 received = events.recv() => {
                     match received {
                         Ok(app_event) => {
-                            if apply_projector_event(&state, generation, &diagnostics_path, &active_command_bus, &app_event).await.was_applied() {
+                            if apply_projector_event(&state, generation, &active_command_bus, &app_event).await.was_applied() {
                                 dirty = true;
                             }
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                            let log_message = format!(
-                                "shell-state-projector event subscriber lagged and missed {count} events"
-                            );
-                            state.push_log_unchecked(LogSource::App, LogSeverity::Warning, log_message).await;
                             dirty = true;
                             log_lagged_subscriber("shell-state-projector", count);
                         }
@@ -735,20 +771,16 @@ fn spawn_shell_state_projector<R: Runtime>(
 async fn apply_projector_event(
     state: &ShellState,
     generation: u64,
-    diagnostics_path: &std::path::Path,
     active_command_bus: &ActiveCommandBus,
     event: &AppEvent,
 ) -> ProjectionOutcome {
     match event {
         AppEvent::Lv1(event) => {
             if let Lv1Event::SceneListChanged(scenes) = event {
-                let _ = append_scene_list_diagnostic_for_generation(
-                    state,
-                    generation,
-                    diagnostics_path,
-                    scenes,
-                )
-                .await;
+                let _ = state
+                    .show
+                    .scene_reconciliation_diagnostic(scenes.clone())
+                    .await;
             }
 
             let outcome = state.apply_lv1_event_to_projection(generation, event).await;
@@ -768,89 +800,8 @@ async fn apply_projector_event(
                 .apply_fade_event_to_projection(generation, event)
                 .await
         }
-        AppEvent::CommandFailed { command, message } => {
-            let log_message = format!("command failed: {command}: {message}");
-            if state
-                .push_log(generation, LogSource::App, LogSeverity::Error, log_message)
-                .await
-            {
-                ProjectionOutcome::Applied
-            } else {
-                ProjectionOutcome::Stale
-            }
-        }
-        AppEvent::Diagnostic { source, message } => {
-            if !state
-                .append_diagnostic_for_generation(generation, diagnostics_path, source, message)
-                .await
-            {
-                return ProjectionOutcome::Stale;
-            }
-
-            let log_message = format!("{source}: {message}");
-            if state
-                .push_log(
-                    generation,
-                    LogSource::App,
-                    LogSeverity::Warning,
-                    log_message,
-                )
-                .await
-            {
-                ProjectionOutcome::Applied
-            } else {
-                ProjectionOutcome::Stale
-            }
-        }
         AppEvent::SceneRecall(_) => ProjectionOutcome::Ignored,
     }
-}
-
-#[cfg(test)]
-async fn handle_diagnostic_event<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &ShellState,
-    generation: u64,
-    diagnostics_path: &std::path::Path,
-    source: &str,
-    message: &str,
-) -> Option<AppViewState> {
-    if !state
-        .append_diagnostic_for_generation(generation, diagnostics_path, source, message)
-        .await
-    {
-        return None;
-    }
-
-    if !state
-        .push_log(
-            generation,
-            LogSource::App,
-            LogSeverity::Warning,
-            format!("{source}: {message}"),
-        )
-        .await
-    {
-        return None;
-    }
-
-    let _ = app;
-    state.snapshot_for_generation(generation).await
-}
-
-async fn append_scene_list_diagnostic_for_generation(
-    state: &ShellState,
-    generation: u64,
-    diagnostics_path: &std::path::Path,
-    scenes: &[advanced_show_control::lv1::types::SceneListEntry],
-) -> bool {
-    let message = state
-        .show
-        .scene_reconciliation_diagnostic(scenes.to_vec())
-        .await;
-    state
-        .append_diagnostic_for_generation(generation, diagnostics_path, "show-state", &message)
-        .await
 }
 
 async fn save_show_file_to_path(
@@ -1346,269 +1297,6 @@ mod tests {
         assert_eq!(observed.len(), 2);
         assert_eq!(observed[0]["fadeState"], "idle");
         assert_eq!(observed[1]["fadeState"], "running");
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn diagnostic_event_updates_shell_state_log_and_coalesced_snapshot() {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let observed_for_listener = observed.clone();
-
-        handle.listen_any("app-status-changed", move |event| {
-            let payload: serde_json::Value = serde_json::from_str(event.payload())
-                .expect("app-status-changed payload should be valid JSON");
-            observed_for_listener.lock().unwrap().push(payload);
-        });
-
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-
-        let initial_snapshot = state
-            .begin_connection(
-                generation,
-                Lv1StateSnapshot {
-                    connection: ConnectionStatus::Connected,
-                    scene: None,
-                    scene_list: Vec::new(),
-                    channels: Vec::new(),
-                },
-            )
-            .await
-            .expect("current generation should accept the initial snapshot");
-
-        let event_bus = AppEventBus::default();
-        let active_command_bus = ActiveCommandBus::default();
-        let _snapshot = install_connected_runtime(
-            &handle,
-            &state,
-            state.clone(),
-            generation,
-            initial_snapshot,
-            event_bus.subscribe(),
-            RuntimeHandles::default(),
-            &active_command_bus,
-        )
-        .await
-        .expect("connected runtime should install successfully");
-
-        tokio::time::advance(std::time::Duration::from_millis(100)).await;
-        tokio::task::yield_now().await;
-
-        assert!(!observed.lock().unwrap().is_empty());
-
-        event_bus.publish(AppEvent::Diagnostic {
-            source: "fade-engine".to_string(),
-            message: "event subscriber lagged and missed 3 events".to_string(),
-        });
-
-        tokio::time::advance(std::time::Duration::from_millis(100)).await;
-        tokio::task::yield_now().await;
-
-        let observed = observed.lock().unwrap();
-        assert_eq!(observed.len(), 2);
-        assert_eq!(observed[1]["fadeState"], "idle");
-        assert!(observed[1]["logs"].as_array().unwrap().iter().any(|entry| {
-            entry["message"] == "fade-engine: event subscriber lagged and missed 3 events"
-        }));
-    }
-
-    #[tokio::test]
-    async fn stale_diagnostic_event_does_not_write_diagnostics_or_logs() {
-        let app = mock_app();
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let diagnostics_dir = temp_dir("stale-diagnostic-file");
-        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
-
-        let _ = state.disconnect().await;
-
-        let snapshot = handle_diagnostic_event(
-            &app.handle().clone(),
-            &state,
-            generation,
-            &diagnostics_path,
-            "fade-engine",
-            "stale diagnostic",
-        )
-        .await;
-
-        assert!(snapshot.is_none());
-        assert!(!diagnostics_path.exists());
-        assert!(
-            state
-                .snapshot()
-                .await
-                .logs
-                .iter()
-                .all(|entry| { entry.message != "fade-engine: stale diagnostic" })
-        );
-
-        let _ = fs::remove_dir_all(&diagnostics_dir);
-    }
-
-    #[tokio::test]
-    async fn stale_scene_list_event_does_not_write_show_state_diagnostics() {
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let diagnostics_dir = temp_dir("stale-scene-list-diagnostic");
-        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
-        let scenes = vec![advanced_show_control::lv1::types::SceneListEntry {
-            index: 1,
-            name: "Intro".to_string(),
-        }];
-
-        let _ = state.disconnect().await;
-
-        assert!(
-            !append_scene_list_diagnostic_for_generation(
-                &state,
-                generation,
-                &diagnostics_path,
-                &scenes,
-            )
-            .await
-        );
-        assert!(!diagnostics_path.exists());
-
-        let _ = fs::remove_dir_all(&diagnostics_dir);
-    }
-
-    #[tokio::test]
-    async fn stale_diagnostic_event_does_not_emit_snapshot_through_projector() {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let observed = Arc::new(Mutex::new(Vec::new()));
-        let observed_for_listener = observed.clone();
-
-        handle.listen_any("app-status-changed", move |event| {
-            let payload: serde_json::Value = serde_json::from_str(event.payload())
-                .expect("app-status-changed payload should be valid JSON");
-            observed_for_listener.lock().unwrap().push(payload);
-        });
-
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-
-        let initial_snapshot = state
-            .begin_connection(
-                generation,
-                Lv1StateSnapshot {
-                    connection: ConnectionStatus::Connected,
-                    scene: None,
-                    scene_list: Vec::new(),
-                    channels: Vec::new(),
-                },
-            )
-            .await
-            .expect("current generation should accept the initial snapshot");
-
-        let event_bus = AppEventBus::default();
-        let active_command_bus = ActiveCommandBus::default();
-        let _snapshot = install_connected_runtime(
-            &handle,
-            &state,
-            state.clone(),
-            generation,
-            initial_snapshot,
-            event_bus.subscribe(),
-            RuntimeHandles::default(),
-            &active_command_bus,
-        )
-        .await
-        .expect("connected runtime should install successfully");
-
-        for _ in 0..20 {
-            if !observed.lock().unwrap().is_empty() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(!observed.lock().unwrap().is_empty());
-
-        let _ = state.disconnect().await;
-
-        event_bus.publish(AppEvent::Diagnostic {
-            source: "fade-engine".to_string(),
-            message: "stale projector diagnostic".to_string(),
-        });
-
-        for _ in 0..20 {
-            if observed.lock().unwrap().len() == 1 {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(observed.lock().unwrap().len(), 1);
-
-        let snapshot = state.snapshot().await;
-        assert!(
-            snapshot
-                .logs
-                .iter()
-                .all(|entry| { entry.message != "fade-engine: stale projector diagnostic" })
-        );
-    }
-
-    #[tokio::test]
-    async fn stale_diagnostic_event_does_not_write_diagnostics_through_projector() {
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let diagnostics_dir = temp_dir("stale-projector-diagnostic");
-        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
-
-        let _ = state.disconnect().await;
-
-        let applied = apply_projector_event(
-            &state,
-            generation,
-            &diagnostics_path,
-            &ActiveCommandBus::default(),
-            &AppEvent::Diagnostic {
-                source: "fade-engine".to_string(),
-                message: "stale projector diagnostic".to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(applied, ProjectionOutcome::Stale);
-        assert!(!diagnostics_path.exists());
-
-        let _ = fs::remove_dir_all(&diagnostics_dir);
-    }
-
-    #[tokio::test]
-    async fn projector_applies_runtime_events_before_coalesced_snapshot() {
-        let state = ShellState::default();
-        let (generation, _) = state.begin_connecting().await;
-        let diagnostics_dir = temp_dir("projector-applies-runtime-events");
-        let diagnostics_path = diagnostics_dir.join("diagnostics.jsonl");
-
-        let applied = apply_projector_event(
-            &state,
-            generation,
-            &diagnostics_path,
-            &ActiveCommandBus::default(),
-            &AppEvent::Diagnostic {
-                source: "shell-state-projector".to_string(),
-                message: "coalesced snapshot pending".to_string(),
-            },
-        )
-        .await;
-
-        assert_eq!(applied, ProjectionOutcome::Applied);
-
-        let snapshot = state
-            .snapshot_for_generation(generation)
-            .await
-            .expect("current generation should still snapshot after projection");
-        assert!(
-            snapshot.logs.iter().any(|entry| {
-                entry.message == "shell-state-projector: coalesced snapshot pending"
-            })
-        );
-
-        let _ = fs::remove_dir_all(&diagnostics_dir);
     }
 
     #[tokio::test(start_paused = true)]
