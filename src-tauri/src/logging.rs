@@ -129,6 +129,7 @@ where
     S: Subscriber,
 {
     fn on_event(&self, event: &Event<'_>, _ctx: tracing_subscriber::layer::Context<'_, S>) {
+        // Internal sink errors must not be re-enqueued into the same UI log channel.
         if event.metadata().target() == UI_SINK_TARGET {
             return;
         }
@@ -136,7 +137,7 @@ where
         if let Some(severity) = ui_severity(event.metadata().level()) {
             let mut visitor = EventVisitor::default();
             event.record(&mut visitor);
-            if let Some(message) = visitor.message {
+            if let Some(message) = visitor.ui_message() {
                 let ui_event = UiLogEvent { severity, message };
                 match self.tx.try_send(ui_event) {
                     Ok(()) => {}
@@ -185,6 +186,7 @@ async fn ui_log_projector<R: Runtime>(
 
 #[derive(Default)]
 pub struct EventVisitor {
+    pub event_name: Option<String>,
     pub message: Option<String>,
 }
 
@@ -195,16 +197,22 @@ impl tracing::field::Visit for EventVisitor {
 
     fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
         if field.name() == "event" || field.name() == "message" {
-            self.message = Some(format!("{value:?}"));
+            self.record_field(field.name(), format!("{value:?}"));
         }
     }
 }
 
 impl EventVisitor {
-    fn record_field(&mut self, field_name: &str, value: &str) {
-        if field_name == "event" || field_name == "message" {
-            self.message = Some(value.to_string());
+    fn record_field(&mut self, field_name: &str, value: impl Into<String>) {
+        match field_name {
+            "event" => self.event_name = Some(value.into()),
+            "message" => self.message = Some(value.into()),
+            _ => {}
         }
+    }
+
+    fn ui_message(self) -> Option<String> {
+        self.message.or(self.event_name)
     }
 }
 
@@ -244,6 +252,29 @@ mod tests {
         assert_eq!(
             visitor.message.as_deref(),
             Some("Starting \"Advanced Show Control\"")
+        );
+    }
+
+    #[test]
+    fn event_visitor_prefers_message_over_event_name() {
+        let mut visitor = EventVisitor::default();
+        visitor.record_field("message", "Scene recall blocked");
+        visitor.record_field("event", "scene_recall_blocked");
+
+        assert_eq!(
+            visitor.ui_message().as_deref(),
+            Some("Scene recall blocked")
+        );
+    }
+
+    #[test]
+    fn event_visitor_falls_back_to_event_name() {
+        let mut visitor = EventVisitor::default();
+        visitor.record_field("event", "scene_recall_blocked");
+
+        assert_eq!(
+            visitor.ui_message().as_deref(),
+            Some("scene_recall_blocked")
         );
     }
 
