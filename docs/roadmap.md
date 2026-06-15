@@ -48,34 +48,38 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 5. Add show-file scene reconciliation/remapping.
    - Handle loaded show files whose stored scene references no longer match the current LV1 scene list.
    - Make mismatches and any skipped or unresolved mappings visible to the user.
-6. Create a Storybook setup and start real frontend development.
+6. Rename show-file extension and default filename.
+   - Choose the final app-owned show/session file extension and default saved filename before frontend Sessions work.
+   - Update open/save dialogs, backup naming, tests, and user-facing copy to use the final name consistently.
+   - Decide whether existing `.lv1show` files need migration support before adding compatibility code.
+7. Create a Storybook setup and start real frontend development.
    - Treat the current frontend as a test bed, not the final UI.
    - Establish component development outside the live Tauri runtime.
-7. Set up frontend testing.
+8. Set up frontend testing.
    - Add the test tooling needed for UI behavior and component coverage.
-8. Build the frontend app shell.
+9. Build the frontend app shell.
    - Replace the test-bed layout with the real application frame.
    - Keep global safety controls prominent.
-9. Build the frontend Scenes tab.
+10. Build the frontend Scenes tab.
    - Support scene status, stored scene config review, scope editing, duration editing, and clear mismatch or safety warnings.
-10. Build the frontend connection controls.
+11. Build the frontend connection controls.
    - Support discovery, connect/disconnect, current LV1 status, and startup/reconnect clarity.
-11. Build the frontend Settings tab.
+12. Build the frontend Settings tab.
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session/show file when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
-12. Build the frontend Sessions tab.
+13. Build the frontend Sessions tab.
    - Support session management for app show/session files.
    - Provide clear import/export flows for engineers moving sessions between systems.
    - Surface save/load state, dirty state, current file location, and any import/export warnings.
    - Preserve manual session import/export as the explicit fallback path for automatic session handling.
-13. Add auto-session recall.
+14. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session/show file only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
-14. Build the frontend Logs tab.
+15. Build the frontend Logs tab.
    - Show frontend-facing info logs, safety blocks, recalls, fade starts, fade completions, manual overrides, and connection events.
-15. Sort out bundling.
+16. Sort out bundling.
    - Produce a practical app package for MVP testing.
    - Document the packaging path and any platform limitations.
 
