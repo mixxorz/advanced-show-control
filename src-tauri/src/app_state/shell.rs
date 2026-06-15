@@ -253,11 +253,7 @@ impl ShellState {
         self.snapshot_for_generation(generation).await
     }
 
-    pub async fn fail_connect(
-        &self,
-        generation: u64,
-        message: impl Into<String>,
-    ) -> Option<AppViewState> {
+    pub async fn fail_connect(&self, generation: u64) -> Option<AppViewState> {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return None;
@@ -267,17 +263,11 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         inner.connected_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        let message = message.into();
-        tracing::warn!(event = "lv1_connect_failed", "{message}");
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
 
-    pub async fn fail_reconnect(
-        &self,
-        generation: u64,
-        message: impl Into<String>,
-    ) -> Option<AppViewState> {
+    pub async fn fail_reconnect(&self, generation: u64) -> Option<AppViewState> {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
             return None;
@@ -286,8 +276,6 @@ impl ShellState {
         inner.lv1_snapshot = None;
         inner.pending_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        let message = message.into();
-        tracing::warn!(event = "lv1_reconnect_failed", "{message}");
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
@@ -1170,7 +1158,7 @@ mod tests {
         store_intro_scene_config(&state).await;
 
         let snapshot = state
-            .fail_connect(generation, "LV1 did not connect")
+            .fail_connect(generation)
             .await
             .expect("current generation failure should apply");
 
@@ -1217,7 +1205,7 @@ mod tests {
             .expect("current generation should set pending identity");
 
         let snapshot = state
-            .fail_connect(generation, "LV1 did not connect")
+            .fail_connect(generation)
             .await
             .expect("current generation failure should apply");
 
@@ -1247,7 +1235,7 @@ mod tests {
             .expect("current generation should set pending identity");
 
         let snapshot = state
-            .fail_reconnect(generation, "LV1 did not connect")
+            .fail_reconnect(generation)
             .await
             .expect("current generation reconnect failure should apply");
 
@@ -1275,9 +1263,7 @@ mod tests {
             .await
             .expect("current generation should set pending identity");
 
-        let stale = state
-            .fail_connect(stale_generation, "LV1 did not connect")
-            .await;
+        let stale = state.fail_connect(stale_generation).await;
         let snapshot = state.snapshot().await;
 
         assert!(stale.is_none());

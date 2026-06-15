@@ -50,7 +50,6 @@ impl ShellState {
             scene_list: Vec::new(),
             channels: Vec::new(),
         });
-        tracing::info!(event = "lv1_connecting", "Connecting to LV1");
         let generation = inner.generation;
         drop(inner);
         (generation, self.snapshot().await)
@@ -60,12 +59,6 @@ impl ShellState {
         self.show.set_lockout(enabled).await;
         let mut inner = self.inner.lock().await;
         inner.show_file_dirty = true;
-        tracing::info!(
-            event = "lockout_changed",
-            enabled = enabled,
-            "Lockout {}",
-            if enabled { "enabled" } else { "disabled" }
-        );
         drop(inner);
         self.snapshot().await
     }
@@ -110,7 +103,6 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         inner.reconnect_state.active = false;
         refresh_discovered_statuses(&mut inner);
-        tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
         let generation = inner.generation;
         drop(inner);
         (generation, self.snapshot().await)
@@ -131,9 +123,8 @@ impl ShellState {
                 ensure_lv1_snapshot(&mut inner).connection = ConnectionStatus::Connected;
                 inner.reconnect_state.active = false;
                 refresh_discovered_statuses(&mut inner);
-                tracing::info!(event = "lv1_connected", "LV1 connected");
             }
-            Lv1Event::Disconnected { reason } => {
+            Lv1Event::Disconnected { .. } => {
                 let had_connected_identity = inner.connected_lv1_identity.is_some();
                 inner.lv1_snapshot = None;
                 inner.pending_lv1_identity = None;
@@ -142,18 +133,9 @@ impl ShellState {
                     inner.reconnect_state.attempt = inner.reconnect_state.attempt.saturating_add(1);
                 }
                 refresh_discovered_statuses(&mut inner);
-                tracing::warn!(event = "lv1_disconnected", reason = %reason, "LV1 disconnected: {reason}");
             }
             Lv1Event::SceneChanged(scene) => {
                 ensure_lv1_snapshot(&mut inner).scene = Some(scene.clone());
-                tracing::info!(
-                    event = "lv1_scene_changed",
-                    scene_index = scene.index,
-                    scene_name = %scene.name,
-                    "Scene changed to {}: {}",
-                    scene.index,
-                    scene.name
-                );
             }
             Lv1Event::SceneListChanged(scenes) => {
                 let generation = inner.generation;
@@ -313,20 +295,5 @@ fn apply_begin_connection(inner: &mut ShellInner, snapshot: Lv1StateSnapshot) {
     inner.lv1_snapshot = Some(snapshot);
     if connected {
         inner.reconnect_state.active = false;
-    }
-    match inner
-        .lv1_snapshot
-        .as_ref()
-        .map(|snapshot| &snapshot.connection)
-    {
-        Some(ConnectionStatus::Connecting) => {
-            tracing::info!(event = "lv1_connecting", "Connecting to LV1");
-        }
-        Some(ConnectionStatus::Connected) => {
-            tracing::info!(event = "lv1_connected", "LV1 connected");
-        }
-        Some(ConnectionStatus::Disconnected) | None => {
-            tracing::info!(event = "lv1_disconnected", "LV1 disconnected");
-        }
     }
 }

@@ -260,6 +260,12 @@ pub async fn set_lockout(
     enabled: bool,
 ) -> Result<AppViewState, String> {
     let snapshot = state.set_lockout(enabled).await;
+    tracing::info!(
+        event = "lockout_changed",
+        enabled = enabled,
+        "Lockout {}",
+        if enabled { "enabled" } else { "disabled" }
+    );
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -270,6 +276,10 @@ pub async fn disconnect_lv1(
     state: State<'_, ShellState>,
     active_command_bus: State<'_, ActiveCommandBus>,
 ) -> Result<AppViewState, String> {
+    tracing::debug!(
+        event = "lv1_disconnect_requested",
+        "LV1 disconnect requested"
+    );
     let (generation, snapshot) = state.disconnect().await;
     if let Some(command_bus) = active_command_bus.current().await {
         command_bus.set_generation(generation).await;
@@ -277,6 +287,7 @@ pub async fn disconnect_lv1(
     state
         .clear_runtime_handles(generation, &active_command_bus)
         .await;
+    tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -491,11 +502,23 @@ async fn connect_to_target<R: Runtime>(
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
     let event_bus = AppEventBus::default();
+    tracing::debug!(
+        event = "lv1_connect_requested",
+        host = %identity.address,
+        port = identity.port,
+        "LV1 connect requested"
+    );
     let Some((generation, connecting_snapshot)) = state.try_begin_connecting().await else {
         let snapshot = state.snapshot().await;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     };
+    tracing::info!(
+        event = "lv1_connecting",
+        host = %identity.address,
+        port = identity.port,
+        "Connecting to LV1"
+    );
     state.abort_current_runtime(&active_command_bus).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
@@ -535,17 +558,31 @@ async fn connect_to_target<R: Runtime>(
     {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
-            ConnectFailureMode::ClearConnectedIdentity => {
-                state.fail_connect(generation, "LV1 did not connect").await
-            }
-            ConnectFailureMode::PreserveConnectedIdentity => {
-                state
-                    .fail_reconnect(generation, "LV1 did not connect")
-                    .await
-            }
+            ConnectFailureMode::ClearConnectedIdentity => state.fail_connect(generation).await,
+            ConnectFailureMode::PreserveConnectedIdentity => state.fail_reconnect(generation).await,
         };
         if let Some(snapshot) = failed_snapshot {
             emit_snapshot(&app, &snapshot);
+        }
+        match failure_mode {
+            ConnectFailureMode::ClearConnectedIdentity => {
+                tracing::warn!(
+                    event = "lv1_connect_failed",
+                    host = %identity.address,
+                    port = identity.port,
+                    error = "LV1 did not connect",
+                    "LV1 did not connect"
+                );
+            }
+            ConnectFailureMode::PreserveConnectedIdentity => {
+                tracing::warn!(
+                    event = "lv1_reconnect_failed",
+                    host = %identity.address,
+                    port = identity.port,
+                    error = "LV1 did not connect",
+                    "LV1 did not connect"
+                );
+            }
         }
         return Err("LV1 did not connect".to_string());
     }
@@ -571,6 +608,8 @@ async fn connect_to_target<R: Runtime>(
     )
     .await?;
 
+    let connected_host = identity.address.clone();
+    let connected_port = identity.port;
     let Some(snapshot) = state
         .establish_connected_lv1_identity(generation, identity)
         .await
@@ -582,6 +621,12 @@ async fn connect_to_target<R: Runtime>(
         return Ok(snapshot);
     };
 
+    tracing::info!(
+        event = "lv1_connected",
+        host = %connected_host,
+        port = connected_port,
+        "LV1 connected"
+    );
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
