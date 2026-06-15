@@ -274,16 +274,11 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
             inner.fade_state = AppFadeState::Idle;
         }
         FadeEvent::ChannelCompleted { .. } => {}
-        FadeEvent::ChannelOverride { group, channel, .. } => {
+        FadeEvent::ChannelOverride { .. } => {
             inner.fade_state = AppFadeState::Blocked;
-            let _ = (group, channel);
         }
-        FadeEvent::ChannelCancelled { group, channel, .. } => {
-            let _ = (group, channel);
-        }
-        FadeEvent::WriteFailed { reason } => {
-            let _ = reason;
-        }
+        FadeEvent::ChannelCancelled { .. } => {}
+        FadeEvent::WriteFailed { .. } => {}
     }
 }
 
