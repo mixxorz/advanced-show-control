@@ -116,7 +116,62 @@ where
             event.metadata().level(),
             event.metadata().target()
         )
-        .and_then(|_| ctx.field_format().format_fields(writer.by_ref(), event))
+        .and_then(|_| {
+            if let Some(message) = stdout_osc_message(event) {
+                write!(writer, "{message}")
+            } else {
+                ctx.field_format().format_fields(writer.by_ref(), event)
+            }
+        })
+        .and_then(|_| writeln!(writer))
+    }
+}
+
+fn stdout_osc_message(event: &Event<'_>) -> Option<String> {
+    let mut visitor = StdoutOscMessageVisitor::default();
+    event.record(&mut visitor);
+    if visitor.event_name.as_deref() == Some("osc_message") {
+        match (visitor.direction.as_deref(), visitor.message) {
+            (Some(direction), Some(message)) => {
+                Some(format!("OSC {} {message}", direction.to_uppercase()))
+            }
+            (_, message) => message,
+        }
+    } else {
+        None
+    }
+}
+
+#[derive(Default)]
+struct StdoutOscMessageVisitor {
+    event_name: Option<String>,
+    direction: Option<String>,
+    message: Option<String>,
+}
+
+impl tracing::field::Visit for StdoutOscMessageVisitor {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        self.record_field(field.name(), value.to_string());
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "event" || field.name() == "message" {
+            self.record_field(
+                field.name(),
+                format!("{value:?}").trim_matches('"').to_string(),
+            );
+        }
+    }
+}
+
+impl StdoutOscMessageVisitor {
+    fn record_field(&mut self, field_name: &str, value: String) {
+        match field_name {
+            "event" => self.event_name = Some(value),
+            "direction" => self.direction = Some(value),
+            "message" => self.message = Some(value),
+            _ => {}
+        }
     }
 }
 
@@ -219,8 +274,22 @@ impl EventVisitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
     use tracing::subscriber::with_default;
     use tracing_subscriber::registry;
+
+    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn ui_severity_drops_debug() {
@@ -243,6 +312,59 @@ mod tests {
             ("event", "scene_recall_blocked"),
             ("message", "Scene recall blocked")
         ]));
+    }
+
+    #[test]
+    fn bracketed_stdout_format_terminates_each_event_with_newline() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer_capture = captured.clone();
+        let subscriber = registry().with(
+            fmt::layer()
+                .with_target(false)
+                .event_format(BracketedFormat)
+                .with_writer(move || CapturedWriter(writer_capture.clone())),
+        );
+
+        with_default(subscriber, || {
+            tracing::info!(event = "first_event", "first message");
+            tracing::info!(event = "second_event", "second message");
+        });
+
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("first_event"));
+        assert!(output.contains("second_event"));
+        assert_eq!(output.lines().count(), 2, "output was {output:?}");
+        assert!(output.ends_with('\n'), "output was {output:?}");
+    }
+
+    #[test]
+    fn bracketed_stdout_format_prints_only_osc_message_text() {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let writer_capture = captured.clone();
+        let subscriber = registry().with(
+            fmt::layer()
+                .with_target(false)
+                .event_format(BracketedFormat)
+                .with_writer(move || CapturedWriter(writer_capture.clone())),
+        );
+
+        with_default(subscriber, || {
+            tracing::debug!(
+                event = "osc_message",
+                direction = "rx",
+                osc_address = "/CurrentScene",
+                "/CurrentScene"
+            );
+        });
+
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("OSC RX /CurrentScene"),
+            "output was {output:?}"
+        );
+        assert!(!output.contains("direction"), "output was {output:?}");
+        assert!(!output.contains("osc_address"), "output was {output:?}");
+        assert!(!output.contains("osc_message"), "output was {output:?}");
     }
 
     #[test]

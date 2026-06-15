@@ -29,12 +29,7 @@ pub fn encode_frame(address: &str, args: &[OscArg]) -> Result<Vec<u8>, Lv1TcpErr
         return Err(Lv1TcpError::InvalidLength(payload.len()));
     }
 
-    tracing::debug!(
-        event = "osc_message",
-        direction = "tx",
-        osc_address = address,
-        "OSC TX {address}"
-    );
+    log_osc_message("tx", address);
 
     let mut frame = Vec::with_capacity(4 + HEADER_LEN + payload.len());
     frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
@@ -85,14 +80,25 @@ impl FrameDecoder {
 
 pub fn decode_frame_payload(frame: &Lv1Frame) -> Result<OscMessage, Lv1TcpError> {
     let message = decode_packet(&frame.payload)?;
+    log_osc_message("rx", &message.address);
+    Ok(message)
+}
+
+fn log_osc_message(direction: &'static str, address: &str) {
+    if is_noisy_osc_log_address(address) {
+        return;
+    }
+
     tracing::debug!(
         event = "osc_message",
-        direction = "rx",
-        osc_address = message.address,
-        "OSC RX {}",
-        message.address
+        direction,
+        osc_address = address,
+        "{address}"
     );
-    Ok(message)
+}
+
+fn is_noisy_osc_log_address(address: &str) -> bool {
+    matches!(address, "/ping" | "/pong" | "/Notify/TempoBlink")
 }
 
 pub fn encode_parameter_write_batch(writes: &[Lv1ParameterWrite]) -> Result<Vec<u8>, Lv1TcpError> {
@@ -238,6 +244,7 @@ mod tests {
         event: Option<String>,
         direction: Option<String>,
         osc_address: Option<String>,
+        message: Option<String>,
     }
 
     impl<S> Layer<S> for CapturedOscLogs
@@ -265,6 +272,7 @@ mod tests {
                 "event" => self.log.event = Some(value.to_string()),
                 "direction" => self.log.direction = Some(value.to_string()),
                 "osc_address" => self.log.osc_address = Some(value.to_string()),
+                "message" => self.log.message = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -275,6 +283,7 @@ mod tests {
                 "event" => self.log.event = Some(value.trim_matches('"').to_string()),
                 "direction" => self.log.direction = Some(value.trim_matches('"').to_string()),
                 "osc_address" => self.log.osc_address = Some(value.trim_matches('"').to_string()),
+                "message" => self.log.message = Some(value.trim_matches('"').to_string()),
                 _ => {}
             }
         }
@@ -300,7 +309,7 @@ mod tests {
     #[test]
     fn encode_frame_logs_osc_tx_at_frame_boundary() {
         let logs = capture_osc_logs(|| {
-            let _ = encode_frame("/ping", &[OscArg::Int64(123)]).unwrap();
+            let _ = encode_frame("/Set/Track/Out/Gain", &[OscArg::Int64(123)]).unwrap();
         });
 
         assert_eq!(
@@ -308,16 +317,28 @@ mod tests {
             vec![CapturedOscLog {
                 event: Some("osc_message".to_string()),
                 direction: Some("tx".to_string()),
-                osc_address: Some("/ping".to_string()),
+                osc_address: Some("/Set/Track/Out/Gain".to_string()),
+                message: Some("/Set/Track/Out/Gain".to_string()),
             }]
         );
+    }
+
+    #[test]
+    fn encode_frame_does_not_log_noisy_osc_tx_messages() {
+        for address in ["/ping", "/pong", "/Notify/TempoBlink"] {
+            let logs = capture_osc_logs(|| {
+                let _ = encode_frame(address, &[OscArg::Int64(123)]).unwrap();
+            });
+
+            assert_eq!(logs, Vec::new(), "logged noisy address {address}");
+        }
     }
 
     #[test]
     fn decode_frame_payload_logs_osc_rx_at_frame_boundary() {
         let frame = Lv1Frame {
             header: DEFAULT_HEADER,
-            payload: crate::osc::encode_message("/ping", &[OscArg::Int64(123)]).unwrap(),
+            payload: crate::osc::encode_message("/CurrentScene", &[OscArg::Int64(123)]).unwrap(),
         };
 
         let logs = capture_osc_logs(|| {
@@ -329,9 +350,26 @@ mod tests {
             vec![CapturedOscLog {
                 event: Some("osc_message".to_string()),
                 direction: Some("rx".to_string()),
-                osc_address: Some("/ping".to_string()),
+                osc_address: Some("/CurrentScene".to_string()),
+                message: Some("/CurrentScene".to_string()),
             }]
         );
+    }
+
+    #[test]
+    fn decode_frame_payload_does_not_log_noisy_osc_rx_messages() {
+        for address in ["/ping", "/pong", "/Notify/TempoBlink"] {
+            let frame = Lv1Frame {
+                header: DEFAULT_HEADER,
+                payload: crate::osc::encode_message(address, &[OscArg::Int64(123)]).unwrap(),
+            };
+
+            let logs = capture_osc_logs(|| {
+                let _ = decode_frame_payload(&frame).unwrap();
+            });
+
+            assert_eq!(logs, Vec::new(), "logged noisy address {address}");
+        }
     }
 
     #[test]
