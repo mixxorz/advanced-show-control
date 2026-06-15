@@ -267,7 +267,8 @@ impl ShellState {
         inner.pending_lv1_identity = None;
         inner.connected_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        inner.append_log(LogSeverity::Warning, message.into());
+        let message = message.into();
+        tracing::warn!(event = "lv1_connect_failed", "{message}");
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
@@ -285,7 +286,8 @@ impl ShellState {
         inner.lv1_snapshot = None;
         inner.pending_lv1_identity = None;
         refresh_discovered_statuses(&mut inner);
-        inner.append_log(LogSeverity::Warning, message.into());
+        let message = message.into();
+        tracing::warn!(event = "lv1_reconnect_failed", "{message}");
         drop(inner);
         self.snapshot_for_generation(generation).await
     }
@@ -667,13 +669,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lockout_is_owned_by_rust_state() {
+    async fn lockout_is_owned_by_rust_state_without_direct_log() {
         let state = ShellState::default();
         let snapshot = state.set_lockout(true).await;
 
         assert!(snapshot.lockout);
-        assert_eq!(snapshot.logs.len(), 1);
-        assert_eq!(snapshot.logs[0].message, "Lockout enabled");
+        assert!(snapshot.logs.is_empty());
     }
 
     #[tokio::test]
@@ -1223,8 +1224,7 @@ mod tests {
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert_eq!(snapshot.pending_lv1_identity, None);
         assert_eq!(snapshot.connected_lv1_identity, None);
-        assert_eq!(snapshot.logs.last().unwrap().severity, LogSeverity::Warning);
-        assert_eq!(snapshot.logs.last().unwrap().message, "LV1 did not connect");
+        assert!(snapshot.logs.is_empty());
     }
 
     #[tokio::test]
