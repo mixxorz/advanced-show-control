@@ -98,6 +98,14 @@ pub fn init_logging<R: Runtime>(
 
 struct BracketedFormat;
 
+const ANSI_RESET: &str = "\x1b[0m";
+const ANSI_DIM: &str = "\x1b[2m";
+const ANSI_CYAN: &str = "\x1b[36m";
+const ANSI_GREEN: &str = "\x1b[32m";
+const ANSI_YELLOW: &str = "\x1b[33m";
+const ANSI_RED: &str = "\x1b[31m";
+const ANSI_MAGENTA: &str = "\x1b[35m";
+
 impl<S, N> FormatEvent<S, N> for BracketedFormat
 where
     S: Subscriber + for<'span> LookupSpan<'span>,
@@ -109,22 +117,122 @@ where
         mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> std::fmt::Result {
+        let stdout_event = StdoutEvent::from_event(event);
         write!(
             writer,
-            "[{}] [{}] [{}] ",
-            crate::time::current_timestamp_millis(),
+            "{}{:>5}{} {}│{} {}[{}]{} {}[{}]{} ",
+            level_color(event.metadata().level()),
             event.metadata().level(),
-            event.metadata().target()
+            ANSI_RESET,
+            ANSI_DIM,
+            ANSI_RESET,
+            ANSI_DIM,
+            stdout_timestamp(),
+            ANSI_RESET,
+            ANSI_CYAN,
+            stdout_category(event.metadata().target()),
+            ANSI_RESET,
         )
         .and_then(|_| {
             if let Some(message) = stdout_osc_message(event) {
+                write!(writer, "{message}")
+            } else if let Some(message) = stdout_event.message.as_deref() {
                 write!(writer, "{message}")
             } else {
                 ctx.field_format().format_fields(writer.by_ref(), event)
             }
         })
+        .and_then(|_| stdout_event.format_fields(&mut writer))
         .and_then(|_| writeln!(writer))
     }
+}
+
+fn stdout_timestamp() -> String {
+    let millis = crate::time::current_timestamp_millis()
+        .parse::<u128>()
+        .unwrap_or_default();
+    let millis_in_day = millis % 86_400_000;
+    let hours = millis_in_day / 3_600_000;
+    let minutes = (millis_in_day % 3_600_000) / 60_000;
+    let seconds = (millis_in_day % 60_000) / 1_000;
+    let millis = millis_in_day % 1_000;
+    format!("{hours:02}:{minutes:02}:{seconds:02}.{millis:03}")
+}
+
+fn level_color(level: &Level) -> &'static str {
+    match *level {
+        Level::ERROR => ANSI_RED,
+        Level::WARN => ANSI_YELLOW,
+        Level::INFO => ANSI_GREEN,
+        Level::DEBUG => ANSI_MAGENTA,
+        Level::TRACE => ANSI_DIM,
+    }
+}
+
+fn stdout_category(target: &str) -> &str {
+    target.rsplit("::").next().unwrap_or(target)
+}
+
+#[derive(Default)]
+struct StdoutEvent {
+    message: Option<String>,
+    fields: Vec<(String, String)>,
+}
+
+impl StdoutEvent {
+    fn from_event(event: &Event<'_>) -> Self {
+        let mut visitor = Self::default();
+        event.record(&mut visitor);
+        visitor
+    }
+
+    fn format_fields(&self, writer: &mut Writer<'_>) -> std::fmt::Result {
+        let mut fields = self.fields.iter().filter(|(name, _)| name != "message");
+        if let Some((name, value)) = fields.next() {
+            write!(writer, " {}│ ", ANSI_DIM)?;
+            write_field(writer, name, value)?;
+            for (name, value) in fields {
+                write!(writer, " ")?;
+                write_field(writer, name, value)?;
+            }
+            write!(writer, "{ANSI_RESET}")?;
+        }
+        Ok(())
+    }
+}
+
+impl tracing::field::Visit for StdoutEvent {
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        if field.name() == "message" {
+            self.message = Some(value.to_string());
+        }
+        self.fields
+            .push((field.name().to_string(), value.to_string()));
+    }
+
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        let value = format!("{value:?}");
+        if field.name() == "message" {
+            self.message = Some(trim_debug_string_quotes(&value));
+        }
+        self.fields.push((field.name().to_string(), value));
+    }
+}
+
+fn write_field(writer: &mut Writer<'_>, name: &str, value: &str) -> std::fmt::Result {
+    write!(writer, "{name}=\"{}\"", escaped_field_value(value))
+}
+
+fn escaped_field_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn trim_debug_string_quotes(value: &str) -> String {
+    value
+        .strip_prefix('"')
+        .and_then(|value| value.strip_suffix('"'))
+        .unwrap_or(value)
+        .to_string()
 }
 
 fn stdout_osc_message(event: &Event<'_>) -> Option<String> {
@@ -158,7 +266,7 @@ impl tracing::field::Visit for StdoutOscMessageVisitor {
         if field.name() == "event" || field.name() == "message" {
             self.record_field(
                 field.name(),
-                format!("{value:?}").trim_matches('"').to_string(),
+                trim_debug_string_quotes(&format!("{value:?}")),
             );
         }
     }
@@ -315,7 +423,7 @@ mod tests {
     }
 
     #[test]
-    fn bracketed_stdout_format_terminates_each_event_with_newline() {
+    fn stdout_formatter_renders_severity_stripe_lines() {
         let captured = Arc::new(Mutex::new(Vec::new()));
         let writer_capture = captured.clone();
         let subscriber = registry().with(
@@ -326,29 +434,17 @@ mod tests {
         );
 
         with_default(subscriber, || {
-            tracing::info!(event = "first_event", "first message");
-            tracing::info!(event = "second_event", "second message");
-        });
-
-        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
-        assert!(output.contains("first_event"));
-        assert!(output.contains("second_event"));
-        assert_eq!(output.lines().count(), 2, "output was {output:?}");
-        assert!(output.ends_with('\n'), "output was {output:?}");
-    }
-
-    #[test]
-    fn bracketed_stdout_format_prints_only_osc_message_text() {
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let writer_capture = captured.clone();
-        let subscriber = registry().with(
-            fmt::layer()
-                .with_target(false)
-                .event_format(BracketedFormat)
-                .with_writer(move || CapturedWriter(writer_capture.clone())),
-        );
-
-        with_default(subscriber, || {
+            tracing::info!(
+                event = "app_started",
+                version = "0.1.0",
+                "Starting \"Advanced Show Control\""
+            );
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene = "4: Chorus",
+                reason = "lockout enabled",
+                "Scene recall blocked for 4: Chorus: lockout enabled"
+            );
             tracing::debug!(
                 event = "osc_message",
                 direction = "rx",
@@ -358,13 +454,56 @@ mod tests {
         });
 
         let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
-        assert!(
-            output.contains("OSC RX /CurrentScene"),
-            "output was {output:?}"
+        assert_eq!(
+            normalize_stdout_output(&output),
+            concat!(
+                " INFO │ [TIME] [tests] Starting \"Advanced Show Control\" │ event=\"app_started\" version=\"0.1.0\"\n",
+                " WARN │ [TIME] [tests] Scene recall blocked for 4: Chorus: lockout enabled │ event=\"scene_recall_blocked\" scene=\"4: Chorus\" reason=\"lockout enabled\"\n",
+                "DEBUG │ [TIME] [tests] OSC RX /CurrentScene │ event=\"osc_message\" direction=\"rx\" osc_address=\"/CurrentScene\"\n",
+            )
         );
-        assert!(!output.contains("direction"), "output was {output:?}");
-        assert!(!output.contains("osc_address"), "output was {output:?}");
-        assert!(!output.contains("osc_message"), "output was {output:?}");
+    }
+
+    fn normalize_stdout_output(output: &str) -> String {
+        let stripped = strip_ansi(output);
+        stripped
+            .lines()
+            .map(|line| {
+                if let Some(timestamp_start) = line.find('[') {
+                    let timestamp_end = timestamp_start + "[00:00:00.000]".len();
+                    if line.get(timestamp_start..timestamp_end).is_some() {
+                        return format!(
+                            "{}[TIME]{}",
+                            &line[..timestamp_start],
+                            &line[timestamp_end..]
+                        );
+                    }
+                    line.to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + if stripped.ends_with('\n') { "\n" } else { "" }
+    }
+
+    fn strip_ansi(output: &str) -> String {
+        let mut stripped = String::new();
+        let mut chars = output.chars().peekable();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' && chars.peek() == Some(&'[') {
+                chars.next();
+                for ch in chars.by_ref() {
+                    if ch.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                stripped.push(ch);
+            }
+        }
+        stripped
     }
 
     #[test]
