@@ -24,6 +24,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - `FadeEngine` supports timed fades, curves, measured fader law, 25 Hz scheduling, minimum send delta, exact final sends, abort, scene-owned overlap behavior, same-scene repeat handling, and manual override detection.
 - `ShowState` owns show data, selected scene editing, stored channel configs, scoped channel lists, scene toggles, duration, dirty state, and JSON `.lv1show` save/load.
 - The Tauri shell exposes a working test-bed UI with connection, scene, and logs tabs, global lockout/abort controls, show-file controls, store workflow, duration editing, and scoped-channel controls.
+- Storybook is configured for frontend component development outside the live Tauri runtime, with typed app-state fixtures and representative stories for the current test-bed components.
 - `SceneRecallFader` validates LV1 scene recall events, blocks unsafe recalls, skips disabled fader scope, starts validated scene-owned fades, and moves duration `0` scenes immediately.
 - Runtime architecture is actor-oriented with `Lv1Actor`, `FadeEngine`, `ShowState`, `SceneRecallFader`, `ShellState`, `AppEventBus`, and `AppCommandBus` as the main ownership boundaries.
 
@@ -52,37 +53,34 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Choose the final app-owned show/session file extension and default saved filename before frontend Sessions work.
    - Update open/save dialogs, backup naming, tests, and user-facing copy to use the final name consistently.
    - Decide whether existing `.lv1show` files need migration support before adding compatibility code.
-7. Create a Storybook setup and start real frontend development.
-   - Treat the current frontend as a test bed, not the final UI.
-   - Establish component development outside the live Tauri runtime.
-8. Set up frontend testing.
+7. Set up frontend testing.
    - Add the test tooling needed for UI behavior and component coverage.
-9. Build the frontend app shell.
+8. Build the frontend app shell.
    - Replace the test-bed layout with the real application frame.
    - Keep global safety controls prominent.
-10. Build the frontend Scenes tab.
+9. Build the frontend Scenes tab.
    - Support scene status, stored scene config review, scope editing, duration editing, and clear mismatch or safety warnings.
-11. Build the frontend connection controls.
+10. Build the frontend connection controls.
    - Support discovery, connect/disconnect, current LV1 status, and startup/reconnect clarity.
-12. Build the frontend Settings tab.
+11. Build the frontend Settings tab.
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session/show file when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
-13. Build the frontend Sessions tab.
+12. Build the frontend Sessions tab.
    - Support session management for app show/session files.
    - Provide clear import/export flows for engineers moving sessions between systems.
    - Surface save/load state, dirty state, current file location, and any import/export warnings.
    - Preserve manual session import/export as the explicit fallback path for automatic session handling.
-14. Show skipped-scene warnings when loading show files.
+13. Show skipped-scene warnings when loading show files.
    - Show a warning on load when saved scene configs are skipped because they are not found in the current scene list.
    - Include enough scene identity detail for engineers to understand what was skipped without opening diagnostic logs.
-15. Add auto-session recall.
+14. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session/show file only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
-16. Build the frontend Logs tab.
+15. Build the frontend Logs tab.
    - Show frontend-facing info logs, safety blocks, recalls, fade starts, fade completions, manual overrides, and connection events.
-17. Sort out bundling.
+16. Sort out bundling.
    - Produce a practical app package for MVP testing.
    - Document the packaging path and any platform limitations.
 
