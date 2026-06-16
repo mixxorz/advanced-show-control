@@ -1,4 +1,4 @@
-import { disconnectedAppViewState, type AppLogEntry, type AppViewState, type SceneConfig } from "../types";
+import { type AppLogEntry, type AppViewState, type SceneConfig } from "../types";
 
 type ChannelSummary = AppViewState["channels"][number];
 type DiscoveredLv1System = AppViewState["discoveredLv1Systems"][number];
@@ -115,13 +115,27 @@ function makeDiscoveredSystems(): DiscoveredLv1System[] {
 
 function makeBaseDisconnectedAppState(overrides: Partial<AppViewState> = {}): AppViewState {
   return {
-    ...disconnectedAppViewState,
+    connection: "disconnected",
     discoveredLv1Systems: [],
+    connectedLv1Identity: null,
+    pendingLv1Identity: null,
     reconnect: { active: false, attempt: 0 },
+    currentScene: null,
     scenes: [],
+    sceneCount: 0,
+    channelCount: 0,
     channels: [],
+    fadeState: "idle",
+    lockout: false,
     logs: [],
+    lastEventAt: null,
     sceneConfigs: [],
+    selectedSceneId: null,
+    showFileName: "Untitled Show",
+    showFilePath: null,
+    showFileDirty: false,
+    showFileLastSavedAt: null,
+    stateVersion: 0,
     ...overrides,
   };
 }
