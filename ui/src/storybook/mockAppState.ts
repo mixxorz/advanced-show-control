@@ -37,32 +37,32 @@ function makeConnectedIdentity() {
 
 function makeStoredVerseScene(): SceneConfig {
   return {
-  sceneId: "scene-verse",
-  sceneIndex: 3,
-  sceneName: "Verse",
-  durationMs: 2500,
-  scopeToggles: { faders: true, pan: true },
-  scopedChannels: [
-    { group: 0, channel: 0 },
-    { group: 0, channel: 2 },
-    { group: 1, channel: 0 },
-  ],
-  channelConfigs: [
-    { group: 0, channel: 0, faderDb: -3.5, pan: 0, balance: null, width: null, panMode: "mono" },
-    { group: 0, channel: 1, faderDb: -8, pan: -0.2, balance: null, width: null, panMode: "mono" },
-    { group: 0, channel: 2, faderDb: -6, pan: null, balance: 0.15, width: 0.6, panMode: "stereo" },
-    { group: 1, channel: 0, faderDb: -5, pan: null, balance: null, width: null, panMode: "none" },
-  ],
+    sceneId: "scene-verse",
+    sceneIndex: 3,
+    sceneName: "Verse",
+    durationMs: 2500,
+    scopeToggles: { faders: true, pan: true },
+    scopedChannels: [
+      { group: 0, channel: 0 },
+      { group: 0, channel: 2 },
+      { group: 1, channel: 0 },
+    ],
+    channelConfigs: [
+      { group: 0, channel: 0, faderDb: -3.5, pan: 0, balance: null, width: null, panMode: "mono" },
+      { group: 0, channel: 1, faderDb: -8, pan: -0.2, balance: null, width: null, panMode: "mono" },
+      { group: 0, channel: 2, faderDb: -6, pan: null, balance: 0.15, width: 0.6, panMode: "stereo" },
+      { group: 1, channel: 0, faderDb: -5, pan: null, balance: null, width: null, panMode: "none" },
+    ],
   };
 }
 
 function makeStoredChorusScene(): SceneConfig {
   return {
-  sceneId: "scene-chorus",
-  sceneIndex: 4,
-  sceneName: "Chorus",
-  durationMs: 4000,
-  scopeToggles: { faders: true, pan: false },
+    sceneId: "scene-chorus",
+    sceneIndex: 4,
+    sceneName: "Chorus",
+    durationMs: 4000,
+    scopeToggles: { faders: true, pan: false },
     scopedChannels: [
       { group: 0, channel: 0 },
       { group: 0, channel: 2 },
@@ -79,10 +79,10 @@ function makeStoredChorusScene(): SceneConfig {
 
 function makeDuplicateVerseScene(): SceneConfig {
   return {
-  sceneId: "scene-verse-duplicate",
-  sceneIndex: 9,
-  sceneName: "Verse",
-  durationMs: 1500,
+    sceneId: "scene-verse-duplicate",
+    sceneIndex: 9,
+    sceneName: "Verse",
+    durationMs: 1500,
     scopeToggles: { faders: true, pan: true },
     scopedChannels: [
       { group: 0, channel: 0 },
@@ -113,44 +113,62 @@ function makeDiscoveredSystems(): DiscoveredLv1System[] {
   ];
 }
 
+function makeBaseDisconnectedAppState(overrides: Partial<AppViewState> = {}): AppViewState {
+  return {
+    ...disconnectedAppViewState,
+    discoveredLv1Systems: [],
+    reconnect: { active: false, attempt: 0 },
+    scenes: [],
+    channels: [],
+    logs: [],
+    sceneConfigs: [],
+    ...overrides,
+  };
+}
+
+function makeConnectedAppState(sceneConfigs = [makeStoredVerseScene(), makeStoredChorusScene()]): AppViewState {
+  const channels = makeChannels();
+  const logs = makeLogs();
+  const scenes = makeSceneSummaries();
+  const connectedLv1Identity = makeConnectedIdentity();
+
+  return makeBaseDisconnectedAppState({
+    connection: "connected",
+    connectedLv1Identity,
+    currentScene: { index: 3, name: "Verse" },
+    scenes,
+    sceneCount: scenes.length,
+    channelCount: channels.length,
+    channels,
+    fadeState: "idle",
+    logs,
+    lastEventAt: "20:15:01",
+    sceneConfigs,
+    selectedSceneId: sceneConfigs[0]?.sceneId ?? null,
+    showFileName: "Sunday Service.ascshow",
+    showFilePath: "/Users/engineer/Shows/Sunday Service.ascshow",
+    showFileDirty: true,
+    showFileLastSavedAt: "20:12:40",
+    stateVersion: 12,
+  });
+}
+
 export const storedVerseScene: SceneConfig = makeStoredVerseScene();
 
 export const storedChorusScene: SceneConfig = makeStoredChorusScene();
 
 export const duplicateVerseScene: SceneConfig = makeDuplicateVerseScene();
 
-export const connectedAppState: AppViewState = {
-  ...disconnectedAppViewState,
-  connection: "connected",
-  connectedLv1Identity: makeConnectedIdentity(),
-  currentScene: { index: 3, name: "Verse" },
-  scenes: makeSceneSummaries(),
-  sceneCount: 3,
-  channelCount: makeChannels().length,
-  channels: makeChannels(),
-  fadeState: "idle",
-  logs: makeLogs(),
-  lastEventAt: "20:15:01",
-  sceneConfigs: [makeStoredVerseScene(), makeStoredChorusScene()],
-  selectedSceneId: makeStoredVerseScene().sceneId,
-  showFileName: "Sunday Service.ascshow",
-  showFilePath: "/Users/engineer/Shows/Sunday Service.ascshow",
-  showFileDirty: true,
-  showFileLastSavedAt: "20:12:40",
-  stateVersion: 12,
-};
+export const connectedAppState: AppViewState = makeConnectedAppState();
 
-export const connectedWithDuplicateScenesAppState: AppViewState = {
-  ...connectedAppState,
-  sceneConfigs: [makeStoredVerseScene(), makeStoredChorusScene(), makeDuplicateVerseScene()],
-};
+export const connectedWithDuplicateScenesAppState: AppViewState = makeConnectedAppState([
+  makeStoredVerseScene(),
+  makeStoredChorusScene(),
+  makeDuplicateVerseScene(),
+]);
 
-export const discoveringAppState: AppViewState = {
-  ...disconnectedAppViewState,
-  discoveredLv1Systems: [],
-};
+export const discoveringAppState: AppViewState = makeBaseDisconnectedAppState();
 
-export const discoveredSystemsAppState: AppViewState = {
-  ...disconnectedAppViewState,
+export const discoveredSystemsAppState: AppViewState = makeBaseDisconnectedAppState({
   discoveredLv1Systems: makeDiscoveredSystems(),
-};
+});
