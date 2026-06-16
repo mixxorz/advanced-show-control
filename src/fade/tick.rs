@@ -17,8 +17,7 @@ pub const MIN_SEND_DELTA_WIDTH: f64 = 0.028;
 /// ~2% of full travel — equivalent to a few dB near unity, much more at extremes.
 pub const OVERRIDE_THRESHOLD_POS: f64 = 0.02;
 pub const PAN_OVERRIDE_THRESHOLD: f64 = 1.8;
-pub const BALANCE_OVERRIDE_THRESHOLD: f64 = 1.8;
-pub const WIDTH_OVERRIDE_THRESHOLD: f64 = 0.056;
+pub const PAN_OVERRIDE_CONFIRMATION_COUNT: u8 = 2;
 
 pub(crate) struct ActiveTarget {
     pub(crate) key: FadeTargetKey,
@@ -28,6 +27,8 @@ pub(crate) struct ActiveTarget {
     pub(crate) target_value: f64,
     /// Last value sent — for override detection and min-delta suppression.
     pub(crate) expected_value: f64,
+    #[allow(dead_code)]
+    pub(crate) override_deviation_count: u8,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
@@ -55,6 +56,7 @@ impl ActiveTarget {
             start_value: init.start_value,
             target_value: init.target_value,
             expected_value: init.start_value,
+            override_deviation_count: 0,
             curve: init.curve,
             duration: init.duration,
             started_at: init.started_at,
@@ -66,12 +68,11 @@ impl ActiveTarget {
         self.key.parameter == FadeParameter::FaderDb
     }
 
-    fn override_threshold(&self) -> f64 {
+    fn override_threshold(&self) -> Option<f64> {
         match self.key.parameter {
-            FadeParameter::FaderDb => OVERRIDE_THRESHOLD_POS,
-            FadeParameter::Pan => PAN_OVERRIDE_THRESHOLD,
-            FadeParameter::Balance => BALANCE_OVERRIDE_THRESHOLD,
-            FadeParameter::Width => WIDTH_OVERRIDE_THRESHOLD,
+            FadeParameter::FaderDb => Some(OVERRIDE_THRESHOLD_POS),
+            FadeParameter::Pan => Some(PAN_OVERRIDE_THRESHOLD),
+            FadeParameter::Balance | FadeParameter::Width => None,
         }
     }
 
@@ -92,17 +93,34 @@ impl ActiveTarget {
         now.duration_since(self.started_at) >= self.duration
     }
 
-    /// Returns true if `reported_db` deviates from `expected_db` by more than
-    /// OVERRIDE_THRESHOLD_POS in fader position space. Using position space means
-    /// the threshold is proportionally tighter at loud levels and wider at quiet
-    /// levels, matching the physical fader resolution.
+    /// Returns true if the current parameter value indicates a manual override.
+    /// Faders are compared in position space. Pan uses a direct threshold. Balance
+    /// and width do not participate in override cancellation.
     pub(crate) fn is_override(&self, reported_value: f64) -> bool {
         if self.is_fader() {
             let reported_pos = db_to_pos(reported_value);
             let expected_pos = db_to_pos(self.expected_value);
             (reported_pos - expected_pos).abs() >= OVERRIDE_THRESHOLD_POS
+        } else if let Some(threshold) = self.override_threshold() {
+            (reported_value - self.expected_value).abs() >= threshold
         } else {
-            (reported_value - self.expected_value).abs() >= self.override_threshold()
+            false
+        }
+    }
+
+    /// Records an override report and returns true when override is confirmed.
+    #[allow(dead_code)]
+    pub(crate) fn record_override_report(&mut self, reported_value: f64) -> bool {
+        if self.key.parameter != FadeParameter::Pan {
+            return self.is_override(reported_value);
+        }
+
+        if self.is_override(reported_value) {
+            self.override_deviation_count = self.override_deviation_count.saturating_add(1);
+            self.override_deviation_count >= PAN_OVERRIDE_CONFIRMATION_COUNT
+        } else {
+            self.override_deviation_count = 0;
+            false
         }
     }
 
@@ -311,6 +329,47 @@ mod tests {
 
         let later = target.started_at + Duration::from_millis(400);
         assert!(target.next_send(later).is_some());
+    }
+
+    #[test]
+    fn pan_override_requires_two_consecutive_out_of_threshold_reports() {
+        let mut target = make_pan_family_target(FadeParameter::Pan);
+
+        assert!(!target.record_override_report(2.0));
+        assert_eq!(target.override_deviation_count, 1);
+
+        assert!(target.record_override_report(2.0));
+        assert_eq!(
+            target.override_deviation_count,
+            PAN_OVERRIDE_CONFIRMATION_COUNT
+        );
+    }
+
+    #[test]
+    fn pan_override_confirmation_resets_after_in_threshold_report() {
+        let mut target = make_pan_family_target(FadeParameter::Pan);
+
+        assert!(!target.record_override_report(2.0));
+        assert_eq!(target.override_deviation_count, 1);
+
+        assert!(!target.record_override_report(1.0));
+        assert_eq!(target.override_deviation_count, 0);
+
+        assert!(!target.record_override_report(2.0));
+        assert_eq!(target.override_deviation_count, 1);
+    }
+
+    #[test]
+    fn fader_override_remains_immediate() {
+        use crate::fade::fader_law::{db_to_pos, pos_to_db};
+
+        let mut target = make_channel(-20.0, -10.0, 4000);
+        let expected_pos = db_to_pos(-20.0);
+        let over_pos = expected_pos + OVERRIDE_THRESHOLD_POS + 0.001;
+        let reported_db = pos_to_db(over_pos);
+
+        assert!(target.record_override_report(reported_db));
+        assert_eq!(target.override_deviation_count, 0);
     }
 
     #[test]
