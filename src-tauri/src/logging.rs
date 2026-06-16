@@ -40,15 +40,6 @@ pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
     }
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-pub fn is_missing_event_field(fields: &[(&str, &str)]) -> bool {
-    let event = fields.iter().find(|(name, _)| *name == "event");
-    match event {
-        Some((_, value)) => value.is_empty(),
-        None => true,
-    }
-}
-
 pub fn init_logging<R: Runtime>(
     app: &AppHandle<R>,
     state: ShellState,
@@ -385,6 +376,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tracing::subscriber::with_default;
     use tracing_subscriber::registry;
+
+    fn is_missing_event_field(fields: &[(&str, &str)]) -> bool {
+        let event = fields.iter().find(|(name, _)| *name == "event");
+        match event {
+            Some((_, value)) => value.is_empty(),
+            None => true,
+        }
+    }
 
     struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
 

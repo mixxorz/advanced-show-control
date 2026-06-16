@@ -1,8 +1,7 @@
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager, Runtime};
 
-pub fn diagnostic_log_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
+pub fn diagnostic_log_path<R: Runtime>(app: &AppHandle<R>) -> std::path::PathBuf {
     let started_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -17,7 +16,3 @@ pub fn diagnostic_log_path<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
             std::process::id()
         ))
 }
-
-#[allow(dead_code)]
-#[derive(Clone)]
-pub struct DiagnosticLogPath(pub PathBuf);

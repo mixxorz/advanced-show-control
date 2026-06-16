@@ -17,8 +17,6 @@ fn main() {
         .manage(ActiveCommandBus::default())
         .setup(|app| {
             let shell_state = (*app.state::<ShellState>()).clone();
-            let path = diagnostics::diagnostic_log_path(app.handle());
-            app.manage(diagnostics::DiagnosticLogPath(path));
             let logging_guard = logging::init_logging(app.handle(), shell_state.clone())?;
             app.manage(logging_guard);
             tracing::info!(event = "app_started", "Starting Advanced Show Control");
