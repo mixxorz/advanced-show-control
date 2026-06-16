@@ -31,6 +31,7 @@ For pan targets:
 
 - An out-of-threshold report increments `override_deviation_count`.
 - The first consecutive out-of-threshold report marks the pan target as suspect but does not cancel.
+- Each out-of-threshold suspect hit emits a `tracing::debug!` diagnostic with enough context to identify the group, channel, reported value, expected value, threshold, and current confirmation count.
 - A second consecutive out-of-threshold report confirms manual override and cancels the pan family for that group/channel.
 - Any in-threshold pan report resets `override_deviation_count` to `0`.
 
@@ -44,15 +45,18 @@ When a pan-family channel has balance/width targets but no active pan target, th
 
 1. If an active pan target exists for the reported group/channel, pass the reported value through the pan target's confirmation state.
 2. If the report is in threshold, reset the pan target count and continue the fade.
-3. If the report is the first out-of-threshold report, increment the count and continue the fade.
-4. If the report reaches `PAN_OVERRIDE_CONFIRMATION_COUNT`, emit the existing `ChannelOverride` event and cancel pan, balance, and width targets for that channel.
-5. If no active pan target exists but other pan-family targets exist for that channel, preserve the current immediate cancellation path.
+3. If the report is out of threshold, increment the count and emit a debug tracing diagnostic for the suspect hit.
+4. If the report is the first out-of-threshold report, continue the fade.
+5. If the report reaches `PAN_OVERRIDE_CONFIRMATION_COUNT`, emit the existing `ChannelOverride` event and cancel pan, balance, and width targets for that channel.
+6. If no active pan target exists but other pan-family targets exist for that channel, preserve the current immediate cancellation path.
 
 ## Error Handling And Safety
 
 The change only delays pan-family cancellation for one pan report when an active pan target has an expected value. It does not bypass lockout checks, connection/generation guards, or write safety. A real manual pan grab should continue to generate out-of-threshold reports and cancel on the second consecutive report.
 
 Existing manual override visibility remains unchanged once an override is confirmed: the engine emits `ChannelOverride` for pan and `ChannelCancelled` for each removed pan-family target.
+
+Suspect hits are diagnostic-only and use `tracing::debug!`; they do not publish app events or frontend-facing logs. This keeps one-off stale echoes visible in diagnostic logs without alarming the operator before confirmation.
 
 ## Testing
 
@@ -63,5 +67,6 @@ Add or update Rust tests around `src/fade/actor.rs` and `src/fade/tick.rs`:
 - An in-threshold pan report between two out-of-threshold reports resets confirmation, so the second out-of-threshold report alone still does not cancel.
 - Balance and width reports still do not trigger override cancellation.
 - Existing fader override tests continue to prove immediate fader override behavior.
+- The implementation emits a debug tracing diagnostic for each out-of-threshold pan suspect hit.
 
 Run the smallest relevant targeted verification first, then broader Rust checks before claiming implementation complete.
