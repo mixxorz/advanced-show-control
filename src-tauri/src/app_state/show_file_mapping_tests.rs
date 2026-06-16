@@ -2,6 +2,73 @@ use super::shell::ShellState;
 use super::test_support::{begin_test_connection, connected_state_with_scene_and_channel};
 use super::view::ShowSnapshot;
 use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
+use std::sync::{Arc, Mutex};
+use tracing::field::{Field, Visit};
+use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::{LookupSpan, Registry};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CapturedWarning {
+    event: String,
+    message: String,
+    scene: String,
+}
+
+struct CapturedWarnings(Arc<Mutex<Vec<CapturedWarning>>>);
+
+impl<S> Layer<S> for CapturedWarnings
+where
+    S: tracing::Subscriber,
+    S: for<'a> LookupSpan<'a>,
+{
+    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+        if *event.metadata().level() != tracing::Level::WARN {
+            return;
+        }
+
+        let mut visitor = WarningVisitor::default();
+        event.record(&mut visitor);
+        if let (Some(event), Some(message), Some(scene)) =
+            (visitor.event, visitor.message, visitor.scene)
+        {
+            self.0.lock().unwrap().push(CapturedWarning {
+                event,
+                message,
+                scene,
+            });
+        }
+    }
+}
+
+#[derive(Default)]
+struct WarningVisitor {
+    event: Option<String>,
+    message: Option<String>,
+    scene: Option<String>,
+}
+
+impl WarningVisitor {
+    fn record_field(&mut self, name: &str, value: String) {
+        match name {
+            "event" => self.event = Some(value),
+            "message" => self.message = Some(value),
+            "scene" => self.scene = Some(value),
+            _ => {}
+        }
+    }
+}
+
+impl Visit for WarningVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.record_field(field.name(), value.to_string());
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.record_field(field.name(), format!("{value:?}"));
+    }
+}
 
 fn populated_show_snapshot() -> ShowSnapshot {
     ShowSnapshot {
@@ -261,6 +328,10 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
         ],
     };
 
+    let captured = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = Registry::default().with(CapturedWarnings(captured.clone()));
+    let _guard = tracing::subscriber::set_default(subscriber);
+
     let snapshot = state
         .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
         .await
@@ -277,6 +348,16 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
             .logs
             .iter()
             .all(|entry| entry.message != "Deleted saved scene config during load: 2: Missing")
+    );
+    assert_eq!(
+        captured.lock().unwrap().as_slice(),
+        &[CapturedWarning {
+            event: "show_file_scene_pruned".to_string(),
+            message:
+                "Skipped loading \"2: Missing\" because it was not found in the current scene list."
+                    .to_string(),
+            scene: "2: Missing".to_string(),
+        }]
     );
 }
 

@@ -73,13 +73,16 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Provide clear import/export flows for engineers moving sessions between systems.
    - Surface save/load state, dirty state, current file location, and any import/export warnings.
    - Preserve manual session import/export as the explicit fallback path for automatic session handling.
-14. Add auto-session recall.
+14. Show skipped-scene warnings when loading show files.
+   - Show a warning on load when saved scene configs are skipped because they are not found in the current scene list.
+   - Include enough scene identity detail for engineers to understand what was skipped without opening diagnostic logs.
+15. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session/show file only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
-15. Build the frontend Logs tab.
+16. Build the frontend Logs tab.
    - Show frontend-facing info logs, safety blocks, recalls, fade starts, fade completions, manual overrides, and connection events.
-16. Sort out bundling.
+17. Sort out bundling.
    - Produce a practical app package for MVP testing.
    - Document the packaging path and any platform limitations.
 

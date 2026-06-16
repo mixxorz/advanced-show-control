@@ -161,7 +161,11 @@ impl ShellState {
         inner.show_file_dirty = report.removed_anything();
 
         for scene in report.removed_scenes {
-            tracing::warn!(event = "show_file_scene_pruned", scene = %scene, "Deleted saved scene config during load: {scene}");
+            tracing::warn!(
+                event = "show_file_scene_pruned",
+                scene = %scene,
+                "Skipped loading \"{scene}\" because it was not found in the current scene list."
+            );
         }
 
         drop(inner);
