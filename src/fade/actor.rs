@@ -442,6 +442,9 @@ fn handle_pan_family_pan_report(
     let pan_override = if let Some(pan_target) = state.channels.iter_mut().find(|ch| {
         ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::Pan
     }) {
+        // A single unexpected pan echo can be stale LV1 feedback during a reversal.
+        // Wait for the configured number of consecutive misses before treating it
+        // as an engineer grab.
         let expected_pan = pan_target.expected_value;
         let is_out_of_threshold = pan_target.is_override(reported_pan);
         let confirmed = pan_target.record_override_report(reported_pan);
@@ -464,6 +467,9 @@ fn handle_pan_family_pan_report(
         }
         confirmed
     } else {
+        // If only balance/width are still fading, a pan move is still a manual
+        // pan-family intervention. There is no active pan target to compare
+        // against, so cancel those remaining targets immediately.
         state.channels.iter().any(|ch| {
             ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family()
         })
@@ -473,6 +479,9 @@ fn handle_pan_family_pan_report(
         return;
     }
 
+    // Once the engineer grabs pan, stop the app's pan-family automation for
+    // this channel. Leave the channel fader fade running; pan override should
+    // not disrupt level automation.
     let mut removed = Vec::new();
     state.channels.retain(|ch| {
         let should_remove =
@@ -487,6 +496,8 @@ fn handle_pan_family_pan_report(
         channel,
         parameter: FadeParameter::Pan,
     });
+    // Report each stopped pan-family parameter so logs/UI show what the app
+    // handed back to the engineer.
     for parameter in removed {
         state.fan_out(FadeEvent::ChannelCancelled {
             group,
@@ -496,6 +507,7 @@ fn handle_pan_family_pan_report(
     }
 
     if !state.is_active() {
+        // If that was the last automated move, close out the fade cleanly.
         complete_fade(tick_interval, state, fade_completed_emitted);
     }
 }

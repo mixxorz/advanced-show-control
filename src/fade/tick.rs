@@ -27,7 +27,6 @@ pub(crate) struct ActiveTarget {
     pub(crate) target_value: f64,
     /// Last value sent — for override detection and min-delta suppression.
     pub(crate) expected_value: f64,
-    #[allow(dead_code)]
     pub(crate) override_deviation_count: u8,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
@@ -109,7 +108,6 @@ impl ActiveTarget {
     }
 
     /// Records an override report and returns true when override is confirmed.
-    #[allow(dead_code)]
     pub(crate) fn record_override_report(&mut self, reported_value: f64) -> bool {
         if self.key.parameter != FadeParameter::Pan {
             return self.is_override(reported_value);
