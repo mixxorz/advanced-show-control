@@ -143,6 +143,21 @@ enum Command {
         #[arg(long, default_value_t = 6000)]
         timeout_ms: u64,
     },
+    #[command(about = "Run a live LV1 pan/balance/width fade-engine smoke test")]
+    PanFamilySmokeTest {
+        #[arg(long)]
+        host: Option<String>,
+        #[arg(long)]
+        port: Option<u16>,
+        #[arg(long, default_value_t = 6000)]
+        timeout_ms: u64,
+        #[arg(long, default_value = "logs/pan-family-smoke-test")]
+        log_dir: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        group: i32,
+        #[arg(long, default_value_t = 2)]
+        channel: i32,
+    },
 }
 
 #[tokio::main]
@@ -234,6 +249,24 @@ async fn main() -> AppResult<()> {
             port,
             timeout_ms,
         } => run_vegas(host, port, timeout_ms).await,
+        Command::PanFamilySmokeTest {
+            host,
+            port,
+            timeout_ms,
+            log_dir,
+            group,
+            channel,
+        } => {
+            run_pan_family_smoke_test(PanFamilySmokeOptions {
+                host,
+                port,
+                timeout_ms,
+                log_dir,
+                group,
+                channel,
+            })
+            .await
+        }
     }
 }
 
@@ -770,6 +803,536 @@ async fn run_fade_test(
     Ok(())
 }
 
+struct PanFamilySmokeOptions {
+    host: Option<String>,
+    port: Option<u16>,
+    timeout_ms: u64,
+    log_dir: PathBuf,
+    group: i32,
+    channel: i32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PanFamilySmokePosition {
+    label: &'static str,
+    pan: f64,
+    balance: f64,
+    width: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PanFamilySmokeStep {
+    stage: &'static str,
+    loop_index: usize,
+    duration_ms: u64,
+    position: PanFamilySmokePosition,
+}
+
+const PAN_FAMILY_SMOKE_DURATIONS_MS: [u64; 4] = [5_000, 2_500, 1_000, 100];
+const PAN_FAMILY_DEFAULT: PanFamilySmokePosition = PanFamilySmokePosition {
+    label: "default",
+    pan: 0.0,
+    balance: 0.0,
+    width: 1.0,
+};
+const PAN_FAMILY_ALL_MIN: PanFamilySmokePosition = PanFamilySmokePosition {
+    label: "min",
+    pan: -45.0,
+    balance: -45.0,
+    width: -1.4,
+};
+const PAN_FAMILY_ALL_MAX: PanFamilySmokePosition = PanFamilySmokePosition {
+    label: "max",
+    pan: 45.0,
+    balance: 45.0,
+    width: 1.4,
+};
+const PAN_FAMILY_ALTERNATE_A: PanFamilySmokePosition = PanFamilySmokePosition {
+    label: "pan_min_balance_max_width_min",
+    pan: -45.0,
+    balance: 45.0,
+    width: -1.4,
+};
+const PAN_FAMILY_ALTERNATE_B: PanFamilySmokePosition = PanFamilySmokePosition {
+    label: "pan_max_balance_min_width_max",
+    pan: 45.0,
+    balance: -45.0,
+    width: 1.4,
+};
+
+fn pan_family_smoke_steps() -> Vec<PanFamilySmokeStep> {
+    let stages = [
+        (
+            "together",
+            [
+                PAN_FAMILY_DEFAULT,
+                PAN_FAMILY_ALL_MIN,
+                PAN_FAMILY_ALL_MAX,
+                PAN_FAMILY_ALL_MIN,
+                PAN_FAMILY_ALL_MAX,
+                PAN_FAMILY_DEFAULT,
+            ],
+        ),
+        (
+            "alternating",
+            [
+                PAN_FAMILY_DEFAULT,
+                PAN_FAMILY_ALTERNATE_A,
+                PAN_FAMILY_ALTERNATE_B,
+                PAN_FAMILY_ALTERNATE_A,
+                PAN_FAMILY_ALTERNATE_B,
+                PAN_FAMILY_DEFAULT,
+            ],
+        ),
+    ];
+
+    let mut steps = Vec::new();
+    for (stage, positions) in stages {
+        for (loop_index, duration_ms) in PAN_FAMILY_SMOKE_DURATIONS_MS.into_iter().enumerate() {
+            for position in positions {
+                steps.push(PanFamilySmokeStep {
+                    stage,
+                    loop_index: loop_index + 1,
+                    duration_ms,
+                    position,
+                });
+            }
+        }
+    }
+    steps
+}
+
+fn pan_family_smoke_config(
+    group: i32,
+    channel: i32,
+    step: &PanFamilySmokeStep,
+) -> advanced_show_control::fade::types::FadeConfig {
+    use advanced_show_control::fade::curve::FadeCurve;
+    use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+
+    FadeConfig {
+        scene: FadeSceneIdentity {
+            index: (step.loop_index as i32),
+            name: format!(
+                "pan-family-smoke-{}-loop-{}-{}",
+                step.stage, step.loop_index, step.position.label
+            ),
+        },
+        targets: vec![
+            FadeTarget {
+                group,
+                channel,
+                parameter: FadeParameter::Pan,
+                target: step.position.pan,
+            },
+            FadeTarget {
+                group,
+                channel,
+                parameter: FadeParameter::Balance,
+                target: step.position.balance,
+            },
+            FadeTarget {
+                group,
+                channel,
+                parameter: FadeParameter::Width,
+                target: step.position.width,
+            },
+        ],
+        duration_ms: step.duration_ms,
+        curve: FadeCurve::Linear,
+    }
+}
+
+async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<()> {
+    use advanced_show_control::fade::actor::spawn_engine;
+    use advanced_show_control::runtime::commands::AppCommandBus;
+
+    let PanFamilySmokeOptions {
+        host,
+        port,
+        timeout_ms,
+        log_dir,
+        group,
+        channel,
+    } = options;
+
+    std::fs::create_dir_all(&log_dir)?;
+    let log_path = log_dir.join(format!(
+        "lv1-pan-family-smoke-{}.jsonl",
+        unix_timestamp_secs()
+    ));
+    write_smoke_log_entry(
+        &log_path,
+        serde_json::json!({
+            "event": "smoke_start",
+            "group": group,
+            "channel": channel,
+            "durations_ms": PAN_FAMILY_SMOKE_DURATIONS_MS,
+        }),
+    )?;
+
+    let (host, port) = resolve_target(host, port, timeout_ms)?;
+    eprintln!("connecting to {host}:{port}");
+    println!("[smoke-log] {}", log_path.display());
+    println!("[target] group={group} channel={channel}");
+
+    let event_bus = AppEventBus::default();
+    let mut lv1_events = event_bus.subscribe();
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
+    let command_bus = AppCommandBus::new(event_bus.clone());
+    command_bus.set_lv1(Some(lv1.clone())).await;
+    let engine = spawn_engine(command_bus.clone(), event_bus.clone());
+    command_bus.set_fade(Some(engine.clone())).await;
+    let mut fade_events = event_bus.subscribe();
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match lv1_events.recv().await {
+                Ok(AppEvent::Lv1(Lv1Event::Connected)) => {
+                    println!("[connected] {host}:{port}");
+                    break;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    log_lagged_subscriber("pan-family-smoke-test", count);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+    .await
+    .map_err(|_| "timed out waiting for LV1 connection")?;
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let snapshot = lv1.get_state().await;
+    let channel_found = snapshot
+        .channels
+        .iter()
+        .any(|ch| ch.group == group && ch.channel == channel);
+    if channel_found {
+        println!("[current] group={group} channel={channel} found in LV1 snapshot");
+    } else {
+        println!("[warning] group={group} channel={channel} not found in LV1 snapshot");
+    }
+
+    let mut failed_loops = Vec::new();
+    let steps = pan_family_smoke_steps();
+    for stage in ["together", "alternating"] {
+        for loop_index in 1..=PAN_FAMILY_SMOKE_DURATIONS_MS.len() {
+            let loop_steps: Vec<_> = steps
+                .iter()
+                .filter(|step| step.stage == stage && step.loop_index == loop_index)
+                .collect();
+            let mut failed_reason = None;
+            for step in loop_steps {
+                let label = format!(
+                    "{}-loop-{}-{}-{}ms",
+                    step.stage, step.loop_index, step.position.label, step.duration_ms
+                );
+                if let Err(err) = run_pan_family_smoke_step(
+                    &engine,
+                    &mut fade_events,
+                    &log_path,
+                    pan_family_smoke_config(group, channel, step),
+                    step,
+                    &label,
+                )
+                .await
+                {
+                    let reason = err.to_string();
+                    println!("[loop-failed] {stage} loop {loop_index}: {reason}");
+                    write_smoke_log_entry(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "loop_failed",
+                            "stage": stage,
+                            "loop_index": loop_index,
+                            "reason": reason,
+                        }),
+                    )?;
+                    let _ = engine.abort_all().await;
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    drain_pending_smoke_events(&mut fade_events);
+                    failed_reason = Some(reason);
+                    break;
+                }
+            }
+
+            if let Some(reason) = failed_reason {
+                failed_loops.push((stage.to_string(), loop_index, reason));
+            } else {
+                println!("[loop-complete] {stage} loop {loop_index}");
+                write_smoke_log_entry(
+                    &log_path,
+                    serde_json::json!({
+                        "event": "loop_completed",
+                        "stage": stage,
+                        "loop_index": loop_index,
+                    }),
+                )?;
+            }
+        }
+    }
+
+    write_smoke_log_entry(
+        &log_path,
+        serde_json::json!({
+            "event": "smoke_complete",
+            "failed_loop_count": failed_loops.len(),
+        }),
+    )?;
+    if !failed_loops.is_empty() {
+        println!("[smoke-complete] {} loop(s) failed", failed_loops.len());
+        println!("[smoke-log] {}", log_path.display());
+        return Err(format!(
+            "pan-family smoke test failed {} loop(s); inspect smoke log: {}",
+            failed_loops.len(),
+            log_path.display()
+        )
+        .into());
+    }
+
+    println!("[smoke-complete] all loops passed with no fade override detected");
+    println!("[smoke-log] {}", log_path.display());
+    Ok(())
+}
+
+async fn run_pan_family_smoke_step(
+    engine: &advanced_show_control::fade::handle::FadeEngineHandle,
+    fade_events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    log_path: &std::path::Path,
+    config: advanced_show_control::fade::types::FadeConfig,
+    step: &PanFamilySmokeStep,
+    label: &str,
+) -> AppResult<()> {
+    use advanced_show_control::fade::events::FadeEvent;
+
+    drain_pending_smoke_events(fade_events);
+
+    let targets: Vec<_> = config
+        .targets
+        .iter()
+        .map(|target| {
+            serde_json::json!({
+                "group": target.group,
+                "channel": target.channel,
+                "parameter": format!("{:?}", target.parameter),
+                "target": target.target,
+            })
+        })
+        .collect();
+
+    println!("[fade-start] {label}");
+    write_smoke_log_entry(
+        log_path,
+        serde_json::json!({
+            "event": "fade_request",
+            "label": label,
+            "stage": step.stage,
+            "loop_index": step.loop_index,
+            "position": step.position.label,
+            "duration_ms": config.duration_ms,
+            "targets": targets,
+        }),
+    )?;
+
+    engine.start_fade(config).await?;
+
+    loop {
+        match fade_events.recv().await {
+            Ok(AppEvent::Fade(FadeEvent::FadeStarted)) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "fade_started",
+                        "label": label,
+                        "stage": step.stage,
+                        "loop_index": step.loop_index,
+                        "position": step.position.label,
+                    }),
+                )?;
+            }
+            Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => {
+                println!("[fade-complete] {label}");
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "fade_completed",
+                        "label": label,
+                        "stage": step.stage,
+                        "loop_index": step.loop_index,
+                        "position": step.position.label,
+                    }),
+                )?;
+                break;
+            }
+            Ok(AppEvent::Fade(FadeEvent::FadeAborted)) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "fade_aborted",
+                        "label": label,
+                        "stage": step.stage,
+                        "loop_index": step.loop_index,
+                        "position": step.position.label,
+                    }),
+                )?;
+                return Err(format!(
+                    "pan-family smoke test fade aborted during {label}; smoke log: {}",
+                    log_path.display()
+                )
+                .into());
+            }
+            Ok(AppEvent::Fade(FadeEvent::ChannelOverride {
+                group,
+                channel,
+                parameter,
+            })) => {
+                println!(
+                    "[override] group={group} ch={channel} parameter={parameter:?}; stopping smoke test"
+                );
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "manual_override_detected",
+                        "label": label,
+                        "group": group,
+                        "channel": channel,
+                        "parameter": format!("{:?}", parameter),
+                    }),
+                )?;
+                return Err(format!(
+                    "manual override detected during pan-family smoke test; inspect smoke log: {}",
+                    log_path.display()
+                )
+                .into());
+            }
+            Ok(AppEvent::Fade(FadeEvent::ChannelCancelled {
+                group,
+                channel,
+                parameter,
+            })) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "channel_cancelled",
+                        "label": label,
+                        "group": group,
+                        "channel": channel,
+                        "parameter": format!("{:?}", parameter),
+                    }),
+                )?;
+            }
+            Ok(AppEvent::Fade(FadeEvent::ChannelCompleted {
+                group,
+                channel,
+                parameter,
+            })) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "channel_completed",
+                        "label": label,
+                        "group": group,
+                        "channel": channel,
+                        "parameter": format!("{:?}", parameter),
+                    }),
+                )?;
+            }
+            Ok(AppEvent::Fade(FadeEvent::WriteFailed { reason })) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({ "event": "write_failed", "label": label, "reason": reason }),
+                )?;
+                return Err(format!(
+                    "pan-family smoke test write failed during {label}: {reason}; smoke log: {}",
+                    log_path.display()
+                )
+                .into());
+            }
+            Ok(AppEvent::Lv1(Lv1Event::PanChanged {
+                group,
+                channel,
+                pan,
+            })) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "lv1_pan_changed",
+                        "label": label,
+                        "group": group,
+                        "channel": channel,
+                        "value": pan,
+                    }),
+                )?;
+            }
+            Ok(AppEvent::Lv1(Lv1Event::BalanceChanged {
+                group,
+                channel,
+                balance,
+            })) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "lv1_balance_changed",
+                        "label": label,
+                        "group": group,
+                        "channel": channel,
+                        "value": balance,
+                    }),
+                )?;
+            }
+            Ok(AppEvent::Lv1(Lv1Event::WidthChanged {
+                group,
+                channel,
+                width,
+            })) => {
+                write_smoke_log_entry(
+                    log_path,
+                    serde_json::json!({
+                        "event": "lv1_width_changed",
+                        "label": label,
+                        "group": group,
+                        "channel": channel,
+                        "value": width,
+                    }),
+                )?;
+            }
+            Ok(_) => {}
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                log_lagged_subscriber("pan-family-smoke-test", count);
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                return Err("pan-family smoke test event bus closed".into());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn drain_pending_smoke_events(fade_events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
+    while fade_events.try_recv().is_ok() {}
+}
+
+fn write_smoke_log_entry(path: &std::path::Path, mut entry: serde_json::Value) -> AppResult<()> {
+    use std::io::Write;
+
+    if let Some(object) = entry.as_object_mut() {
+        object.insert(
+            "timestamp_unix_secs".to_string(),
+            serde_json::json!(unix_timestamp_secs()),
+        );
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+    Ok(())
+}
+
 async fn wait_for_channels_until(
     lv1: &Lv1ActorHandle,
     deadline: Instant,
@@ -1181,6 +1744,83 @@ mod tests {
 
         let err = Cli::try_parse_from(["lv1-probe", "vegas", "--group", "0"]).unwrap_err();
         assert!(err.to_string().contains("unexpected argument '--group'"));
+    }
+
+    #[test]
+    fn parses_pan_family_smoke_test_command() {
+        let cli = Cli::try_parse_from([
+            "lv1-probe",
+            "pan-family-smoke-test",
+            "--host",
+            "192.168.1.10",
+            "--port",
+            "50001",
+            "--timeout-ms",
+            "3000",
+            "--log-dir",
+            "logs-smoke",
+            "--group",
+            "0",
+            "--channel",
+            "2",
+        ])
+        .unwrap();
+
+        match cli.command {
+            Command::PanFamilySmokeTest {
+                host,
+                port,
+                timeout_ms,
+                log_dir,
+                group,
+                channel,
+            } => {
+                assert_eq!(host.as_deref(), Some("192.168.1.10"));
+                assert_eq!(port, Some(50001));
+                assert_eq!(timeout_ms, 3000);
+                assert_eq!(log_dir, std::path::PathBuf::from("logs-smoke"));
+                assert_eq!(group, 0);
+                assert_eq!(channel, 2);
+            }
+            other => panic!("expected PanFamilySmokeTest, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pan_family_smoke_steps_cover_stages_loops_and_positions() {
+        let steps = pan_family_smoke_steps();
+
+        assert_eq!(steps.len(), 48);
+
+        let first_loop: Vec<_> = steps
+            .iter()
+            .filter(|step| step.stage == "together" && step.loop_index == 1)
+            .collect();
+        assert_eq!(first_loop.len(), 6);
+        assert!(first_loop.iter().all(|step| step.duration_ms == 5_000));
+        assert_eq!(first_loop[0].position, PAN_FAMILY_DEFAULT);
+        assert_eq!(first_loop[1].position, PAN_FAMILY_ALL_MIN);
+        assert_eq!(first_loop[2].position, PAN_FAMILY_ALL_MAX);
+        assert_eq!(first_loop[3].position, PAN_FAMILY_ALL_MIN);
+        assert_eq!(first_loop[4].position, PAN_FAMILY_ALL_MAX);
+        assert_eq!(first_loop[5].position, PAN_FAMILY_DEFAULT);
+
+        let alternating_fast_loop: Vec<_> = steps
+            .iter()
+            .filter(|step| step.stage == "alternating" && step.loop_index == 4)
+            .collect();
+        assert_eq!(alternating_fast_loop.len(), 6);
+        assert!(
+            alternating_fast_loop
+                .iter()
+                .all(|step| step.duration_ms == 100)
+        );
+        assert_eq!(alternating_fast_loop[0].position, PAN_FAMILY_DEFAULT);
+        assert_eq!(alternating_fast_loop[1].position, PAN_FAMILY_ALTERNATE_A);
+        assert_eq!(alternating_fast_loop[2].position, PAN_FAMILY_ALTERNATE_B);
+        assert_eq!(alternating_fast_loop[3].position, PAN_FAMILY_ALTERNATE_A);
+        assert_eq!(alternating_fast_loop[4].position, PAN_FAMILY_ALTERNATE_B);
+        assert_eq!(alternating_fast_loop[5].position, PAN_FAMILY_DEFAULT);
     }
 
     #[tokio::test]

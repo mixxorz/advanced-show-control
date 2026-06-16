@@ -107,7 +107,7 @@ Core + Tauri tracing events
 
 `FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
 
-`FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation and direct linear override thresholds. Pan-family manual override cancels pan, balance, and width for that channel together, but it does not cancel that channel's fader fade.
+`FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation. Pan-family manual override is driven only by pan movement. A pan override cancels pan, balance, and width for that channel together. Balance and width reports do not trigger override cancellation. Fader fades are not cancelled by pan-family override.
 
 High-rate fade writes use `write_batch`. The command bus reports an unavailable LV1 target when no actor is installed. Once a batch reaches an LV1 actor, the actor may still drop queued writes during disconnect cleanup; this is intentional for the 25 Hz fade stream and must be surfaced through diagnostics rather than retried blindly.
 
@@ -132,7 +132,7 @@ High-rate fade writes use `write_batch`. The command bus reports an unavailable 
 `FadeEngine` owns overlap behavior.
 
 - It starts fades from live values.
-- It fades pan, balance, and width with direct linear interpolation and threshold checks.
+- It fades pan, balance, and width with direct linear interpolation.
 - It overlaps on unrelated faders.
 - It takes over only overlapping channels for a new recall.
 - It does not expose a finish-now command.
