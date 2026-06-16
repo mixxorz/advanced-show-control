@@ -175,13 +175,14 @@ async fn run_engine(
                         }
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::PanChanged { group, channel, pan })) => {
-                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Pan, pan, &mut tick_interval);
-                    }
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::BalanceChanged { group, channel, balance })) => {
-                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Balance, balance, &mut tick_interval);
-                    }
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::WidthChanged { group, channel, width })) => {
-                        cancel_pan_family_overrides(&mut state, group, channel, FadeParameter::Width, width, &mut tick_interval);
+                        handle_pan_family_pan_report(
+                            &mut state,
+                            group,
+                            channel,
+                            pan,
+                            &mut tick_interval,
+                            &mut fade_completed_emitted,
+                        );
                     }
                     Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected { .. })) => {
                         if state.is_active() {
@@ -430,42 +431,72 @@ fn cancel_generation_owned_targets(state: &mut EngineState, expected_generation:
     }
 }
 
-fn cancel_pan_family_overrides(
+fn handle_pan_family_pan_report(
     state: &mut EngineState,
     group: i32,
     channel: i32,
-    parameter: FadeParameter,
-    reported_value: f64,
+    reported_pan: f64,
     tick_interval: &mut Option<tokio::time::Interval>,
+    fade_completed_emitted: &mut bool,
 ) {
-    let cancel = state.channels.iter().any(|ch| {
-        ch.group == group
-            && ch.channel == channel
-            && ch.key.parameter == parameter
-            && ch.is_override(reported_value)
-    });
+    let pan_override = if let Some(pan_target) = state.channels.iter_mut().find(|ch| {
+        ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::Pan
+    }) {
+        let expected_pan = pan_target.expected_value;
+        let is_out_of_threshold = pan_target.is_override(reported_pan);
+        let confirmed = pan_target.record_override_report(reported_pan);
+        if is_out_of_threshold {
+            tracing::debug!(
+                event = "pan_override_suspect",
+                group,
+                channel,
+                reported_pan,
+                expected_pan,
+                threshold = crate::fade::tick::PAN_OVERRIDE_THRESHOLD,
+                confirmation_count = pan_target.override_deviation_count,
+                required_confirmation_count = crate::fade::tick::PAN_OVERRIDE_CONFIRMATION_COUNT,
+                "Pan override suspect: group {}, channel {}, reported {}, expected {}",
+                group,
+                channel,
+                reported_pan,
+                expected_pan
+            );
+        }
+        confirmed
+    } else {
+        state.channels.iter().any(|ch| {
+            ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family()
+        })
+    };
 
-    if !cancel {
+    if !pan_override {
         return;
     }
 
+    let mut removed = Vec::new();
     state.channels.retain(|ch| {
-        !(ch.group == group && ch.channel == channel && ch.key.parameter == parameter)
+        let should_remove =
+            ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family();
+        if should_remove {
+            removed.push(ch.key.parameter);
+        }
+        !should_remove
     });
     state.fan_out(FadeEvent::ChannelOverride {
         group,
         channel,
-        parameter,
+        parameter: FadeParameter::Pan,
     });
-    state.fan_out(FadeEvent::ChannelCancelled {
-        group,
-        channel,
-        parameter,
-    });
+    for parameter in removed {
+        state.fan_out(FadeEvent::ChannelCancelled {
+            group,
+            channel,
+            parameter,
+        });
+    }
 
     if !state.is_active() {
-        *tick_interval = None;
-        state.fan_out(FadeEvent::FadeCompleted);
+        complete_fade(tick_interval, state, fade_completed_emitted);
     }
 }
 
@@ -498,6 +529,27 @@ mod tests {
         }
     }
 
+    fn active_pan_family_target(parameter: FadeParameter) -> ActiveTarget {
+        let target = FadeTarget {
+            group: 0,
+            channel: 0,
+            parameter,
+            target: 45.0,
+        };
+
+        ActiveTarget::new(ActiveTargetInit {
+            key: target.key(),
+            group: target.group,
+            channel: target.channel,
+            start_value: 0.0,
+            target_value: target.target,
+            curve: FadeCurve::Linear,
+            duration: std::time::Duration::from_millis(1000),
+            started_at: Instant::now(),
+            expected_generation: None,
+        })
+    }
+
     async fn spawn_runtime_for_test() -> (
         AppEventBus,
         FadeEngineHandle,
@@ -511,6 +563,452 @@ mod tests {
         let engine = spawn_engine(bus.clone(), event_bus.clone());
         bus.set_fade(Some(engine.clone())).await;
         (event_bus, engine, rx)
+    }
+
+    async fn assert_pan_family_aux_event_does_not_override(parameter: FadeParameter) {
+        let (event_bus, engine, mut rx) = spawn_runtime_for_test().await;
+        let mut events = event_bus.subscribe();
+        let (write_tx, mut write_rx) = tokio::sync::mpsc::channel::<Vec<Lv1ParameterWrite>>(8);
+
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                match command {
+                    Lv1Command::GetState { reply } => {
+                        let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
+                            connection: crate::lv1::types::ConnectionStatus::Connected,
+                            scene: None,
+                            scene_list: vec![],
+                            channels: vec![],
+                        });
+                    }
+                    Lv1Command::WriteBatch(writes) => {
+                        let _ = write_tx.send(writes).await;
+                    }
+                    _ => {}
+                }
+            }
+        });
+
+        engine
+            .start_fade(fade_config(
+                scene(1, "Intro"),
+                vec![
+                    FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::Pan,
+                        target: 45.0,
+                    },
+                    FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::Balance,
+                        target: 45.0,
+                    },
+                    FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::Width,
+                        target: 45.0,
+                    },
+                ],
+                1000,
+            ))
+            .await
+            .unwrap();
+
+        // Drain the initial fade setup writes and any immediate events before the aux report.
+        while write_rx.try_recv().is_ok() {}
+        while events.try_recv().is_ok() {}
+
+        event_bus.publish(AppEvent::Lv1(match parameter {
+            FadeParameter::Balance => crate::lv1::events::Lv1Event::BalanceChanged {
+                group: 0,
+                channel: 0,
+                balance: -45.0,
+            },
+            FadeParameter::Width => crate::lv1::events::Lv1Event::WidthChanged {
+                group: 0,
+                channel: 0,
+                width: -45.0,
+            },
+            _ => unreachable!(),
+        }));
+
+        let writes = tokio::time::timeout(std::time::Duration::from_millis(1500), write_rx.recv())
+            .await
+            .expect("expected fade activity after auxiliary pan-family event")
+            .expect("write signal should arrive");
+
+        assert!(writes.iter().any(|write| {
+            write.group == 0 && write.channel == 0 && write.parameter == Lv1WriteParameter::Pan
+        }));
+        assert!(writes.iter().any(|write| {
+            write.group == 0 && write.channel == 0 && write.parameter == Lv1WriteParameter::Balance
+        }));
+        assert!(writes.iter().any(|write| {
+            write.group == 0 && write.channel == 0 && write.parameter == Lv1WriteParameter::Width
+        }));
+
+        let mut saw_override = false;
+        let mut saw_cancelled = false;
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::Fade(FadeEvent::ChannelOverride { .. }) => saw_override = true,
+                AppEvent::Fade(FadeEvent::ChannelCancelled { .. }) => saw_cancelled = true,
+                _ => {}
+            }
+        }
+
+        assert!(!saw_override, "unexpected ChannelOverride event");
+        assert!(!saw_cancelled, "unexpected ChannelCancelled event");
+    }
+
+    #[tokio::test]
+    async fn balance_report_does_not_cancel_pan_family_targets() {
+        assert_pan_family_aux_event_does_not_override(FadeParameter::Balance).await;
+    }
+
+    #[tokio::test]
+    async fn width_report_does_not_cancel_pan_family_targets() {
+        assert_pan_family_aux_event_does_not_override(FadeParameter::Width).await;
+    }
+
+    #[tokio::test]
+    async fn pan_report_cancels_balance_and_width_when_pan_target_is_missing() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus);
+        let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
+
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Balance));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Width));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Pan));
+        state.channels.last_mut().unwrap().group = 1;
+        state.channels.last_mut().unwrap().channel = 1;
+
+        let mut fade_completed_emitted = false;
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+
+        assert_eq!(state.channels.len(), 1);
+        assert!(
+            state.channels.iter().any(|ch| ch.group == 1
+                && ch.channel == 1
+                && ch.key.parameter == FadeParameter::Pan)
+        );
+
+        let mut saw_override = false;
+        let mut cancelled = std::collections::HashSet::new();
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::Fade(FadeEvent::ChannelOverride {
+                    group,
+                    channel,
+                    parameter,
+                }) => {
+                    assert_eq!((group, channel, parameter), (0, 0, FadeParameter::Pan));
+                    saw_override = true;
+                }
+                AppEvent::Fade(FadeEvent::ChannelCancelled {
+                    group,
+                    channel,
+                    parameter,
+                }) => {
+                    cancelled.insert((group, channel, parameter));
+                }
+                AppEvent::Fade(FadeEvent::FadeCompleted) => {
+                    panic!("unexpected FadeCompleted while unrelated target remains")
+                }
+                _ => {}
+            }
+        }
+
+        assert!(saw_override, "missing ChannelOverride for pan");
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Balance)));
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Width)));
+        assert!(!cancelled.contains(&(1, 1, FadeParameter::Pan)));
+    }
+
+    #[tokio::test]
+    async fn pan_report_completes_when_no_active_targets_remain() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus);
+        let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
+
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Balance));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Width));
+
+        let mut fade_completed_emitted = false;
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+
+        assert!(state.channels.is_empty());
+
+        let mut saw_override = false;
+        let mut cancelled = std::collections::HashSet::new();
+        let mut saw_fade_completed = false;
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::Fade(FadeEvent::ChannelOverride {
+                    group,
+                    channel,
+                    parameter,
+                }) => {
+                    assert_eq!((group, channel, parameter), (0, 0, FadeParameter::Pan));
+                    saw_override = true;
+                }
+                AppEvent::Fade(FadeEvent::ChannelCancelled {
+                    group,
+                    channel,
+                    parameter,
+                }) => {
+                    cancelled.insert((group, channel, parameter));
+                }
+                AppEvent::Fade(FadeEvent::FadeCompleted) => saw_fade_completed = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_override, "missing ChannelOverride for pan");
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Balance)));
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Width)));
+        assert!(saw_fade_completed, "missing FadeCompleted");
+    }
+
+    #[tokio::test]
+    async fn one_out_of_threshold_pan_report_does_not_cancel_active_pan_family_targets() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus);
+        let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
+
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Pan));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Balance));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Width));
+
+        let mut fade_completed_emitted = false;
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+
+        assert_eq!(state.channels.len(), 3);
+        assert!(
+            state
+                .channels
+                .iter()
+                .any(|ch| ch.key.parameter == FadeParameter::Pan)
+        );
+        assert!(
+            state
+                .channels
+                .iter()
+                .any(|ch| ch.key.parameter == FadeParameter::Balance)
+        );
+        assert!(
+            state
+                .channels
+                .iter()
+                .any(|ch| ch.key.parameter == FadeParameter::Width)
+        );
+
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::Fade(FadeEvent::ChannelOverride { .. }) => {
+                    panic!("unexpected ChannelOverride event")
+                }
+                AppEvent::Fade(FadeEvent::ChannelCancelled { .. }) => {
+                    panic!("unexpected ChannelCancelled event")
+                }
+                AppEvent::Fade(FadeEvent::FadeCompleted) => {
+                    panic!("unexpected FadeCompleted event")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn in_threshold_pan_report_resets_override_confirmation() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus);
+        let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
+
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Pan));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Balance));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Width));
+
+        let mut fade_completed_emitted = false;
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            0.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+
+        assert_eq!(state.channels.len(), 3);
+        let pan_target = state
+            .channels
+            .iter()
+            .find(|ch| ch.key.parameter == FadeParameter::Pan)
+            .expect("pan target should remain active");
+        assert_eq!(pan_target.override_deviation_count, 1);
+
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::Fade(FadeEvent::ChannelOverride { .. }) => {
+                    panic!("unexpected ChannelOverride event")
+                }
+                AppEvent::Fade(FadeEvent::ChannelCancelled { .. }) => {
+                    panic!("unexpected ChannelCancelled event")
+                }
+                AppEvent::Fade(FadeEvent::FadeCompleted) => {
+                    panic!("unexpected FadeCompleted event")
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pan_report_cancels_all_pan_family_targets_for_channel() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus);
+        let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Pan));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Balance));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Width));
+        state
+            .channels
+            .push(active_pan_family_target(FadeParameter::Pan));
+        state.channels.last_mut().unwrap().group = 0;
+        state.channels.last_mut().unwrap().channel = 1;
+
+        let mut fade_completed_emitted = false;
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+
+        assert_eq!(state.channels.len(), 4);
+
+        handle_pan_family_pan_report(
+            &mut state,
+            0,
+            0,
+            45.0,
+            &mut tick_interval,
+            &mut fade_completed_emitted,
+        );
+
+        assert_eq!(state.channels.len(), 1);
+        assert!(
+            state.channels.iter().any(|ch| ch.group == 0
+                && ch.channel == 1
+                && ch.key.parameter == FadeParameter::Pan)
+        );
+
+        let mut saw_override = false;
+        let mut cancelled = std::collections::HashSet::new();
+        let mut saw_fade_completed = false;
+        while let Ok(event) = events.try_recv() {
+            match event {
+                AppEvent::Fade(FadeEvent::ChannelOverride {
+                    group,
+                    channel,
+                    parameter,
+                }) => {
+                    assert_eq!((group, channel, parameter), (0, 0, FadeParameter::Pan));
+                    saw_override = true;
+                }
+                AppEvent::Fade(FadeEvent::ChannelCancelled {
+                    group,
+                    channel,
+                    parameter,
+                }) => {
+                    cancelled.insert((group, channel, parameter));
+                }
+                AppEvent::Fade(FadeEvent::FadeCompleted) => saw_fade_completed = true,
+                _ => {}
+            }
+        }
+
+        assert!(saw_override, "missing ChannelOverride for pan");
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Pan)));
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Balance)));
+        assert!(cancelled.contains(&(0, 0, FadeParameter::Width)));
+        assert!(!cancelled.contains(&(0, 1, FadeParameter::Pan)));
+        assert!(!saw_fade_completed, "unexpected FadeCompleted");
     }
 
     #[tokio::test]
