@@ -528,6 +528,18 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                 ],
             ))
             .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        stream
+            .write_all(&lv1_frame(
+                "/Notify/Track/Pan",
+                &[
+                    OscArg::Int(0),
+                    OscArg::Int(0),
+                    OscArg::Double(45.0),
+                    OscArg::True,
+                ],
+            ))
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_secs(3));
     });
 
