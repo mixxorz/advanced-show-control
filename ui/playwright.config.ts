@@ -19,7 +19,7 @@ export default defineConfig({
   webServer: {
     command: "npm run build-storybook && npm run serve-storybook",
     url: "http://127.0.0.1:6007",
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 120_000,
   },
   projects: [

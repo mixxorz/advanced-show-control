@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "@storybook/test";
+import { expect, within } from "storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { ConnectionScreen } from "./ConnectionScreen";
 import {
