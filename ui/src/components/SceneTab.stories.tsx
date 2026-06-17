@@ -45,11 +45,9 @@ export const StoredSceneSelected: Story = {
     const canvas = within(canvasElement);
 
     await expect(
-      canvas.getByRole("heading", { name: "Scenes" }),
+      canvas.getByRole("heading", { name: "Scene List" }),
     ).toBeInTheDocument();
-    await expect(
-      canvas.getByRole("heading", { name: "4: Verse" }),
-    ).toBeInTheDocument();
+    await expect(canvas.getByText("Selected Scene")).toBeInTheDocument();
   },
 };
 
