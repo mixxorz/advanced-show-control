@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { AppViewState, Lv1SystemIdentity } from "../types";
+import { useAppCommands, useAppState } from "../appContext";
 import { ConnectionScreen } from "./ConnectionScreen";
 import { Header } from "./Header";
 import { LogsTab } from "./LogsTab";
@@ -9,51 +9,21 @@ export type MainTab = "scene" | "logs";
 
 export function AppShell(props: {
   activeTab: MainTab;
-  appState: AppViewState;
-  commandError: string | null;
-  onAbortAll: () => void;
-  onDisconnect: () => void;
-  onNewShowFile: () => void;
   onOpenConnection: () => void;
-  onOpenShowFile: () => void;
   onResume: () => void;
-  onSaveShowFile: () => void;
-  onSaveShowFileAs: () => void;
-  onSelectScene: (sceneId: string) => void;
-  onSelectSystem: (identity: Lv1SystemIdentity) => void;
   onSelectTab: (tab: MainTab) => void;
-  onSetAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
-  onSetChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => void;
-  onSetSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
-  onSetSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => void;
-  onSetSceneScopePanEnabled: (sceneId: string, enabled: boolean) => void;
-  onStoreSceneConfig: (sceneId: string) => Promise<boolean>;
-  onToggleLockout: () => void;
   showConnection: boolean;
 }) {
+  const { appState, commandError } = useAppState();
+  const commands = useAppCommands();
+
   return (
     <>
       {props.showConnection ? (
-        <ConnectionScreen
-          appState={props.appState}
-          commandError={props.commandError}
-          onDisconnect={props.onDisconnect}
-          onResume={props.onResume}
-          onSelectSystem={props.onSelectSystem}
-        />
+        <ConnectionScreen appState={appState} commandError={commandError} onDisconnect={commands.disconnect} onResume={props.onResume} onSelectSystem={commands.selectSystem} />
       ) : (
         <main className="min-h-screen bg-slate-950 text-slate-100">
-          <Header
-            appState={props.appState}
-            commandError={props.commandError}
-            onAbortAll={props.onAbortAll}
-            onNewShowFile={props.onNewShowFile}
-            onOpenConnection={props.onOpenConnection}
-            onOpenShowFile={props.onOpenShowFile}
-            onSaveShowFile={props.onSaveShowFile}
-            onSaveShowFileAs={props.onSaveShowFileAs}
-            onToggleLockout={props.onToggleLockout}
-          />
+          <Header appState={appState} commandError={commandError} onAbortAll={commands.abortAll} onNewShowFile={commands.newShowFile} onOpenConnection={props.onOpenConnection} onOpenShowFile={commands.openShowFile} onSaveShowFile={commands.saveShowFile} onSaveShowFileAs={commands.saveShowFileAs} onToggleLockout={commands.toggleLockout} />
 
           <nav className="border-b border-slate-800 px-6">
             <div className="flex gap-2">
@@ -68,23 +38,14 @@ export function AppShell(props: {
 
           <section className="p-6">
             {props.activeTab === "scene" && (
-              <SceneTab
-                appState={props.appState}
-                selectScene={props.onSelectScene}
-                setSceneDurationMs={props.onSetSceneDurationMs}
-                setSceneScopeFadersEnabled={props.onSetSceneScopeFadersEnabled}
-                setSceneScopePanEnabled={props.onSetSceneScopePanEnabled}
-                storeSceneConfig={props.onStoreSceneConfig}
-                setAllChannelsScoped={props.onSetAllChannelsScoped}
-                setChannelScoped={props.onSetChannelScoped}
-              />
+              <SceneTab appState={appState} selectScene={commands.selectScene} setSceneDurationMs={commands.setSceneDurationMs} setSceneScopeFadersEnabled={commands.setSceneScopeFadersEnabled} setSceneScopePanEnabled={commands.setSceneScopePanEnabled} storeSceneConfig={commands.storeSceneConfig} setAllChannelsScoped={commands.setAllChannelsScoped} setChannelScoped={commands.setChannelScoped} />
             )}
-            {props.activeTab === "logs" && <LogsTab appState={props.appState} />}
+            {props.activeTab === "logs" && <LogsTab appState={appState} />}
           </section>
         </main>
       )}
 
-      <ReconnectOverlay active={props.appState.reconnect.active} />
+      <ReconnectOverlay active={appState.reconnect.active} />
     </>
   );
 }
