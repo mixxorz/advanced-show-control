@@ -61,6 +61,9 @@ export const ConnectionSystemsFound: Story = {
 };
 
 export const SceneTab: Story = {
+  args: {
+    appState: connectedAppState,
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
 
