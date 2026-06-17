@@ -1,13 +1,12 @@
-import type { AppViewState, DiscoveredLv1System, Lv1SystemIdentity } from "../types";
+import { useAppCommands, useAppState } from "../appContext";
+import type { DiscoveredLv1System, Lv1SystemIdentity } from "../types";
 
 export function ConnectionScreen(props: {
-  appState: AppViewState;
-  commandError: string | null;
-  onDisconnect: () => void;
-  onSelectSystem: (identity: Lv1SystemIdentity) => void;
   onResume: () => void;
 }) {
-  const isConnected = props.appState.connection === "connected";
+  const { appState, commandError } = useAppState();
+  const commands = useAppCommands();
+  const isConnected = appState.connection === "connected";
 
   return (
     <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
@@ -27,35 +26,27 @@ export function ConnectionScreen(props: {
               >
                 Resume main app
               </button>
-              <button
-                className="rounded-lg border border-red-800 px-4 py-2 font-semibold text-red-100 hover:bg-red-950"
-                onClick={props.onDisconnect}
-              >
+              <button className="rounded-lg border border-red-800 px-4 py-2 font-semibold text-red-100 hover:bg-red-950" onClick={commands.disconnect}>
                 Disconnect
               </button>
             </div>
           )}
         </div>
 
-        {props.commandError && (
+        {commandError && (
           <p className="rounded-lg border border-red-800 bg-red-950 px-3 py-2 text-sm text-red-100">
-            {props.commandError}
+            {commandError}
           </p>
         )}
 
         <div className="grid gap-3">
-          {props.appState.discoveredLv1Systems.length === 0 ? (
+          {appState.discoveredLv1Systems.length === 0 ? (
             <div className="rounded-xl border border-slate-800 bg-slate-900 p-6 text-slate-400">
               Searching for LV1 systems...
             </div>
           ) : (
-            props.appState.discoveredLv1Systems.map((system) => (
-              <SystemRow
-                key={systemKey(system)}
-                system={system}
-                onSelectSystem={props.onSelectSystem}
-                onResume={props.onResume}
-              />
+            appState.discoveredLv1Systems.map((system) => (
+              <SystemRow key={systemKey(system)} system={system} onSelectSystem={commands.selectSystem} onResume={props.onResume} />
             ))
           )}
         </div>

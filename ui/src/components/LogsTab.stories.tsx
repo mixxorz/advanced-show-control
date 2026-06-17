@@ -1,9 +1,10 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { LogsTab } from "./LogsTab";
 import { connectedAppState } from "../storybook/mockAppState";
 import { disconnectedAppViewState } from "../types";
 
-const meta = {
+const meta: Meta<any> = {
   title: "Components/LogsTab",
   component: LogsTab,
   parameters: {
@@ -19,11 +20,16 @@ const meta = {
   args: {
     appState: disconnectedAppViewState,
   },
-} satisfies Meta<typeof LogsTab>;
+  render: (args: any) => (
+    <MockAppProviders appState={args.appState}>
+      <LogsTab />
+    </MockAppProviders>
+  ),
+};
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<any>;
 
 export const Empty: Story = {};
 

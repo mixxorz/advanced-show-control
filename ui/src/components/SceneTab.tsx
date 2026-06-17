@@ -1,3 +1,4 @@
+import { useAppCommands, useAppState } from "../appContext";
 import type { AppViewState, ChannelConfig, SceneConfig } from "../types";
 import {
   channelButtonLabel,
@@ -23,18 +24,11 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
-export function SceneTab(props: {
-  appState: AppViewState;
-  selectScene: (sceneId: string) => void;
-  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
-  setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => void;
-  setSceneScopePanEnabled: (sceneId: string, enabled: boolean) => void;
-  storeSceneConfig: (sceneId: string) => Promise<boolean>;
-  setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => void;
-  setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
-}) {
-  const selected = props.appState.sceneConfigs.find((scene) => scene.sceneId === props.appState.selectedSceneId);
-  const duplicateNames = duplicateSceneNames(props.appState.sceneConfigs);
+export function SceneTab() {
+  const { appState } = useAppState();
+  const commands = useAppCommands();
+  const selected = appState.sceneConfigs.find((scene) => scene.sceneId === appState.selectedSceneId);
+  const duplicateNames = duplicateSceneNames(appState.sceneConfigs);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[22rem_1fr]">
@@ -53,11 +47,11 @@ export function SceneTab(props: {
           </div>
         ) : null}
         <div className="mt-4 max-h-[34rem] overflow-auto rounded-lg border border-slate-800">
-          {props.appState.sceneConfigs.length === 0 ? (
+          {appState.sceneConfigs.length === 0 ? (
             <p className="p-3 text-sm text-slate-400">No scenes loaded.</p>
           ) : (
-            props.appState.sceneConfigs.map((scene) => {
-              const selectedRow = scene.sceneId === props.appState.selectedSceneId;
+            appState.sceneConfigs.map((scene) => {
+              const selectedRow = scene.sceneId === appState.selectedSceneId;
 
               return (
                 <button
@@ -66,9 +60,9 @@ export function SceneTab(props: {
                       ? "block w-full border-b border-slate-800 bg-cyan-950/40 px-3 py-3 text-left last:border-b-0"
                     : "block w-full border-b border-slate-800 px-3 py-3 text-left hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 last:border-b-0"
                   }
-                  key={scene.sceneId}
-                    onClick={() => props.selectScene(scene.sceneId)}
-                    >
+                    key={scene.sceneId}
+                    onClick={() => commands.selectScene(scene.sceneId)}
+                  >
                     <span className="block text-sm font-semibold text-slate-100">
                       {formatSceneNumber(scene.sceneIndex)}: {scene.sceneName}
                     </span>
@@ -94,7 +88,7 @@ export function SceneTab(props: {
               <div className="flex flex-wrap gap-3">
                 <button
                   className="rounded-lg bg-cyan-700 px-4 py-2 font-bold text-white hover:bg-cyan-600"
-                  onClick={() => props.storeSceneConfig(selected.sceneId)}
+                  onClick={() => commands.storeSceneConfig(selected.sceneId)}
                 >
                   Store
                 </button>
@@ -103,7 +97,7 @@ export function SceneTab(props: {
             <DurationInput
               durationMs={selected.durationMs}
               sceneId={selected.sceneId}
-              setSceneDurationMs={props.setSceneDurationMs}
+              setSceneDurationMs={commands.setSceneDurationMs}
             />
 
             <div className="mt-4 rounded-lg border border-slate-800 p-4">
@@ -121,7 +115,7 @@ export function SceneTab(props: {
                         ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
                         : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
                     }
-                    onClick={() => props.setSceneScopeFadersEnabled(selected.sceneId, !selected.scopeToggles.faders)}
+                    onClick={() => commands.setSceneScopeFadersEnabled(selected.sceneId, !selected.scopeToggles.faders)}
                   >
                     FADERS {selected.scopeToggles.faders ? "ON" : "OFF"}
                   </button>
@@ -131,7 +125,7 @@ export function SceneTab(props: {
                         ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
                         : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
                     }
-                    onClick={() => props.setSceneScopePanEnabled(selected.sceneId, !selected.scopeToggles.pan)}
+                    onClick={() => commands.setSceneScopePanEnabled(selected.sceneId, !selected.scopeToggles.pan)}
                   >
                     PAN {selected.scopeToggles.pan ? "ON" : "OFF"}
                   </button>
@@ -140,10 +134,10 @@ export function SceneTab(props: {
             </div>
 
             <ScopeGrid
-              channels={props.appState.channels}
+              channels={appState.channels}
               scene={selected}
-              setAllChannelsScoped={props.setAllChannelsScoped}
-              setChannelScoped={props.setChannelScoped}
+              setAllChannelsScoped={commands.setAllChannelsScoped}
+              setChannelScoped={commands.setChannelScoped}
             />
           </div>
         ) : (

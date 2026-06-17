@@ -1,31 +1,29 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { ConnectionScreen } from "./ConnectionScreen";
-import {
-  connectedAppState,
-  discoveredSystemsAppState,
-  discoveringAppState,
-} from "../storybook/mockAppState";
+import { connectedAppState, discoveredSystemsAppState, discoveringAppState } from "../storybook/mockAppState";
 
 const noop = async () => {};
 
-const meta = {
+const meta: Meta<any> = {
   title: "Components/ConnectionScreen",
   component: ConnectionScreen,
   parameters: {
     layout: "fullscreen",
   },
   args: {
-    appState: discoveringAppState,
-    commandError: null,
-    onDisconnect: noop,
-    onSelectSystem: noop,
     onResume: noop,
   },
-} satisfies Meta<typeof ConnectionScreen>;
+  render: (args: any) => (
+    <MockAppProviders appState={args.appState} commandError={args.commandError}>
+      <ConnectionScreen onResume={args.onResume} />
+    </MockAppProviders>
+  ),
+};
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<any>;
 
 export const Searching: Story = {};
 

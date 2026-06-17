@@ -15,15 +15,14 @@ export function AppShell(props: {
   showConnection: boolean;
 }) {
   const { appState, commandError } = useAppState();
-  const commands = useAppCommands();
 
   return (
     <>
       {props.showConnection ? (
-        <ConnectionScreen appState={appState} commandError={commandError} onDisconnect={commands.disconnect} onResume={props.onResume} onSelectSystem={commands.selectSystem} />
+        <ConnectionScreen onResume={props.onResume} />
       ) : (
         <main className="min-h-screen bg-slate-950 text-slate-100">
-          <Header appState={appState} commandError={commandError} onAbortAll={commands.abortAll} onNewShowFile={commands.newShowFile} onOpenConnection={props.onOpenConnection} onOpenShowFile={commands.openShowFile} onSaveShowFile={commands.saveShowFile} onSaveShowFileAs={commands.saveShowFileAs} onToggleLockout={commands.toggleLockout} />
+          <Header onOpenConnection={props.onOpenConnection} />
 
           <nav className="border-b border-slate-800 px-6">
             <div className="flex gap-2">
@@ -37,10 +36,8 @@ export function AppShell(props: {
           </nav>
 
           <section className="p-6">
-            {props.activeTab === "scene" && (
-              <SceneTab appState={appState} selectScene={commands.selectScene} setSceneDurationMs={commands.setSceneDurationMs} setSceneScopeFadersEnabled={commands.setSceneScopeFadersEnabled} setSceneScopePanEnabled={commands.setSceneScopePanEnabled} storeSceneConfig={commands.storeSceneConfig} setAllChannelsScoped={commands.setAllChannelsScoped} setChannelScoped={commands.setChannelScoped} />
-            )}
-            {props.activeTab === "logs" && <LogsTab appState={appState} />}
+            {props.activeTab === "scene" && <SceneTab />}
+            {props.activeTab === "logs" && <LogsTab />}
           </section>
         </main>
       )}

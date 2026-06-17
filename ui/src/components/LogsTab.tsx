@@ -1,6 +1,8 @@
-import type { AppViewState } from "../types";
+import { useAppState } from "../appContext";
 
-export function LogsTab({ appState }: { appState: AppViewState }) {
+export function LogsTab() {
+  const { appState } = useAppState();
+
   return (
     <section className="rounded-xl border border-slate-800 bg-slate-900 p-5">
       <h2 className="text-lg font-semibold">Logs</h2>
@@ -9,7 +11,7 @@ export function LogsTab({ appState }: { appState: AppViewState }) {
           <p className="p-3 text-sm text-slate-400">No events yet.</p>
         ) : (
           appState.logs.map((entry) => (
-              <div
+            <div
               className="grid grid-cols-[9rem_6rem_1fr] gap-3 border-b border-slate-800 px-3 py-2 text-sm last:border-b-0"
               key={entry.id}
             >

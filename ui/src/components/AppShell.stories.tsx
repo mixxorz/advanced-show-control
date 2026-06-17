@@ -5,12 +5,10 @@ import {
   discoveredSystemsAppState,
   discoveringAppState,
 } from "../storybook/mockAppState";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { AppShell } from "./AppShell";
 
-const noop = () => {};
-const promiseTrue = async () => true;
-
-const meta = {
+const meta: Meta<any> = {
   title: "App/AppShell",
   component: AppShell,
   parameters: {
@@ -18,33 +16,27 @@ const meta = {
   },
   args: {
     activeTab: "scene",
-    appState: connectedAppState,
-    commandError: null,
-    onAbortAll: noop,
-    onDisconnect: promiseTrue,
-    onNewShowFile: noop,
-    onOpenConnection: noop,
-    onOpenShowFile: noop,
-    onResume: noop,
-    onSaveShowFile: noop,
-    onSaveShowFileAs: noop,
-    onSelectScene: noop,
-    onSelectSystem: noop,
-    onSelectTab: noop,
-    onSetAllChannelsScoped: noop,
-    onSetChannelScoped: noop,
-    onSetSceneDurationMs: promiseTrue,
-    onSetSceneScopeFadersEnabled: noop,
-    onSetSceneScopePanEnabled: noop,
-    onStoreSceneConfig: promiseTrue,
-    onToggleLockout: noop,
+    onOpenConnection: () => {},
+    onResume: () => {},
+    onSelectTab: () => {},
     showConnection: false,
   },
-} satisfies Meta<typeof AppShell>;
+  render: (args: any) => (
+    <MockAppProviders appState={args.appState} commandError={args.commandError}>
+      <AppShell
+        activeTab={args.activeTab}
+        onOpenConnection={args.onOpenConnection}
+        onResume={args.onResume}
+        onSelectTab={args.onSelectTab}
+        showConnection={args.showConnection}
+      />
+    </MockAppProviders>
+  ),
+};
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<any>;
 
 export const ConnectionSearching: Story = {
   args: {

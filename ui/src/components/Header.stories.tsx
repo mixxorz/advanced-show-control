@@ -1,35 +1,29 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { Header } from "./Header";
-import {
-  connectedAppState,
-  discoveredSystemsAppState,
-  discoveringAppState,
-} from "../storybook/mockAppState";
+import { connectedAppState } from "../storybook/mockAppState";
 
 const noop = () => {};
 
-const meta = {
+const meta: Meta<any> = {
   title: "Components/Header",
   component: Header,
   parameters: {
     layout: "fullscreen",
   },
   args: {
-    appState: connectedAppState,
-    commandError: null,
-    onAbortAll: noop,
-    onNewShowFile: noop,
     onOpenConnection: noop,
-    onOpenShowFile: noop,
-    onSaveShowFile: noop,
-    onSaveShowFileAs: noop,
-    onToggleLockout: noop,
   },
-} satisfies Meta<typeof Header>;
+  render: (args: any) => (
+    <MockAppProviders appState={args.appState} commandError={args.commandError}>
+      <Header onOpenConnection={args.onOpenConnection} />
+    </MockAppProviders>
+  ),
+};
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<any>;
 
 export const Connected: Story = {};
 
@@ -45,7 +39,6 @@ export const LockoutRunningFade: Story = {
 
 export const CommandError: Story = {
   args: {
-    appState: discoveringAppState,
     commandError: "Permission denied: LV1 rejected the command.",
   },
 };
