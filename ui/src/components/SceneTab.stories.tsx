@@ -21,7 +21,7 @@ const meta: Meta<SceneTabStoryArgs> = {
   },
   decorators: [
     (Story) => (
-      <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+      <main className="min-h-screen bg-console-bg p-6 text-console-primary">
         <Story />
       </main>
     ),
@@ -45,11 +45,9 @@ export const StoredSceneSelected: Story = {
     const canvas = within(canvasElement);
 
     await expect(
-      canvas.getByRole("heading", { name: "Scenes" }),
+      canvas.getByRole("heading", { name: "Scene List" }),
     ).toBeInTheDocument();
-    await expect(
-      canvas.getByRole("heading", { name: "4: Verse" }),
-    ).toBeInTheDocument();
+    await expect(canvas.getByText("Selected Scene")).toBeInTheDocument();
   },
 };
 

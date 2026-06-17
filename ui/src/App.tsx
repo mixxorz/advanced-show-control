@@ -19,7 +19,7 @@ import {
 import { AppShell, type MainTab } from "./components/AppShell";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<MainTab>("scene");
+  const [activeTab, setActiveTab] = useState<MainTab>("scenes");
   const [showConnection, setShowConnection] = useState(true);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppViewState>(

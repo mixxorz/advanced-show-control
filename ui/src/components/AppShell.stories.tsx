@@ -23,7 +23,7 @@ const meta: Meta<AppShellStoryArgs> = {
     layout: "fullscreen",
   },
   args: {
-    activeTab: "scene",
+    activeTab: "scenes",
     onOpenConnection: () => {},
     onResume: () => {},
     onSelectTab: () => {},
@@ -61,14 +61,20 @@ export const ConnectionSystemsFound: Story = {
 };
 
 export const SceneTab: Story = {
+  args: {
+    appState: connectedAppState,
+  },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
 
     await expect(
-      canvas.getByRole("heading", { name: "Advanced Show Control" }),
+      canvas.getByRole("heading", { name: "Scene List" }),
     ).toBeInTheDocument();
     await expect(
-      canvas.getByRole("button", { name: "Scene" }),
+      canvas.getByRole("button", { name: "Scenes" }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", { name: "Settings" }),
     ).toBeInTheDocument();
   },
 };
@@ -76,6 +82,12 @@ export const SceneTab: Story = {
 export const LogsTab: Story = {
   args: {
     activeTab: "logs",
+  },
+};
+
+export const SettingsPlaceholder: Story = {
+  args: {
+    activeTab: "settings",
   },
 };
 

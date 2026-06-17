@@ -155,6 +155,20 @@ Use the existing frontend test infrastructure.
 - Run `npm run typecheck` and `npm run build` before claiming completion.
 - Run targeted visual tests when snapshot changes are intentional and practical.
 
+## Visual Polish Follow-Up
+
+After the first shell implementation, refine the Storybook screenshots against `designs/01 SCENES.png` in a loop. Use the populated full-shell AppShell story as the primary comparison target, not an empty disconnected state.
+
+Polish priorities:
+
+- Make `app-appshell--scene-tab` use connected/populated app state so it can be compared to the reference.
+- Keep all Storybook scene backgrounds neutral black/charcoal; avoid navy or green-tinted page backgrounds.
+- Compact the selected scene header to better match the reference: horizontal scene identity, scope toggles, X-Fade duration, and actions.
+- Make channel scope panels and buttons denser and more console-like.
+- Preserve the flat neutral visual direction: minimal shadows, subtle borders, orange active states, green current state, blue selected/cued state.
+- Regenerate visual snapshots after each intentional visual pass and use them as the acceptance artifact.
+- Keep shell and storybook backgrounds neutral black/charcoal rather than tinted slate.
+
 ## Non-Goals
 
 - Implementing Playlists, Events, Sessions, or Settings workflows.

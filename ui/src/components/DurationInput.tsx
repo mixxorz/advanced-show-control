@@ -88,10 +88,10 @@ function DurationInputDraft(props: {
   }
 
   return (
-    <label className="mt-4 flex w-full max-w-xs flex-col gap-1 text-sm text-slate-300">
-      Fade duration (seconds)
+    <label className="flex w-full max-w-[9rem] flex-col gap-1 text-xs uppercase tracking-[0.12em] text-console-secondary">
+      X-Fade
       <input
-        className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-slate-100"
+        className="rounded-console-control border border-console-line bg-console-control px-3 py-2 font-mono text-sm text-console-primary outline-none transition-colors focus:border-console-line-strong focus:bg-console-control-hover"
         max={120}
         min={0}
         onBlur={handleBlur}
@@ -101,7 +101,7 @@ function DurationInputDraft(props: {
         type="number"
         value={draft}
       />
-      <span className="text-xs text-slate-500">
+      <span className="text-[11px] leading-tight text-console-muted">
         Use 0 for an immediate move. Values above 0 are clamped from 0.1 to 120
         seconds.
       </span>

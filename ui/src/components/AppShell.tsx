@@ -1,11 +1,12 @@
-import type { ReactNode } from "react";
 import { useAppState } from "../appHooks";
+import { BottomStatusBar } from "./BottomStatusBar";
 import { ConnectionScreen } from "./ConnectionScreen";
-import { Header } from "./Header";
-import { LogsTab } from "./LogsTab";
+import { ConsoleLogsTab } from "./ConsoleLogsTab";
+import { PlaceholderTab } from "./PlaceholderTab";
 import { SceneTab } from "./SceneTab";
+import { type MainTab, TopTabBar } from "./TopTabBar";
 
-export type MainTab = "scene" | "logs";
+export type { MainTab } from "./TopTabBar";
 
 export function AppShell(props: {
   activeTab: MainTab;
@@ -21,30 +22,26 @@ export function AppShell(props: {
       {props.showConnection ? (
         <ConnectionScreen onResume={props.onResume} />
       ) : (
-        <main className="min-h-screen bg-slate-950 text-slate-100">
-          <Header onOpenConnection={props.onOpenConnection} />
-
-          <nav className="border-b border-slate-800 px-6">
-            <div className="flex gap-2">
-              <TabButton
-                active={props.activeTab === "scene"}
-                onClick={() => props.onSelectTab("scene")}
-              >
-                Scene
-              </TabButton>
-              <TabButton
-                active={props.activeTab === "logs"}
-                onClick={() => props.onSelectTab("logs")}
-              >
-                Logs
-              </TabButton>
-            </div>
-          </nav>
-
-          <section className="p-6">
-            {props.activeTab === "scene" && <SceneTab />}
-            {props.activeTab === "logs" && <LogsTab />}
+        <main className="grid min-h-screen grid-rows-[auto_1fr_auto] bg-black font-ui text-console-primary">
+          <TopTabBar
+            activeTab={props.activeTab}
+            onSelectTab={props.onSelectTab}
+          />
+          <section className="min-h-0 p-3">
+            {props.activeTab === "scenes" && <SceneTab />}
+            {props.activeTab === "playlists" && (
+              <PlaceholderTab name="Playlists" />
+            )}
+            {props.activeTab === "events" && <PlaceholderTab name="Events" />}
+            {props.activeTab === "sessions" && (
+              <PlaceholderTab name="Sessions" />
+            )}
+            {props.activeTab === "logs" && <ConsoleLogsTab />}
+            {props.activeTab === "settings" && (
+              <PlaceholderTab name="Settings" />
+            )}
           </section>
+          <BottomStatusBar appState={appState} />
         </main>
       )}
 
@@ -59,29 +56,10 @@ function ReconnectOverlay(props: { active: boolean }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70">
-      <div className="rounded-xl border border-slate-700 bg-slate-900 px-8 py-6 text-xl font-semibold text-slate-100 shadow-2xl">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70">
+      <div className="rounded-xl border border-console-line bg-console-panel px-8 py-6 text-xl font-semibold text-console-primary shadow-2xl">
         Reconnecting...
       </div>
     </div>
-  );
-}
-
-function TabButton(props: {
-  active: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <button
-      className={
-        props.active
-          ? "border-b-2 border-cyan-400 px-4 py-3 text-cyan-200"
-          : "px-4 py-3 text-slate-400 hover:text-slate-100"
-      }
-      onClick={props.onClick}
-    >
-      {props.children}
-    </button>
   );
 }
