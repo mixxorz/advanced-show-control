@@ -55,6 +55,7 @@ Read these files before substantial work:
 - Keep docs current when behavior, architecture, or project phase changes.
 - Add future ideas to the appropriate release section in `docs/roadmap.md` instead of expanding the current scope.
 - For UI work, preserve the existing design language unless the task is to redesign it.
+- For frontend styling, define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables. Avoid hard-coded Tailwind values when a reusable token is appropriate.
 
 ## Safety-Critical Rules
 
