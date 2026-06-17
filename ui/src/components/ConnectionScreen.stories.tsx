@@ -1,5 +1,6 @@
 import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "@storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { ConnectionScreen } from "./ConnectionScreen";
 import {
@@ -40,6 +41,13 @@ export const Searching: Story = {};
 export const SystemsFound: Story = {
   args: {
     appState: discoveredSystemsAppState,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(
+      canvas.getByRole("heading", { name: "Choose an LV1 system" }),
+    ).toBeInTheDocument();
   },
 };
 

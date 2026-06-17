@@ -1,5 +1,6 @@
 import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "@storybook/test";
 import { disconnectedAppViewState } from "../types";
 import {
   connectedAppState,
@@ -60,6 +61,17 @@ export const ConnectionSystemsFound: Story = {
 };
 
 export const SceneTab: Story = {};
+
+SceneTab.play = async ({ canvasElement }) => {
+  const canvas = within(canvasElement);
+
+  await expect(
+    canvas.getByRole("heading", { name: "Advanced Show Control" }),
+  ).toBeInTheDocument();
+  await expect(
+    canvas.getByRole("button", { name: "Scene" }),
+  ).toBeInTheDocument();
+};
 
 export const LogsTab: Story = {
   args: {

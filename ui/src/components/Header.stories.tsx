@@ -1,5 +1,6 @@
 import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "@storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { Header } from "./Header";
 import { connectedAppState } from "../storybook/mockAppState";
@@ -33,6 +34,17 @@ export default meta;
 type Story = StoryObj<HeaderStoryArgs>;
 
 export const Connected: Story = {};
+
+Connected.play = async ({ canvasElement }) => {
+  const canvas = within(canvasElement);
+
+  await expect(
+    canvas.getByRole("heading", { name: "Advanced Show Control" }),
+  ).toBeInTheDocument();
+  await expect(
+    canvas.getByRole("button", { name: "Open LV1 connection screen" }),
+  ).toBeInTheDocument();
+};
 
 export const LockoutRunningFade: Story = {
   args: {

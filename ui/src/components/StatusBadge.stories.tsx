@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "@storybook/test";
 import { StatusBadge } from "./StatusBadge";
 
 const meta = {
@@ -24,6 +25,11 @@ export const Good: Story = {
   args: {
     label: "Connected",
     tone: "good",
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(canvas.getByText("Connected")).toBeInTheDocument();
   },
 };
 

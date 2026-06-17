@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, within } from "@storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { LogsTab } from "./LogsTab";
 import { connectedAppState } from "../storybook/mockAppState";
@@ -40,5 +41,12 @@ export const Empty: Story = {};
 export const Populated: Story = {
   args: {
     appState: connectedAppState,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(
+      canvas.getByRole("heading", { name: "Logs" }),
+    ).toBeInTheDocument();
   },
 };
