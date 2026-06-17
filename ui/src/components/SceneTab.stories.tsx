@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { SceneTab } from "./SceneTab";
 import {
   connectedAppState,
@@ -7,10 +8,7 @@ import {
 } from "../storybook/mockAppState";
 import { disconnectedAppViewState } from "../types";
 
-const promiseTrue = async () => true;
-const noop = () => {};
-
-const meta = {
+const meta: Meta<any> = {
   title: "Components/SceneTab",
   component: SceneTab,
   parameters: {
@@ -25,19 +23,17 @@ const meta = {
   ],
   args: {
     appState: connectedAppState,
-    selectScene: noop,
-    setSceneDurationMs: promiseTrue,
-    setSceneScopeFadersEnabled: noop,
-    setSceneScopePanEnabled: noop,
-    storeSceneConfig: promiseTrue,
-    setChannelScoped: noop,
-    setAllChannelsScoped: noop,
   },
-} satisfies Meta<typeof SceneTab>;
+  render: (args: any) => (
+    <MockAppProviders appState={args.appState}>
+      <SceneTab />
+    </MockAppProviders>
+  ),
+};
 
 export default meta;
 
-type Story = StoryObj<typeof meta>;
+type Story = StoryObj<any>;
 
 export const StoredSceneSelected: Story = {};
 
