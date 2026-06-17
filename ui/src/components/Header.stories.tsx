@@ -14,7 +14,7 @@ type HeaderStoryArgs = ComponentProps<typeof Header> & {
 };
 
 const meta: Meta<HeaderStoryArgs> = {
-  title: "Components/Header",
+  title: "Shell/Header",
   component: Header,
   parameters: {
     layout: "fullscreen",

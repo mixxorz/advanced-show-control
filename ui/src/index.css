@@ -1,9 +1,9 @@
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;500;600;700;800;900&family=Source+Code+Pro:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
 
 @theme {
-  --font-ui: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+  --font-ui: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Source Code Pro", ui-monospace, SFMono-Regular, monospace;
 
   --color-console-bg: #050506;
   --color-console-chrome: #080809;
@@ -22,16 +22,16 @@
 
   --color-accent-orange: #ff8a00;
   --color-accent-orange-hover: #ff9f2a;
-  --color-accent-orange-active: #c96400;
-  --color-accent-orange-soft: #261404;
+  --color-accent-orange-active: #c95700;
+  --color-accent-orange-soft: #1e1003;
 
-  --color-status-current: #52d62d;
-  --color-status-cued: #2c9dff;
+  --color-status-current: #2c9dff;
+  --color-status-cued: #52d62d;
   --color-status-warning: #f0b429;
   --color-status-danger: #ff5c5c;
 
-  --radius-console-panel: 0.3125rem;
-  --radius-console-control: 0.1875rem;
+  --radius-console-panel: 0.25rem;
+  --radius-console-control: 0.15625rem;
 }
 
 :root {
@@ -44,10 +44,36 @@
 body {
   margin: 0;
   min-width: 320px;
+  font-family: var(--font-ui);
   background: var(--color-console-bg);
 }
 
-button,
-input {
-  font: inherit;
+* {
+  scrollbar-color: var(--color-console-line-strong) transparent;
+  scrollbar-width: thin;
+}
+
+::-webkit-scrollbar {
+  width: 0.5rem;
+  height: 0.5rem;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 0.125rem solid transparent;
+  border-radius: 999px;
+  background: var(--color-console-line-strong);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-console-secondary);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
 }

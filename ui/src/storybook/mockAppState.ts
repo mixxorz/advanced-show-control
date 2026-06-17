@@ -1,6 +1,7 @@
 import {
   type AppLogEntry,
   type AppViewState,
+  type ChannelConfig,
   type SceneConfig,
 } from "../types";
 
@@ -10,13 +11,40 @@ type SceneSummary = AppViewState["scenes"][number];
 
 function makeChannels(): ChannelSummary[] {
   return [
-    { group: 0, channel: 0, name: "Lead Vocal" },
-    { group: 0, channel: 1, name: "B Vocal" },
-    { group: 0, channel: 2, name: "Guitar" },
-    { group: 0, channel: 3, name: "Keys" },
-    { group: 1, channel: 0, name: "Drums" },
-    { group: 1, channel: 1, name: "Tracks" },
+    ...makeNumberedChannels(0, 80, "Ch"),
+    ...makeNumberedChannels(1, 16, "Group"),
+    ...makeNumberedChannels(2, 32, "Aux"),
+    ...makeNumberedChannels(6, 8, "Matrix"),
+    ...makeNumberedChannels(12, 16, "DCA"),
+    { group: 3, channel: 0, name: "LR" },
+    { group: 4, channel: 0, name: "C" },
+    { group: 5, channel: 0, name: "M" },
   ];
+}
+
+function makeNumberedChannels(
+  group: number,
+  count: number,
+  label: string,
+): ChannelSummary[] {
+  return Array.from({ length: count }, (_, channel) => ({
+    group,
+    channel,
+    name: `${label} ${String(channel + 1).padStart(2, "0")}`,
+  }));
+}
+
+function makeChannelConfigs(): ChannelConfig[] {
+  return makeChannels().map((channel) => ({
+    group: channel.group,
+    channel: channel.channel,
+    faderDb: -3 - (channel.channel % 8),
+    pan: channel.group === 0 ? ((channel.channel % 9) - 4) / 10 : null,
+    balance: channel.group === 1 ? ((channel.channel % 7) - 3) / 10 : null,
+    width: channel.group === 1 ? 0.6 : null,
+    panMode:
+      channel.group === 0 ? "mono" : channel.group === 1 ? "stereo" : "none",
+  }));
 }
 
 function makeLogs(): AppLogEntry[] {
@@ -44,9 +72,9 @@ function makeLogs(): AppLogEntry[] {
 
 function makeSceneSummaries(): SceneSummary[] {
   return [
-    { index: 3, name: "Verse" },
-    { index: 4, name: "Chorus" },
-    { index: 9, name: "Verse" },
+    { index: 0, name: "Service Start" },
+    { index: 1, name: "Tuning: A" },
+    { index: 2, name: "S01: The Wonderful Blood" },
   ];
 }
 
@@ -63,52 +91,19 @@ function makeStoredVerseScene(): SceneConfig {
   return {
     sceneId: "scene-verse",
     sceneIndex: 3,
-    sceneName: "Verse",
+    sceneName: "S01: The Wonderful Blood",
     durationMs: 2500,
-    scopeToggles: { faders: true, pan: true },
+    scopeToggles: { faders: true, pan: false },
     scopedChannels: [
       { group: 0, channel: 0 },
       { group: 0, channel: 2 },
       { group: 1, channel: 0 },
+      { group: 2, channel: 0 },
+      { group: 6, channel: 0 },
+      { group: 12, channel: 0 },
+      { group: 3, channel: 0 },
     ],
-    channelConfigs: [
-      {
-        group: 0,
-        channel: 0,
-        faderDb: -3.5,
-        pan: 0,
-        balance: null,
-        width: null,
-        panMode: "mono",
-      },
-      {
-        group: 0,
-        channel: 1,
-        faderDb: -8,
-        pan: -0.2,
-        balance: null,
-        width: null,
-        panMode: "mono",
-      },
-      {
-        group: 0,
-        channel: 2,
-        faderDb: -6,
-        pan: null,
-        balance: 0.15,
-        width: 0.6,
-        panMode: "stereo",
-      },
-      {
-        group: 1,
-        channel: 0,
-        faderDb: -5,
-        pan: null,
-        balance: null,
-        width: null,
-        panMode: "none",
-      },
-    ],
+    channelConfigs: makeChannelConfigs(),
   };
 }
 
@@ -116,52 +111,19 @@ function makeStoredChorusScene(): SceneConfig {
   return {
     sceneId: "scene-chorus",
     sceneIndex: 4,
-    sceneName: "Chorus",
+    sceneName: "S02: Holy Forever",
     durationMs: 4000,
     scopeToggles: { faders: true, pan: false },
     scopedChannels: [
       { group: 0, channel: 0 },
       { group: 0, channel: 2 },
       { group: 1, channel: 0 },
+      { group: 2, channel: 1 },
+      { group: 6, channel: 1 },
+      { group: 12, channel: 1 },
+      { group: 5, channel: 0 },
     ],
-    channelConfigs: [
-      {
-        group: 0,
-        channel: 0,
-        faderDb: -3.5,
-        pan: 0,
-        balance: null,
-        width: null,
-        panMode: "mono",
-      },
-      {
-        group: 0,
-        channel: 1,
-        faderDb: -8,
-        pan: -0.2,
-        balance: null,
-        width: null,
-        panMode: "mono",
-      },
-      {
-        group: 0,
-        channel: 2,
-        faderDb: -6,
-        pan: null,
-        balance: 0.15,
-        width: 0.6,
-        panMode: "stereo",
-      },
-      {
-        group: 1,
-        channel: 0,
-        faderDb: -5,
-        pan: null,
-        balance: null,
-        width: null,
-        panMode: "none",
-      },
-    ],
+    channelConfigs: makeChannelConfigs(),
   };
 }
 
@@ -169,52 +131,19 @@ function makeDuplicateVerseScene(): SceneConfig {
   return {
     sceneId: "scene-verse-duplicate",
     sceneIndex: 9,
-    sceneName: "Verse",
+    sceneName: "S01: The Wonderful Blood",
     durationMs: 1500,
     scopeToggles: { faders: true, pan: true },
     scopedChannels: [
       { group: 0, channel: 0 },
       { group: 0, channel: 2 },
       { group: 1, channel: 0 },
+      { group: 2, channel: 2 },
+      { group: 6, channel: 2 },
+      { group: 12, channel: 2 },
+      { group: 4, channel: 0 },
     ],
-    channelConfigs: [
-      {
-        group: 0,
-        channel: 0,
-        faderDb: -3.5,
-        pan: 0,
-        balance: null,
-        width: null,
-        panMode: "mono",
-      },
-      {
-        group: 0,
-        channel: 1,
-        faderDb: -8,
-        pan: -0.2,
-        balance: null,
-        width: null,
-        panMode: "mono",
-      },
-      {
-        group: 0,
-        channel: 2,
-        faderDb: -6,
-        pan: null,
-        balance: 0.15,
-        width: 0.6,
-        panMode: "stereo",
-      },
-      {
-        group: 1,
-        channel: 0,
-        faderDb: -5,
-        pan: null,
-        balance: null,
-        width: null,
-        panMode: "none",
-      },
-    ],
+    channelConfigs: makeChannelConfigs(),
   };
 }
 
@@ -283,7 +212,7 @@ function makeConnectedAppState(
   return makeBaseDisconnectedAppState({
     connection: "connected",
     connectedLv1Identity,
-    currentScene: { index: 3, name: "Verse" },
+    currentScene: { index: 2, name: "S01: The Wonderful Blood" },
     scenes,
     sceneCount: scenes.length,
     channelCount: channels.length,

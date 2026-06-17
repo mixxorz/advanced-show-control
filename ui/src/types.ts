@@ -91,6 +91,7 @@ export type AppViewState = {
   logs: AppLogEntry[];
   lastEventAt: string | null;
   sceneConfigs: SceneConfig[];
+  cuedSceneId?: string | null;
   selectedSceneId: string | null;
   showFileName: string;
   showFilePath: string | null;

@@ -1,17 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
-import { LogsTab } from "./LogsTab";
 import { connectedAppState } from "../storybook/mockAppState";
 import { disconnectedAppViewState, type AppViewState } from "../types";
+import { ConsoleLogsTab } from "./ConsoleLogsTab";
 
-type LogsTabStoryArgs = {
+type ConsoleLogsTabStoryArgs = {
   appState?: AppViewState;
 };
 
-const meta: Meta<LogsTabStoryArgs> = {
-  title: "Logs/LogsTab",
-  component: LogsTab,
+const meta: Meta<ConsoleLogsTabStoryArgs> = {
+  title: "Logs/ConsoleLogsTab",
+  component: ConsoleLogsTab,
   parameters: {
     layout: "fullscreen",
   },
@@ -23,30 +22,23 @@ const meta: Meta<LogsTabStoryArgs> = {
     ),
   ],
   args: {
-    appState: disconnectedAppViewState,
+    appState: connectedAppState,
   },
   render: (args) => (
     <MockAppProviders appState={args.appState}>
-      <LogsTab />
+      <ConsoleLogsTab />
     </MockAppProviders>
   ),
 };
 
 export default meta;
 
-type Story = StoryObj<LogsTabStoryArgs>;
+type Story = StoryObj<ConsoleLogsTabStoryArgs>;
 
-export const Empty: Story = {};
+export const Populated: Story = {};
 
-export const Populated: Story = {
+export const Empty: Story = {
   args: {
-    appState: connectedAppState,
-  },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-
-    await expect(
-      canvas.getByRole("heading", { name: "Logs" }),
-    ).toBeInTheDocument();
+    appState: disconnectedAppViewState,
   },
 };

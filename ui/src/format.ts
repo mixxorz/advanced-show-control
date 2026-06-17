@@ -30,8 +30,8 @@ export function channelDisplayGroupOrder(groupName: string) {
     "Inputs",
     "Groups",
     "Aux",
-    "Matrix",
     "Masters",
+    "Matrix",
     "Link/DCAs",
     "Unknown",
   ].indexOf(groupName);
@@ -40,10 +40,10 @@ export function channelDisplayGroupOrder(groupName: string) {
 export function channelButtonLabel(group: number, channel: number) {
   if (group === 3) return "LR";
   if (group === 4) return "C";
-  if (group === 5) return "Mono";
+  if (group === 5) return "M";
   if (group === 7) return "Cue";
   if (group === 8) return "TB";
-  return String(channel);
+  return String(channel + 1);
 }
 
 export function formatSceneNumber(index: number | null | undefined): string {
@@ -51,7 +51,7 @@ export function formatSceneNumber(index: number | null | undefined): string {
     return "--";
   }
 
-  return String(index + 1);
+  return String(index + 1).padStart(3, "0");
 }
 
 export function formatDurationSeconds(durationMs: number) {
@@ -59,7 +59,7 @@ export function formatDurationSeconds(durationMs: number) {
 }
 
 export function formatSceneDurationSummary(durationMs: number) {
-  return durationMs === 0 ? "Immediate" : `${durationMs} ms`;
+  return `${formatDurationSeconds(durationMs)}s`;
 }
 
 export function formatPanFamilySummary(config: ChannelConfig) {

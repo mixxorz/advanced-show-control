@@ -1,34 +1,14 @@
-import type { AppViewState, ChannelConfig, SceneConfig } from "../types";
-import {
-  channelButtonLabel,
-  channelDisplayGroup,
-  channelDisplayGroupOrder,
-  channelName,
-  formatDb,
-  formatPanFamilySummary,
-} from "../format";
-import { ConsoleButton } from "./ConsoleButton";
+import type { ChannelConfig, SceneConfig } from "../types";
+import { channelDisplayGroup, channelDisplayGroupOrder } from "../format";
+import { ChannelScopeEmptyState } from "./ChannelScopeEmptyState";
+import { ChannelScopeGroup } from "./ChannelScopeGroup";
+import { ChannelScopeToolbar } from "./ChannelScopeToolbar";
 import { Panel } from "./Panel";
-import { ScopeButton } from "./ScopeButton";
 
-function channelKey(group: number, channel: number) {
-  return `${group}:${channel}`;
-}
-
-export function ChannelScopeGrid(props: {
-  channels: AppViewState["channels"];
-  scene: SceneConfig;
-  setChannelScoped: (
-    sceneId: string,
-    group: number,
-    channel: number,
-    scoped: boolean,
-  ) => void;
-  setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
-}) {
+export function ChannelScopeGrid(props: { scene: SceneConfig }) {
   const scoped = new Set(
-    props.scene.scopedChannels.map((entry) =>
-      channelKey(entry.group, entry.channel),
+    props.scene.scopedChannels.map(
+      (entry) => `${entry.group}:${entry.channel}`,
     ),
   );
   const groups = new Map<string, ChannelConfig[]>();
@@ -43,71 +23,29 @@ export function ChannelScopeGrid(props: {
   );
 
   if (props.scene.channelConfigs.length === 0) {
-    return (
-      <Panel className="p-4 text-sm text-console-muted">
-        Store the current mixer state to choose scoped channels.
-      </Panel>
-    );
+    return <ChannelScopeEmptyState />;
   }
 
   return (
-    <Panel className="p-4">
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-console-line pb-3">
-        <h3 className="text-sm font-semibold uppercase tracking-[0.12em] text-console-primary">
-          Channel Scope
-        </h3>
-        <div className="flex gap-2">
-          <ConsoleButton
-            onClick={() =>
-              props.setAllChannelsScoped(props.scene.sceneId, true)
-            }
-          >
-            All
-          </ConsoleButton>
-          <ConsoleButton
-            onClick={() =>
-              props.setAllChannelsScoped(props.scene.sceneId, false)
-            }
-          >
-            None
-          </ConsoleButton>
-        </div>
-      </div>
-      <div className="mt-3 space-y-3">
+    <Panel className="flex min-h-0 flex-1 flex-col overflow-hidden p-4">
+      <ChannelScopeToolbar
+        allChannelsScoped={
+          props.scene.channelConfigs.length > 0 &&
+          scoped.size === props.scene.channelConfigs.length
+        }
+        noChannelsScoped={scoped.size === 0}
+        sceneId={props.scene.sceneId}
+        scopeToggles={props.scene.scopeToggles}
+      />
+      <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-auto">
         {grouped.map(([groupName, configs]) => (
-          <section
-            className="rounded-console-panel border border-console-line-soft bg-console-section p-2.5"
+          <ChannelScopeGroup
+            configs={configs}
+            groupName={groupName}
             key={groupName}
-          >
-            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-console-secondary">
-              {groupName}
-            </h4>
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {[...configs]
-                .sort((a, b) => a.channel - b.channel)
-                .map((config) => {
-                  const key = channelKey(config.group, config.channel);
-                  const isScoped = scoped.has(key);
-
-                  return (
-                    <ScopeButton
-                      active={isScoped}
-                      key={key}
-                      label={channelButtonLabel(config.group, config.channel)}
-                      onClick={() =>
-                        props.setChannelScoped(
-                          props.scene.sceneId,
-                          config.group,
-                          config.channel,
-                          !isScoped,
-                        )
-                      }
-                      title={`${channelName(props.channels, config.group, config.channel)} · ${formatDb(config.faderDb ?? 0)} · ${formatPanFamilySummary(config)}`}
-                    />
-                  );
-                })}
-            </div>
-          </section>
+            sceneId={props.scene.sceneId}
+            scoped={scoped}
+          />
         ))}
       </div>
     </Panel>

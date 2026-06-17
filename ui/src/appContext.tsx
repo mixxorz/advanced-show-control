@@ -4,12 +4,14 @@ import { AppCommandsContext, AppStateContext } from "./appContextValues";
 
 export type AppCommands = {
   abortAll: () => void;
+  cueScene?: (sceneId: string) => void;
   disconnect: () => void | Promise<void>;
   newShowFile: () => void;
   openShowFile: () => void;
   saveShowFile: () => void;
   saveShowFileAs: () => void;
   selectScene: (sceneId: string) => void;
+  recallScene?: (sceneId: string) => void;
   selectSystem: (identity: Lv1SystemIdentity) => void | Promise<void>;
   setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
   setChannelScoped: (

@@ -1,4 +1,6 @@
+import { useAppCommands, useAppState } from "../appHooks";
 import type { SceneConfig, SceneSummary } from "../types";
+import { ConsoleButton } from "./ConsoleButton";
 import { Panel } from "./Panel";
 import { SceneListRow } from "./SceneListRow";
 
@@ -12,25 +14,62 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
-export function SceneList(props: {
+export function SceneListView(props: {
   currentScene: SceneSummary | null;
+  cuedSceneId?: string | null;
   scenes: SceneConfig[];
   selectedSceneId: string | null;
   onSelectScene: (sceneId: string) => void;
+  onRecallScene?: (sceneId: string) => void;
 }) {
   const duplicateNames = duplicateSceneNames(props.scenes);
+  const currentIndex = props.scenes.findIndex(
+    (scene) =>
+      props.currentScene?.index === scene.sceneIndex &&
+      props.currentScene.name === scene.sceneName,
+  );
+  const canRecallPrevious = currentIndex > 0;
+  const canRecallNext =
+    currentIndex >= 0 && currentIndex < props.scenes.length - 1;
+
+  function recallPreviousScene() {
+    if (!canRecallPrevious) return;
+    props.onRecallScene?.(props.scenes[currentIndex - 1].sceneId);
+  }
+
+  function recallNextScene() {
+    if (!canRecallNext) return;
+    props.onRecallScene?.(props.scenes[currentIndex + 1].sceneId);
+  }
 
   return (
     <Panel className="flex min-h-0 flex-col overflow-hidden">
-      <div className="border-b border-console-line px-4 py-3">
-        <h2 className="text-base font-semibold uppercase tracking-[0.08em] text-console-primary">
+      <div className="flex items-center justify-between gap-3 border-b border-console-line px-4 py-3">
+        <h2 className="text-lg font-normal uppercase text-console-primary">
           Scene List
         </h2>
+        <div className="flex gap-2">
+          <ConsoleButton
+            disabled={!canRecallPrevious || !props.onRecallScene}
+            onClick={recallPreviousScene}
+            size="small"
+          >
+            Prev
+          </ConsoleButton>
+          <ConsoleButton
+            disabled={!canRecallNext || !props.onRecallScene}
+            onClick={recallNextScene}
+            size="small"
+          >
+            Next
+          </ConsoleButton>
+        </div>
       </div>
-      <div className="grid grid-cols-[4rem_1fr_4rem] border-b border-console-line-soft px-3 py-2 text-xs uppercase tracking-[0.08em] text-console-secondary">
-        <span>#</span>
-        <span>Scene Name</span>
-        <span className="text-right">X-Fade</span>
+      <div className="grid grid-cols-[1.25rem_3rem_1fr_4rem] border-b border-console-line-soft py-2 pr-3 pl-0 text-sm uppercase tracking-[0.08em] text-console-secondary">
+        <span aria-hidden="true" />
+        <span className="translate-y-0.5">#</span>
+        <span className="translate-y-0.5">Scene Name</span>
+        <span className="translate-y-0.5 text-right">X-Fade</span>
       </div>
       {duplicateNames.length > 0 ? (
         <div className="border-b border-status-warning bg-console-section px-3 py-2 text-sm text-status-warning">
@@ -44,6 +83,7 @@ export function SceneList(props: {
           props.scenes.map((scene) => (
             <SceneListRow
               currentScene={props.currentScene}
+              cued={scene.sceneId === props.cuedSceneId}
               key={scene.sceneId}
               onSelect={() => props.onSelectScene(scene.sceneId)}
               scene={scene}
@@ -53,5 +93,21 @@ export function SceneList(props: {
         )}
       </div>
     </Panel>
+  );
+}
+
+export function SceneList() {
+  const { appState } = useAppState();
+  const commands = useAppCommands();
+
+  return (
+    <SceneListView
+      currentScene={appState.currentScene}
+      cuedSceneId={appState.cuedSceneId ?? null}
+      onRecallScene={commands.recallScene}
+      onSelectScene={commands.selectScene}
+      scenes={appState.sceneConfigs}
+      selectedSceneId={appState.selectedSceneId}
+    />
   );
 }

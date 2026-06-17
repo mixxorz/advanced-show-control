@@ -22,15 +22,15 @@ export function AppShell(props: {
       {props.showConnection ? (
         <ConnectionScreen onResume={props.onResume} />
       ) : (
-        <main className="grid min-h-screen grid-rows-[auto_1fr_auto] bg-black font-ui text-console-primary">
+        <main className="grid h-screen grid-rows-[auto_1fr_auto] overflow-hidden bg-black font-ui text-console-primary">
           <TopTabBar
             activeTab={props.activeTab}
             onSelectTab={props.onSelectTab}
           />
-          <section className="min-h-0 p-3">
+          <section className="min-h-0 overflow-hidden p-3">
             {props.activeTab === "scenes" && <SceneTab />}
             {props.activeTab === "playlists" && (
-              <PlaceholderTab name="Playlists" />
+              <PlaceholderTab name="Cue Lists" />
             )}
             {props.activeTab === "events" && <PlaceholderTab name="Events" />}
             {props.activeTab === "sessions" && (

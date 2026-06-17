@@ -10,7 +10,7 @@ export type MainTab =
 
 const tabs: { id: MainTab; label: string }[] = [
   { id: "scenes", label: "Scenes" },
-  { id: "playlists", label: "Playlists" },
+  { id: "playlists", label: "Cue Lists" },
   { id: "events", label: "Events" },
   { id: "sessions", label: "Sessions" },
   { id: "logs", label: "Logs" },
@@ -22,7 +22,7 @@ export function TopTabBar(props: {
   onSelectTab: (tab: MainTab) => void;
 }) {
   return (
-    <nav className="flex border-b border-console-line bg-console-chrome">
+    <nav className="mx-3 mt-3 flex overflow-hidden rounded-console-panel border border-console-line bg-console-chrome">
       {tabs.map((tab) => (
         <TopTab
           active={props.activeTab === tab.id}

@@ -14,7 +14,7 @@ type SceneTabStoryArgs = {
 };
 
 const meta: Meta<SceneTabStoryArgs> = {
-  title: "Components/SceneTab",
+  title: "Scenes/SceneTab",
   component: SceneTab,
   parameters: {
     layout: "fullscreen",

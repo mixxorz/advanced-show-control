@@ -17,7 +17,7 @@ type ConnectionScreenStoryArgs = ComponentProps<typeof ConnectionScreen> & {
 };
 
 const meta: Meta<ConnectionScreenStoryArgs> = {
-  title: "Components/ConnectionScreen",
+  title: "Connection/ConnectionScreen",
   component: ConnectionScreen,
   parameters: {
     layout: "fullscreen",

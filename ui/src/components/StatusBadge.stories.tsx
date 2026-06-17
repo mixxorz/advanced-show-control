@@ -3,7 +3,7 @@ import { expect, within } from "storybook/test";
 import { StatusBadge } from "./StatusBadge";
 
 const meta = {
-  title: "Components/StatusBadge",
+  title: "Primitives/StatusBadge",
   component: StatusBadge,
   parameters: {
     layout: "centered",
