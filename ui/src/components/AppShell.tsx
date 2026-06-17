@@ -22,7 +22,7 @@ export function AppShell(props: {
       {props.showConnection ? (
         <ConnectionScreen onResume={props.onResume} />
       ) : (
-        <main className="grid min-h-screen grid-rows-[auto_1fr_auto] bg-console-bg font-ui text-console-primary">
+        <main className="grid min-h-screen grid-rows-[auto_1fr_auto] bg-black font-ui text-console-primary">
           <TopTabBar
             activeTab={props.activeTab}
             onSelectTab={props.onSelectTab}
@@ -56,8 +56,8 @@ function ReconnectOverlay(props: { active: boolean }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70">
-      <div className="rounded-xl border border-slate-700 bg-slate-900 px-8 py-6 text-xl font-semibold text-slate-100 shadow-2xl">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/70">
+      <div className="rounded-xl border border-console-line bg-console-panel px-8 py-6 text-xl font-semibold text-console-primary shadow-2xl">
         Reconnecting...
       </div>
     </div>

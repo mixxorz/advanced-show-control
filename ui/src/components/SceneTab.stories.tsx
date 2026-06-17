@@ -21,7 +21,7 @@ const meta: Meta<SceneTabStoryArgs> = {
   },
   decorators: [
     (Story) => (
-      <main className="min-h-screen bg-slate-950 p-6 text-slate-100">
+      <main className="min-h-screen bg-black p-6 text-console-primary">
         <Story />
       </main>
     ),

@@ -15,8 +15,8 @@ export function SceneListRow(props: {
     <button
       className={
         props.selected
-          ? "grid w-full grid-cols-[4rem_1fr_4rem] items-center border border-accent-orange-active bg-accent-orange-soft px-3 py-2 text-left text-console-primary"
-          : "grid w-full grid-cols-[4rem_1fr_4rem] items-center border-b border-console-line-soft px-3 py-2 text-left text-console-secondary hover:bg-console-section hover:text-console-primary"
+          ? "grid w-full grid-cols-[3.5rem_1fr_4rem] items-center border border-accent-orange-active bg-accent-orange-soft px-3 py-2 text-left text-console-primary"
+          : "grid w-full grid-cols-[3.5rem_1fr_4rem] items-center border-b border-console-line-soft px-3 py-2 text-left text-console-secondary hover:bg-console-section hover:text-console-primary"
       }
       onClick={props.onSelect}
     >

@@ -53,7 +53,7 @@ export function ChannelScopeGrid(props: {
   return (
     <Panel className="p-4">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-console-line pb-3">
-        <h3 className="text-base font-semibold uppercase tracking-[0.08em] text-console-primary">
+        <h3 className="text-sm font-semibold uppercase tracking-[0.12em] text-console-primary">
           Channel Scope
         </h3>
         <div className="flex gap-2">
@@ -73,16 +73,16 @@ export function ChannelScopeGrid(props: {
           </ConsoleButton>
         </div>
       </div>
-      <div className="mt-4 space-y-4">
+      <div className="mt-3 space-y-3">
         {grouped.map(([groupName, configs]) => (
           <section
-            className="rounded-console-panel border border-console-line-soft bg-console-section p-3"
+            className="rounded-console-panel border border-console-line-soft bg-console-section p-2.5"
             key={groupName}
           >
-            <h4 className="text-xs font-semibold uppercase tracking-[0.08em] text-console-secondary">
+            <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-console-secondary">
               {groupName}
             </h4>
-            <div className="mt-3 flex flex-wrap gap-2">
+            <div className="mt-2 flex flex-wrap gap-1.5">
               {[...configs]
                 .sort((a, b) => a.channel - b.channel)
                 .map((config) => {
