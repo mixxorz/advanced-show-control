@@ -18,6 +18,9 @@ export default defineConfig({
         extends: "./vite.config.ts",
         test: {
           name: "unit",
+          globals: true,
+          setupFiles: ["./vitest.setup.ts"],
+          environment: "jsdom",
           include: ["src/**/*.{test,spec}.{ts,tsx}"],
           passWithNoTests: true,
         },
