@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useAppState } from "../appHooks";
 import { ConnectionScreen } from "./ConnectionScreen";
 import { Header } from "./Header";
-import { ConsoleLogsTab } from "./ConsoleLogsTab";
+import { LogsTab } from "./LogsTab";
 import { SceneTab } from "./SceneTab";
 
 export type MainTab = "scene" | "logs";
@@ -43,7 +43,7 @@ export function AppShell(props: {
 
           <section className="p-6">
             {props.activeTab === "scene" && <SceneTab />}
-            {props.activeTab === "logs" && <ConsoleLogsTab />}
+            {props.activeTab === "logs" && <LogsTab />}
           </section>
         </main>
       )}
