@@ -23,7 +23,7 @@ const meta: Meta<AppShellStoryArgs> = {
     layout: "fullscreen",
   },
   args: {
-    activeTab: "scene",
+    activeTab: "scenes",
     onOpenConnection: () => {},
     onResume: () => {},
     onSelectTab: () => {},
