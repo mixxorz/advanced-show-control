@@ -60,17 +60,17 @@ export const ConnectionSystemsFound: Story = {
   },
 };
 
-export const SceneTab: Story = {};
+export const SceneTab: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
 
-SceneTab.play = async ({ canvasElement }) => {
-  const canvas = within(canvasElement);
-
-  await expect(
-    canvas.getByRole("heading", { name: "Advanced Show Control" }),
-  ).toBeInTheDocument();
-  await expect(
-    canvas.getByRole("button", { name: "Scene" }),
-  ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "Advanced Show Control" }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", { name: "Scene" }),
+    ).toBeInTheDocument();
+  },
 };
 
 export const LogsTab: Story = {

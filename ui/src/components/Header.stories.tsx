@@ -33,17 +33,17 @@ export default meta;
 
 type Story = StoryObj<HeaderStoryArgs>;
 
-export const Connected: Story = {};
+export const Connected: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
 
-Connected.play = async ({ canvasElement }) => {
-  const canvas = within(canvasElement);
-
-  await expect(
-    canvas.getByRole("heading", { name: "Advanced Show Control" }),
-  ).toBeInTheDocument();
-  await expect(
-    canvas.getByRole("button", { name: "Open LV1 connection screen" }),
-  ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "Advanced Show Control" }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", { name: "Open LV1 connection screen" }),
+    ).toBeInTheDocument();
+  },
 };
 
 export const LockoutRunningFade: Story = {

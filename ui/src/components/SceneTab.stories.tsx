@@ -40,17 +40,17 @@ export default meta;
 
 type Story = StoryObj<SceneTabStoryArgs>;
 
-export const StoredSceneSelected: Story = {};
+export const StoredSceneSelected: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
 
-StoredSceneSelected.play = async ({ canvasElement }) => {
-  const canvas = within(canvasElement);
-
-  await expect(
-    canvas.getByRole("heading", { name: "Scenes" }),
-  ).toBeInTheDocument();
-  await expect(
-    canvas.getByRole("heading", { name: "4: Verse" }),
-  ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "Scenes" }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "4: Verse" }),
+    ).toBeInTheDocument();
+  },
 };
 
 export const DuplicateSceneWarning: Story = {
