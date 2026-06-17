@@ -1,21 +1,53 @@
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap");
 @import "tailwindcss";
+
+@theme {
+  --font-ui: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --color-console-bg: #050506;
+  --color-console-chrome: #080809;
+  --color-console-panel: #0d0d0f;
+  --color-console-section: #141416;
+  --color-console-control: #18181b;
+  --color-console-control-hover: #202026;
+  --color-console-line: #2a2a2e;
+  --color-console-line-soft: #242428;
+  --color-console-line-strong: #3a3a40;
+
+  --color-console-primary: #dedbd6;
+  --color-console-secondary: #b8b3ab;
+  --color-console-muted: #8f8981;
+  --color-console-disabled: #56524d;
+
+  --color-accent-orange: #ff8a00;
+  --color-accent-orange-hover: #ff9f2a;
+  --color-accent-orange-active: #c96400;
+  --color-accent-orange-soft: #261404;
+
+  --color-status-current: #52d62d;
+  --color-status-cued: #2c9dff;
+  --color-status-warning: #f0b429;
+  --color-status-danger: #ff5c5c;
+
+  --radius-console-panel: 0.3125rem;
+  --radius-console-control: 0.1875rem;
+}
 
 :root {
   color-scheme: dark;
-  font-family:
-    Inter,
-    ui-sans-serif,
-    system-ui,
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    sans-serif;
+  font-family: var(--font-ui);
+  background: var(--color-console-bg);
+  color: var(--color-console-primary);
 }
 
 body {
   margin: 0;
+  min-width: 320px;
+  background: var(--color-console-bg);
 }
 
-button {
+button,
+input {
   font: inherit;
 }
