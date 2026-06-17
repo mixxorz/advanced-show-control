@@ -1,3 +1,4 @@
+import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { disconnectedAppViewState } from "../types";
 import {
@@ -6,9 +7,15 @@ import {
   discoveringAppState,
 } from "../storybook/mockAppState";
 import { MockAppProviders } from "../storybook/MockAppProviders";
+import type { AppViewState } from "../types";
 import { AppShell } from "./AppShell";
 
-const meta: Meta<any> = {
+type AppShellStoryArgs = ComponentProps<typeof AppShell> & {
+  appState?: AppViewState;
+  commandError?: string | null;
+};
+
+const meta: Meta<AppShellStoryArgs> = {
   title: "App/AppShell",
   component: AppShell,
   parameters: {
@@ -21,7 +28,7 @@ const meta: Meta<any> = {
     onSelectTab: () => {},
     showConnection: false,
   },
-  render: (args: any) => (
+  render: (args) => (
     <MockAppProviders appState={args.appState} commandError={args.commandError}>
       <AppShell
         activeTab={args.activeTab}
@@ -36,7 +43,7 @@ const meta: Meta<any> = {
 
 export default meta;
 
-type Story = StoryObj<any>;
+type Story = StoryObj<AppShellStoryArgs>;
 
 export const ConnectionSearching: Story = {
   args: {

@@ -6,9 +6,13 @@ import {
   connectedWithDuplicateScenesAppState,
   storedChorusScene,
 } from "../storybook/mockAppState";
-import { disconnectedAppViewState } from "../types";
+import { disconnectedAppViewState, type AppViewState } from "../types";
 
-const meta: Meta<any> = {
+type SceneTabStoryArgs = {
+  appState?: AppViewState;
+};
+
+const meta: Meta<SceneTabStoryArgs> = {
   title: "Components/SceneTab",
   component: SceneTab,
   parameters: {
@@ -24,7 +28,7 @@ const meta: Meta<any> = {
   args: {
     appState: connectedAppState,
   },
-  render: (args: any) => (
+  render: (args) => (
     <MockAppProviders appState={args.appState}>
       <SceneTab />
     </MockAppProviders>
@@ -33,7 +37,7 @@ const meta: Meta<any> = {
 
 export default meta;
 
-type Story = StoryObj<any>;
+type Story = StoryObj<SceneTabStoryArgs>;
 
 export const StoredSceneSelected: Story = {};
 

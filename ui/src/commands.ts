@@ -70,5 +70,10 @@ export async function setSceneScopePanEnabled(
   setAppState: (appState: AppViewState) => void,
   setCommandError: (message: string | null) => void,
 ) {
-  return runSnapshotCommand("set_scene_scope_pan_enabled", { sceneId, enabled }, setAppState, setCommandError);
+  return runSnapshotCommand(
+    "set_scene_scope_pan_enabled",
+    { sceneId, enabled },
+    setAppState,
+    setCommandError,
+  );
 }

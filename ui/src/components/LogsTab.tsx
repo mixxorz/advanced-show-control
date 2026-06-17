@@ -1,4 +1,4 @@
-import { useAppState } from "../appContext";
+import { useAppState } from "../appHooks";
 
 export function LogsTab() {
   const { appState } = useAppState();

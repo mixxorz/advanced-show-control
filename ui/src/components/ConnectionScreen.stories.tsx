@@ -1,11 +1,21 @@
+import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { ConnectionScreen } from "./ConnectionScreen";
-import { connectedAppState, discoveredSystemsAppState, discoveringAppState } from "../storybook/mockAppState";
+import {
+  connectedAppState,
+  discoveredSystemsAppState,
+} from "../storybook/mockAppState";
+import type { AppViewState } from "../types";
 
 const noop = async () => {};
 
-const meta: Meta<any> = {
+type ConnectionScreenStoryArgs = ComponentProps<typeof ConnectionScreen> & {
+  appState?: AppViewState;
+  commandError?: string | null;
+};
+
+const meta: Meta<ConnectionScreenStoryArgs> = {
   title: "Components/ConnectionScreen",
   component: ConnectionScreen,
   parameters: {
@@ -14,7 +24,7 @@ const meta: Meta<any> = {
   args: {
     onResume: noop,
   },
-  render: (args: any) => (
+  render: (args) => (
     <MockAppProviders appState={args.appState} commandError={args.commandError}>
       <ConnectionScreen onResume={args.onResume} />
     </MockAppProviders>
@@ -23,7 +33,7 @@ const meta: Meta<any> = {
 
 export default meta;
 
-type Story = StoryObj<any>;
+type Story = StoryObj<ConnectionScreenStoryArgs>;
 
 export const Searching: Story = {};
 

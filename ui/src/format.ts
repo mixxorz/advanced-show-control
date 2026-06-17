@@ -4,8 +4,15 @@ export function formatDb(value: number) {
   return `${value.toFixed(1)} dB`;
 }
 
-export function channelName(channels: ChannelSummary[], group: number, channel: number) {
-  return channels.find((entry) => entry.group === group && entry.channel === channel)?.name ?? "Unknown";
+export function channelName(
+  channels: ChannelSummary[],
+  group: number,
+  channel: number,
+) {
+  return (
+    channels.find((entry) => entry.group === group && entry.channel === channel)
+      ?.name ?? "Unknown"
+  );
 }
 
 export function channelDisplayGroup(group: number) {
@@ -19,7 +26,15 @@ export function channelDisplayGroup(group: number) {
 }
 
 export function channelDisplayGroupOrder(groupName: string) {
-  return ["Inputs", "Groups", "Aux", "Matrix", "Masters", "Link/DCAs", "Unknown"].indexOf(groupName);
+  return [
+    "Inputs",
+    "Groups",
+    "Aux",
+    "Matrix",
+    "Masters",
+    "Link/DCAs",
+    "Unknown",
+  ].indexOf(groupName);
 }
 
 export function channelButtonLabel(group: number, channel: number) {

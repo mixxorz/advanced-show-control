@@ -13,7 +13,9 @@ export function ShowFileControls(props: {
         {props.fileName}
         {props.dirty ? " *" : ""}
       </div>
-      <div className="mt-1 text-xs text-slate-400">{props.filePath ?? "No show file saved"}</div>
+      <div className="mt-1 text-xs text-slate-400">
+        {props.filePath ?? "No show file saved"}
+      </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           className="rounded border border-slate-700 px-3 py-1 text-sm text-slate-100 hover:bg-slate-800"

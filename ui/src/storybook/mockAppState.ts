@@ -1,4 +1,8 @@
-import { type AppLogEntry, type AppViewState, type SceneConfig } from "../types";
+import {
+  type AppLogEntry,
+  type AppViewState,
+  type SceneConfig,
+} from "../types";
 
 type ChannelSummary = AppViewState["channels"][number];
 type DiscoveredLv1System = AppViewState["discoveredLv1Systems"][number];
@@ -17,9 +21,24 @@ function makeChannels(): ChannelSummary[] {
 
 function makeLogs(): AppLogEntry[] {
   return [
-    { id: 1, timestamp: "20:14:02", severity: "info", message: "Connected to LV1 at 192.168.1.42:22000" },
-    { id: 2, timestamp: "20:14:18", severity: "info", message: "Stored fader targets for Scene 004" },
-    { id: 3, timestamp: "20:15:01", severity: "warning", message: "Recall skipped because lockout is enabled" },
+    {
+      id: 1,
+      timestamp: "20:14:02",
+      severity: "info",
+      message: "Connected to LV1 at 192.168.1.42:22000",
+    },
+    {
+      id: 2,
+      timestamp: "20:14:18",
+      severity: "info",
+      message: "Stored fader targets for Scene 004",
+    },
+    {
+      id: 3,
+      timestamp: "20:15:01",
+      severity: "warning",
+      message: "Recall skipped because lockout is enabled",
+    },
   ];
 }
 
@@ -32,7 +51,12 @@ function makeSceneSummaries(): SceneSummary[] {
 }
 
 function makeConnectedIdentity() {
-  return { uuid: "lv1-demo", host: "FOH LV1", address: "192.168.1.42", port: 22000 };
+  return {
+    uuid: "lv1-demo",
+    host: "FOH LV1",
+    address: "192.168.1.42",
+    port: 22000,
+  };
 }
 
 function makeStoredVerseScene(): SceneConfig {
@@ -48,10 +72,42 @@ function makeStoredVerseScene(): SceneConfig {
       { group: 1, channel: 0 },
     ],
     channelConfigs: [
-      { group: 0, channel: 0, faderDb: -3.5, pan: 0, balance: null, width: null, panMode: "mono" },
-      { group: 0, channel: 1, faderDb: -8, pan: -0.2, balance: null, width: null, panMode: "mono" },
-      { group: 0, channel: 2, faderDb: -6, pan: null, balance: 0.15, width: 0.6, panMode: "stereo" },
-      { group: 1, channel: 0, faderDb: -5, pan: null, balance: null, width: null, panMode: "none" },
+      {
+        group: 0,
+        channel: 0,
+        faderDb: -3.5,
+        pan: 0,
+        balance: null,
+        width: null,
+        panMode: "mono",
+      },
+      {
+        group: 0,
+        channel: 1,
+        faderDb: -8,
+        pan: -0.2,
+        balance: null,
+        width: null,
+        panMode: "mono",
+      },
+      {
+        group: 0,
+        channel: 2,
+        faderDb: -6,
+        pan: null,
+        balance: 0.15,
+        width: 0.6,
+        panMode: "stereo",
+      },
+      {
+        group: 1,
+        channel: 0,
+        faderDb: -5,
+        pan: null,
+        balance: null,
+        width: null,
+        panMode: "none",
+      },
     ],
   };
 }
@@ -69,10 +125,42 @@ function makeStoredChorusScene(): SceneConfig {
       { group: 1, channel: 0 },
     ],
     channelConfigs: [
-      { group: 0, channel: 0, faderDb: -3.5, pan: 0, balance: null, width: null, panMode: "mono" },
-      { group: 0, channel: 1, faderDb: -8, pan: -0.2, balance: null, width: null, panMode: "mono" },
-      { group: 0, channel: 2, faderDb: -6, pan: null, balance: 0.15, width: 0.6, panMode: "stereo" },
-      { group: 1, channel: 0, faderDb: -5, pan: null, balance: null, width: null, panMode: "none" },
+      {
+        group: 0,
+        channel: 0,
+        faderDb: -3.5,
+        pan: 0,
+        balance: null,
+        width: null,
+        panMode: "mono",
+      },
+      {
+        group: 0,
+        channel: 1,
+        faderDb: -8,
+        pan: -0.2,
+        balance: null,
+        width: null,
+        panMode: "mono",
+      },
+      {
+        group: 0,
+        channel: 2,
+        faderDb: -6,
+        pan: null,
+        balance: 0.15,
+        width: 0.6,
+        panMode: "stereo",
+      },
+      {
+        group: 1,
+        channel: 0,
+        faderDb: -5,
+        pan: null,
+        balance: null,
+        width: null,
+        panMode: "none",
+      },
     ],
   };
 }
@@ -90,10 +178,42 @@ function makeDuplicateVerseScene(): SceneConfig {
       { group: 1, channel: 0 },
     ],
     channelConfigs: [
-      { group: 0, channel: 0, faderDb: -3.5, pan: 0, balance: null, width: null, panMode: "mono" },
-      { group: 0, channel: 1, faderDb: -8, pan: -0.2, balance: null, width: null, panMode: "mono" },
-      { group: 0, channel: 2, faderDb: -6, pan: null, balance: 0.15, width: 0.6, panMode: "stereo" },
-      { group: 1, channel: 0, faderDb: -5, pan: null, balance: null, width: null, panMode: "none" },
+      {
+        group: 0,
+        channel: 0,
+        faderDb: -3.5,
+        pan: 0,
+        balance: null,
+        width: null,
+        panMode: "mono",
+      },
+      {
+        group: 0,
+        channel: 1,
+        faderDb: -8,
+        pan: -0.2,
+        balance: null,
+        width: null,
+        panMode: "mono",
+      },
+      {
+        group: 0,
+        channel: 2,
+        faderDb: -6,
+        pan: null,
+        balance: 0.15,
+        width: 0.6,
+        panMode: "stereo",
+      },
+      {
+        group: 1,
+        channel: 0,
+        faderDb: -5,
+        pan: null,
+        balance: null,
+        width: null,
+        panMode: "none",
+      },
     ],
   };
 }
@@ -101,19 +221,31 @@ function makeDuplicateVerseScene(): SceneConfig {
 function makeDiscoveredSystems(): DiscoveredLv1System[] {
   return [
     {
-      identity: { uuid: "lv1-demo", host: "FOH LV1", address: "192.168.1.42", port: 22000 },
+      identity: {
+        uuid: "lv1-demo",
+        host: "FOH LV1",
+        address: "192.168.1.42",
+        port: 22000,
+      },
       latencyMs: 3,
       status: "available",
     },
     {
-      identity: { uuid: null, host: null, address: "192.168.1.43", port: 22000 },
+      identity: {
+        uuid: null,
+        host: null,
+        address: "192.168.1.43",
+        port: 22000,
+      },
       latencyMs: null,
       status: "unavailable",
     },
   ];
 }
 
-function makeBaseDisconnectedAppState(overrides: Partial<AppViewState> = {}): AppViewState {
+function makeBaseDisconnectedAppState(
+  overrides: Partial<AppViewState> = {},
+): AppViewState {
   return {
     connection: "disconnected",
     discoveredLv1Systems: [],
@@ -140,7 +272,9 @@ function makeBaseDisconnectedAppState(overrides: Partial<AppViewState> = {}): Ap
   };
 }
 
-function makeConnectedAppState(sceneConfigs = [makeStoredVerseScene(), makeStoredChorusScene()]): AppViewState {
+function makeConnectedAppState(
+  sceneConfigs = [makeStoredVerseScene(), makeStoredChorusScene()],
+): AppViewState {
   const channels = makeChannels();
   const logs = makeLogs();
   const scenes = makeSceneSummaries();
@@ -175,14 +309,16 @@ export const duplicateVerseScene: SceneConfig = makeDuplicateVerseScene();
 
 export const connectedAppState: AppViewState = makeConnectedAppState();
 
-export const connectedWithDuplicateScenesAppState: AppViewState = makeConnectedAppState([
-  makeStoredVerseScene(),
-  makeStoredChorusScene(),
-  makeDuplicateVerseScene(),
-]);
+export const connectedWithDuplicateScenesAppState: AppViewState =
+  makeConnectedAppState([
+    makeStoredVerseScene(),
+    makeStoredChorusScene(),
+    makeDuplicateVerseScene(),
+  ]);
 
 export const discoveringAppState: AppViewState = makeBaseDisconnectedAppState();
 
-export const discoveredSystemsAppState: AppViewState = makeBaseDisconnectedAppState({
-  discoveredLv1Systems: makeDiscoveredSystems(),
-});
+export const discoveredSystemsAppState: AppViewState =
+  makeBaseDisconnectedAppState({
+    discoveredLv1Systems: makeDiscoveredSystems(),
+  });

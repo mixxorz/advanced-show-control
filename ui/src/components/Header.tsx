@@ -1,4 +1,4 @@
-import { useAppCommands, useAppState } from "../appContext";
+import { useAppCommands, useAppState } from "../appHooks";
 import { formatSceneNumber } from "../format";
 import { ShowFileControls } from "./ShowFileControls";
 import { StatusBadge } from "./StatusBadge";
@@ -33,9 +33,15 @@ export function Header(props: { onOpenConnection: () => void }) {
             onClick={props.onOpenConnection}
             className="rounded-full focus:outline-none focus:ring-2 focus:ring-cyan-400"
           >
-            <StatusBadge label={appState.connection} tone={appState.connection === "connected" ? "good" : "neutral"} />
+            <StatusBadge
+              label={appState.connection}
+              tone={appState.connection === "connected" ? "good" : "neutral"}
+            />
           </button>
-          <StatusBadge label={`Fade: ${appState.fadeState}`} tone={appState.fadeState === "blocked" ? "warning" : "neutral"} />
+          <StatusBadge
+            label={`Fade: ${appState.fadeState}`}
+            tone={appState.fadeState === "blocked" ? "warning" : "neutral"}
+          />
           <button
             className={
               appState.lockout

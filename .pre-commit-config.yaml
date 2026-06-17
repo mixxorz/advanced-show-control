@@ -14,3 +14,17 @@ repos:
         language: system
         pass_filenames: false
         types: [rust]
+
+      - id: ui-prettier
+        name: ui prettier
+        entry: npm --prefix ui run format
+        language: system
+        pass_filenames: false
+        files: ^ui/
+
+      - id: ui-eslint
+        name: ui eslint
+        entry: npm --prefix ui run lint:fix
+        language: system
+        pass_filenames: false
+        files: ^ui/

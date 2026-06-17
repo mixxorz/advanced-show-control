@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useAppCommands, useAppState } from "../appContext";
+import { useAppState } from "../appHooks";
 import { ConnectionScreen } from "./ConnectionScreen";
 import { Header } from "./Header";
 import { LogsTab } from "./LogsTab";
@@ -14,7 +14,7 @@ export function AppShell(props: {
   onSelectTab: (tab: MainTab) => void;
   showConnection: boolean;
 }) {
-  const { appState, commandError } = useAppState();
+  const { appState } = useAppState();
 
   return (
     <>
@@ -26,10 +26,16 @@ export function AppShell(props: {
 
           <nav className="border-b border-slate-800 px-6">
             <div className="flex gap-2">
-              <TabButton active={props.activeTab === "scene"} onClick={() => props.onSelectTab("scene")}>
+              <TabButton
+                active={props.activeTab === "scene"}
+                onClick={() => props.onSelectTab("scene")}
+              >
                 Scene
               </TabButton>
-              <TabButton active={props.activeTab === "logs"} onClick={() => props.onSelectTab("logs")}>
+              <TabButton
+                active={props.activeTab === "logs"}
+                onClick={() => props.onSelectTab("logs")}
+              >
                 Logs
               </TabButton>
             </div>
@@ -61,7 +67,11 @@ function ReconnectOverlay(props: { active: boolean }) {
   );
 }
 
-function TabButton(props: { active: boolean; onClick: () => void; children: ReactNode }) {
+function TabButton(props: {
+  active: boolean;
+  onClick: () => void;
+  children: ReactNode;
+}) {
   return (
     <button
       className={

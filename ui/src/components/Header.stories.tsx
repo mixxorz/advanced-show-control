@@ -1,11 +1,18 @@
+import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { Header } from "./Header";
 import { connectedAppState } from "../storybook/mockAppState";
+import type { AppViewState } from "../types";
 
 const noop = () => {};
 
-const meta: Meta<any> = {
+type HeaderStoryArgs = ComponentProps<typeof Header> & {
+  appState?: AppViewState;
+  commandError?: string | null;
+};
+
+const meta: Meta<HeaderStoryArgs> = {
   title: "Components/Header",
   component: Header,
   parameters: {
@@ -14,7 +21,7 @@ const meta: Meta<any> = {
   args: {
     onOpenConnection: noop,
   },
-  render: (args: any) => (
+  render: (args) => (
     <MockAppProviders appState={args.appState} commandError={args.commandError}>
       <Header onOpenConnection={args.onOpenConnection} />
     </MockAppProviders>
@@ -23,7 +30,7 @@ const meta: Meta<any> = {
 
 export default meta;
 
-type Story = StoryObj<any>;
+type Story = StoryObj<HeaderStoryArgs>;
 
 export const Connected: Story = {};
 

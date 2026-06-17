@@ -1,27 +1,11 @@
 import type { ReactNode } from "react";
-import { AppCommandsProvider, AppStateProvider, type AppCommands } from "../appContext";
+import {
+  AppCommandsProvider,
+  AppStateProvider,
+  type AppCommands,
+} from "../appContext";
 import { disconnectedAppViewState, type AppViewState } from "../types";
-
-const noop = () => {};
-const promiseTrue = async () => true;
-
-export const mockAppCommands: AppCommands = {
-  abortAll: noop,
-  disconnect: noop,
-  newShowFile: noop,
-  openShowFile: noop,
-  saveShowFile: noop,
-  saveShowFileAs: noop,
-  selectScene: noop,
-  selectSystem: noop,
-  setAllChannelsScoped: noop,
-  setChannelScoped: noop,
-  setSceneDurationMs: promiseTrue,
-  setSceneScopeFadersEnabled: noop,
-  setSceneScopePanEnabled: noop,
-  storeSceneConfig: promiseTrue,
-  toggleLockout: noop,
-};
+import { mockAppCommands } from "./mockAppCommands";
 
 export function MockAppProviders(props: {
   appState?: AppViewState;
@@ -30,8 +14,13 @@ export function MockAppProviders(props: {
   children: ReactNode;
 }) {
   return (
-    <AppStateProvider appState={props.appState ?? disconnectedAppViewState} commandError={props.commandError ?? null}>
-      <AppCommandsProvider commands={{ ...mockAppCommands, ...props.commands }}>{props.children}</AppCommandsProvider>
+    <AppStateProvider
+      appState={props.appState ?? disconnectedAppViewState}
+      commandError={props.commandError ?? null}
+    >
+      <AppCommandsProvider commands={{ ...mockAppCommands, ...props.commands }}>
+        {props.children}
+      </AppCommandsProvider>
     </AppStateProvider>
   );
 }

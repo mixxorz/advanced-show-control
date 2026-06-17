@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { AppCommandsProvider, AppStateProvider, type AppCommands } from "./appContext";
+import {
+  AppCommandsProvider,
+  AppStateProvider,
+  type AppCommands,
+} from "./appContext";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 import {
   attemptReconnectLv1,
@@ -18,11 +22,13 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<MainTab>("scene");
   const [showConnection, setShowConnection] = useState(true);
   const [commandError, setCommandError] = useState<string | null>(null);
-  const [appState, setAppState] = useState<AppViewState>(disconnectedAppViewState);
+  const [appState, setAppState] = useState<AppViewState>(
+    disconnectedAppViewState,
+  );
 
   const applySnapshot = useCallback((next: AppViewState) => {
-    setAppState(prev =>
-      !prev || next.stateVersion > prev.stateVersion ? next : prev
+    setAppState((prev) =>
+      !prev || next.stateVersion > prev.stateVersion ? next : prev,
     );
   }, []);
 
@@ -44,12 +50,15 @@ export default function App() {
         setShowConnection(true);
       });
 
-    const unlistenPromise = listen<AppViewState>("app-status-changed", (event) => {
-      if (cancelled) {
-        return;
-      }
-      applySnapshot(event.payload);
-    });
+    const unlistenPromise = listen<AppViewState>(
+      "app-status-changed",
+      (event) => {
+        if (cancelled) {
+          return;
+        }
+        applySnapshot(event.payload);
+      },
+    );
 
     return () => {
       cancelled = true;
@@ -156,16 +165,52 @@ export default function App() {
   }, [appState.reconnect.active, appState.reconnect.attempt, applySnapshot]);
 
   const commands: AppCommands = {
-    abortAll: () => runVoidCommand("abort_all_fades", applySnapshot, setCommandError),
+    abortAll: () =>
+      runVoidCommand("abort_all_fades", applySnapshot, setCommandError),
     disconnect: async () => {
-      await runSnapshotCommand("disconnect_lv1", undefined, applySnapshot, setCommandError);
+      await runSnapshotCommand(
+        "disconnect_lv1",
+        undefined,
+        applySnapshot,
+        setCommandError,
+      );
       setShowConnection(true);
     },
-    newShowFile: () => runSnapshotCommand("new_show_file", undefined, applySnapshot, setCommandError),
-    openShowFile: () => runSnapshotCommand("open_show_file_dialog", undefined, applySnapshot, setCommandError),
-    saveShowFile: () => runSnapshotCommand("save_show_file", undefined, applySnapshot, setCommandError),
-    saveShowFileAs: () => runSnapshotCommand("save_show_file_as_dialog", undefined, applySnapshot, setCommandError),
-    selectScene: (sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, applySnapshot, setCommandError),
+    newShowFile: () =>
+      runSnapshotCommand(
+        "new_show_file",
+        undefined,
+        applySnapshot,
+        setCommandError,
+      ),
+    openShowFile: () =>
+      runSnapshotCommand(
+        "open_show_file_dialog",
+        undefined,
+        applySnapshot,
+        setCommandError,
+      ),
+    saveShowFile: () =>
+      runSnapshotCommand(
+        "save_show_file",
+        undefined,
+        applySnapshot,
+        setCommandError,
+      ),
+    saveShowFileAs: () =>
+      runSnapshotCommand(
+        "save_show_file_as_dialog",
+        undefined,
+        applySnapshot,
+        setCommandError,
+      ),
+    selectScene: (sceneId: string) =>
+      runSnapshotCommand(
+        "select_scene_config",
+        { sceneId },
+        applySnapshot,
+        setCommandError,
+      ),
     selectSystem: async (identity) => {
       setCommandError(null);
       try {
@@ -179,18 +224,54 @@ export default function App() {
       }
     },
     setAllChannelsScoped: (sceneId: string, scoped: boolean) =>
-      runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, applySnapshot, setCommandError),
-    setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) =>
-      runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, applySnapshot, setCommandError),
+      runSnapshotCommand(
+        "set_all_channels_scoped",
+        { sceneId, scoped },
+        applySnapshot,
+        setCommandError,
+      ),
+    setChannelScoped: (
+      sceneId: string,
+      group: number,
+      channel: number,
+      scoped: boolean,
+    ) =>
+      runSnapshotCommand(
+        "set_channel_scoped",
+        { sceneId, group, channel, scoped },
+        applySnapshot,
+        setCommandError,
+      ),
     setSceneDurationMs: (sceneId: string, durationMs: number) =>
-      runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, applySnapshot, setCommandError),
+      runSnapshotCommand(
+        "set_scene_duration_ms",
+        { sceneId, durationMs },
+        applySnapshot,
+        setCommandError,
+      ),
     setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) =>
-      runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, applySnapshot, setCommandError),
+      runSnapshotCommand(
+        "set_scene_scope_faders_enabled",
+        { sceneId, enabled },
+        applySnapshot,
+        setCommandError,
+      ),
     setSceneScopePanEnabled: (sceneId: string, enabled: boolean) =>
       setSceneScopePanEnabled(sceneId, enabled, applySnapshot, setCommandError),
     storeSceneConfig: (sceneId: string) =>
-      runSnapshotCommand("store_scene_config", { sceneId }, applySnapshot, setCommandError),
-    toggleLockout: () => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, applySnapshot, setCommandError),
+      runSnapshotCommand(
+        "store_scene_config",
+        { sceneId },
+        applySnapshot,
+        setCommandError,
+      ),
+    toggleLockout: () =>
+      runSnapshotCommand(
+        "set_lockout",
+        { enabled: !appState.lockout },
+        applySnapshot,
+        setCommandError,
+      ),
   };
 
   return (

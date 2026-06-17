@@ -1,4 +1,4 @@
-import { useAppCommands, useAppState } from "../appContext";
+import { useAppCommands, useAppState } from "../appHooks";
 import type { AppViewState, ChannelConfig, SceneConfig } from "../types";
 import {
   channelButtonLabel,
@@ -27,7 +27,9 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
 export function SceneTab() {
   const { appState } = useAppState();
   const commands = useAppCommands();
-  const selected = appState.sceneConfigs.find((scene) => scene.sceneId === appState.selectedSceneId);
+  const selected = appState.sceneConfigs.find(
+    (scene) => scene.sceneId === appState.selectedSceneId,
+  );
   const duplicateNames = duplicateSceneNames(appState.sceneConfigs);
 
   return (
@@ -41,9 +43,12 @@ export function SceneTab() {
           <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-950/40 p-3 text-sm text-amber-100">
             <p className="font-semibold">Scene tracking warning</p>
             <p className="mt-1 text-amber-100/80">
-              Duplicate scene names make some LV1 scene moves hard to track. Rename duplicate scenes for the most reliable scene tracking.
+              Duplicate scene names make some LV1 scene moves hard to track.
+              Rename duplicate scenes for the most reliable scene tracking.
             </p>
-            <p className="mt-1 text-xs text-amber-100/70">Duplicates: {duplicateNames.join(", ")}</p>
+            <p className="mt-1 text-xs text-amber-100/70">
+              Duplicates: {duplicateNames.join(", ")}
+            </p>
           </div>
         ) : null}
         <div className="mt-4 max-h-[34rem] overflow-auto rounded-lg border border-slate-800">
@@ -58,20 +63,24 @@ export function SceneTab() {
                   className={
                     selectedRow
                       ? "block w-full border-b border-slate-800 bg-cyan-950/40 px-3 py-3 text-left last:border-b-0"
-                    : "block w-full border-b border-slate-800 px-3 py-3 text-left hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 last:border-b-0"
+                      : "block w-full border-b border-slate-800 px-3 py-3 text-left hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 last:border-b-0"
                   }
-                    key={scene.sceneId}
-                    onClick={() => commands.selectScene(scene.sceneId)}
-                  >
-                    <span className="block text-sm font-semibold text-slate-100">
-                      {formatSceneNumber(scene.sceneIndex)}: {scene.sceneName}
-                    </span>
-                    <span className="mt-1 block text-xs text-slate-400">
-                      {formatSceneDurationSummary(scene.durationMs)} · FADERS {scene.scopeToggles.faders ? "on" : "off"} · PAN {scene.scopeToggles.pan ? "on" : "off"} · {scene.scopedChannels.length}/{scene.channelConfigs.length} scoped
-                    </span>
-                  </button>
-                );
-              })
+                  key={scene.sceneId}
+                  onClick={() => commands.selectScene(scene.sceneId)}
+                >
+                  <span className="block text-sm font-semibold text-slate-100">
+                    {formatSceneNumber(scene.sceneIndex)}: {scene.sceneName}
+                  </span>
+                  <span className="mt-1 block text-xs text-slate-400">
+                    {formatSceneDurationSummary(scene.durationMs)} · FADERS{" "}
+                    {scene.scopeToggles.faders ? "on" : "off"} · PAN{" "}
+                    {scene.scopeToggles.pan ? "on" : "off"} ·{" "}
+                    {scene.scopedChannels.length}/{scene.channelConfigs.length}{" "}
+                    scoped
+                  </span>
+                </button>
+              );
+            })
           )}
         </div>
       </section>
@@ -83,7 +92,10 @@ export function SceneTab() {
                 <h2 className="text-lg font-semibold">
                   {formatSceneNumber(selected.sceneIndex)}: {selected.sceneName}
                 </h2>
-                <p className="mt-1 text-sm text-slate-400">Current LV1 scene does not affect which scene config is edited.</p>
+                <p className="mt-1 text-sm text-slate-400">
+                  Current LV1 scene does not affect which scene config is
+                  edited.
+                </p>
               </div>
               <div className="flex flex-wrap gap-3">
                 <button
@@ -105,7 +117,8 @@ export function SceneTab() {
                 <div>
                   <h3 className="font-semibold text-slate-100">Scene Scope</h3>
                   <p className="mt-1 text-sm text-slate-400">
-                    FADERS and PAN control whether scoped fader and pan-family values move when this LV1 scene is recalled.
+                    FADERS and PAN control whether scoped fader and pan-family
+                    values move when this LV1 scene is recalled.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-3">
@@ -115,7 +128,12 @@ export function SceneTab() {
                         ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
                         : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
                     }
-                    onClick={() => commands.setSceneScopeFadersEnabled(selected.sceneId, !selected.scopeToggles.faders)}
+                    onClick={() =>
+                      commands.setSceneScopeFadersEnabled(
+                        selected.sceneId,
+                        !selected.scopeToggles.faders,
+                      )
+                    }
                   >
                     FADERS {selected.scopeToggles.faders ? "ON" : "OFF"}
                   </button>
@@ -125,7 +143,12 @@ export function SceneTab() {
                         ? "rounded bg-cyan-700 px-4 py-2 text-sm font-bold text-white hover:bg-cyan-600"
                         : "rounded bg-slate-800 px-4 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
                     }
-                    onClick={() => commands.setSceneScopePanEnabled(selected.sceneId, !selected.scopeToggles.pan)}
+                    onClick={() =>
+                      commands.setSceneScopePanEnabled(
+                        selected.sceneId,
+                        !selected.scopeToggles.pan,
+                      )
+                    }
                   >
                     PAN {selected.scopeToggles.pan ? "ON" : "OFF"}
                   </button>
@@ -141,7 +164,9 @@ export function SceneTab() {
             />
           </div>
         ) : (
-          <p className="text-sm text-slate-400">Select a scene to edit its scoped channels.</p>
+          <p className="text-sm text-slate-400">
+            Select a scene to edit its scoped channels.
+          </p>
         )}
       </section>
     </div>
@@ -155,10 +180,19 @@ function channelKey(group: number, channel: number) {
 function ScopeGrid(props: {
   channels: AppViewState["channels"];
   scene: SceneConfig;
-  setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => void;
+  setChannelScoped: (
+    sceneId: string,
+    group: number,
+    channel: number,
+    scoped: boolean,
+  ) => void;
   setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
 }) {
-  const scoped = new Set(props.scene.scopedChannels.map((entry) => channelKey(entry.group, entry.channel)));
+  const scoped = new Set(
+    props.scene.scopedChannels.map((entry) =>
+      channelKey(entry.group, entry.channel),
+    ),
+  );
   const groups = new Map<string, ChannelConfig[]>();
 
   for (const config of props.scene.channelConfigs) {
@@ -166,10 +200,16 @@ function ScopeGrid(props: {
     groups.set(groupName, [...(groups.get(groupName) ?? []), config]);
   }
 
-  const grouped = [...groups.entries()].sort(([a], [b]) => channelDisplayGroupOrder(a) - channelDisplayGroupOrder(b));
+  const grouped = [...groups.entries()].sort(
+    ([a], [b]) => channelDisplayGroupOrder(a) - channelDisplayGroupOrder(b),
+  );
 
   if (props.scene.channelConfigs.length === 0) {
-    return <p className="mt-5 rounded-lg border border-slate-800 p-4 text-sm text-slate-400">Store the current mixer state to choose scoped channels.</p>;
+    return (
+      <p className="mt-5 rounded-lg border border-slate-800 p-4 text-sm text-slate-400">
+        Store the current mixer state to choose scoped channels.
+      </p>
+    );
   }
 
   return (
@@ -177,10 +217,20 @@ function ScopeGrid(props: {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h3 className="font-semibold text-slate-100">Scoped Channels</h3>
         <div className="flex gap-2">
-          <button className="rounded border border-slate-700 px-3 py-1 text-sm hover:bg-slate-800" onClick={() => props.setAllChannelsScoped(props.scene.sceneId, true)}>
+          <button
+            className="rounded border border-slate-700 px-3 py-1 text-sm hover:bg-slate-800"
+            onClick={() =>
+              props.setAllChannelsScoped(props.scene.sceneId, true)
+            }
+          >
             All
           </button>
-          <button className="rounded border border-slate-700 px-3 py-1 text-sm hover:bg-slate-800" onClick={() => props.setAllChannelsScoped(props.scene.sceneId, false)}>
+          <button
+            className="rounded border border-slate-700 px-3 py-1 text-sm hover:bg-slate-800"
+            onClick={() =>
+              props.setAllChannelsScoped(props.scene.sceneId, false)
+            }
+          >
             None
           </button>
         </div>
@@ -188,7 +238,9 @@ function ScopeGrid(props: {
       <div className="mt-4 space-y-4">
         {grouped.map(([groupName, configs]) => (
           <section key={groupName}>
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">{groupName}</h4>
+            <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+              {groupName}
+            </h4>
             <div className="mt-2 flex flex-wrap gap-2">
               {[...configs]
                 .sort((a, b) => a.channel - b.channel)
@@ -204,7 +256,14 @@ function ScopeGrid(props: {
                           : "rounded bg-slate-800 px-3 py-2 text-sm font-bold text-slate-300 hover:bg-slate-700"
                       }
                       key={key}
-                      onClick={() => props.setChannelScoped(props.scene.sceneId, config.group, config.channel, !isScoped)}
+                      onClick={() =>
+                        props.setChannelScoped(
+                          props.scene.sceneId,
+                          config.group,
+                          config.channel,
+                          !isScoped,
+                        )
+                      }
                       title={`${channelName(props.channels, config.group, config.channel)} · ${formatDb(config.faderDb ?? 0)} · ${formatPanFamilySummary(config)}`}
                     >
                       {channelButtonLabel(config.group, config.channel)}
