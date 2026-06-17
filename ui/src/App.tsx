@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 import {
@@ -11,12 +11,7 @@ import {
   startupAutoConnectLv1,
   setSceneScopePanEnabled,
 } from "./commands";
-import { ConnectionScreen } from "./components/ConnectionScreen";
-import { Header } from "./components/Header";
-import { LogsTab } from "./components/LogsTab";
-import { SceneTab } from "./components/SceneTab";
-
-type MainTab = "scene" | "logs";
+import { AppShell, type MainTab } from "./components/AppShell";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<MainTab>("scene");
@@ -160,114 +155,55 @@ export default function App() {
   }, [appState.reconnect.active, appState.reconnect.attempt, applySnapshot]);
 
   return (
-    <>
-      {showConnection ? (
-        <ConnectionScreen
-          appState={appState}
-          commandError={commandError}
-          onDisconnect={async () => {
-            await runSnapshotCommand("disconnect_lv1", undefined, applySnapshot, setCommandError);
-            setShowConnection(true);
-          }}
-          onResume={() => setShowConnection(false)}
-          onSelectSystem={async (identity) => {
-            setCommandError(null);
-            try {
-              const snapshot = await connectLv1System(identity);
-              applySnapshot(snapshot);
-              if (snapshot.connection === "connected") {
-                setShowConnection(false);
-              }
-            } catch (error) {
-              setCommandError(String(error));
-            }
-          }}
-        />
-      ) : (
-        <main className="min-h-screen bg-slate-950 text-slate-100">
-          <Header
-            appState={appState}
-            commandError={commandError}
-            onAbortAll={() => runVoidCommand("abort_all_fades", applySnapshot, setCommandError)}
-            onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, applySnapshot, setCommandError)}
-            onOpenConnection={() => setShowConnection(true)}
-            onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, applySnapshot, setCommandError)}
-            onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, applySnapshot, setCommandError)}
-            onSaveShowFileAs={() => runSnapshotCommand("save_show_file_as_dialog", undefined, applySnapshot, setCommandError)}
-            onToggleLockout={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, applySnapshot, setCommandError)}
-          />
-
-          <nav className="border-b border-slate-800 px-6">
-            <div className="flex gap-2">
-              <TabButton active={activeTab === "scene"} onClick={() => setActiveTab("scene")}>
-                Scene
-              </TabButton>
-              <TabButton active={activeTab === "logs"} onClick={() => setActiveTab("logs")}>
-                Logs
-              </TabButton>
-            </div>
-          </nav>
-
-          <section className="p-6">
-            {activeTab === "scene" && (
-              <SceneTab
-                appState={appState}
-                selectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, applySnapshot, setCommandError)}
-                setSceneDurationMs={(sceneId: string, durationMs: number) =>
-                  runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, applySnapshot, setCommandError)
-                }
-                setSceneScopeFadersEnabled={(sceneId: string, enabled: boolean) =>
-                  runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, applySnapshot, setCommandError)
-                }
-                setSceneScopePanEnabled={(sceneId: string, enabled: boolean) =>
-                  setSceneScopePanEnabled(sceneId, enabled, applySnapshot, setCommandError)
-                }
-                storeSceneConfig={(sceneId: string) =>
-                  runSnapshotCommand("store_scene_config", { sceneId }, applySnapshot, setCommandError)
-                }
-                setAllChannelsScoped={(sceneId: string, scoped: boolean) =>
-                  runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, applySnapshot, setCommandError)
-                }
-                setChannelScoped={(sceneId: string, group: number, channel: number, scoped: boolean) =>
-                  runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, applySnapshot, setCommandError)
-                }
-              />
-            )}
-            {activeTab === "logs" && <LogsTab appState={appState} />}
-          </section>
-        </main>
-      )}
-
-      <ReconnectOverlay active={appState.reconnect.active} />
-    </>
-  );
-}
-
-function ReconnectOverlay(props: { active: boolean }) {
-  if (!props.active) {
-    return null;
-  }
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70">
-      <div className="rounded-xl border border-slate-700 bg-slate-900 px-8 py-6 text-xl font-semibold text-slate-100 shadow-2xl">
-        Reconnecting...
-      </div>
-    </div>
-  );
-}
-
-function TabButton(props: { active: boolean; onClick: () => void; children: ReactNode }) {
-  return (
-    <button
-      className={
-        props.active
-          ? "border-b-2 border-cyan-400 px-4 py-3 text-cyan-200"
-          : "px-4 py-3 text-slate-400 hover:text-slate-100"
+    <AppShell
+      activeTab={activeTab}
+      appState={appState}
+      commandError={commandError}
+      onAbortAll={() => runVoidCommand("abort_all_fades", applySnapshot, setCommandError)}
+      onDisconnect={async () => {
+        await runSnapshotCommand("disconnect_lv1", undefined, applySnapshot, setCommandError);
+        setShowConnection(true);
+      }}
+      onNewShowFile={() => runSnapshotCommand("new_show_file", undefined, applySnapshot, setCommandError)}
+      onOpenConnection={() => setShowConnection(true)}
+      onOpenShowFile={() => runSnapshotCommand("open_show_file_dialog", undefined, applySnapshot, setCommandError)}
+      onResume={() => setShowConnection(false)}
+      onSaveShowFile={() => runSnapshotCommand("save_show_file", undefined, applySnapshot, setCommandError)}
+      onSaveShowFileAs={() => runSnapshotCommand("save_show_file_as_dialog", undefined, applySnapshot, setCommandError)}
+      onSelectScene={(sceneId: string) => runSnapshotCommand("select_scene_config", { sceneId }, applySnapshot, setCommandError)}
+      onSelectSystem={async (identity) => {
+        setCommandError(null);
+        try {
+          const snapshot = await connectLv1System(identity);
+          applySnapshot(snapshot);
+          if (snapshot.connection === "connected") {
+            setShowConnection(false);
+          }
+        } catch (error) {
+          setCommandError(String(error));
+        }
+      }}
+      onSelectTab={setActiveTab}
+      onSetAllChannelsScoped={(sceneId: string, scoped: boolean) =>
+        runSnapshotCommand("set_all_channels_scoped", { sceneId, scoped }, applySnapshot, setCommandError)
       }
-      onClick={props.onClick}
-    >
-      {props.children}
-      </button>
+      onSetChannelScoped={(sceneId: string, group: number, channel: number, scoped: boolean) =>
+        runSnapshotCommand("set_channel_scoped", { sceneId, group, channel, scoped }, applySnapshot, setCommandError)
+      }
+      onSetSceneDurationMs={(sceneId: string, durationMs: number) =>
+        runSnapshotCommand("set_scene_duration_ms", { sceneId, durationMs }, applySnapshot, setCommandError)
+      }
+      onSetSceneScopeFadersEnabled={(sceneId: string, enabled: boolean) =>
+        runSnapshotCommand("set_scene_scope_faders_enabled", { sceneId, enabled }, applySnapshot, setCommandError)
+      }
+      onSetSceneScopePanEnabled={(sceneId: string, enabled: boolean) =>
+        setSceneScopePanEnabled(sceneId, enabled, applySnapshot, setCommandError)
+      }
+      onStoreSceneConfig={(sceneId: string) =>
+        runSnapshotCommand("store_scene_config", { sceneId }, applySnapshot, setCommandError)
+      }
+      onToggleLockout={() => runSnapshotCommand("set_lockout", { enabled: !appState.lockout }, applySnapshot, setCommandError)}
+      showConnection={showConnection}
+    />
   );
 }
