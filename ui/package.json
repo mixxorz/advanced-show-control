@@ -6,15 +6,18 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
+    "build-storybook": "storybook build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build",
+    "serve-storybook": "http-server storybook-static -p 6007 -a 127.0.0.1",
     "test": "vitest --project unit",
-    "test:storybook": "vitest --project storybook"
+    "test:storybook": "vitest --project storybook",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
@@ -23,6 +26,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.61.0",
     "@storybook/addon-docs": "^10.4.6",
     "@storybook/addon-onboarding": "^10.4.6",
     "@storybook/addon-vitest": "^10.4.6",
@@ -42,6 +46,7 @@
     "eslint-plugin-react-refresh": "^0.5.3",
     "eslint-plugin-storybook": "^10.4.6",
     "globals": "^17.6.0",
+    "http-server": "^14.1.1",
     "playwright": "^1.61.0",
     "prettier": "^3.8.4",
     "storybook": "^10.4.6",
