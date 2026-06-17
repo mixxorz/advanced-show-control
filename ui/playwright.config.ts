@@ -16,6 +16,7 @@ export default defineConfig({
       maxDiffPixelRatio: 0.01,
     },
   },
+  snapshotPathTemplate: "{testDir}/{testFileName}-snapshots/{arg}{ext}",
   webServer: {
     command: "npm run build-storybook && npm run serve-storybook",
     url: "http://127.0.0.1:6007",

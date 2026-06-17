@@ -11,6 +11,9 @@ rustc-ice-*.txt
 node_modules/
 ui/node_modules/
 ui/dist/
+ui/storybook-static/
+ui/test-results/
+ui/playwright-report/
 
 # Local app data
 logs/
