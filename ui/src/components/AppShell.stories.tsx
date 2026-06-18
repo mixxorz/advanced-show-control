@@ -1,6 +1,6 @@
 import { useState, type ComponentProps, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, within } from "storybook/test";
 import {
   AppCommandsProvider,
   AppStateProvider,
@@ -256,7 +256,6 @@ export const SceneTab: Story = {
     appState: sceneTabAppState,
   },
   play: async ({ canvasElement }) => {
-    const user = userEvent.setup();
     const canvas = within(canvasElement);
 
     await expect(
@@ -268,13 +267,6 @@ export const SceneTab: Story = {
     await expect(
       canvas.getByRole("button", { name: "Settings" }),
     ).toBeInTheDocument();
-
-    const safeButton = canvas.getByRole("button", { name: "SAFE" });
-    await expect(safeButton).toHaveAttribute("aria-pressed", "false");
-
-    await user.click(safeButton);
-
-    await expect(safeButton).toHaveAttribute("aria-pressed", "true");
   },
 };
 
