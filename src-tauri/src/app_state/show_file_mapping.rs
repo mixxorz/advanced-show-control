@@ -114,15 +114,6 @@ impl ShellState {
         self.show
             .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
                 lockout: file.safety.lockout,
-                cued_scene_id: file.cued_scene_id.clone().filter(|scene_id| {
-                    file.scene_configs.iter().any(|config| {
-                        scene_id
-                            == &advanced_show_control::show::types::scene_id(
-                                config.scene_index,
-                                &config.scene_name,
-                            )
-                    })
-                }),
                 scene_configs: file
                     .scene_configs
                     .iter()
@@ -158,6 +149,17 @@ impl ShellState {
                         },
                     })
                     .collect(),
+                cued_scene_id: {
+                    let kept_scene_ids = file
+                        .scene_configs
+                        .iter()
+                        .map(|config| scene_id(config.scene_index, &config.scene_name))
+                        .collect::<std::collections::HashSet<_>>();
+
+                    file.cued_scene_id
+                        .clone()
+                        .filter(|scene_id| kept_scene_ids.contains(scene_id))
+                },
             })
             .await;
 

@@ -575,6 +575,57 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
     assert_eq!(snapshot.scene_configs[0].scoped_channels.len(), 1);
 }
 
+#[tokio::test]
+async fn load_show_file_clears_pruned_cued_scene_id() {
+    let state = ShellState::default();
+    begin_test_connection(&state, lv1_scene_only_snapshot()).await;
+
+    let mut file = ShowFile {
+        schema_version: 1,
+        app_version: "0.1.0".to_string(),
+        saved_at: "123".to_string(),
+        safety: crate::show_file::ShowFileSafety { lockout: false },
+        cued_scene_id: Some("2::Unused".to_string()),
+        scene_configs: vec![
+            ShowFileSceneConfig {
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 5000,
+                channel_configs: vec![ShowFileChannelConfig {
+                    group: 0,
+                    channel: 2,
+                    fader_db: Some(-9.0),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }],
+                scoped_channels: vec![ShowFileChannelRef {
+                    group: 0,
+                    channel: 2,
+                }],
+                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+            },
+            ShowFileSceneConfig {
+                scene_index: 2,
+                scene_name: "Unused".to_string(),
+                duration_ms: 6000,
+                channel_configs: vec![],
+                scoped_channels: vec![],
+                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+            },
+        ],
+    };
+
+    let snapshot = state
+        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut file)
+        .await
+        .unwrap();
+
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.cued_scene_id, None);
+}
+
 #[test]
 fn show_file_structural_round_trip_test() {
     let original = ShowFile {

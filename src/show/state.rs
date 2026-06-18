@@ -223,7 +223,7 @@ impl ShowState {
         let old_entries = entries_from_configs(&self.scene_configs);
         let new_entries = entries_from_scene_list(scenes);
 
-        match classify_scene_list_change(&old_entries, &new_entries) {
+        let changed = match classify_scene_list_change(&old_entries, &new_entries) {
             SceneListChange::Noop => false,
             SceneListChange::Rename => self.apply_position_mapping(&new_entries),
             SceneListChange::Move { .. }
@@ -232,7 +232,13 @@ impl ShowState {
             | SceneListChange::Ambiguous => {
                 self.reconcile_scene_fade_configs_by_name_fifo(&new_entries)
             }
+        };
+
+        if changed {
+            self.clear_missing_cue();
         }
+
+        changed
     }
 
     pub fn scene_reconciliation_diagnostic(&self, scenes: &[SceneListEntry]) -> String {
@@ -312,6 +318,17 @@ impl ShowState {
         self.lockout = false;
         self.scene_configs.clear();
         self.cued_scene_id = None;
+    }
+
+    fn clear_missing_cue(&mut self) {
+        if let Some(cued_scene_id) = &self.cued_scene_id
+            && !self
+                .scene_configs
+                .iter()
+                .any(|scene| &scene.scene_id == cued_scene_id)
+        {
+            self.cued_scene_id = None;
+        }
     }
 
     pub fn get_scene_config(&self, scene_id: &str) -> Option<SceneConfig> {
@@ -658,6 +675,22 @@ mod tests {
         assert_eq!(state.scene_configs[0].duration_ms, 100);
         assert_eq!(state.scene_configs[1].scene_id, "1::Chorus");
         assert_eq!(state.scene_configs[1].duration_ms, 300);
+    }
+
+    #[test]
+    fn reconciliation_clears_missing_cued_scene_id() {
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                named_scene_config(0, "Intro", 100),
+                named_scene_config(1, "Verse", 200),
+            ],
+            cued_scene_id: Some("1::Verse".to_string()),
+        };
+
+        assert!(state.reconcile_scene_fade_configs(&[scene_entry(0, "Intro")]));
+
+        assert_eq!(state.cued_scene_id, None);
     }
 
     #[test]
