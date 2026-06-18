@@ -84,12 +84,38 @@ cargo build --workspace
 
 Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks. Avoid `cargo test` unless you specifically need a test harness feature that nextest cannot provide.
 
-Common frontend checks:
+Common frontend checks, run from `ui/`:
 
 ```bash
+npm run format:check
+npm run lint
 npm run typecheck
 npm run build
+npm run test
+npm run test:storybook
+npm run test:visual
 ```
+
+Frontend check meanings:
+
+- `npm run format:check` runs Prettier in check mode.
+- `npm run lint` runs ESLint.
+- `npm run typecheck` runs TypeScript with `tsc --noEmit`.
+- `npm run build` runs the Vite production build.
+- `npm run test` runs Vitest unit tests.
+- `npm run test:storybook` runs Storybook interaction/browser tests through Vitest.
+- `npm run test:visual` runs Playwright visual regression tests.
+
+CI runs the Rust checks above and the frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook` commands. CI also runs `npm run test:visual` on manual workflow dispatch or when visual-relevant files change.
+
+Hook-only targeted checks may run at commit time for staged files. Do not run these manually; let the hooks run them at commit time:
+
+- Rust formatting for staged Rust files.
+- Rust clippy for staged Rust files.
+- UI Prettier for staged UI files.
+- UI ESLint for staged UI files.
+
+Do not bypass hooks; fix failures in a new commit.
 
 Useful targeted Rust checks:
 
