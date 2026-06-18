@@ -49,4 +49,37 @@ describe("TopTabBar", () => {
 
     expect(onOpenConnection).toHaveBeenCalledTimes(1);
   });
+
+  it("renders a fixed-label SAFE button", () => {
+    renderTopBar(connectedAppState);
+
+    expect(screen.getByRole("button", { name: "SAFE" })).toBeInTheDocument();
+  });
+
+  it("toggles lockout from the SAFE button", async () => {
+    const user = userEvent.setup();
+    const toggleLockout = vi.fn();
+
+    renderWithAppProviders(
+      <TopTabBar
+        activeTab="scenes"
+        onOpenConnection={vi.fn()}
+        onSelectTab={vi.fn()}
+      />,
+      { appState: connectedAppState, commands: { toggleLockout } },
+    );
+
+    await user.click(screen.getByRole("button", { name: "SAFE" }));
+
+    expect(toggleLockout).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks the SAFE button pressed when lockout is active", () => {
+    renderTopBar({ ...connectedAppState, lockout: true });
+
+    expect(screen.getByRole("button", { name: "SAFE" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
 });

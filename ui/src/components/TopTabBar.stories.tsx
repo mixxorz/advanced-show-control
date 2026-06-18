@@ -56,3 +56,16 @@ export const Connecting: Story = {
     </MockAppProviders>
   ),
 };
+
+export const SafeActive: Story = {
+  render: (args) => (
+    <MockAppProviders
+      appState={{
+        ...connectedAppState,
+        lockout: true,
+      }}
+    >
+      <TopTabBar {...args} />
+    </MockAppProviders>
+  ),
+};
