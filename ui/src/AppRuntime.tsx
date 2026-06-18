@@ -254,6 +254,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     },
     newShowFile: () => runSnapshot(() => services.newShowFile()),
     openShowFile: () => runSnapshot(() => services.openShowFile()),
+    cueScene: (sceneId) => runSnapshot(() => services.cueScene(sceneId)),
+    recallScene: (sceneId) => runSnapshot(() => services.recallScene(sceneId)),
     saveShowFile: () => runSnapshot(() => services.saveShowFile()),
     saveShowFileAs: () => runSnapshot(() => services.saveShowFileAs()),
     selectScene: (sceneId: string) =>

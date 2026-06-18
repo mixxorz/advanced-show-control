@@ -321,4 +321,30 @@ describe("AppRuntime connection lifecycle", () => {
       screen.getByRole("heading", { name: "Connect to LV1" }),
     ).toBeInTheDocument();
   });
+
+  it("wires cue recall and go buttons to runtime services", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => ({
+        ...connectedAppState,
+        cuedSceneId: connectedAppState.sceneConfigs[0]?.sceneId ?? null,
+      })),
+    });
+    const scene = connectedAppState.sceneConfigs[0];
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue" }));
+    await user.click(screen.getByRole("button", { name: "Recall" }));
+    await user.click(screen.getByRole("button", { name: "GO" }));
+
+    expect(services.cueScene).toHaveBeenCalledWith(scene.sceneId);
+    expect(services.recallScene).toHaveBeenCalledWith(scene.sceneId);
+    expect(services.recallScene).toHaveBeenCalledTimes(2);
+  });
 });
