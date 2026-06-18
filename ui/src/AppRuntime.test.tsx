@@ -1,4 +1,4 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
@@ -139,7 +139,10 @@ describe("AppRuntime connection lifecycle", () => {
     expect(
       screen.queryByRole("heading", { name: "Connect to LV1" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("Offline")).toBeInTheDocument();
+
+    expect(
+      within(screen.getByRole("contentinfo")).getByText("Offline"),
+    ).toBeInTheDocument();
   });
 
   it("ignores an equal-version stale snapshot after initialization", async () => {

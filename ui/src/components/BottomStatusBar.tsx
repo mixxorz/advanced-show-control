@@ -16,7 +16,27 @@ function cuedSceneLabel(appState: AppViewState) {
   const cued = appState.sceneConfigs.find(
     (scene) => scene.sceneId === appState.cuedSceneId,
   );
-  return cued ? cued.sceneName : "None";
+  return cued ? cued.sceneName : "---";
+}
+
+function modeDisplay(appState: AppViewState): {
+  className?: string;
+  tone: "default" | "cued" | "warning";
+  value: string;
+} {
+  if (appState.connection !== "connected") {
+    return { tone: "default", value: "Offline" };
+  }
+
+  if (appState.lockout) {
+    return { tone: "warning", value: "Safe" };
+  }
+
+  if (appState.fadeState === "running") {
+    return { className: "animate-pulse", tone: "warning", value: "Fading" };
+  }
+
+  return { tone: "cued", value: "Ready" };
 }
 
 export function BottomStatusBar(props: { appState: AppViewState }) {
@@ -30,12 +50,8 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
 
   const currentScene = props.appState.currentScene
     ? props.appState.currentScene.name
-    : "None";
-  const modeTone = props.appState.lockout
-    ? "warning"
-    : props.appState.fadeState === "blocked"
-      ? "danger"
-      : "default";
+    : "---";
+  const mode = modeDisplay(props.appState);
   const canGo = Boolean(props.appState.cuedSceneId && commands.recallScene);
 
   return (
@@ -63,12 +79,9 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
       <StatusCell label="Current" tone="current" value={currentScene} />
       <StatusCell
         label="Mode"
-        tone={modeTone}
-        value={
-          props.appState.lockout
-            ? "LOCKOUT"
-            : props.appState.fadeState.toUpperCase()
-        }
+        className={mode.className}
+        tone={mode.tone}
+        value={mode.value}
       />
       <StatusCell font="mono" label="Time" value={formatClock(now)} />
     </footer>

@@ -1,4 +1,4 @@
-import { useAppState } from "../appHooks";
+import { useAppCommands, useAppState } from "../appHooks";
 import { TopTab } from "./TopTab";
 
 export type MainTab =
@@ -24,6 +24,7 @@ export function TopTabBar(props: {
   onSelectTab: (tab: MainTab) => void;
 }) {
   const { appState } = useAppState();
+  const commands = useAppCommands();
   const connected = appState.connection === "connected";
   const connecting = appState.connection === "connecting";
   const consoleName = appState.connectedLv1Identity?.host ?? "Console A";
@@ -42,6 +43,9 @@ export function TopTabBar(props: {
     : connecting
       ? "bg-console-secondary"
       : "bg-status-danger";
+  const safeClass = appState.lockout
+    ? "border-status-warning bg-status-warning/15 text-status-warning shadow-inner shadow-status-warning/20"
+    : "border-console-line bg-black/20 text-console-primary hover:border-console-line-strong";
 
   return (
     <nav className="mx-3 mt-3 flex overflow-hidden rounded-console-panel border border-console-line bg-console-chrome">
@@ -56,7 +60,7 @@ export function TopTabBar(props: {
           </TopTab>
         ))}
       </div>
-      <div className="flex items-center gap-5 px-4">
+      <div className="flex items-center gap-3 px-4">
         <div
           className={`flex items-center gap-2 font-mono text-sm font-normal uppercase ${statusClass}`}
         >
@@ -70,6 +74,14 @@ export function TopTabBar(props: {
         >
           <span className="truncate">{consoleName}</span>
           <span className="h-0 w-0 border-x-[5px] border-t-[6px] border-x-transparent border-t-console-secondary" />
+        </button>
+        <button
+          aria-pressed={appState.lockout}
+          className={`rounded-console-control border px-3 py-2 font-mono text-base font-normal uppercase ${safeClass}`}
+          onClick={commands.toggleLockout}
+          type="button"
+        >
+          SAFE
         </button>
       </div>
     </nav>

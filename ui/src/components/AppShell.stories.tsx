@@ -196,6 +196,8 @@ function StatefulAppShellStory(props: {
       ),
     setSceneScopePanEnabled: (_sceneId, enabled) =>
       setAppState((state) => updateSelectedSceneToggle(state, "pan", enabled)),
+    toggleLockout: () =>
+      setAppState((state) => ({ ...state, lockout: !state.lockout })),
   };
 
   return (
