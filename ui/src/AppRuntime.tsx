@@ -180,7 +180,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         applySnapshot(snapshot);
         if (snapshot.connection === "connected") {
           setCommandError(null);
-          setConnectionModalMode(null);
+          setConnectionModalMode((mode) => (mode === "manual" ? mode : null));
         }
       } catch (error) {
         if (!cancelled) setCommandError(String(error));

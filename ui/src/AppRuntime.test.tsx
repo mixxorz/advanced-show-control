@@ -272,4 +272,48 @@ describe("AppRuntime connection lifecycle", () => {
       screen.getByRole("heading", { name: "Connect to LV1" }),
     ).toBeInTheDocument();
   });
+
+  it("keeps a manually opened modal open when reconnect succeeds", async () => {
+    const user = userEvent.setup();
+    const reconnect = createDeferred<AppViewState>();
+    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+      listenForAppStatus: vi.fn(async (listener) => {
+        appStatusListener = listener;
+        return () => {};
+      }),
+      attemptReconnectLv1: vi.fn(() => reconnect.promise),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      appStatusListener?.({
+        ...connectedAppState,
+        reconnect: { active: true, attempt: 1 },
+        stateVersion: connectedAppState.stateVersion + 1,
+      });
+    });
+
+    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
+
+    await act(async () => {
+      reconnect.resolve({
+        ...connectedAppState,
+        reconnect: { active: false, attempt: 1 },
+        stateVersion: connectedAppState.stateVersion + 2,
+      });
+      await reconnect.promise;
+    });
+
+    expect(
+      screen.getByRole("heading", { name: "Connect to LV1" }),
+    ).toBeInTheDocument();
+  });
 });
