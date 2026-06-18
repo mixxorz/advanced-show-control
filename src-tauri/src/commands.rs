@@ -1619,6 +1619,29 @@ mod tests {
         assert!(holder.current().await.is_none());
     }
 
+    #[tokio::test]
+    async fn emit_snapshot_directly_emits_app_status_changed() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let snapshot = state.snapshot().await;
+        emit_snapshot(&handle, &snapshot);
+        tokio::task::yield_now().await;
+
+        let observed = observed.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0]["stateVersion"], snapshot.state_version);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn initial_connection_snapshot_is_emitted_before_coalesced_projector_events() {
         let app = mock_app();

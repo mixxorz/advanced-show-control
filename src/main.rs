@@ -1636,6 +1636,25 @@ mod tests {
     }
 
     #[test]
+    fn parses_discover_command_for_probe_binary() {
+        let cli = parse_cli_from(["lv1-probe", "discover", "--timeout-ms", "100", "--json"])
+            .expect("discover command should parse");
+
+        match cli.command {
+            Command::Discover {
+                timeout_ms,
+                filter_host,
+                json,
+            } => {
+                assert_eq!(timeout_ms, 100);
+                assert_eq!(filter_host, None);
+                assert!(json);
+            }
+            other => panic!("expected discover command, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn help_uses_lv1_probe_name_even_when_binary_name_differs() {
         let err = parse_cli_from(["advanced-show-control", "--help"]).unwrap_err();
 
