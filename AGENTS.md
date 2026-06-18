@@ -93,7 +93,7 @@ npm run typecheck
 npm run build
 npm run test
 npm run test:storybook
-npm run test:visual
+npm run test:visual:ci
 ```
 
 Frontend check meanings:
@@ -104,9 +104,11 @@ Frontend check meanings:
 - `npm run build` runs the Vite production build.
 - `npm run test` runs Vitest unit tests.
 - `npm run test:storybook` runs Storybook interaction/browser tests through Vitest.
-- `npm run test:visual` runs Playwright visual regression tests.
+- `npm run test:visual:ci` runs Playwright visual regression tests in the Docker visual-test image for CI-compatible screenshots.
+- `npm run test:visual:update:ci` regenerates Playwright visual snapshots in the Docker visual-test image; use this when UI changes intentionally update screenshots.
+- Prefer the `:ci` visual commands over local `npm run test:visual` / `npm run test:visual:update` so screenshot rendering matches CI more closely.
 
-CI runs the Rust checks above and the frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook` commands. CI also runs `npm run test:visual` on manual workflow dispatch or when visual-relevant files change.
+CI runs the Rust checks above and the frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook` commands. CI also runs Docker-backed visual checks on manual workflow dispatch or when visual-relevant files change.
 
 Hook-only targeted checks may run at commit time for staged files. Do not run these manually; let the hooks run them at commit time:
 
