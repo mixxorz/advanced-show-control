@@ -1,7 +1,5 @@
-use advanced_show_control::lv1::types::{
-    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
-};
-use advanced_show_control::show::types::{SceneScopeToggles, scene_id};
+use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+use crate::show::types::{SceneScopeToggles, scene_id};
 
 use super::shell::ShellState;
 use super::view::AppViewState;

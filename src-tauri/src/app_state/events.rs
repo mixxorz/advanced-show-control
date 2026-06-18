@@ -1,7 +1,7 @@
-use advanced_show_control::fade::events::FadeEvent;
-use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
-use advanced_show_control::show::types::scene_id;
+use crate::fade::events::FadeEvent;
+use crate::lv1::events::Lv1Event;
+use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
+use crate::show::types::scene_id;
 
 use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
 use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity};

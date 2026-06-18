@@ -1,4 +1,4 @@
-use advanced_show_control::lv1::types::Lv1StateSnapshot;
+use crate::lv1::types::Lv1StateSnapshot;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::fs::OpenOptions;
@@ -65,7 +65,7 @@ pub struct ShowFileChannelConfig {
     pub pan: Option<f64>,
     pub balance: Option<f64>,
     pub width: Option<f64>,
-    pub pan_mode: Option<advanced_show_control::lv1::types::PanMode>,
+    pub pan_mode: Option<crate::lv1::types::PanMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -377,7 +377,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use advanced_show_control::lv1::types::{ChannelInfo, ConnectionStatus, SceneListEntry};
+    use crate::lv1::types::{ChannelInfo, ConnectionStatus, SceneListEntry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

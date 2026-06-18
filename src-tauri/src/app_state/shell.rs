@@ -3,10 +3,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
-use advanced_show_control::runtime::commands::AppCommandBus;
-use advanced_show_control::show::handle::ShowStateHandle;
-use advanced_show_control::show::types::ShowSnapshot;
+use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+use crate::runtime::commands::AppCommandBus;
+use crate::show::handle::ShowStateHandle;
+use crate::show::types::ShowSnapshot;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
@@ -23,8 +23,8 @@ pub(super) const MAX_LOGS: usize = 200;
 #[derive(Default)]
 pub struct RuntimeHandles {
     pub active_generation: u64,
-    pub lv1: Option<advanced_show_control::lv1::handle::Lv1ActorHandle>,
-    pub fade: Option<advanced_show_control::fade::handle::FadeEngineHandle>,
+    pub lv1: Option<crate::lv1::handle::Lv1ActorHandle>,
+    pub fade: Option<crate::fade::handle::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
     pub scene_recall_fader: Option<JoinHandle<()>>,
@@ -412,7 +412,7 @@ pub(super) fn refresh_discovered_statuses(inner: &mut ShellInner) {
 }
 
 fn cover_state_variants() {
-    let discovery_entry = advanced_show_control::lv1::discovery::DiscoveryEntry {
+    let discovery_entry = crate::lv1::discovery::DiscoveryEntry {
         service: "_waveslv113._tcp".to_string(),
         uuid: Some("uuid".to_string()),
         host: Some("LV1".to_string()),
@@ -595,8 +595,8 @@ mod tests {
     use super::*;
     use crate::app_state::ProjectionOutcome;
     use crate::app_state::test_support::begin_test_connection;
-    use advanced_show_control::lv1::events::Lv1Event;
-    use advanced_show_control::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
+    use crate::lv1::events::Lv1Event;
+    use crate::lv1::types::{ChannelInfo, SceneListEntry, SceneState};
 
     async fn store_intro_scene_config(state: &ShellState) {
         state
@@ -651,7 +651,7 @@ mod tests {
             .show
             .replace_snapshot(ShowSnapshot {
                 lockout: false,
-                scene_configs: vec![advanced_show_control::show::types::SceneConfig {
+                scene_configs: vec![crate::show::types::SceneConfig {
                     scene_id: "1::Verse".to_string(),
                     scene_index: 1,
                     scene_name: "Verse".to_string(),
@@ -759,8 +759,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let active_command_bus = crate::commands::ActiveCommandBus::default();
-        let command_bus =
-            AppCommandBus::new(advanced_show_control::runtime::events::AppEventBus::default());
+        let command_bus = AppCommandBus::new(crate::runtime::events::AppEventBus::default());
 
         let installed = state
             .install_runtime_handles(

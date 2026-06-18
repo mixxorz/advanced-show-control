@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use advanced_show_control::show::types::scene_id;
+use crate::show::types::scene_id;
 
 use super::shell::ShellState;
 use super::view::AppViewState;
@@ -112,12 +112,12 @@ impl ShellState {
         drop(inner);
 
         self.show
-            .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
+            .replace_snapshot(crate::show::types::ShowSnapshot {
                 lockout: file.safety.lockout,
                 scene_configs: file
                     .scene_configs
                     .iter()
-                    .map(|config| advanced_show_control::show::types::SceneConfig {
+                    .map(|config| crate::show::types::SceneConfig {
                         scene_id: scene_id(config.scene_index, &config.scene_name),
                         scene_index: config.scene_index,
                         scene_name: config.scene_name.clone(),
@@ -125,7 +125,7 @@ impl ShellState {
                         channel_configs: config
                             .channel_configs
                             .iter()
-                            .map(|target| advanced_show_control::show::types::ChannelConfig {
+                            .map(|target| crate::show::types::ChannelConfig {
                                 group: target.group,
                                 channel: target.channel,
                                 fader_db: target.fader_db,
@@ -138,12 +138,12 @@ impl ShellState {
                         scoped_channels: config
                             .scoped_channels
                             .iter()
-                            .map(|channel| advanced_show_control::show::types::ChannelRef {
+                            .map(|channel| crate::show::types::ChannelRef {
                                 group: channel.group,
                                 channel: channel.channel,
                             })
                             .collect(),
-                        scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
+                        scope_toggles: crate::show::types::SceneScopeToggles {
                             faders: config.scope_toggles.faders,
                             pan: config.scope_toggles.pan,
                         },

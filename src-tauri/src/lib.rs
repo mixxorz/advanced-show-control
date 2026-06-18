@@ -1,7 +1,15 @@
+pub mod app_state;
+pub mod commands;
+pub mod connection_preferences;
+pub mod connection_state;
+pub mod diagnostics;
 pub mod fade;
+pub mod logging;
 pub mod lv1;
 pub mod osc;
 pub mod runtime;
 pub mod scene_recall;
 pub mod show;
+pub mod show_file;
+pub mod time;
 pub mod vegas;

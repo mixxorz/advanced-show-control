@@ -5,9 +5,9 @@ use super::test_support::{
     scene_config, set_pending_lv1_identity,
 };
 use super::view::{AppConnectionState, ChannelConfig, ChannelRef, ShowSnapshot};
-use advanced_show_control::fade::events::FadeEvent;
-use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::types::{
+use crate::fade::events::FadeEvent;
+use crate::lv1::events::Lv1Event;
+use crate::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
 use std::sync::{Arc, Mutex};
@@ -56,7 +56,7 @@ impl Visit for EventNameVisitor {
 #[tokio::test]
 async fn fade_events_update_fade_state() {
     use super::view::AppFadeState;
-    use advanced_show_control::fade::types::FadeParameter;
+    use crate::fade::types::FadeParameter;
 
     let state = ShellState::default();
 
@@ -82,8 +82,8 @@ async fn fade_events_update_fade_state() {
 #[tokio::test]
 async fn channel_completed_logs_without_clearing_running_state() {
     use super::view::AppFadeState;
-    use advanced_show_control::fade::events::FadeEvent;
-    use advanced_show_control::fade::types::FadeParameter;
+    use crate::fade::events::FadeEvent;
+    use crate::fade::types::FadeParameter;
 
     let state = ShellState::default();
     let started = state.apply_fade_event(&FadeEvent::FadeStarted).await;
@@ -361,7 +361,7 @@ async fn channel_topology_projection_does_not_append_ui_log() {
 
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
-    let mut state = advanced_show_control::show::state::ShowState {
+    let mut state = crate::show::state::ShowState {
         lockout: false,
         scene_configs: Vec::new(),
         cued_scene_id: None,
@@ -388,7 +388,7 @@ fn scene_list_reconciliation_creates_default_configs() {
 
 #[test]
 fn scene_list_reconciliation_preserves_matching_config_data() {
-    let mut state = advanced_show_control::show::state::ShowState {
+    let mut state = crate::show::state::ShowState {
         lockout: false,
         scene_configs: vec![scene_config(
             2,
@@ -440,7 +440,7 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
 
 #[test]
 fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
-    let mut state = advanced_show_control::show::state::ShowState {
+    let mut state = crate::show::state::ShowState {
         lockout: false,
         scene_configs: vec![scene_config(
             1,
@@ -866,7 +866,7 @@ async fn stale_lv1_events_are_ignored_after_generation_change() {
 #[tokio::test]
 async fn stale_fade_events_are_ignored_after_generation_change() {
     use super::view::AppFadeState;
-    use advanced_show_control::fade::events::FadeEvent;
+    use crate::fade::events::FadeEvent;
 
     let state = ShellState::default();
     let (first_generation, _) = state.begin_connecting().await;

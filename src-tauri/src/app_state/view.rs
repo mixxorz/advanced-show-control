@@ -2,9 +2,9 @@ use serde::Serialize;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
-pub use advanced_show_control::show::types::SceneConfig;
+pub use crate::show::types::SceneConfig;
 #[cfg(test)]
-pub use advanced_show_control::show::types::{ChannelConfig, ChannelRef, ShowSnapshot};
+pub use crate::show::types::{ChannelConfig, ChannelRef, ShowSnapshot};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

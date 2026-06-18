@@ -1,9 +1,7 @@
 use super::shell::ShellState;
 use super::test_support::{begin_test_connection, connected_state_with_scene_and_channel};
 use super::view::ChannelRef;
-use advanced_show_control::lv1::types::{
-    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry,
-};
+use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
 
 #[tokio::test]
 async fn store_scene_config_snapshots_all_current_channels_and_scopes_first_store() {

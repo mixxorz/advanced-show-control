@@ -1,10 +1,10 @@
-use advanced_show_control::fade::actor::spawn_engine;
-use advanced_show_control::lv1::actor::spawn_actor;
-use advanced_show_control::lv1::discovery::resolve_target;
-use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::runtime::commands::AppCommandBus;
-use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
-use advanced_show_control::scene_recall::spawn_scene_recall_fader;
+use crate::fade::actor::spawn_engine;
+use crate::lv1::actor::spawn_actor;
+use crate::lv1::discovery::resolve_target;
+use crate::lv1::events::Lv1Event;
+use crate::runtime::commands::AppCommandBus;
+use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use crate::scene_recall::spawn_scene_recall_fader;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -57,12 +57,10 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
         .clamp(MIN_DISCOVERY_TIMEOUT_MS, MAX_DISCOVERY_TIMEOUT_MS);
     let entries = spawn_blocking(move || {
-        advanced_show_control::lv1::discovery::discover(
-            advanced_show_control::lv1::discovery::DiscoverOptions {
-                timeout: std::time::Duration::from_millis(timeout),
-                ..Default::default()
-            },
-        )
+        crate::lv1::discovery::discover(crate::lv1::discovery::DiscoverOptions {
+            timeout: std::time::Duration::from_millis(timeout),
+            ..Default::default()
+        })
     })
     .await
     .map_err(|err| format!("Failed to run LV1 discovery task: {err}"))?
@@ -277,7 +275,7 @@ async fn recall_scene_snapshot(
         "Recall blocked: LV1 state is unavailable".to_string()
     })?;
 
-    if lv1.connection != advanced_show_control::lv1::types::ConnectionStatus::Connected {
+    if lv1.connection != crate::lv1::types::ConnectionStatus::Connected {
         tracing::warn!(
             event = "scene_recall_blocked",
             scene_id = %scene_id,
@@ -717,8 +715,7 @@ async fn connect_to_target<R: Runtime>(
     };
 
     let initial_snapshot = lv1.get_state().await;
-    if initial_snapshot.connection != advanced_show_control::lv1::types::ConnectionStatus::Connected
-    {
+    if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => state.fail_connect(generation).await,
@@ -1008,8 +1005,8 @@ fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBu
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
-    use advanced_show_control::fade::events::FadeEvent;
-    use advanced_show_control::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
+    use crate::fade::events::FadeEvent;
+    use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
     use std::fs;
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -1117,9 +1114,9 @@ mod tests {
         let state = ShellState::default();
         state
             .show
-            .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
+            .replace_snapshot(crate::show::types::ShowSnapshot {
                 lockout: true,
-                scene_configs: vec![advanced_show_control::show::types::SceneConfig {
+                scene_configs: vec![crate::show::types::SceneConfig {
                     scene_id: "1::Verse".to_string(),
                     scene_index: 1,
                     scene_name: "Verse".to_string(),
@@ -1157,9 +1154,9 @@ mod tests {
         let state = ShellState::default();
         state
             .show
-            .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
+            .replace_snapshot(crate::show::types::ShowSnapshot {
                 lockout,
-                scene_configs: vec![advanced_show_control::show::types::SceneConfig {
+                scene_configs: vec![crate::show::types::SceneConfig {
                     scene_id: "1::Verse".to_string(),
                     scene_index: 1,
                     scene_name: "Verse".to_string(),
@@ -1723,7 +1720,7 @@ mod tests {
                     connection: ConnectionStatus::Connected,
                     scene: None,
                     scene_list: Vec::new(),
-                    channels: vec![advanced_show_control::lv1::types::ChannelInfo {
+                    channels: vec![crate::lv1::types::ChannelInfo {
                         group: 1,
                         channel: 1,
                         name: "Channel 1".to_string(),
@@ -1796,7 +1793,7 @@ mod tests {
                     connection: ConnectionStatus::Connected,
                     scene: None,
                     scene_list: Vec::new(),
-                    channels: vec![advanced_show_control::lv1::types::ChannelInfo {
+                    channels: vec![crate::lv1::types::ChannelInfo {
                         group: 1,
                         channel: 1,
                         name: "Channel 1".to_string(),

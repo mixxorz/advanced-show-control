@@ -86,13 +86,13 @@ fn populated_show_snapshot() -> ShowSnapshot {
                 pan: Some(-12.0),
                 balance: Some(3.0),
                 width: Some(1.2),
-                pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+                pan_mode: Some(crate::lv1::types::PanMode::Stereo),
             }],
             scoped_channels: vec![super::view::ChannelRef {
                 group: 0,
                 channel: 2,
             }],
-            scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
+            scope_toggles: crate::show::types::SceneScopeToggles {
                 faders: false,
                 pan: true,
             },
@@ -122,7 +122,7 @@ async fn export_show_file_contains_current_configs() {
             pan: Some(-12.0),
             balance: Some(3.0),
             width: Some(1.2),
-            pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
         }]
     );
     assert_eq!(
@@ -162,11 +162,11 @@ async fn export_load_export_round_trips_show_file_mapping() {
     assert_eq!(round_tripped.scene_configs, exported.scene_configs);
 }
 
-fn lv1_scene_only_snapshot() -> advanced_show_control::lv1::types::Lv1StateSnapshot {
-    advanced_show_control::lv1::types::Lv1StateSnapshot {
-        connection: advanced_show_control::lv1::types::ConnectionStatus::Connected,
+fn lv1_scene_only_snapshot() -> crate::lv1::types::Lv1StateSnapshot {
+    crate::lv1::types::Lv1StateSnapshot {
+        connection: crate::lv1::types::ConnectionStatus::Connected,
         scene: None,
-        scene_list: vec![advanced_show_control::lv1::types::SceneListEntry {
+        scene_list: vec![crate::lv1::types::SceneListEntry {
             index: 1,
             name: "Intro".to_string(),
         }],
@@ -201,7 +201,7 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: advanced_show_control::show::types::SceneScopeToggles::default(),
+                scope_toggles: crate::show::types::SceneScopeToggles::default(),
             }],
         })
         .await;
@@ -251,7 +251,7 @@ async fn new_show_file_clears_stale_selection_when_disconnected() {
                 duration_ms: 0,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: advanced_show_control::show::types::SceneScopeToggles::default(),
+                scope_toggles: crate::show::types::SceneScopeToggles::default(),
             }],
         })
         .await;
@@ -430,13 +430,13 @@ async fn export_and_import_show_file_round_trips_pan_family_fields() {
                     pan: Some(-12.0),
                     balance: Some(3.0),
                     width: Some(1.2),
-                    pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
                 }],
                 scoped_channels: vec![super::view::ChannelRef {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: advanced_show_control::show::types::SceneScopeToggles {
+                scope_toggles: crate::show::types::SceneScopeToggles {
                     faders: true,
                     pan: true,
                 },
@@ -460,7 +460,7 @@ async fn export_and_import_show_file_round_trips_pan_family_fields() {
     );
     assert_eq!(
         exported.scene_configs[0].channel_configs[0].pan_mode,
-        Some(advanced_show_control::lv1::types::PanMode::Stereo)
+        Some(crate::lv1::types::PanMode::Stereo)
     );
 
     let mut imported = exported.clone();
@@ -484,7 +484,7 @@ async fn export_and_import_show_file_round_trips_pan_family_fields() {
     );
     assert_eq!(
         snapshot.scene_configs[0].channel_configs[0].pan_mode,
-        Some(advanced_show_control::lv1::types::PanMode::Stereo)
+        Some(crate::lv1::types::PanMode::Stereo)
     );
 }
 
@@ -647,7 +647,7 @@ fn show_file_structural_round_trip_test() {
                         pan: Some(-15.0),
                         balance: Some(2.5),
                         width: Some(0.8),
-                        pan_mode: Some(advanced_show_control::lv1::types::PanMode::Stereo),
+                        pan_mode: Some(crate::lv1::types::PanMode::Stereo),
                     },
                     ShowFileChannelConfig {
                         group: 1,
@@ -685,7 +685,7 @@ fn show_file_structural_round_trip_test() {
                     pan: Some(5.5),
                     balance: Some(-1.0),
                     width: Some(1.5),
-                    pan_mode: Some(advanced_show_control::lv1::types::PanMode::Mono),
+                    pan_mode: Some(crate::lv1::types::PanMode::Mono),
                 }],
                 scoped_channels: vec![ShowFileChannelRef {
                     group: 0,
@@ -727,7 +727,7 @@ fn show_file_structural_round_trip_test() {
     assert_eq!(channel_1_1.width, Some(0.8));
     assert_eq!(
         channel_1_1.pan_mode,
-        Some(advanced_show_control::lv1::types::PanMode::Stereo)
+        Some(crate::lv1::types::PanMode::Stereo)
     );
 
     let channel_1_2 = &scene_1.channel_configs[1];
@@ -755,8 +755,5 @@ fn show_file_structural_round_trip_test() {
     assert_eq!(channel_2_1.pan, Some(5.5));
     assert_eq!(channel_2_1.balance, Some(-1.0));
     assert_eq!(channel_2_1.width, Some(1.5));
-    assert_eq!(
-        channel_2_1.pan_mode,
-        Some(advanced_show_control::lv1::types::PanMode::Mono)
-    );
+    assert_eq!(channel_2_1.pan_mode, Some(crate::lv1::types::PanMode::Mono));
 }

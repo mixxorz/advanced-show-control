@@ -1,14 +1,7 @@
-mod app_state;
-mod commands;
-mod connection_preferences;
-mod connection_state;
-mod diagnostics;
-mod logging;
-mod show_file;
-mod time;
-
-use app_state::ShellState;
-use commands::ActiveCommandBus;
+use advanced_show_control::app_state::ShellState;
+use advanced_show_control::commands;
+use advanced_show_control::commands::ActiveCommandBus;
+use advanced_show_control::logging;
 use tauri::Manager;
 
 fn main() {
