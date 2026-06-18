@@ -71,6 +71,7 @@ pub struct AppViewState {
     pub fade_state: AppFadeState,
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
+    pub cued_scene_id: Option<String>,
     pub selected_scene_id: Option<String>,
     pub show_file_name: String,
     pub show_file_path: Option<String>,

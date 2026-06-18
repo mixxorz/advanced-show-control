@@ -150,6 +150,52 @@ pub async fn select_scene_config(
 }
 
 #[tauri::command]
+pub async fn cue_scene(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    scene_id: String,
+) -> Result<AppViewState, String> {
+    let snapshot = cue_scene_snapshot((*state).clone(), scene_id).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+async fn cue_scene_snapshot(state: ShellState, scene_id: String) -> Result<AppViewState, String> {
+    tracing::debug!(
+        event = "scene_cue_requested",
+        scene_id = %scene_id,
+        "Scene cue requested"
+    );
+
+    let scene = state
+        .show
+        .get_scene_config(scene_id.clone())
+        .await
+        .ok_or_else(|| {
+            tracing::warn!(
+                event = "scene_cue_blocked",
+                scene_id = %scene_id,
+                reason = "scene config not found",
+                "Scene cue blocked: scene config not found"
+            );
+            "Scene config not found".to_string()
+        })?;
+
+    let snapshot = state.cue_scene(scene_id.clone()).await?;
+
+    tracing::info!(
+        event = "scene_cued",
+        scene_id = %scene.scene_id,
+        scene_index = scene.scene_index,
+        scene_name = %scene.scene_name,
+        "Scene cued: {}",
+        scene.scene_name
+    );
+
+    Ok(snapshot)
+}
+
+#[tauri::command]
 pub async fn store_scene_config(
     app: AppHandle,
     state: State<'_, ShellState>,
@@ -158,6 +204,123 @@ pub async fn store_scene_config(
     let snapshot = state.store_scene_config(scene_id).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
+}
+
+#[tauri::command]
+pub async fn recall_scene(
+    app: AppHandle,
+    state: State<'_, ShellState>,
+    active_command_bus: State<'_, ActiveCommandBus>,
+    scene_id: String,
+) -> Result<AppViewState, String> {
+    let snapshot =
+        recall_scene_snapshot((*state).clone(), (*active_command_bus).clone(), scene_id).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+async fn recall_scene_snapshot(
+    state: ShellState,
+    active_command_bus: ActiveCommandBus,
+    scene_id: String,
+) -> Result<AppViewState, String> {
+    tracing::debug!(
+        event = "scene_recall_requested",
+        scene_id = %scene_id,
+        "Scene recall requested"
+    );
+
+    let show = state.show.get_snapshot().await;
+    if show.lockout {
+        tracing::warn!(
+            event = "scene_recall_blocked",
+            scene_id = %scene_id,
+            reason = "lockout is enabled",
+            "Recall blocked: lockout is enabled"
+        );
+        return Err("Recall blocked: lockout is enabled".to_string());
+    }
+
+    let scene = show
+        .scene_configs
+        .iter()
+        .find(|scene| scene.scene_id == scene_id)
+        .cloned()
+        .ok_or_else(|| {
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = "scene config not found",
+                "Scene recall blocked: scene config not found"
+            );
+            "Scene config not found".to_string()
+        })?;
+
+    let command_bus = active_command_bus.current().await.ok_or_else(|| {
+        tracing::warn!(
+            event = "scene_recall_blocked",
+            scene_id = %scene_id,
+            reason = "LV1 command target is unavailable",
+            "Scene recall blocked: LV1 command target is unavailable"
+        );
+        "Recall blocked: LV1 command target is unavailable".to_string()
+    })?;
+
+    let lv1 = command_bus.get_lv1_state().await.map_err(|error| {
+        tracing::warn!(
+            event = "scene_recall_blocked",
+            scene_id = %scene_id,
+            reason = "LV1 state is unavailable",
+            error = %error,
+            "Scene recall blocked: LV1 state is unavailable"
+        );
+        "Recall blocked: LV1 state is unavailable".to_string()
+    })?;
+
+    if lv1.connection != advanced_show_control::lv1::types::ConnectionStatus::Connected {
+        tracing::warn!(
+            event = "scene_recall_blocked",
+            scene_id = %scene_id,
+            reason = "LV1 is disconnected",
+            "Recall blocked: LV1 is disconnected"
+        );
+        return Err("Recall blocked: LV1 is disconnected".to_string());
+    }
+
+    let Some(lv1_scene) = lv1.scene_list.iter().find(|candidate| {
+        candidate.index == scene.scene_index && candidate.name == scene.scene_name
+    }) else {
+        tracing::warn!(
+            event = "scene_recall_blocked",
+            scene_id = %scene_id,
+            reason = "scene identity mismatch",
+            "Recall blocked: scene identity mismatch"
+        );
+        return Err("Recall blocked: scene identity mismatch".to_string());
+    };
+
+    if let Err(error) = command_bus.recall_scene(lv1_scene.index).await {
+        tracing::warn!(
+            event = "scene_recall_command_failed",
+            scene_id = %scene.scene_id,
+            scene_index = scene.scene_index,
+            scene_name = %scene.scene_name,
+            error = %error,
+            "Scene recall command failed: {error}"
+        );
+        return Err(error.to_string());
+    }
+
+    tracing::debug!(
+        event = "scene_recall_command_sent",
+        scene_id = %scene.scene_id,
+        scene_index = scene.scene_index,
+        scene_name = %scene.scene_name,
+        "Scene recall command sent: {}",
+        scene.scene_name
+    );
+
+    Ok(state.snapshot().await)
 }
 
 #[tauri::command]
@@ -947,6 +1110,95 @@ mod tests {
         let _ = attempt_reconnect_lv1;
         let _ = startup_auto_connect_lv1;
         let _ = reconnect_timed_out;
+    }
+
+    #[tokio::test]
+    async fn cue_scene_updates_show_state_even_when_lockout_is_enabled() {
+        let state = ShellState::default();
+        state
+            .show
+            .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
+                lockout: true,
+                scene_configs: vec![advanced_show_control::show::types::SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: None,
+            })
+            .await;
+
+        let snapshot = cue_scene_snapshot(state.clone(), "1::Verse".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.cued_scene_id, Some("1::Verse".to_string()));
+        assert!(snapshot.lockout);
+        assert!(snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn cue_scene_rejects_unknown_scene_id() {
+        let state = ShellState::default();
+
+        let err = cue_scene_snapshot(state.clone(), "99::Missing".to_string())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "Scene config not found");
+        assert_eq!(state.snapshot().await.cued_scene_id, None);
+    }
+
+    async fn recall_state_with_unstored_scene(lockout: bool) -> ShellState {
+        let state = ShellState::default();
+        state
+            .show
+            .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
+                lockout,
+                scene_configs: vec![advanced_show_control::show::types::SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: Some("1::Verse".to_string()),
+            })
+            .await;
+        state
+    }
+
+    #[tokio::test]
+    async fn recall_scene_blocks_when_lockout_is_enabled() {
+        let state = recall_state_with_unstored_scene(true).await;
+        let active_command_bus = ActiveCommandBus::default();
+
+        let err = recall_scene_snapshot(state, active_command_bus, "1::Verse".to_string())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "Recall blocked: lockout is enabled");
+    }
+
+    #[tokio::test]
+    async fn recall_scene_blocks_without_lv1_state() {
+        let state = recall_state_with_unstored_scene(false).await;
+        let active_command_bus = ActiveCommandBus::default();
+        active_command_bus
+            .set(Some(AppCommandBus::new(AppEventBus::default())))
+            .await;
+
+        let err = recall_scene_snapshot(state, active_command_bus, "1::Verse".to_string())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "Recall blocked: LV1 state is unavailable");
     }
 
     #[tokio::test]

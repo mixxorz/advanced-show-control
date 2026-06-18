@@ -1018,6 +1018,9 @@ mod tests {
                     crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
+                    crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
                     crate::lv1::commands::Lv1Command::Flush { reply } => {
                         let _ = reply.send(Ok(()));
                     }
@@ -1082,6 +1085,9 @@ mod tests {
                     crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
+                    crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
                     crate::lv1::commands::Lv1Command::Flush { reply } => {
                         let _ = reply.send(Ok(()));
                     }
@@ -1129,6 +1135,7 @@ mod tests {
                 }],
                 scope_toggles: SceneScopeToggles::default(),
             }],
+            cued_scene_id: None,
         };
         handle.replace_snapshot(snapshot).await;
     }

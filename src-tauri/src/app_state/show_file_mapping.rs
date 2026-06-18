@@ -55,6 +55,7 @@ impl ShellState {
             safety: ShowFileSafety {
                 lockout: show.lockout,
             },
+            cued_scene_id: show.cued_scene_id,
             scene_configs: show
                 .scene_configs
                 .into_iter()
@@ -148,6 +149,17 @@ impl ShellState {
                         },
                     })
                     .collect(),
+                cued_scene_id: {
+                    let kept_scene_ids = file
+                        .scene_configs
+                        .iter()
+                        .map(|config| scene_id(config.scene_index, &config.scene_name))
+                        .collect::<std::collections::HashSet<_>>();
+
+                    file.cued_scene_id
+                        .clone()
+                        .filter(|scene_id| kept_scene_ids.contains(scene_id))
+                },
             })
             .await;
 

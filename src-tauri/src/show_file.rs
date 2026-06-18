@@ -17,6 +17,8 @@ pub struct ShowFile {
     pub saved_at: String,
     pub safety: ShowFileSafety,
     pub scene_configs: Vec<ShowFileSceneConfig>,
+    #[serde(default)]
+    pub cued_scene_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -426,6 +428,7 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
+            cued_scene_id: None,
             scene_configs: vec![ShowFileSceneConfig {
                 scene_index: 1,
                 scene_name: "Intro".to_string(),
@@ -533,6 +536,21 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn show_file_deserializes_missing_cued_scene_id_as_none() {
+        let json = r#"{
+            "schemaVersion": 1,
+            "appVersion": "0.1.0",
+            "savedAt": "2026-06-18T00:00:00Z",
+            "safety": { "lockout": false },
+            "sceneConfigs": []
+        }"#;
+
+        let file: ShowFile = serde_json::from_str(json).unwrap();
+
+        assert_eq!(file.cued_scene_id, None);
     }
 
     #[test]

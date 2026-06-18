@@ -27,6 +27,8 @@ export type AppRuntimeServices = {
   refreshLv1Discovery: () => Promise<AppViewState>;
   saveShowFile: () => Promise<AppViewState>;
   saveShowFileAs: () => Promise<AppViewState>;
+  cueScene: (sceneId: string) => Promise<AppViewState>;
+  recallScene: (sceneId: string) => Promise<AppViewState>;
   selectSceneConfig: (sceneId: string) => Promise<AppViewState>;
   setAllChannelsScoped: (
     sceneId: string,

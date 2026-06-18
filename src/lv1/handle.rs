@@ -134,6 +134,22 @@ impl Lv1ActorHandle {
             .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
     }
 
+    /// Send a `/Set/CurSceneIndex` command to LV1.
+    pub async fn recall_scene(&self, scene_index: i32) -> Result<(), Lv1ActorError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(Lv1Command::RecallScene {
+                scene_index,
+                reply: reply_tx,
+            })
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
+
+        reply_rx
+            .await
+            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
+    }
+
     pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), Lv1ActorError> {
         if writes.is_empty() {
             return Ok(());
@@ -241,5 +257,22 @@ mod tests {
             Some(_) => panic!("expected WriteBatch, got some other command"),
             None => panic!("expected WriteBatch, got None"),
         }
+    }
+
+    #[tokio::test]
+    async fn handle_sends_recall_scene_command() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let handle = Lv1ActorHandle::new(tx);
+
+        let recall = tokio::spawn(async move { handle.recall_scene(4).await });
+
+        if let Some(Lv1Command::RecallScene { scene_index, reply }) = rx.recv().await {
+            assert_eq!(scene_index, 4);
+            reply.send(Ok(())).unwrap();
+        } else {
+            panic!("expected RecallScene command");
+        }
+
+        assert!(recall.await.unwrap().is_ok());
     }
 }

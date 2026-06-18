@@ -31,6 +31,8 @@ fn main() {
             commands::save_show_file_as_dialog,
             commands::set_scene_duration_ms,
             commands::select_scene_config,
+            commands::cue_scene,
+            commands::recall_scene,
             commands::connect_lv1,
             commands::connect_lv1_system,
             commands::attempt_reconnect_lv1,

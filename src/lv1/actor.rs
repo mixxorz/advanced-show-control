@@ -122,7 +122,7 @@ fn fail_pending_writer_flushes(rx: &mut mpsc::Receiver<WriterMessage>) {
 ///
 /// WriteBatch is silently dropped (fire-and-forget; callers tolerate loss while disconnected).
 /// GetState replies with the current snapshot.
-/// All other commands (SetGain, SetPan, SetBalance, SetWidth, SetMute) reply based on flush_reply.
+/// All other commands (SetGain, SetPan, SetBalance, SetWidth, SetMute, RecallScene) reply based on flush_reply.
 fn drain_disconnected_command(
     cmd: Lv1Command,
     state: &ActorState,
@@ -148,6 +148,9 @@ fn drain_disconnected_command(
             let _ = reply.send(Err(Lv1ActorError::NotConnected));
         }
         Lv1Command::SetMute { reply, .. } => {
+            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+        }
+        Lv1Command::RecallScene { reply, .. } => {
             let _ = reply.send(Err(Lv1ActorError::NotConnected));
         }
         Lv1Command::Flush { reply } => {
@@ -462,6 +465,25 @@ async fn run_connected(
                             );
                         }
                     }
+                    Some(Lv1Command::RecallScene { scene_index, reply }) => {
+                        let result = encode_frame(
+                            "/Set/CurSceneIndex",
+                            &[OscArg::Int(scene_index)],
+                        )
+                        .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        .and_then(|bytes| {
+                            enqueue_writer_bytes(&writer_tx, bytes)
+                                .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        });
+
+                        let failed = result.is_err();
+                        let _ = reply.send(result);
+                        if failed {
+                            return DisconnectReason::TcpError(
+                                "RecallScene send failed (encode or writer queue)".to_string(),
+                            );
+                        }
+                    }
                     Some(Lv1Command::Flush { reply }) => {
                         if let Err(reply) = enqueue_writer_flush(&writer_tx, reply) {
                             let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
@@ -508,6 +530,26 @@ mod tests {
 
         assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
         assert_eq!(reply_rx.await.unwrap(), Err(Lv1ActorError::NotConnected));
+    }
+
+    #[test]
+    fn drain_disconnected_command_rejects_recall_scene_when_not_connected() {
+        let state = ActorState::new(AppEventBus::default());
+        let (reply, rx) = oneshot::channel();
+
+        drain_disconnected_command(
+            Lv1Command::RecallScene {
+                scene_index: 4,
+                reply,
+            },
+            &state,
+            Err(Lv1ActorError::NotConnected),
+        );
+
+        assert_eq!(
+            rx.blocking_recv().unwrap(),
+            Err(Lv1ActorError::NotConnected)
+        );
     }
 
     #[tokio::test]
@@ -557,6 +599,17 @@ mod tests {
             result,
             Err(DisconnectReason::TcpError("writer queue full".to_string()))
         );
+    }
+
+    #[test]
+    fn recall_scene_frame_uses_set_cur_scene_index() {
+        let bytes = encode_frame("/Set/CurSceneIndex", &[OscArg::Int(4)]).unwrap();
+        let mut decoder = FrameDecoder::default();
+        let frames = decoder.push(&bytes).unwrap();
+        let msg = decode_frame_payload(&frames[0]).unwrap();
+
+        assert_eq!(msg.address, "/Set/CurSceneIndex");
+        assert_eq!(msg.args, vec![OscArg::Int(4)]);
     }
 
     #[tokio::test]

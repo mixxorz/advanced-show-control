@@ -38,6 +38,10 @@ pub enum Lv1Command {
         muted: bool,
         reply: oneshot::Sender<Result<(), Lv1ActorError>>,
     },
+    RecallScene {
+        scene_index: i32,
+        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+    },
     Flush {
         reply: oneshot::Sender<Result<(), Lv1ActorError>>,
     },
