@@ -11,9 +11,14 @@ const cuedConnectedAppState = {
   cuedSceneId: connectedAppState.sceneConfigs[1]?.sceneId ?? null,
 };
 
-const lockedOutAppState = {
+const safeAppState = {
   ...cuedConnectedAppState,
   lockout: true,
+};
+
+const fadingAppState = {
+  ...cuedConnectedAppState,
+  fadeState: "running" as const,
 };
 
 const meta: Meta<typeof BottomStatusBar> = {
@@ -36,11 +41,17 @@ export default meta;
 
 type Story = StoryObj<typeof BottomStatusBar>;
 
-export const Connected: Story = {};
+export const Ready: Story = {};
 
-export const Lockout: Story = {
+export const Safe: Story = {
   args: {
-    appState: lockedOutAppState,
+    appState: safeAppState,
+  },
+};
+
+export const Fading: Story = {
+  args: {
+    appState: fadingAppState,
   },
 };
 

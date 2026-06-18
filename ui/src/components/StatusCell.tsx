@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 
 export function StatusCell(props: {
+  className?: string;
   font?: "ui" | "mono";
   label: string;
   tone?: "default" | "current" | "cued" | "warning" | "danger";
@@ -22,7 +23,7 @@ export function StatusCell(props: {
         {props.label}
       </div>
       <div
-        className={`mt-1 truncate ${fontClass} text-lg font-normal ${valueClass}`}
+        className={`mt-1 truncate ${fontClass} text-lg font-normal ${valueClass} ${props.className ?? ""}`}
       >
         {props.value}
       </div>
