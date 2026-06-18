@@ -61,14 +61,6 @@ export function TopTabBar(props: {
         ))}
       </div>
       <div className="flex items-center gap-3 px-4">
-        <button
-          aria-pressed={appState.lockout}
-          className={`rounded-console-control border px-3 py-2 font-mono text-sm font-normal uppercase ${safeClass}`}
-          onClick={commands.toggleLockout}
-          type="button"
-        >
-          SAFE
-        </button>
         <div
           className={`flex items-center gap-2 font-mono text-sm font-normal uppercase ${statusClass}`}
         >
@@ -82,6 +74,14 @@ export function TopTabBar(props: {
         >
           <span className="truncate">{consoleName}</span>
           <span className="h-0 w-0 border-x-[5px] border-t-[6px] border-x-transparent border-t-console-secondary" />
+        </button>
+        <button
+          aria-pressed={appState.lockout}
+          className={`rounded-console-control border px-3 py-2 font-mono text-sm font-normal uppercase ${safeClass}`}
+          onClick={commands.toggleLockout}
+          type="button"
+        >
+          SAFE
         </button>
       </div>
     </nav>
