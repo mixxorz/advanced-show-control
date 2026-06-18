@@ -40,6 +40,7 @@ export function ConnectionModal(props: { onResume: () => void }) {
             ) : (
               appState.discoveredLv1Systems.map((system) => (
                 <SystemRow
+                  connectedIdentity={appState.connectedLv1Identity}
                   key={systemKey(system)}
                   system={system}
                   onSelectSystem={commands.selectSystem}
@@ -55,23 +56,33 @@ export function ConnectionModal(props: { onResume: () => void }) {
 }
 
 function SystemRow(props: {
+  connectedIdentity: Lv1SystemIdentity | null;
   system: DiscoveredLv1System;
   onSelectSystem: (identity: Lv1SystemIdentity) => void;
   onResume: () => void;
 }) {
   const { system } = props;
-  const isConnected = system.status === "connected";
+  const isConnected = identitiesMatch(system.identity, props.connectedIdentity);
   const isUnavailable = system.status === "unavailable";
   const rowClass = isConnected
     ? "border-status-current bg-console-section/70 hover:border-status-current hover:bg-console-control/70"
-    : "border-console-line bg-console-section/70 hover:border-console-line-strong hover:bg-console-control/70";
+    : isUnavailable
+      ? "cursor-not-allowed border-console-line bg-console-section/40 opacity-70"
+      : "border-console-line bg-console-section/70 hover:border-console-line-strong hover:bg-console-control/70";
 
   return (
     <button
       className={`grid gap-3 rounded-console-control border px-4 py-2.5 text-left md:grid-cols-[1fr_auto_auto] md:items-center ${rowClass}`}
-      onClick={() =>
-        isConnected ? props.onResume() : props.onSelectSystem(system.identity)
-      }
+      onClick={() => {
+        if (isConnected) {
+          props.onResume();
+          return;
+        }
+        if (!isUnavailable) {
+          props.onSelectSystem(system.identity);
+        }
+      }}
+      type="button"
     >
       <div className="grid min-w-0 grid-cols-[auto_1fr] items-center gap-x-3 gap-y-0.5">
         <span
@@ -91,8 +102,12 @@ function SystemRow(props: {
         </div>
       </div>
       {isUnavailable ? (
-        <div className="font-mono text-sm text-status-danger md:justify-self-end">
-          Unavailable
+        <div className="flex items-center gap-3 font-mono text-sm text-status-danger md:justify-self-end">
+          <span>Unavailable</span>
+          <span className="h-4 border-l border-console-line" />
+          <span>
+            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
+          </span>
         </div>
       ) : isConnected ? (
         <div className="flex items-center gap-3 font-mono text-sm text-status-current md:justify-self-end">
@@ -113,6 +128,23 @@ function SystemRow(props: {
       )}
       <span className="h-2.5 w-2.5 rotate-45 border-t-2 border-r-2 border-console-secondary md:justify-self-end" />
     </button>
+  );
+}
+
+function identitiesMatch(
+  system: Lv1SystemIdentity,
+  connected: Lv1SystemIdentity | null,
+) {
+  if (!connected) {
+    return false;
+  }
+  if (system.uuid && connected.uuid) {
+    return system.uuid === connected.uuid;
+  }
+  return (
+    system.host === connected.host &&
+    system.address === connected.address &&
+    system.port === connected.port
   );
 }
 
