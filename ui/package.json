@@ -17,7 +17,9 @@
     "test": "vitest --project unit",
     "test:storybook": "vitest --project storybook",
     "test:visual": "playwright test",
-    "test:visual:update": "playwright test --update-snapshots"
+    "test:visual:ci": "VISUAL_TEST_SCRIPT=test:visual bash scripts/update-visual-snapshots-ci.sh",
+    "test:visual:update": "playwright test --update-snapshots",
+    "test:visual:update:ci": "VISUAL_TEST_SCRIPT=test:visual:update bash scripts/update-visual-snapshots-ci.sh"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
