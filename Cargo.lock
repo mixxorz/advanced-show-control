@@ -13,31 +13,19 @@ name = "advanced-show-control"
 version = "0.1.0"
 dependencies = [
  "clap",
- "serde",
- "serde_json",
- "socket2 0.5.10",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "advanced-show-control-tauri"
-version = "0.1.0"
-dependencies = [
- "advanced-show-control",
  "dirs",
  "rfd",
  "serde",
  "serde_json",
+ "socket2 0.5.10",
  "tauri",
  "tauri-build",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
