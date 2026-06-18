@@ -105,14 +105,18 @@ impl ShellState {
         Ok(self.snapshot().await)
     }
 
-    pub async fn mark_show_file_dirty(&self) {
-        self.inner.lock().await.show_file_dirty = true;
-    }
-
     pub async fn select_scene_config(&self, scene_id: String) -> Result<AppViewState, String> {
         let mut inner = self.inner.lock().await;
         inner.selected_scene_id = Some(scene_id);
         drop(inner);
+        Ok(self.snapshot().await)
+    }
+
+    pub async fn cue_scene(&self, scene_id: String) -> Result<AppViewState, String> {
+        let changed = self.show.cue_scene(scene_id).await?;
+        if changed {
+            self.inner.lock().await.show_file_dirty = true;
+        }
         Ok(self.snapshot().await)
     }
 
@@ -239,10 +243,6 @@ impl ShellState {
 
     pub async fn connected_lv1_identity(&self) -> Option<Lv1SystemIdentity> {
         self.inner.lock().await.connected_lv1_identity.clone()
-    }
-
-    pub async fn lv1_snapshot(&self) -> Option<Lv1StateSnapshot> {
-        self.inner.lock().await.lv1_snapshot.clone()
     }
 
     pub async fn set_pending_lv1_identity(
