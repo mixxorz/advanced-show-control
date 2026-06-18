@@ -1,4 +1,5 @@
 import { useAppCommands, useAppState } from "../appHooks";
+import { ConsoleButton } from "./ConsoleButton";
 import { TopTab } from "./TopTab";
 
 export type MainTab =
@@ -43,10 +44,6 @@ export function TopTabBar(props: {
     : connecting
       ? "bg-console-secondary"
       : "bg-status-danger";
-  const safeClass = appState.lockout
-    ? "border-status-warning bg-status-warning/15 text-status-warning shadow-inner shadow-status-warning/20"
-    : "border-console-line bg-black/20 text-console-primary hover:border-console-line-strong";
-
   return (
     <nav className="mx-3 mt-3 flex overflow-hidden rounded-console-panel border border-console-line bg-console-chrome">
       <div className="flex min-w-0 flex-1">
@@ -67,22 +64,24 @@ export function TopTabBar(props: {
           <span className={`h-2.5 w-2.5 rounded-full ${dotClass}`} />
           {statusLabel}
         </div>
-        <button
-          className="flex min-w-36 items-center justify-between gap-4 rounded-console-control border border-console-line bg-black/20 px-3 py-2 text-base font-normal uppercase text-console-primary shadow-inner hover:border-console-line-strong"
+        <ConsoleButton
+          className="flex min-w-36 items-center justify-between gap-4 shadow-inner"
           onClick={props.onOpenConnection}
-          type="button"
+          variant="secondary"
         >
           <span className="truncate">{consoleName}</span>
           <span className="h-0 w-0 border-x-[5px] border-t-[6px] border-x-transparent border-t-console-secondary" />
-        </button>
-        <button
-          aria-pressed={appState.lockout}
-          className={`rounded-console-control border px-3 py-2 font-mono text-sm font-normal uppercase ${safeClass}`}
+        </ConsoleButton>
+        <ConsoleButton
+          active={appState.lockout}
+          ariaPressed={appState.lockout}
+          className="font-mono"
           onClick={commands.toggleLockout}
-          type="button"
+          size="small"
+          variant="warning"
         >
           SAFE
-        </button>
+        </ConsoleButton>
       </div>
     </nav>
   );
