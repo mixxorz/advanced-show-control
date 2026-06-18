@@ -643,11 +643,32 @@ fn remembered_auto_connect_target(
     preferences: &crate::connection_preferences::ConnectionPreferences,
     systems: &[crate::connection_state::DiscoveredLv1System],
 ) -> Option<crate::connection_state::Lv1SystemIdentity> {
-    let remembered_uuid = preferences.last_connected_lv1.as_ref()?.uuid.as_ref()?;
-    systems
+    let remembered = preferences.last_connected_lv1.as_ref()?;
+    let available_systems = systems
         .iter()
-        .find(|system| system.identity.uuid.as_ref() == Some(remembered_uuid))
-        .map(|system| system.identity.clone())
+        .filter(|system| system.status == crate::connection_state::DiscoveredLv1Status::Available);
+
+    if let Some(system) = remembered.uuid.as_ref().and_then(|remembered_uuid| {
+        available_systems
+            .clone()
+            .find(|system| system.identity.uuid.as_ref() == Some(remembered_uuid))
+    }) {
+        return Some(system.identity.clone());
+    }
+
+    let remembered_host = remembered.host.as_deref()?.trim();
+    if remembered_host.is_empty() {
+        return None;
+    }
+
+    let mut host_matches = available_systems
+        .filter(|system| system.identity.host.as_deref().map(str::trim) == Some(remembered_host));
+    let first = host_matches.next()?;
+    if host_matches.next().is_some() {
+        return None;
+    }
+
+    Some(first.identity.clone())
 }
 
 fn reconnect_target_for_connected_identity(
@@ -864,6 +885,38 @@ mod tests {
         );
         let _ = projector_start_tx.send(());
         projector
+    }
+
+    fn remembered_preferences(
+        uuid: Option<&str>,
+        host: Option<&str>,
+    ) -> crate::connection_preferences::ConnectionPreferences {
+        crate::connection_preferences::ConnectionPreferences {
+            last_connected_lv1: Some(crate::connection_preferences::LastConnectedLv1 {
+                uuid: uuid.map(str::to_string),
+                host: host.map(str::to_string),
+                address: "192.168.1.35".to_string(),
+                port: 50000,
+            }),
+        }
+    }
+
+    fn discovered_system(
+        uuid: Option<&str>,
+        host: Option<&str>,
+        address: &str,
+        status: crate::connection_state::DiscoveredLv1Status,
+    ) -> crate::connection_state::DiscoveredLv1System {
+        crate::connection_state::DiscoveredLv1System {
+            identity: crate::connection_state::Lv1SystemIdentity {
+                uuid: uuid.map(str::to_string),
+                host: host.map(str::to_string),
+                address: address.to_string(),
+                port: 50000,
+            },
+            latency_ms: Some(10),
+            status,
+        }
     }
 
     #[test]
@@ -1103,7 +1156,79 @@ mod tests {
     }
 
     #[test]
-    fn remembered_uuid_absent_does_not_match_same_address() {
+    fn remembered_hostname_fallback_matches_single_available_system() {
+        let preferences = remembered_preferences(Some("uuid-1"), Some(" LV1-FOH "));
+        let systems = vec![discovered_system(
+            Some("uuid-2"),
+            Some("LV1-FOH"),
+            "10.0.0.20",
+            crate::connection_state::DiscoveredLv1Status::Available,
+        )];
+
+        let matched = remembered_auto_connect_target(&preferences, &systems).unwrap();
+
+        assert_eq!(matched.address, "10.0.0.20");
+    }
+
+    #[test]
+    fn remembered_uuid_match_takes_precedence_over_hostname_match() {
+        let preferences = remembered_preferences(Some("uuid-1"), Some("LV1-FOH"));
+        let systems = vec![
+            discovered_system(
+                Some("uuid-2"),
+                Some("LV1-FOH"),
+                "10.0.0.20",
+                crate::connection_state::DiscoveredLv1Status::Available,
+            ),
+            discovered_system(
+                Some("uuid-1"),
+                Some("Renamed LV1"),
+                "10.0.0.21",
+                crate::connection_state::DiscoveredLv1Status::Available,
+            ),
+        ];
+
+        let matched = remembered_auto_connect_target(&preferences, &systems).unwrap();
+
+        assert_eq!(matched.address, "10.0.0.21");
+    }
+
+    #[test]
+    fn remembered_hostname_fallback_rejects_duplicate_available_hosts() {
+        let preferences = remembered_preferences(None, Some("LV1-FOH"));
+        let systems = vec![
+            discovered_system(
+                None,
+                Some("LV1-FOH"),
+                "10.0.0.20",
+                crate::connection_state::DiscoveredLv1Status::Available,
+            ),
+            discovered_system(
+                None,
+                Some("LV1-FOH"),
+                "10.0.0.21",
+                crate::connection_state::DiscoveredLv1Status::Available,
+            ),
+        ];
+
+        assert!(remembered_auto_connect_target(&preferences, &systems).is_none());
+    }
+
+    #[test]
+    fn remembered_hostname_fallback_ignores_unavailable_systems() {
+        let preferences = remembered_preferences(None, Some("LV1-FOH"));
+        let systems = vec![discovered_system(
+            None,
+            Some("LV1-FOH"),
+            "10.0.0.20",
+            crate::connection_state::DiscoveredLv1Status::Unavailable,
+        )];
+
+        assert!(remembered_auto_connect_target(&preferences, &systems).is_none());
+    }
+
+    #[test]
+    fn remembered_host_matches_when_uuid_does_not() {
         let preferences = crate::connection_preferences::ConnectionPreferences {
             last_connected_lv1: Some(crate::connection_preferences::LastConnectedLv1 {
                 uuid: Some("uuid-1".to_string()),
@@ -1123,7 +1248,9 @@ mod tests {
             status: crate::connection_state::DiscoveredLv1Status::Available,
         }];
 
-        assert!(remembered_auto_connect_target(&preferences, &systems).is_none());
+        let matched = remembered_auto_connect_target(&preferences, &systems).unwrap();
+
+        assert_eq!(matched.address, "192.168.1.35");
     }
 
     #[test]
