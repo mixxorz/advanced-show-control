@@ -23,6 +23,7 @@ export function AppShell(props: {
       <main className="grid h-screen grid-rows-[auto_1fr_auto] overflow-hidden bg-black font-ui text-console-primary">
         <TopTabBar
           activeTab={props.activeTab}
+          onOpenConnection={props.onOpenConnection}
           onSelectTab={props.onSelectTab}
         />
         <section className="min-h-0 overflow-hidden p-3">

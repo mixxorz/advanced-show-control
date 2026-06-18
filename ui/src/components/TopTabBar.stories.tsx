@@ -14,6 +14,7 @@ const meta: Meta<typeof TopTabBar> = {
   },
   args: {
     activeTab: "scenes",
+    onOpenConnection: () => {},
     onSelectTab: () => {},
   },
   render: (args) => (
