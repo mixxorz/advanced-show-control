@@ -66,12 +66,19 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
   const hasAppliedSnapshot = useRef(false);
 
   const applySnapshot = useCallback((next: AppViewState) => {
-    setAppState((prev) =>
-      !hasAppliedSnapshot.current || next.stateVersion > prev.stateVersion
-        ? next
-        : prev,
-    );
+    let accepted = false;
+    setAppState((prev) => {
+      if (
+        !hasAppliedSnapshot.current ||
+        next.stateVersion > prev.stateVersion
+      ) {
+        accepted = true;
+        return next;
+      }
+      return prev;
+    });
     hasAppliedSnapshot.current = true;
+    return accepted;
   }, []);
 
   const runSnapshot = useCallback(
@@ -100,8 +107,10 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       .startupAutoConnectLv1()
       .then((snapshot) => {
         if (cancelled) return;
-        applySnapshot(snapshot);
-        setShowConnection(snapshot.connection !== "connected");
+        const accepted = applySnapshot(snapshot);
+        if (accepted) {
+          setShowConnection(snapshot.connection !== "connected");
+        }
       })
       .catch((error) => {
         if (cancelled) return;

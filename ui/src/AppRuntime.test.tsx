@@ -170,4 +170,40 @@ describe("AppRuntime connection lifecycle", () => {
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.queryByText("Offline")).not.toBeInTheDocument();
   });
+
+  it("keeps the modal closed when a stale startup snapshot resolves after a newer connected status", async () => {
+    const startup = createDeferred<AppViewState>();
+    const user = userEvent.setup();
+    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(() => startup.promise),
+      listenForAppStatus: vi.fn(async (listener) => {
+        appStatusListener = listener;
+        return () => {};
+      }),
+    });
+
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(appStatusListener).not.toBeNull();
+    });
+
+    await act(async () => {
+      appStatusListener?.(connectedAppState);
+    });
+
+    await user.click(screen.getByLabelText("Close connection modal"));
+
+    await act(async () => {
+      startup.resolve(discoveredSystemsAppState);
+      await startup.promise;
+    });
+
+    expect(
+      screen.queryByRole("heading", { name: "Connect to LV1" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
+  });
 });
