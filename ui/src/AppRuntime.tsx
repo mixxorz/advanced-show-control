@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useRef } from "react";
 import {
   AppCommandsProvider,
   AppStateProvider,
@@ -62,11 +63,15 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
   const [appState, setAppState] = useState<AppViewState>(
     disconnectedAppViewState,
   );
+  const hasAppliedSnapshot = useRef(false);
 
   const applySnapshot = useCallback((next: AppViewState) => {
     setAppState((prev) =>
-      !prev || next.stateVersion >= prev.stateVersion ? next : prev,
+      !hasAppliedSnapshot.current || next.stateVersion > prev.stateVersion
+        ? next
+        : prev,
     );
+    hasAppliedSnapshot.current = true;
   }, []);
 
   const runSnapshot = useCallback(

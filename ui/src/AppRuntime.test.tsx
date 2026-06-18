@@ -141,4 +141,33 @@ describe("AppRuntime connection lifecycle", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText("Offline")).toBeInTheDocument();
   });
+
+  it("ignores an equal-version stale snapshot after initialization", async () => {
+    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+      listenForAppStatus: vi.fn(async (listener) => {
+        appStatusListener = listener;
+        return () => {};
+      }),
+    });
+
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      appStatusListener?.({
+        ...disconnectedAppViewState,
+        stateVersion: connectedAppState.stateVersion,
+      });
+    });
+
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
+  });
 });
