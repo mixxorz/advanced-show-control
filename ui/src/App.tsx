@@ -21,6 +21,8 @@ const services: AppRuntimeServices = {
     ),
   newShowFile: () => invoke<AppViewState>("new_show_file"),
   openShowFile: () => invoke<AppViewState>("open_show_file_dialog"),
+  cueScene: (sceneId) => invoke<AppViewState>("cue_scene", { sceneId }),
+  recallScene: (sceneId) => invoke<AppViewState>("recall_scene", { sceneId }),
   reconnectTimedOut,
   refreshAppState: () => invoke<AppViewState>("get_app_status"),
   refreshLv1Discovery,

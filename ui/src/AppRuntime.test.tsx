@@ -21,6 +21,8 @@ function makeServices(
     listenForAppStatus: vi.fn(async () => () => {}),
     newShowFile: vi.fn(async () => disconnectedAppViewState),
     openShowFile: vi.fn(async () => disconnectedAppViewState),
+    cueScene: vi.fn(async () => disconnectedAppViewState),
+    recallScene: vi.fn(async () => disconnectedAppViewState),
     reconnectTimedOut: vi.fn(async () => disconnectedAppViewState),
     refreshAppState: vi.fn(async () => disconnectedAppViewState),
     refreshLv1Discovery: vi.fn(async () => discoveredSystemsAppState),

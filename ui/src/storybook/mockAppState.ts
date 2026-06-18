@@ -191,6 +191,7 @@ function makeBaseDisconnectedAppState(
     logs: [],
     lastEventAt: null,
     sceneConfigs: [],
+    cuedSceneId: null,
     selectedSceneId: null,
     showFileName: "Untitled Show",
     showFilePath: null,
