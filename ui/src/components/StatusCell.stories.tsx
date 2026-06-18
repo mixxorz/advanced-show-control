@@ -16,7 +16,7 @@ const meta: Meta<typeof StatusCell> = {
   args: {
     label: "Current",
     tone: "current",
-    value: "003 S01: The Wonderful Blood",
+    value: "S01: The Wonderful Blood",
   },
 };
 
@@ -39,5 +39,13 @@ export const Danger: Story = {
     label: "Sync",
     tone: "danger",
     value: "Offline",
+  },
+};
+
+export const Mono: Story = {
+  args: {
+    font: "mono",
+    label: "Time",
+    value: "09:41:32 PM",
   },
 };

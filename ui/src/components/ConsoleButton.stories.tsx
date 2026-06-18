@@ -21,7 +21,7 @@ export default meta;
 
 type Story = StoryObj<typeof ConsoleButton>;
 
-export const Secondary: Story = {};
+export const Default: Story = {};
 
 export const Primary: Story = {
   args: {
@@ -29,9 +29,22 @@ export const Primary: Story = {
   },
 };
 
+export const Secondary: Story = {
+  args: {
+    variant: "secondary",
+  },
+};
+
 export const GhostPrimary: Story = {
   args: {
     variant: "ghost-primary",
+  },
+};
+
+export const GhostDanger: Story = {
+  args: {
+    children: "Disconnect",
+    variant: "ghost-danger",
   },
 };
 
@@ -52,6 +65,27 @@ export const SmallGhost: Story = {
     size: "small",
     variant: "ghost-primary",
   },
+};
+
+export const Big: Story = {
+  args: {
+    children: "GO",
+    size: "big",
+    variant: "primary",
+  },
+};
+
+export const FullWidth: Story = {
+  args: {
+    fullWidth: true,
+  },
+  decorators: [
+    (Story) => (
+      <div className="w-64">
+        <Story />
+      </div>
+    ),
+  ],
 };
 
 export const Active: Story = {

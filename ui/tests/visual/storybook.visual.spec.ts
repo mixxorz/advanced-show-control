@@ -1,21 +1,35 @@
 import { expect, test } from "@playwright/test";
 
-const stories = [
-  ["AppShell", "app-appshell--scene-tab"],
-  ["ConnectionScreen", "components-connectionscreen--systems-found"],
-  ["Header", "components-header--connected"],
-  ["LogsTab", "components-logstab--populated"],
-  ["SceneTab", "components-scenetab--stored-scene-selected"],
-  ["StatusBadge", "components-statusbadge--good"],
-] as const;
+type StorybookIndex = {
+  entries: Record<string, StorybookIndexEntry>;
+};
 
-for (const [componentName, storyId] of stories) {
-  test(`${componentName} story matches visual baseline`, async ({ page }) => {
-    await page.goto(`/iframe.html?id=${storyId}&viewMode=story`);
-    await page.locator("#storybook-root").waitFor({ state: "visible" });
+type StorybookIndexEntry = {
+  id: string;
+  name: string;
+  title: string;
+  type: "docs" | "story";
+};
 
-    await expect(page).toHaveScreenshot(`${storyId}.png`, {
-      fullPage: true,
+test("all Storybook stories match visual baselines", async ({ page }) => {
+  const response = await page.request.get("/index.json");
+  expect(response.ok()).toBe(true);
+
+  const index = (await response.json()) as StorybookIndex;
+  const stories = Object.values(index.entries)
+    .filter((entry) => entry.type === "story")
+    .sort((a, b) => a.id.localeCompare(b.id));
+
+  expect(stories.length).toBeGreaterThan(0);
+
+  for (const story of stories) {
+    await test.step(`${story.title}: ${story.name}`, async () => {
+      await page.goto(`/iframe.html?id=${story.id}&viewMode=story`);
+      await page.locator("#storybook-root").waitFor({ state: "visible" });
+
+      await expect(page).toHaveScreenshot(`${story.id}.png`, {
+        fullPage: true,
+      });
     });
-  });
-}
+  }
+});

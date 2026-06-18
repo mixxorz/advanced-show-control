@@ -1,4 +1,9 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import {
+  connectedAppState,
+  discoveringAppState,
+} from "../storybook/mockAppState";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { TopTabBar } from "./TopTabBar";
 
 const meta: Meta<typeof TopTabBar> = {
@@ -11,6 +16,11 @@ const meta: Meta<typeof TopTabBar> = {
     activeTab: "scenes",
     onSelectTab: () => {},
   },
+  render: (args) => (
+    <MockAppProviders appState={connectedAppState}>
+      <TopTabBar {...args} />
+    </MockAppProviders>
+  ),
 };
 
 export default meta;
@@ -23,4 +33,12 @@ export const Logs: Story = {
   args: {
     activeTab: "logs",
   },
+};
+
+export const Offline: Story = {
+  render: (args) => (
+    <MockAppProviders appState={discoveringAppState}>
+      <TopTabBar {...args} />
+    </MockAppProviders>
+  ),
 };

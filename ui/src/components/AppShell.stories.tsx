@@ -61,6 +61,15 @@ const sceneTabAppState: AppViewState = {
   selectedSceneId: shellSceneConfigs[6].sceneId,
 };
 
+const offlineSceneTabAppState: AppViewState = {
+  ...sceneTabAppState,
+  connection: "disconnected",
+  connectedLv1Identity: null,
+  currentScene: null,
+  discoveredLv1Systems: discoveredSystemsAppState.discoveredLv1Systems,
+  cuedSceneId: null,
+};
+
 const meta: Meta<AppShellStoryArgs> = {
   title: "App/AppShell",
   component: AppShell,
@@ -235,7 +244,7 @@ export const ConnectionSearching: Story = {
 
 export const ConnectionSystemsFound: Story = {
   args: {
-    appState: discoveredSystemsAppState,
+    appState: offlineSceneTabAppState,
     showConnection: true,
   },
 };

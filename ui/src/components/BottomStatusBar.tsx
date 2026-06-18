@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { AppViewState } from "../types";
-import { formatSceneNumber } from "../format";
+import { useAppCommands } from "../appHooks";
+import { ConsoleButton } from "./ConsoleButton";
 import { StatusCell } from "./StatusCell";
 
 function formatClock(date: Date) {
@@ -11,16 +12,15 @@ function formatClock(date: Date) {
   }).format(date);
 }
 
-function selectedSceneLabel(appState: AppViewState) {
-  const selected = appState.sceneConfigs.find(
-    (scene) => scene.sceneId === appState.selectedSceneId,
+function cuedSceneLabel(appState: AppViewState) {
+  const cued = appState.sceneConfigs.find(
+    (scene) => scene.sceneId === appState.cuedSceneId,
   );
-  return selected
-    ? `${formatSceneNumber(selected.sceneIndex)} ${selected.sceneName}`
-    : "None";
+  return cued ? cued.sceneName : "None";
 }
 
 export function BottomStatusBar(props: { appState: AppViewState }) {
+  const commands = useAppCommands();
   const [now, setNow] = useState(() => new Date());
 
   useEffect(() => {
@@ -29,29 +29,38 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
   }, []);
 
   const currentScene = props.appState.currentScene
-    ? `${formatSceneNumber(props.appState.currentScene.index)} ${props.appState.currentScene.name}`
+    ? props.appState.currentScene.name
     : "None";
-  const connection = props.appState.connectedLv1Identity?.host
-    ? `Connected to ${props.appState.connectedLv1Identity.host}`
-    : props.appState.connection;
   const modeTone = props.appState.lockout
     ? "warning"
     : props.appState.fadeState === "blocked"
       ? "danger"
       : "default";
-  const syncValue = props.appState.reconnect.active
-    ? "Reconnecting"
-    : props.appState.connection === "connected"
-      ? "In Sync"
-      : "Offline";
-  const syncTone = props.appState.reconnect.active
-    ? "warning"
-    : props.appState.connection === "connected"
-      ? "current"
-      : "danger";
+  const canGo = Boolean(props.appState.cuedSceneId && commands.recallScene);
 
   return (
-    <footer className="grid grid-cols-1 border-t border-console-line bg-console-chrome md:grid-cols-[0.8fr_1.2fr_1.4fr_1.8fr_1fr_1fr]">
+    <footer className="mx-3 mb-3 grid grid-cols-1 overflow-hidden rounded-console-panel border border-console-line bg-console-chrome md:grid-cols-[0.7fr_1.4fr_1.4fr_0.9fr_0.8fr]">
+      <div className="grid min-w-0 place-items-center border-r border-console-line p-3 last:border-r-0">
+        <ConsoleButton
+          disabled={!canGo}
+          fullWidth
+          onClick={() => {
+            if (props.appState.cuedSceneId) {
+              commands.recallScene?.(props.appState.cuedSceneId);
+            }
+          }}
+          size="big"
+          variant="primary"
+        >
+          GO
+        </ConsoleButton>
+      </div>
+      <StatusCell
+        label="Cued"
+        tone={props.appState.cuedSceneId ? "cued" : "default"}
+        value={cuedSceneLabel(props.appState)}
+      />
+      <StatusCell label="Current" tone="current" value={currentScene} />
       <StatusCell
         label="Mode"
         tone={modeTone}
@@ -61,19 +70,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
             : props.appState.fadeState.toUpperCase()
         }
       />
-      <StatusCell label="Current" tone="current" value={currentScene} />
-      <StatusCell
-        label="Selected"
-        tone="cued"
-        value={selectedSceneLabel(props.appState)}
-      />
-      <StatusCell
-        label="Connection"
-        tone={props.appState.connection === "connected" ? "current" : "danger"}
-        value={connection}
-      />
-      <StatusCell label="Sync" tone={syncTone} value={syncValue} />
-      <StatusCell label="Time" value={formatClock(now)} />
+      <StatusCell font="mono" label="Time" value={formatClock(now)} />
     </footer>
   );
 }

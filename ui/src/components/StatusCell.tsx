@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 
 export function StatusCell(props: {
+  font?: "ui" | "mono";
   label: string;
   tone?: "default" | "current" | "cued" | "warning" | "danger";
   value: ReactNode;
 }) {
   const tone = props.tone ?? "default";
+  const fontClass = props.font === "mono" ? "font-mono" : "font-ui";
   const valueClass = {
     default: "text-console-primary",
     current: "text-status-current",
@@ -15,12 +17,12 @@ export function StatusCell(props: {
   }[tone];
 
   return (
-    <div className="min-w-0 border-r border-console-line px-6 py-3 last:border-r-0">
+    <div className="grid min-w-0 content-center border-r border-console-line px-6 py-3 last:border-r-0">
       <div className="text-xs uppercase tracking-[0.08em] text-console-secondary">
         {props.label}
       </div>
       <div
-        className={`mt-1 truncate font-mono text-lg font-medium ${valueClass}`}
+        className={`mt-1 truncate ${fontClass} text-lg font-normal ${valueClass}`}
       >
         {props.value}
       </div>

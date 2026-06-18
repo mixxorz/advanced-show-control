@@ -3,10 +3,16 @@ import {
   connectedAppState,
   discoveringAppState,
 } from "../storybook/mockAppState";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { BottomStatusBar } from "./BottomStatusBar";
 
-const lockedOutAppState = {
+const cuedConnectedAppState = {
   ...connectedAppState,
+  cuedSceneId: connectedAppState.sceneConfigs[1]?.sceneId ?? null,
+};
+
+const lockedOutAppState = {
+  ...cuedConnectedAppState,
   lockout: true,
 };
 
@@ -17,8 +23,13 @@ const meta: Meta<typeof BottomStatusBar> = {
     layout: "fullscreen",
   },
   args: {
-    appState: connectedAppState,
+    appState: cuedConnectedAppState,
   },
+  render: (args) => (
+    <MockAppProviders appState={args.appState}>
+      <BottomStatusBar {...args} />
+    </MockAppProviders>
+  ),
 };
 
 export default meta;
