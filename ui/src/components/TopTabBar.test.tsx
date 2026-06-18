@@ -56,6 +56,18 @@ describe("TopTabBar", () => {
     expect(screen.getByRole("button", { name: "SAFE" })).toBeInTheDocument();
   });
 
+  it("places the SAFE button after the connection button", () => {
+    renderTopBar(connectedAppState);
+
+    const connectionButton = screen.getByRole("button", { name: /FOH LV1/i });
+    const safeButton = screen.getByRole("button", { name: "SAFE" });
+
+    expect(
+      connectionButton.compareDocumentPosition(safeButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("toggles lockout from the SAFE button", async () => {
     const user = userEvent.setup();
     const toggleLockout = vi.fn();
