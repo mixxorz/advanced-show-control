@@ -12,6 +12,8 @@ type StorybookIndexEntry = {
 };
 
 test("all Storybook stories match visual baselines", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-01-01T12:00:00Z"));
+
   const response = await page.request.get("/index.json");
   expect(response.ok()).toBe(true);
 
@@ -22,14 +24,24 @@ test("all Storybook stories match visual baselines", async ({ page }) => {
 
   expect(stories.length).toBeGreaterThan(0);
 
+  const failures: string[] = [];
+
   for (const story of stories) {
     await test.step(`${story.title}: ${story.name}`, async () => {
       await page.goto(`/iframe.html?id=${story.id}&viewMode=story`);
       await page.locator("#storybook-root").waitFor({ state: "visible" });
 
-      await expect(page).toHaveScreenshot(`${story.id}.png`, {
-        fullPage: true,
-      });
+      try {
+        await expect(page).toHaveScreenshot(`${story.id}.png`, {
+          fullPage: true,
+        });
+      } catch (error) {
+        failures.push(
+          `${story.title}: ${story.name}\n${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
     });
   }
+
+  expect(failures, failures.join("\n\n")).toHaveLength(0);
 });
