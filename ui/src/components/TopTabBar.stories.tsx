@@ -43,3 +43,16 @@ export const Offline: Story = {
     </MockAppProviders>
   ),
 };
+
+export const Connecting: Story = {
+  render: (args) => (
+    <MockAppProviders
+      appState={{
+        ...discoveringAppState,
+        connection: "connecting",
+      }}
+    >
+      <TopTabBar {...args} />
+    </MockAppProviders>
+  ),
+};
