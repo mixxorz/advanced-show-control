@@ -109,6 +109,7 @@ async fn begin_connection_preserves_scene_configs_when_initial_scene_list_is_emp
         .replace_snapshot(ShowSnapshot {
             lockout: false,
             scene_configs: vec![scene_config(1, "Intro", Vec::new(), Vec::new())],
+            cued_scene_id: None,
         })
         .await;
     {
@@ -170,6 +171,7 @@ async fn stale_initial_connection_snapshot_does_not_overwrite_newer_state() {
         .replace_snapshot(ShowSnapshot {
             lockout: false,
             scene_configs: vec![scene_config(2, "Verse", Vec::new(), Vec::new())],
+            cued_scene_id: None,
         })
         .await;
     {
@@ -362,6 +364,7 @@ fn scene_list_reconciliation_creates_default_configs() {
     let mut state = advanced_show_control::show::state::ShowState {
         lockout: false,
         scene_configs: Vec::new(),
+        cued_scene_id: None,
     };
     assert!(state.reconcile_scene_fade_configs(&[
         SceneListEntry {
@@ -404,6 +407,7 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
                 channel: 4,
             }],
         )],
+        cued_scene_id: None,
     };
 
     assert!(state.reconcile_scene_fade_configs(&[
@@ -455,6 +459,7 @@ fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
                 channel: 2,
             }],
         )],
+        cued_scene_id: None,
     };
 
     assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -973,6 +978,7 @@ async fn fader_event_updates_live_mirror_without_touching_scene_configs() {
                     channel: 2,
                 }],
             )],
+            cued_scene_id: None,
         })
         .await;
 

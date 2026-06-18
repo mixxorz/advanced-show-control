@@ -27,6 +27,10 @@ impl ShowStateHandle {
         self.state.lock().await.get_scene_config(&scene_id)
     }
 
+    pub async fn cue_scene(&self, scene_id: String) -> Result<bool, String> {
+        self.state.lock().await.cue_scene(&scene_id)
+    }
+
     pub async fn get_lockout(&self) -> bool {
         self.state.lock().await.lockout
     }

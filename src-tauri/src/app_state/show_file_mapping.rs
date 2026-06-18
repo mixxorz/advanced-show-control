@@ -55,6 +55,7 @@ impl ShellState {
             safety: ShowFileSafety {
                 lockout: show.lockout,
             },
+            cued_scene_id: show.cued_scene_id,
             scene_configs: show
                 .scene_configs
                 .into_iter()
@@ -113,6 +114,15 @@ impl ShellState {
         self.show
             .replace_snapshot(advanced_show_control::show::types::ShowSnapshot {
                 lockout: file.safety.lockout,
+                cued_scene_id: file.cued_scene_id.clone().filter(|scene_id| {
+                    file.scene_configs.iter().any(|config| {
+                        scene_id
+                            == &advanced_show_control::show::types::scene_id(
+                                config.scene_index,
+                                &config.scene_name,
+                            )
+                    })
+                }),
                 scene_configs: file
                     .scene_configs
                     .iter()

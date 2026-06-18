@@ -73,6 +73,7 @@ impl Visit for WarningVisitor {
 fn populated_show_snapshot() -> ShowSnapshot {
     ShowSnapshot {
         lockout: true,
+        cued_scene_id: None,
         scene_configs: vec![super::view::SceneConfig {
             scene_id: "1::Intro".to_string(),
             scene_index: 1,
@@ -181,6 +182,7 @@ async fn new_show_file_clears_file_state_and_rebuilds_current_lv1_scenes() {
         .show
         .replace_snapshot(ShowSnapshot {
             lockout: true,
+            cued_scene_id: None,
             scene_configs: vec![super::view::SceneConfig {
                 scene_id: "1::Intro".to_string(),
                 scene_index: 1,
@@ -241,6 +243,7 @@ async fn new_show_file_clears_stale_selection_when_disconnected() {
         .show
         .replace_snapshot(ShowSnapshot {
             lockout: false,
+            cued_scene_id: None,
             scene_configs: vec![super::view::SceneConfig {
                 scene_id: "stale::scene".to_string(),
                 scene_index: 99,
@@ -297,6 +300,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
         safety: crate::show_file::ShowFileSafety { lockout: true },
+        cued_scene_id: None,
         scene_configs: vec![
             ShowFileSceneConfig {
                 scene_index: 1,
@@ -371,6 +375,7 @@ async fn load_show_file_preserves_disabled_fader_scope_toggle() {
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
         safety: crate::show_file::ShowFileSafety { lockout: false },
+        cued_scene_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             scene_index: 1,
             scene_name: "Intro".to_string(),
@@ -412,6 +417,7 @@ async fn export_and_import_show_file_round_trips_pan_family_fields() {
         .show
         .replace_snapshot(ShowSnapshot {
             lockout: true,
+            cued_scene_id: None,
             scene_configs: vec![super::view::SceneConfig {
                 scene_id: "1::Intro".to_string(),
                 scene_index: 1,
@@ -492,6 +498,7 @@ async fn load_show_file_defaults_missing_pan_family_fields() {
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
         safety: crate::show_file::ShowFileSafety { lockout: false },
+        cued_scene_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             scene_index: 1,
             scene_name: "Intro".to_string(),
@@ -535,6 +542,7 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
         safety: crate::show_file::ShowFileSafety { lockout: false },
+        cued_scene_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             scene_index: 1,
             scene_name: "Intro".to_string(),
@@ -574,6 +582,7 @@ fn show_file_structural_round_trip_test() {
         app_version: "0.1.0".to_string(),
         saved_at: "2026-06-10T12:00:00Z".to_string(),
         safety: crate::show_file::ShowFileSafety { lockout: true },
+        cued_scene_id: None,
         scene_configs: vec![
             ShowFileSceneConfig {
                 scene_index: 1,

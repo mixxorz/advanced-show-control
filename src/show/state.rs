@@ -189,6 +189,7 @@ fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneLi
 pub struct ShowState {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
+    pub cued_scene_id: Option<String>,
 }
 
 impl ShowState {
@@ -196,7 +197,26 @@ impl ShowState {
         ShowSnapshot {
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
+            cued_scene_id: self.cued_scene_id.clone(),
         }
+    }
+
+    pub fn cue_scene(&mut self, scene_id: &str) -> Result<bool, String> {
+        if !self
+            .scene_configs
+            .iter()
+            .any(|scene| scene.scene_id == scene_id)
+        {
+            return Err("Scene config not found".to_string());
+        }
+
+        let next = Some(scene_id.to_string());
+        if self.cued_scene_id == next {
+            return Ok(false);
+        }
+
+        self.cued_scene_id = next;
+        Ok(true)
     }
 
     pub fn reconcile_scene_fade_configs(&mut self, scenes: &[SceneListEntry]) -> bool {
@@ -285,11 +305,13 @@ impl ShowState {
     pub fn replace_snapshot(&mut self, snapshot: ShowSnapshot) {
         self.lockout = snapshot.lockout;
         self.scene_configs = snapshot.scene_configs;
+        self.cued_scene_id = snapshot.cued_scene_id;
     }
 
     pub fn clear(&mut self) {
         self.lockout = false;
         self.scene_configs.clear();
+        self.cued_scene_id = None;
     }
 
     pub fn get_scene_config(&self, scene_id: &str) -> Option<SceneConfig> {
@@ -390,6 +412,7 @@ mod tests {
                     pan_mode: None,
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -425,6 +448,7 @@ mod tests {
                     pan_mode: None,
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(!state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -450,6 +474,7 @@ mod tests {
                 scene_config("0::Intro", 100, vec![]),
                 scene_config("1::Verse", 200, vec![]),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -489,6 +514,7 @@ mod tests {
                     pan_mode: None,
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(!state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -514,6 +540,7 @@ mod tests {
                     pan_mode: None,
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -540,6 +567,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -565,6 +593,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -589,6 +618,7 @@ mod tests {
                 named_scene_config(0, "Intro", 100),
                 named_scene_config(1, "Chorus", 300),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -615,6 +645,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
+            cued_scene_id: None,
         };
 
         assert!(
@@ -637,6 +668,7 @@ mod tests {
                 named_scene_config(0, "Intro", 100),
                 named_scene_config(1, "Verse", 200),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -659,6 +691,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
+            cued_scene_id: None,
         };
 
         let diagnostic = state.scene_reconciliation_diagnostic(&[
@@ -682,6 +715,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -708,6 +742,7 @@ mod tests {
                 named_scene_config(2, "Dupe", 300),
                 named_scene_config(3, "Chorus", 400),
             ],
+            cued_scene_id: None,
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -732,6 +767,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config("1::scene-1", 1_000, vec![])],
+            cued_scene_id: None,
         };
 
         let err = state.set_scene_duration_ms("1::scene-1", 99).unwrap_err();
@@ -759,6 +795,7 @@ mod tests {
                     pan_mode: None,
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(state.set_channel_scoped("1::scene-1", 0, 1, true).unwrap());
@@ -770,6 +807,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![],
+            cued_scene_id: None,
         };
         let channels = vec![ChannelInfo {
             group: 0,
@@ -804,6 +842,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![],
+            cued_scene_id: None,
         };
         let channels = vec![channel(0, 1, "Lead", -7.5)];
 
@@ -820,6 +859,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![],
+            cued_scene_id: None,
         };
         let channels = vec![channel(0, 1, "Lead", -7.5)];
 
@@ -846,6 +886,7 @@ mod tests {
                     pan_mode: Some(crate::lv1::types::PanMode::Stereo),
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(
@@ -879,6 +920,7 @@ mod tests {
                     pan_mode: Some(crate::lv1::types::PanMode::Stereo),
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(
@@ -925,6 +967,7 @@ mod tests {
                     pan_mode: Some(crate::lv1::types::PanMode::Stereo),
                 }],
             )],
+            cued_scene_id: None,
         };
 
         assert!(

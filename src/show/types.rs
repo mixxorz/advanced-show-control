@@ -53,6 +53,7 @@ pub struct SceneConfig {
 pub struct ShowSnapshot {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
+    pub cued_scene_id: Option<String>,
 }
 
 impl ShowSnapshot {
@@ -60,6 +61,7 @@ impl ShowSnapshot {
         Self {
             lockout: false,
             scene_configs: Vec::new(),
+            cued_scene_id: None,
         }
     }
 }
@@ -186,6 +188,26 @@ mod tests {
         let json = serde_json::to_value(config).unwrap();
 
         assert_eq!(json["channelConfigs"][0]["panMode"], "none");
+    }
+
+    #[test]
+    fn show_snapshot_serializes_cued_scene_id_for_frontend_camel_case() {
+        let snapshot = ShowSnapshot {
+            lockout: false,
+            scene_configs: Vec::new(),
+            cued_scene_id: Some("1::Verse".to_string()),
+        };
+
+        let json = serde_json::to_value(snapshot).unwrap();
+
+        assert_eq!(json["cuedSceneId"], "1::Verse");
+    }
+
+    #[test]
+    fn empty_show_snapshot_has_no_cued_scene() {
+        let snapshot = ShowSnapshot::empty();
+
+        assert_eq!(snapshot.cued_scene_id, None);
     }
 
     #[test]

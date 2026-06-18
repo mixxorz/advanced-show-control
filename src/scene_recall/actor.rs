@@ -1129,6 +1129,7 @@ mod tests {
                 }],
                 scope_toggles: SceneScopeToggles::default(),
             }],
+            cued_scene_id: None,
         };
         handle.replace_snapshot(snapshot).await;
     }

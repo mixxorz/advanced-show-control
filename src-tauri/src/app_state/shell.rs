@@ -570,6 +570,7 @@ fn snapshot_from_parts(
         fade_state: inner.fade_state,
         lockout: show.lockout,
         scene_configs: show.scene_configs,
+        cued_scene_id: show.cued_scene_id,
         selected_scene_id: inner.selected_scene_id,
         show_file_name: inner.show_file_name,
         show_file_path: inner.show_file_path,
@@ -633,6 +634,31 @@ mod tests {
         assert_eq!(snapshot.show_file_path, None);
         assert!(!snapshot.show_file_dirty);
         assert_eq!(snapshot.show_file_last_saved_at, None);
+    }
+
+    #[tokio::test]
+    async fn snapshot_exposes_cued_scene_id() {
+        let state = ShellState::default();
+        state
+            .show
+            .replace_snapshot(ShowSnapshot {
+                lockout: false,
+                scene_configs: vec![advanced_show_control::show::types::SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: Some("1::Verse".to_string()),
+            })
+            .await;
+
+        let snapshot = state.snapshot().await;
+
+        assert_eq!(snapshot.cued_scene_id, Some("1::Verse".to_string()));
     }
 
     #[tokio::test]
