@@ -1,6 +1,6 @@
 import type { ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, fn, userEvent, within } from "storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { ConnectionModal } from "./ConnectionModal";
 import {
@@ -10,6 +10,7 @@ import {
 import type { AppViewState, DiscoveredLv1System } from "../types";
 
 const noop = async () => {};
+const disconnect = fn();
 
 const manyDiscoveredSystems: DiscoveredLv1System[] = Array.from(
   { length: 14 },
@@ -81,7 +82,11 @@ const meta: Meta<ConnectionModalStoryArgs> = {
     onResume: noop,
   },
   render: (args) => (
-    <MockAppProviders appState={args.appState} commandError={args.commandError}>
+    <MockAppProviders
+      appState={args.appState}
+      commandError={args.commandError}
+      commands={{ disconnect }}
+    >
       <div className="h-screen bg-black">
         <ConnectionModal onResume={args.onResume} />
       </div>
@@ -117,6 +122,17 @@ export const ManySystems: Story = {
 export const Connected: Story = {
   args: {
     appState: connectedSystemsAppState,
+  },
+  play: async ({ canvasElement }) => {
+    disconnect.mockClear();
+    const canvas = within(canvasElement);
+
+    await userEvent.click(canvas.getByRole("button", { name: "Disconnect" }));
+
+    await expect(disconnect).toHaveBeenCalledTimes(1);
+    await expect(
+      canvas.getByRole("heading", { name: "Connect to LV1" }),
+    ).toBeInTheDocument();
   },
 };
 

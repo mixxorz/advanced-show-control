@@ -1,5 +1,6 @@
 import { useAppCommands, useAppState } from "../appHooks";
 import type { DiscoveredLv1System, Lv1SystemIdentity } from "../types";
+import { ConsoleButton } from "./ConsoleButton";
 
 export function ConnectionModal(props: { onResume: () => void }) {
   const { appState, commandError } = useAppState();
@@ -15,14 +16,25 @@ export function ConnectionModal(props: { onResume: () => void }) {
             </h1>
           </div>
 
-          <button
-            aria-label="Close connection modal"
-            className="relative h-7 w-7 text-console-secondary hover:text-console-primary"
-            onClick={props.onResume}
-          >
-            <span className="absolute top-1/2 left-1/2 h-6 w-0.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
-            <span className="absolute top-1/2 left-1/2 h-6 w-0.5 -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded-full bg-current" />
-          </button>
+          <div className="flex items-center gap-3">
+            {appState.connection === "connected" && (
+              <ConsoleButton
+                onClick={commands.disconnect}
+                size="small"
+                variant="ghost-danger"
+              >
+                Disconnect
+              </ConsoleButton>
+            )}
+            <button
+              aria-label="Close connection modal"
+              className="relative h-7 w-7 text-console-secondary hover:text-console-primary"
+              onClick={props.onResume}
+            >
+              <span className="absolute top-1/2 left-1/2 h-6 w-0.5 -translate-x-1/2 -translate-y-1/2 rotate-45 rounded-full bg-current" />
+              <span className="absolute top-1/2 left-1/2 h-6 w-0.5 -translate-x-1/2 -translate-y-1/2 -rotate-45 rounded-full bg-current" />
+            </button>
+          </div>
         </div>
 
         <div className="grid min-h-0 grid-rows-[auto_1fr] gap-3">

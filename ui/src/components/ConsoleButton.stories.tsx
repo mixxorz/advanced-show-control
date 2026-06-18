@@ -67,6 +67,14 @@ export const SmallGhost: Story = {
   },
 };
 
+export const SmallGhostDanger: Story = {
+  args: {
+    children: "Disconnect",
+    size: "small",
+    variant: "ghost-danger",
+  },
+};
+
 export const Big: Story = {
   args: {
     children: "GO",
