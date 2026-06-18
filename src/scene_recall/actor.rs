@@ -1018,6 +1018,9 @@ mod tests {
                     crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
+                    crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
                     crate::lv1::commands::Lv1Command::Flush { reply } => {
                         let _ = reply.send(Ok(()));
                     }
@@ -1080,6 +1083,9 @@ mod tests {
                         let _ = reply.send(Ok(()));
                     }
                     crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
                     crate::lv1::commands::Lv1Command::Flush { reply } => {

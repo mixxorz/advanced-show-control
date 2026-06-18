@@ -208,6 +208,16 @@ impl AppCommandBus {
         result
     }
 
+    pub async fn recall_scene(&self, scene_index: i32) -> Result<(), AppCommandError> {
+        let lv1 = self.targets.lock().await.lv1.clone();
+        let result = match lv1 {
+            Some(lv1) => lv1.recall_scene(scene_index).await.map_err(map_lv1_error),
+            None => Err(AppCommandError::Lv1Unavailable),
+        };
+        log_failure("recall_scene", &result);
+        result
+    }
+
     pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), AppCommandError> {
         self.write_batch_with_generation(None, writes).await
     }
@@ -499,6 +509,30 @@ mod tests {
 
         assert_eq!(bus.set_pan(2, 7, -18.5).await, Ok(()));
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn recall_scene_sends_index_to_lv1_actor() {
+        let event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new(event_bus);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+
+        let recall = tokio::spawn({
+            let bus = bus.clone();
+            async move { bus.recall_scene(4).await }
+        });
+
+        if let Some(crate::lv1::commands::Lv1Command::RecallScene { scene_index, reply }) =
+            lv1_rx.recv().await
+        {
+            assert_eq!(scene_index, 4);
+            let _ = reply.send(Ok(()));
+        } else {
+            panic!("expected RecallScene command");
+        }
+
+        assert!(recall.await.unwrap().is_ok());
     }
 
     #[tokio::test]
