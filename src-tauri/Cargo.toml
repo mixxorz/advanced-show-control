@@ -25,4 +25,3 @@ uuid = { version = "1.8", features = ["v4"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }
-tokio = { version = "1", features = ["sync", "time", "rt-multi-thread", "macros", "test-util"] }
