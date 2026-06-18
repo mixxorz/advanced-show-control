@@ -77,7 +77,7 @@ export function TopTabBar(props: {
         </button>
         <button
           aria-pressed={appState.lockout}
-          className={`rounded-console-control border px-3 py-2 font-mono text-sm font-normal uppercase ${safeClass}`}
+          className={`rounded-console-control border px-3 py-2 font-mono text-base font-normal uppercase ${safeClass}`}
           onClick={commands.toggleLockout}
           type="button"
         >
