@@ -173,7 +173,6 @@ describe("AppRuntime connection lifecycle", () => {
 
   it("keeps the modal closed when a stale startup snapshot resolves after a newer connected status", async () => {
     const startup = createDeferred<AppViewState>();
-    const user = userEvent.setup();
     let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
     const services = makeServices({
       startupAutoConnectLv1: vi.fn(() => startup.promise),
@@ -193,7 +192,11 @@ describe("AppRuntime connection lifecycle", () => {
       appStatusListener?.(connectedAppState);
     });
 
-    await user.click(screen.getByLabelText("Close connection modal"));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
 
     await act(async () => {
       startup.resolve(discoveredSystemsAppState);
@@ -205,5 +208,68 @@ describe("AppRuntime connection lifecycle", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText("Connected")).toBeInTheDocument();
     expect(screen.queryByText("Offline")).not.toBeInTheDocument();
+  });
+
+  it("closes the modal when startup auto-connect resolves connected after discovery refresh", async () => {
+    const startup = createDeferred<AppViewState>();
+    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
+    const laterDiscoverySnapshot: AppViewState = {
+      ...discoveredSystemsAppState,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(() => startup.promise),
+      listenForAppStatus: vi.fn(async (listener) => {
+        appStatusListener = listener;
+        return () => {};
+      }),
+      refreshLv1Discovery: vi.fn(async () => laterDiscoverySnapshot),
+    });
+
+    render(<AppRuntime services={services} />);
+
+    await screen.findByText("FOH LV1");
+
+    await act(async () => {
+      appStatusListener?.({
+        ...connectedAppState,
+        stateVersion: laterDiscoverySnapshot.stateVersion + 1,
+      });
+    });
+
+    await act(async () => {
+      startup.resolve(connectedAppState);
+      await startup.promise;
+    });
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+  });
+
+  it("keeps the modal open when the engineer opens it while connected", async () => {
+    const user = userEvent.setup();
+    render(
+      <AppRuntime
+        services={makeServices({
+          startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
+
+    expect(
+      screen.getByRole("heading", { name: "Connect to LV1" }),
+    ).toBeInTheDocument();
   });
 });

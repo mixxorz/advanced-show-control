@@ -55,30 +55,37 @@ export type AppRuntimeServices = {
   storeSceneConfig: (sceneId: string) => Promise<AppViewState>;
 };
 
+type ConnectionModalMode = "startup" | "manual" | null;
+
 export function AppRuntime(props: { services: AppRuntimeServices }) {
   const { services } = props;
   const [activeTab, setActiveTab] = useState<MainTab>("scenes");
-  const [showConnection, setShowConnection] = useState(true);
+  const [connectionModalMode, setConnectionModalMode] =
+    useState<ConnectionModalMode>("startup");
   const [commandError, setCommandError] = useState<string | null>(null);
   const [appState, setAppState] = useState<AppViewState>(
     disconnectedAppViewState,
   );
+  const latestAppState = useRef(disconnectedAppViewState);
   const hasAppliedSnapshot = useRef(false);
+  const showConnection = connectionModalMode !== null;
 
   const applySnapshot = useCallback((next: AppViewState) => {
-    let accepted = false;
-    setAppState((prev) => {
-      if (
-        !hasAppliedSnapshot.current ||
-        next.stateVersion > prev.stateVersion
-      ) {
-        accepted = true;
-        return next;
-      }
-      return prev;
-    });
+    const accepted =
+      !hasAppliedSnapshot.current ||
+      next.stateVersion > latestAppState.current.stateVersion;
+    if (accepted) {
+      latestAppState.current = next;
+      setAppState(next);
+    }
     hasAppliedSnapshot.current = true;
     return accepted;
+  }, []);
+
+  const closeStartupModalIfConnected = useCallback((snapshot: AppViewState) => {
+    if (snapshot.connection === "connected") {
+      setConnectionModalMode((mode) => (mode === "startup" ? null : mode));
+    }
   }, []);
 
   const runSnapshot = useCallback(
@@ -109,17 +116,19 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         if (cancelled) return;
         const accepted = applySnapshot(snapshot);
         if (accepted) {
-          setShowConnection(snapshot.connection !== "connected");
+          closeStartupModalIfConnected(snapshot);
         }
       })
       .catch((error) => {
         if (cancelled) return;
         setCommandError(String(error));
-        setShowConnection(true);
+        setConnectionModalMode("startup");
       });
 
     const unlistenPromise = services.listenForAppStatus((snapshot) => {
-      if (!cancelled) applySnapshot(snapshot);
+      if (!cancelled && applySnapshot(snapshot)) {
+        closeStartupModalIfConnected(snapshot);
+      }
     });
 
     return () => {
@@ -128,7 +137,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         void unlisten();
       });
     };
-  }, [applySnapshot, services]);
+  }, [applySnapshot, closeStartupModalIfConnected, services]);
 
   useEffect(() => {
     if (!showConnection) return;
@@ -171,7 +180,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         applySnapshot(snapshot);
         if (snapshot.connection === "connected") {
           setCommandError(null);
-          setShowConnection(false);
+          setConnectionModalMode(null);
         }
       } catch (error) {
         if (!cancelled) setCommandError(String(error));
@@ -191,12 +200,12 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         if (cancelled) return;
         applySnapshot(snapshot);
         if (!snapshot.reconnect.active && snapshot.connection !== "connected") {
-          setShowConnection(true);
+          setConnectionModalMode("startup");
         }
       } catch (error) {
         if (!cancelled) {
           setCommandError(String(error));
-          setShowConnection(true);
+          setConnectionModalMode("startup");
         }
       }
     }, 15000);
@@ -222,7 +231,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     },
     disconnect: async () => {
       await runSnapshot(() => services.disconnectLv1());
-      setShowConnection(true);
+      setConnectionModalMode("manual");
     },
     newShowFile: () => runSnapshot(() => services.newShowFile()),
     openShowFile: () => runSnapshot(() => services.openShowFile()),
@@ -239,7 +248,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
           snapshot.connection === "connected" &&
           identityMatches(snapshot.connectedLv1Identity, identity)
         ) {
-          setShowConnection(false);
+          setConnectionModalMode(null);
         }
       } catch (error) {
         setCommandError(String(error));
@@ -268,8 +277,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       <AppCommandsProvider commands={commands}>
         <AppShell
           activeTab={activeTab}
-          onOpenConnection={() => setShowConnection(true)}
-          onResume={() => setShowConnection(false)}
+          onOpenConnection={() => setConnectionModalMode("manual")}
+          onResume={() => setConnectionModalMode(null)}
           onSelectTab={setActiveTab}
           showConnection={showConnection}
         />
