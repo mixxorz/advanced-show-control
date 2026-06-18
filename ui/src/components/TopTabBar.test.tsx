@@ -29,14 +29,12 @@ describe("TopTabBar", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows offline status when disconnected", () => {
+  it("does not report connected while disconnected or connecting", () => {
     renderTopBar(disconnectedAppViewState);
 
     expect(screen.getByText("Offline")).toBeInTheDocument();
     expect(screen.queryByText("Connected")).not.toBeInTheDocument();
-  });
 
-  it("shows connecting status without reporting connected", () => {
     renderTopBar({ ...disconnectedAppViewState, connection: "connecting" });
 
     expect(screen.getByText("Connecting")).toBeInTheDocument();
