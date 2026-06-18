@@ -70,6 +70,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
   const hasAppliedSnapshot = useRef(false);
   const showConnection = connectionModalMode !== null;
 
+  // Async service calls and status events can resolve out of order. Only newer
+  // snapshots are allowed to replace the UI projection.
   const applySnapshot = useCallback((next: AppViewState) => {
     const accepted =
       !hasAppliedSnapshot.current ||
@@ -82,6 +84,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     return accepted;
   }, []);
 
+  // Startup owns the initial modal, but a manually opened modal should stay open
+  // even when the app is already connected.
   const closeStartupModalIfConnected = useCallback((snapshot: AppViewState) => {
     if (snapshot.connection === "connected") {
       setConnectionModalMode((mode) => (mode === "startup" ? null : mode));
@@ -108,22 +112,27 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     [applySnapshot, services],
   );
 
+  // Kick off startup auto-connect while also subscribing to backend status
+  // updates. Either path may provide the first fresh connected snapshot.
   useEffect(() => {
     let cancelled = false;
-    void services
-      .startupAutoConnectLv1()
-      .then((snapshot) => {
+
+    async function startupAutoConnect() {
+      try {
+        const snapshot = await services.startupAutoConnectLv1();
         if (cancelled) return;
         const accepted = applySnapshot(snapshot);
         if (accepted) {
           closeStartupModalIfConnected(snapshot);
         }
-      })
-      .catch((error) => {
+      } catch (error) {
         if (cancelled) return;
         setCommandError(String(error));
         setConnectionModalMode("startup");
-      });
+      }
+    }
+
+    void startupAutoConnect();
 
     const unlistenPromise = services.listenForAppStatus((snapshot) => {
       if (!cancelled && applySnapshot(snapshot)) {
@@ -133,12 +142,17 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
 
     return () => {
       cancelled = true;
-      void unlistenPromise.then((unlisten) => {
-        void unlisten();
-      });
+      void cleanupStatusListener();
     };
+
+    async function cleanupStatusListener() {
+      const unlisten = await unlistenPromise;
+      void unlisten();
+    }
   }, [applySnapshot, closeStartupModalIfConnected, services]);
 
+  // The connection modal doubles as discovery UI, so discovery polling is scoped
+  // to the time the modal is visible.
   useEffect(() => {
     if (!showConnection) return;
     let cancelled = false;
@@ -147,7 +161,6 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       try {
         const snapshot = await services.refreshLv1Discovery();
         if (cancelled) return;
-        setCommandError(null);
         applySnapshot(snapshot);
       } catch (error) {
         if (!cancelled) setCommandError(String(error));
@@ -165,6 +178,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     };
   }, [showConnection, applySnapshot, services]);
 
+  // During backend-managed reconnect, keep retrying briefly before handing the
+  // engineer back to the connection modal.
   useEffect(() => {
     if (!appState.reconnect.active) return;
     const attempt = appState.reconnect.attempt;
@@ -231,6 +246,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     },
     disconnect: async () => {
       await runSnapshot(() => services.disconnectLv1());
+      // Disconnect is an explicit connection-management action; keep the modal
+      // open so the engineer can immediately choose another console.
       setConnectionModalMode("manual");
     },
     newShowFile: () => runSnapshot(() => services.newShowFile()),
