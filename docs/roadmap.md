@@ -18,7 +18,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 
 ## Completed Foundation
 
-- Rust core crate, Tauri shell crate, and React/TypeScript frontend workspace exist.
+- One Rust/Tauri crate, `advanced-show-control`, and the React/TypeScript frontend workspace exist.
 - LV1 discovery, TCP connection, MyFOH-style handshake, keepalive, message logging, fader set commands, and basic hardware protocol findings are implemented.
 - `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, reconnect behavior, and snapshots.
 - `FadeEngine` supports timed fades, curves, measured fader law, 25 Hz scheduling, minimum send delta, exact final sends, abort, scene-owned overlap behavior, same-scene repeat handling, and manual override detection.
@@ -42,10 +42,10 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 3. Reduce false-positive manual override reports for balance/rotation fades.
    - Revisit pan-family override ownership, possibly limiting override authority to pan control instead of pan, balance, and width together.
    - Preserve clear manual override logs and cancellation behavior for safety-relevant moves.
-4. Evaluate forbidding dead code for MVP crates.
+4. Evaluate forbidding dead code for the MVP crate.
    - Remove or refactor current dead-code suppressions instead of replacing them with broader lint allowances.
    - Decide whether `#![forbid(dead_code)]` should apply to normal builds only or to test targets as well.
-   - Enable the lint only after the core, Tauri, and CLI/probe crates can pass without suppressions.
+   - Enable the lint only after the Rust crate and preserved CLI/probe binary can pass without suppressions.
 5. Add show-file scene reconciliation/remapping.
    - Handle loaded show files whose stored scene references no longer match the current LV1 scene list.
    - Make mismatches and any skipped or unresolved mappings visible to the user.
@@ -95,7 +95,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 - Logging is split appropriately between diagnostic files and frontend-facing operational events.
 - Show-file scene mismatches can be reconciled or remapped without silently dropping app-managed fade configuration.
 - Balance/rotation fades do not produce known false-positive manual override reports during normal timed fades.
-- MVP crates have a settled dead-code policy, with dead-code suppressions removed or justified before enabling any strict lint.
+- The MVP crate has a settled dead-code policy, with dead-code suppressions removed or justified before enabling any strict lint.
 - Frontend development has Storybook and test coverage in place for continued iteration.
 - Shell state projection is bounded so routine LV1 updates do not overload the frontend.
 - Bundling is good enough for MVP rehearsal/testing distribution.

@@ -150,14 +150,7 @@ The Tauri shell projection only applies events for the active generation, and st
 
 ## File Structure
 
-Core runtime modules live under `src/`:
-
-- `src/lv1/` for LV1 connection, events, commands, handles, and state.
-- `src/fade/` for fade engine commands, events, state, timing, and fader law.
-- `src/show/` for show state, capture, and shared scene/channel types.
-- `src/scene_recall/` for recall policy, recall state, events, and the scene recall fader actor.
-- `src/runtime/` for bus-level commands and events.
-- `src/osc.rs` and `src/vegas.rs` for transport or protocol helpers.
+Rust modules live under `src-tauri/src/` in the `advanced-show-control` package. Tauri-specific adapter code and core app modules are separated by module boundaries, not crate boundaries.
 
 The Tauri shell lives under `src-tauri/src/`:
 

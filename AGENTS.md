@@ -6,8 +6,8 @@ This project is a Tauri/Rust/React desktop app that adds timed fader fades to Wa
 
 Project layout:
 
-- `src/` contains the core Rust crate, `advanced-show-control`.
-- `src-tauri/` contains the Tauri desktop shell crate, `advanced-show-control-tauri`, which depends on the core Rust crate.
+- `src-tauri/` contains the single Rust/Tauri crate, `advanced-show-control`. Core Rust modules such as `lv1/`, `fade/`, `scene_recall/`, `show/`, and `runtime/` live under `src-tauri/src/` alongside Tauri adapter modules.
+- `src-tauri/src/bin/lv1-probe.rs` contains the preserved LV1 probe/developer CLI binary.
 - `ui/` contains the React/TypeScript frontend.
 
 Do not assume `src/` is the frontend; this project does not use the default Tauri template layout.
@@ -122,8 +122,8 @@ Do not bypass hooks; fix failures in a new commit.
 Useful targeted Rust checks:
 
 ```bash
-cargo nextest run -p advanced-show-control-tauri scene_recall
-cargo nextest run -p advanced-show-control-tauri commands::tests
+cargo nextest run -p advanced-show-control scene_recall
+cargo nextest run -p advanced-show-control commands::tests
 cargo nextest run -p advanced-show-control fade
 ```
 
