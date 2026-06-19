@@ -85,26 +85,26 @@ Core + Tauri tracing events
 
 ## Command Flow
 
-`Tauri Shell / FadeEngine / SceneRecallFader -> AppCommandBus -> current LV1 / fade targets`
+`Tauri UI Adapter / AppLifecycle / FadeEngine / SceneRecallFader -> AppCommandBus -> current LV1 / fade targets`
 
 ```text
-┌──────────────┐   ┌────────────┐   ┌──────────────────┐
-│ Tauri Shell  │   │ FadeEngine │   │ SceneRecallFader │
-└──────┬───────┘   └─────┬──────┘   └────────┬─────────┘
-       │                 │                   │
-       └─────────────────┼───────────────────┘
-                         │
-                         ▼
-                 ┌───────────────┐
-                 │ AppCommandBus │
-                 └───────┬───────┘
-                         │
-            ┌────────────┴────────────┐
-            │                         │
-            ▼                         ▼
-       ┌──────────┐            ┌──────────────┐
-       │ Lv1Actor │            │ FadeEngine   │
-       └──────────┘            └──────────────┘
+┌──────────────────┐   ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
+│ Tauri UI Adapter │   │ AppLifecycle   │   │ FadeEngine │   │ SceneRecallFader │
+└────────┬─────────┘   └──────┬─────────┘   └─────┬──────┘   └────────┬─────────┘
+         │                    │                   │                    │
+         └────────────────────┼───────────────────┼────────────────────┘
+                              │
+                              ▼
+                      ┌───────────────┐
+                      │ AppCommandBus │
+                      └───────┬───────┘
+                              │
+                 ┌────────────┴────────────┐
+                 │                         │
+                 ▼                         ▼
+            ┌──────────┐            ┌──────────────┐
+            │ Lv1Actor │            │ FadeEngine   │
+            └──────────┘            └──────────────┘
 ```
 
 `FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
