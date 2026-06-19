@@ -1,13 +1,13 @@
 use advanced_show_control::app_state::ShellState;
 use advanced_show_control::commands;
-use advanced_show_control::lifecycle::ActiveCommandBus;
+use advanced_show_control::lifecycle::AppLifecycle;
 use advanced_show_control::logging;
 use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
         .manage(ShellState::default())
-        .manage(ActiveCommandBus::default())
+        .manage(AppLifecycle::default())
         .setup(|app| {
             let shell_state = (*app.state::<ShellState>()).clone();
             let logging_guard = logging::init_logging(app.handle(), shell_state.clone())?;

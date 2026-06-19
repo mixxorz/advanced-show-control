@@ -1,5 +1,5 @@
 use crate::fade::actor::spawn_engine;
-use crate::lifecycle::ActiveCommandBus;
+use crate::lifecycle::{ActiveCommandBus, AppLifecycle};
 use crate::lv1::actor::spawn_actor;
 use crate::lv1::discovery::resolve_target;
 use crate::lv1::events::Lv1Event;
@@ -194,11 +194,11 @@ pub async fn store_scene_config(
 pub async fn recall_scene(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<AppViewState, String> {
     let snapshot =
-        recall_scene_snapshot((*state).clone(), (*active_command_bus).clone(), scene_id).await?;
+        recall_scene_snapshot((*state).clone(), lifecycle.command_bus_holder(), scene_id).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -421,13 +421,14 @@ pub async fn set_lockout(
 pub async fn disconnect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
     tracing::debug!(
         event = "lv1_disconnect_requested",
         "LV1 disconnect requested"
     );
     let (generation, snapshot) = state.disconnect().await;
+    let active_command_bus = lifecycle.command_bus_holder();
     if let Some(command_bus) = active_command_bus.current().await {
         command_bus.set_generation(generation).await;
     }
@@ -443,13 +444,13 @@ pub async fn disconnect_lv1(
 pub async fn reconnect_timed_out(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
     attempt: u64,
 ) -> Result<AppViewState, String> {
     reconnect_timed_out_snapshot(
         app,
         (*state).clone(),
-        (*active_command_bus).clone(),
+        lifecycle.command_bus_holder(),
         attempt,
     )
     .await
@@ -472,10 +473,8 @@ async fn reconnect_timed_out_snapshot<R: Runtime>(
 }
 
 #[tauri::command]
-pub async fn abort_all_fades(
-    active_command_bus: State<'_, ActiveCommandBus>,
-) -> Result<(), String> {
-    let command_bus = active_command_bus.current().await;
+pub async fn abort_all_fades(lifecycle: State<'_, AppLifecycle>) -> Result<(), String> {
+    let command_bus = lifecycle.current_command_bus().await;
     let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
     command_bus
         .abort_all_fades()
@@ -487,7 +486,7 @@ pub async fn abort_all_fades(
 pub async fn connect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
     host: Option<String>,
     port: Option<u16>,
     timeout_ms: Option<u64>,
@@ -504,7 +503,7 @@ pub async fn connect_lv1(
     connect_to_target(
         app,
         (*state).clone(),
-        (*active_command_bus).clone(),
+        lifecycle.command_bus_holder(),
         identity,
         ConnectFailureMode::ClearConnectedIdentity,
     )
@@ -515,13 +514,13 @@ pub async fn connect_lv1(
 pub async fn connect_lv1_system(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
     identity: crate::connection_state::Lv1SystemIdentity,
 ) -> Result<AppViewState, String> {
     let snapshot = connect_to_target(
         app.clone(),
         (*state).clone(),
-        (*active_command_bus).clone(),
+        lifecycle.command_bus_holder(),
         identity.clone(),
         ConnectFailureMode::ClearConnectedIdentity,
     )
@@ -554,9 +553,9 @@ pub async fn connect_lv1_system(
 pub async fn attempt_reconnect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
-    attempt_reconnect_lv1_snapshot(app, (*state).clone(), (*active_command_bus).clone()).await
+    attempt_reconnect_lv1_snapshot(app, (*state).clone(), lifecycle.command_bus_holder()).await
 }
 
 async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
@@ -614,7 +613,7 @@ enum ConnectFailureMode {
 pub async fn startup_auto_connect_lv1(
     app: AppHandle,
     state: State<'_, ShellState>,
-    active_command_bus: State<'_, ActiveCommandBus>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
     let preferences_path = app
         .path()
@@ -636,7 +635,7 @@ pub async fn startup_auto_connect_lv1(
     if let Some(identity) =
         remembered_auto_connect_target(&preferences, &snapshot.discovered_lv1_systems)
     {
-        return connect_lv1_system(app, state, active_command_bus, identity).await;
+        return connect_lv1_system(app, state, lifecycle, identity).await;
     }
     Ok(snapshot)
 }

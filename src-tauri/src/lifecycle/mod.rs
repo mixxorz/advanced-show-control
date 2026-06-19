@@ -20,6 +20,25 @@ impl ActiveCommandBus {
     }
 }
 
+#[derive(Clone, Default)]
+pub struct AppLifecycle {
+    command_bus: ActiveCommandBus,
+}
+
+impl AppLifecycle {
+    pub fn command_bus_holder(&self) -> ActiveCommandBus {
+        self.command_bus.clone()
+    }
+
+    pub async fn set_command_bus(&self, command_bus: Option<AppCommandBus>) {
+        self.command_bus.set(command_bus).await;
+    }
+
+    pub async fn current_command_bus(&self) -> Option<AppCommandBus> {
+        self.command_bus.current().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -36,5 +55,26 @@ mod tests {
 
         holder.set(None).await;
         assert!(holder.current().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_exposes_current_command_bus() {
+        let lifecycle = AppLifecycle::default();
+        assert!(lifecycle.current_command_bus().await.is_none());
+
+        let command_bus = AppCommandBus::new(AppEventBus::default());
+        lifecycle.set_command_bus(Some(command_bus)).await;
+        assert!(lifecycle.current_command_bus().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_command_bus_holder_is_shared() {
+        let lifecycle = AppLifecycle::default();
+        let holder = lifecycle.command_bus_holder();
+
+        let command_bus = AppCommandBus::new(AppEventBus::default());
+        holder.set(Some(command_bus)).await;
+
+        assert!(lifecycle.current_command_bus().await.is_some());
     }
 }
