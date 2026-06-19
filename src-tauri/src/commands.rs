@@ -103,8 +103,17 @@ fn map_app_command_error(error: crate::runtime::commands::AppCommandError) -> St
 pub async fn new_show_file(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.new_show_file().await?;
+    let command_bus = current_command_bus(lifecycle.command_bus_holder(), "new_show_file").await?;
+    let lv1 = state.lv1_snapshot().await;
+    let result = command_bus
+        .new_show_file(lv1)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state
+        .apply_new_show_file_metadata(result.selected_scene_id)
+        .await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -113,6 +122,7 @@ pub async fn new_show_file(
 pub async fn open_show_file_dialog(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
     let path = spawn_blocking(|| -> Result<Option<std::path::PathBuf>, String> {
         let folder = default_show_folder();
@@ -127,7 +137,28 @@ pub async fn open_show_file_dialog(
     .ok_or_else(|| "Open show file cancelled".to_string())?;
 
     let mut file = read_show_file(&path)?;
-    let snapshot = state.load_show_file_from_dto(path, &mut file).await?;
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "open_show_file_dialog").await?;
+    let lv1 = state.lv1_snapshot_required_for_show_file().await?;
+    let result = command_bus
+        .load_show_file_from_dto(&mut file, lv1)
+        .await
+        .map_err(map_app_command_error)?;
+    for scene in result.report.removed_scenes.iter() {
+        tracing::warn!(
+            event = "show_file_scene_pruned",
+            scene = %scene,
+            "Skipped loading \"{scene}\" because it was not found in the current scene list."
+        );
+    }
+    let snapshot = state
+        .apply_loaded_show_file_metadata(
+            path,
+            result.selected_scene_id,
+            result.saved_at,
+            result.report.removed_anything(),
+        )
+        .await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -451,22 +482,29 @@ pub async fn set_scene_scope_pan_enabled(
 pub async fn save_show_file(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
     if let Some(path) = state.current_show_file_path().await {
-        let snapshot = save_show_file_to_path(&state, path).await?;
+        let snapshot = save_show_file_to_path(&state, lifecycle.command_bus_holder(), path).await?;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     }
 
-    save_show_file_as_dialog(app, state).await
+    save_show_file_as_dialog(app, state, lifecycle).await
 }
 
 #[tauri::command]
 pub async fn save_show_file_as_dialog(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
-    let _ = state.export_show_file_for_save(String::new()).await?;
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "save_show_file_as_dialog").await?;
+    command_bus
+        .export_show_file_for_save(String::new())
+        .await
+        .map_err(map_app_command_error)?;
 
     let path = spawn_blocking(|| -> Result<Option<std::path::PathBuf>, String> {
         let folder = default_show_folder();
@@ -481,7 +519,7 @@ pub async fn save_show_file_as_dialog(
     .map_err(|err| format!("Failed to open save dialog: {err}"))??
     .ok_or_else(|| "Save show file cancelled".to_string())?;
 
-    let snapshot = save_show_file_to_path(&state, path).await?;
+    let snapshot = save_show_file_to_path(&state, lifecycle.command_bus_holder(), path).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -1049,12 +1087,33 @@ async fn apply_projector_event(
 
 async fn save_show_file_to_path(
     state: &State<'_, ShellState>,
+    active_command_bus: ActiveCommandBus,
     path: PathBuf,
 ) -> Result<AppViewState, String> {
     let saved_at = crate::time::current_timestamp_millis();
-    let file = state.export_show_file_for_save(saved_at.clone()).await?;
+    let command_bus = current_command_bus(active_command_bus, "save_show_file").await?;
+    let file = command_bus
+        .export_show_file_for_save(saved_at.clone())
+        .await
+        .map_err(map_app_command_error)?;
     write_show_file(&path, &file, &backup_folder())?;
     Ok(state.mark_show_file_saved(path, saved_at).await)
+}
+
+#[cfg(test)]
+async fn new_show_file_snapshot_for_test(
+    state: ShellState,
+    active_command_bus: ActiveCommandBus,
+) -> Result<AppViewState, String> {
+    let command_bus = current_command_bus(active_command_bus, "new_show_file").await?;
+    let lv1 = state.lv1_snapshot().await;
+    let result = command_bus
+        .new_show_file(lv1)
+        .await
+        .map_err(map_app_command_error)?;
+    Ok(state
+        .apply_new_show_file_metadata(result.selected_scene_id)
+        .await)
 }
 
 fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBuf, String> {
@@ -1295,6 +1354,17 @@ mod tests {
         )
         .await
         .unwrap_err();
+
+        assert_eq!(err, "App command bus is unavailable");
+    }
+
+    #[tokio::test]
+    async fn new_show_file_requires_active_command_bus() {
+        let state = ShellState::default();
+
+        let err = new_show_file_snapshot_for_test(state, ActiveCommandBus::default())
+            .await
+            .unwrap_err();
 
         assert_eq!(err, "App command bus is unavailable");
     }
