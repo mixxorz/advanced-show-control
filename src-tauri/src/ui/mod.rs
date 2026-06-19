@@ -6,13 +6,15 @@
 use crate::app_state::ShellState;
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
+use crate::runtime::events::AppEventBus;
 use tauri::Manager;
 
 pub mod commands;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
+    let event_bus = AppEventBus::default();
     tauri::Builder::default()
-        .manage(ShellState::default())
+        .manage(ShellState::new(event_bus.clone()))
         .manage(AppLifecycle::default())
         .setup(|app| {
             let shell_state = (*app.state::<ShellState>()).clone();
