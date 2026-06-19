@@ -2,12 +2,15 @@ use tokio::sync::broadcast;
 
 use crate::fade::events::FadeEvent;
 use crate::lv1::events::Lv1Event;
+#[allow(unused_imports)]
+use crate::show::events::{ShowEvent, ShowSnapshotChange};
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Lv1(Lv1Event),
     Fade(FadeEvent),
     SceneRecall(crate::scene_recall::events::SceneRecallEvent),
+    Show(ShowEvent),
 }
 
 #[derive(Clone)]
@@ -122,6 +125,35 @@ mod tests {
                 reason: "test".to_string(),
             },
         ));
+
+        assert_eq!(sent, 0);
+    }
+
+    #[tokio::test]
+    async fn subscriber_receives_published_show_event() {
+        let bus = AppEventBus::new(16);
+        let mut rx = bus.subscribe();
+
+        bus.publish(AppEvent::Show(ShowEvent::SnapshotChanged {
+            reason: ShowSnapshotChange::Lockout,
+        }));
+
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(
+            event,
+            AppEvent::Show(ShowEvent::SnapshotChanged {
+                reason: ShowSnapshotChange::Lockout
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn show_fact_publish_without_subscribers_is_safe() {
+        let bus = AppEventBus::new(1);
+
+        let sent = bus.publish(AppEvent::Show(ShowEvent::SnapshotChanged {
+            reason: ShowSnapshotChange::SnapshotReplaced,
+        }));
 
         assert_eq!(sent, 0);
     }

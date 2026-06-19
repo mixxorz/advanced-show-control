@@ -957,6 +957,7 @@ async fn apply_projector_event(
                 .await
         }
         AppEvent::SceneRecall(_) => ProjectionOutcome::Ignored,
+        AppEvent::Show(_) => ProjectionOutcome::Ignored,
     }
 }
 
