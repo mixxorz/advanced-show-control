@@ -1036,6 +1036,14 @@ mod tests {
         path
     }
 
+    fn manage_ui_log_receiver<R: Runtime>(
+        app: &tauri::App<R>,
+    ) -> tokio::sync::mpsc::Sender<crate::logging::UiLogEvent> {
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        app.manage(UiLogReceiverState::new(Some(rx)));
+        tx
+    }
+
     fn spawn_started_projector<R: Runtime>(
         handle: AppHandle<R>,
         state: ShellState,
@@ -1938,6 +1946,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn initial_connection_snapshot_is_emitted_before_coalesced_projector_events() {
         let app = mock_app();
+        let _log_tx = manage_ui_log_receiver(&app);
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
         let observed_for_listener = observed.clone();
@@ -2154,6 +2163,7 @@ mod tests {
     #[tokio::test]
     async fn stale_runtime_install_does_not_emit_current_snapshot() {
         let app = mock_app();
+        let _log_tx = manage_ui_log_receiver(&app);
         let handle = app.handle().clone();
         let observed = Arc::new(Mutex::new(Vec::new()));
         let observed_for_listener = observed.clone();
@@ -2201,6 +2211,7 @@ mod tests {
     #[tokio::test]
     async fn connected_runtime_installs_scene_recall_fader_handle() {
         let app = mock_app();
+        let _log_tx = manage_ui_log_receiver(&app);
         let handle = app.handle().clone();
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
