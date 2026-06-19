@@ -92,6 +92,8 @@ There should be one app-lifetime `AppEventBus` managed at app setup and shared w
 
 Runtime connection attempts must not create a disconnected event bus that isolates LV1/fade events from show events. Runtime actors may subscribe/publish for the active runtime generation, but they use the app-lifetime bus.
 
+There should also be one app-lifetime `AppCommandBus` managed by `AppLifecycle`. The command bus is not recreated on reconnect or disconnect. It keeps show/app/session command routing available while offline, and reconnect/disconnect operations only install or clear generation-scoped LV1/fade runtime targets. Correctness relies on generation checks, not replacing the command bus.
+
 This is required because show command handlers publish `ShowEvent` facts and the projector must observe those facts without polling `show`.
 
 ## Command And Effects Model
@@ -249,7 +251,7 @@ Constructors should not start I/O or emit important events. Event producers star
 
 Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLifecycle`.
 
-`AppLifecycle` owns an app-lifetime/show-capable `AppCommandBus` from construction. This bus routes show/app/session commands while disconnected. Runtime connect and disconnect operations install or clear only the runtime command targets and generation-scoped handles. Discovery, new/open show file, lockout, and other show-owned commands must not require a live LV1 runtime.
+`AppLifecycle` owns an app-lifetime/show-capable `AppCommandBus` from construction. This bus routes show/app/session commands while disconnected and is not recreated on reconnect/disconnect. Runtime connect and disconnect operations install or clear only the runtime command targets and generation-scoped handles. Discovery, new/open show file, lockout, and other show-owned commands must not require a live LV1 runtime.
 
 `AppLifecycle` should provide explicit operations for:
 

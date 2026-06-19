@@ -289,8 +289,11 @@ pub struct ShowState {
     pending_lv1_identity: Option<crate::connection_state::Lv1SystemIdentity>,
     reconnect: crate::connection_state::ReconnectState,
     last_event_at: Option<String>,
+    active_runtime_generation: u64,
 }
 ```
+
+`active_runtime_generation` is internal show/runtime-listener state used only to validate generated runtime facts before mutating show-owned connection metadata. It is not included in `ShowProjectionState` and must not be projected to the frontend.
 
 Add:
 
@@ -334,6 +337,15 @@ fn publish_state_changed(&self, reason: ShowProjectionReason, state: &ShowState)
         reason,
         state: state.projection_state(),
     }));
+}
+```
+
+Add the initial projection helper used by lifecycle startup:
+
+```rust
+pub(crate) async fn initial_projection_state(&self) -> ShowProjectionState {
+    let state = self.state.lock().await;
+    state.projection_state()
 }
 ```
 
@@ -1186,6 +1198,7 @@ struct LifecycleInner {
     frontend_ready: bool,
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
+    show_runtime_metadata_monitor: Option<JoinHandle<()>>,
     command_bus: AppCommandBus,
 }
 
@@ -1204,6 +1217,10 @@ Use this concrete shape in `AppLifecycle::new`:
 ```rust
 let command_bus = AppCommandBus::new();
 command_bus.set_show_target(show.clone());
+let show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
+    event_bus.subscribe(),
+    command_bus.clone(),
+));
 ```
 
 If `AppCommandBus` currently requires constructor arguments or async target installation, change it in this task so construction is app-lifetime and show-capable without requiring runtime handles. Provide methods with these names:
@@ -1222,7 +1239,7 @@ impl AppCommandBus {
 }
 ```
 
-Runtime-only command methods return a runtime-unavailable error when their generation-scoped target is absent. Show-owned commands continue to work while disconnected through the installed show target.
+Store `show_runtime_metadata_monitor` in `LifecycleInner`, outside `RuntimeHandles`. Runtime-only command methods return a runtime-unavailable error when their generation-scoped target is absent. Show-owned commands continue to work while disconnected through the installed show target.
 
 `begin_connecting` must publish `AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })` after incrementing the active generation, so projector and show-owned runtime listeners accept events from the new runtime.
 
@@ -1303,25 +1320,11 @@ git commit -m "refactor: move runtime lifecycle into AppLifecycle"
 - Produces: lifecycle-owned `connect_to_identity` orchestration.
 - Produces: lifecycle-owned disconnect cleanup that publishes a generated LV1 disconnect fact; show metadata updates flow through the show-owned runtime listener and `AppCommandBus`.
 
-- [ ] **Step 1: Write failing app-lifetime bus test**
+- [ ] **Step 1: Write failing disconnected command-bus test**
 
 In `src-tauri/src/lifecycle/mod.rs` tests, add:
 
 ```rust
-#[tokio::test]
-async fn lifecycle_uses_app_lifetime_event_bus_for_runtime_handles() {
-    let event_bus = AppEventBus::default();
-    let show = ShowStateHandle::new_empty(event_bus.clone());
-    let lifecycle = AppLifecycle::new(event_bus.clone(), show);
-    let generation = lifecycle.begin_connecting().await.unwrap();
-    let mut rx = event_bus.subscribe();
-
-    event_bus.publish_lv1(generation, Lv1Event::Connected);
-
-    let event = rx.recv().await.unwrap();
-    assert!(matches!(event, AppEvent::Lv1(generated) if generated.generation == generation));
-}
-
 #[tokio::test]
 async fn disconnected_show_commands_use_app_lifetime_command_bus() {
     let event_bus = AppEventBus::default();
@@ -1391,7 +1394,7 @@ async fn stale_generation_disconnect_does_not_clear_show_owned_connection_metada
 Run:
 
 ```bash
-cargo nextest run -p advanced-show-control lifecycle::tests::lifecycle_uses_app_lifetime_event_bus_for_runtime_handles show::commands::tests::active_generation_disconnect_clears_show_owned_connection_metadata
+cargo nextest run -p advanced-show-control lifecycle::tests::disconnected_show_commands_use_app_lifetime_command_bus show::commands::tests::active_generation_disconnect_clears_show_owned_connection_metadata
 ```
 
 Expected: fail until commands/lifecycle are wired.
@@ -1471,8 +1474,8 @@ The method should:
 
 - abort current runtime handles
 - call `begin_connecting` for a new generation after old runtime handles are cleared
-- create `AppCommandBus`
-- set generation, LV1, fade, and show targets
+- get `self.current_command_bus().await`; do not create a new `AppCommandBus`
+- set generation-scoped LV1 and fade runtime targets on the app-lifetime command bus with `set_runtime_targets(generation, lv1, fade)`
 - spawn LV1 actor and fade engine with the app-lifetime bus and generation
 - spawn scene recall fader with generation
 - install runtime handles if generation is still current
