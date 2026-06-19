@@ -1633,13 +1633,17 @@ The method should:
 - package the spawned LV1/fade handles into `RuntimeHandles` without scene recall fader yet
 - call `install_runtime(generation, handles)`
 - if `install_runtime` rejects the generation, immediately abort the returned handles, call `clear_runtime_targets(generation)`, and return a stale-generation error
-- only after `install_runtime` accepts the generation and command-bus runtime targets are installed, spawn/start the scene recall fader with generation
+- after `install_runtime` accepts the generation and command-bus runtime targets are installed, wait for or query the initial LV1 state through the app-lifetime command bus
+- if the initial LV1 state is unavailable or not connected, immediately abort the accepted runtime handles, call `clear_runtime_targets(generation)`, apply the `fail_connect` / `fail_reconnect` equivalent show command for `failure_mode`, and return the connection error without establishing connected identity
+- only after connected LV1 state is confirmed, spawn/start the scene recall fader with generation
 - install or record the scene recall fader handle for the accepted generation
-- update pending/connected identity through `AppCommandBus`
+- only after connected LV1 state is confirmed, update pending/connected identity through `AppCommandBus`
 - publish show events through show commands
 - never emit `app-status-changed` directly
 
-The `begin_connecting` call inside this method is what publishes the active runtime generation event. LV1/fade actors may publish generated facts immediately after spawn, but scene recall automation must not start until command-bus LV1/fade runtime targets are installed and the generation is accepted. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes active-generation events and generated LV1 disconnect facts.
+The `begin_connecting` call inside this method is what publishes the active runtime generation event. LV1/fade actors may publish generated facts immediately after spawn, but scene recall automation must not start until command-bus LV1/fade runtime targets are installed, the generation is accepted, and connected LV1 state is confirmed. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes active-generation events and generated LV1 disconnect facts.
+
+Add a connect-failure cleanup test proving that when initial LV1 state is unavailable or disconnected, lifecycle aborts the accepted handles, calls `clear_runtime_targets(generation)`, applies the correct failed-connect or failed-reconnect show metadata for `failure_mode`, does not establish connected identity, and does not start scene recall fader.
 
 Add a connection-ordering test or lifecycle seam assertion proving `set_runtime_targets(generation, lv1, fade)` happens before scene recall fader startup. The test should simulate or record an initial scene-change/recall event and assert scene recall automation cannot run before LV1/fade targets are installed.
 
