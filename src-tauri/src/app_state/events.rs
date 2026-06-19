@@ -265,6 +265,7 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
 }
 
 impl ShellInner {
+    #[allow(dead_code)]
     pub(super) fn append_log(&mut self, severity: LogSeverity, message: String) {
         self.next_log_id += 1;
         let timestamp = crate::time::current_timestamp_millis();

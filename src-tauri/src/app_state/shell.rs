@@ -19,6 +19,7 @@ use super::view::{
     SceneSummary,
 };
 
+#[allow(dead_code)]
 pub(super) const MAX_LOGS: usize = 200;
 
 #[derive(Default)]
@@ -53,6 +54,7 @@ pub(super) struct ShellInner {
     pub(super) show_file_dirty: bool,
     pub(super) show_file_last_saved_at: Option<String>,
     pub(super) logs: VecDeque<AppLogEntry>,
+    #[allow(dead_code)]
     pub(super) next_log_id: u64,
     pub(super) last_event_at: Option<String>,
     pub(super) snapshot_counter: AtomicU64,
@@ -433,6 +435,7 @@ impl ShellState {
         self.snapshot().await
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn append_log(&self, severity: LogSeverity, message: String) {
         let mut inner = self.inner.lock().await;
         inner.append_log(severity, message);

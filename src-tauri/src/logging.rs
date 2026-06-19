@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fs;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::Runtime;
 use tokio::sync::mpsc;
 use tracing::{Event, Level, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -12,7 +12,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::app_state::{LogSeverity, ShellState};
+use crate::app_state::LogSeverity;
 use crate::diagnostics::diagnostic_log_path;
 
 const UI_SINK_TARGET: &str = "advanced_show_control_tauri::logging::ui_sink";
@@ -40,10 +40,14 @@ pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
     }
 }
 
+pub struct LoggingRuntime {
+    pub guard: WorkerGuard,
+    pub ui_logs: mpsc::Receiver<UiLogEvent>,
+}
+
 pub fn init_logging<R: Runtime>(
-    app: &AppHandle<R>,
-    state: ShellState,
-) -> Result<WorkerGuard, Box<dyn Error>> {
+    app: &tauri::AppHandle<R>,
+) -> Result<LoggingRuntime, Box<dyn Error>> {
     let log_path = diagnostic_log_path(app);
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
@@ -79,12 +83,10 @@ pub fn init_logging<R: Runtime>(
         .with(ui_layer)
         .try_init()?;
 
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        ui_log_projector(app, state, ui_rx).await;
-    });
-
-    Ok(guard)
+    Ok(LoggingRuntime {
+        guard,
+        ui_logs: ui_rx,
+    })
 }
 
 struct BracketedFormat;
@@ -313,27 +315,6 @@ where
                     }
                 }
             }
-        }
-    }
-}
-
-async fn ui_log_projector<R: Runtime>(
-    app: AppHandle<R>,
-    state: ShellState,
-    mut rx: mpsc::Receiver<UiLogEvent>,
-) {
-    while let Some(ui_event) = rx.recv().await {
-        state
-            .append_log(ui_event.severity.clone(), ui_event.message)
-            .await;
-        let snapshot = state.snapshot().await;
-        if let Err(err) = app.emit("app-status-changed", &snapshot) {
-            tracing::debug!(
-                target: UI_SINK_TARGET,
-                event = "app_status_emit_failed",
-                error = %err,
-                "failed to emit app-status-changed after UI log append"
-            );
         }
     }
 }
@@ -567,6 +548,17 @@ mod tests {
             ("event", "command_failed"),
             ("message", "Command failed")
         ]));
+    }
+
+    #[test]
+    fn logging_module_no_longer_contains_direct_app_status_emit_projector() {
+        let source =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/logging.rs"))
+                .unwrap();
+
+        let projector_name = ["ui_log", "_projector"].concat();
+        assert!(!source.contains(&projector_name));
+        assert!(!source.contains("app.emit(\"app-status-changed\""));
     }
 
     #[test]
