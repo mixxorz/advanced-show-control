@@ -210,6 +210,10 @@ impl ShellState {
         self.snapshot().await
     }
 
+    pub async fn mark_show_file_dirty(&self) {
+        self.inner.lock().await.show_file_dirty = true;
+    }
+
     pub async fn snapshot_for_generation(&self, generation: u64) -> Option<AppViewState> {
         let inner_guard = self.inner.lock().await;
         if inner_guard.generation != generation {

@@ -173,10 +173,13 @@ pub async fn set_scene_duration_ms(
 ) -> Result<AppViewState, String> {
     let command_bus =
         current_command_bus(lifecycle.command_bus_holder(), "set_scene_duration_ms").await?;
-    command_bus
+    let result = command_bus
         .set_scene_duration_ms(scene_id, duration_ms)
         .await
         .map_err(map_app_command_error)?;
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
     let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -268,10 +271,13 @@ pub async fn store_scene_config(
         .lv1_snapshot()
         .await
         .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
-    command_bus
+    let result = command_bus
         .store_scene_config(scene_id, lv1.channels)
         .await
         .map_err(map_app_command_error)?;
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
     let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -406,10 +412,13 @@ pub async fn set_channel_scoped(
 ) -> Result<AppViewState, String> {
     let command_bus =
         current_command_bus(lifecycle.command_bus_holder(), "set_channel_scoped").await?;
-    command_bus
+    let result = command_bus
         .set_channel_scoped(scene_id, group, channel, scoped)
         .await
         .map_err(map_app_command_error)?;
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
     let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -425,10 +434,13 @@ pub async fn set_all_channels_scoped(
 ) -> Result<AppViewState, String> {
     let command_bus =
         current_command_bus(lifecycle.command_bus_holder(), "set_all_channels_scoped").await?;
-    command_bus
+    let result = command_bus
         .set_all_channels_scoped(scene_id, scoped)
         .await
         .map_err(map_app_command_error)?;
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
     let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -447,10 +459,13 @@ pub async fn set_scene_scope_faders_enabled(
         "set_scene_scope_faders_enabled",
     )
     .await?;
-    command_bus
+    let result = command_bus
         .set_scene_scope_faders_enabled(scene_id, enabled)
         .await
         .map_err(map_app_command_error)?;
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
     let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -469,10 +484,13 @@ pub async fn set_scene_scope_pan_enabled(
         "set_scene_scope_pan_enabled",
     )
     .await?;
-    command_bus
+    let result = command_bus
         .set_scene_scope_pan_enabled(scene_id, enabled)
         .await
         .map_err(map_app_command_error)?;
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
     let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -531,14 +549,26 @@ pub async fn set_lockout(
     lifecycle: State<'_, AppLifecycle>,
     enabled: bool,
 ) -> Result<AppViewState, String> {
-    let command_bus = current_command_bus(lifecycle.command_bus_holder(), "set_lockout").await?;
-    command_bus
+    let snapshot =
+        set_lockout_snapshot((*state).clone(), lifecycle.command_bus_holder(), enabled).await?;
+    emit_snapshot(&app, &snapshot);
+    Ok(snapshot)
+}
+
+async fn set_lockout_snapshot(
+    state: ShellState,
+    active_command_bus: ActiveCommandBus,
+    enabled: bool,
+) -> Result<AppViewState, String> {
+    let command_bus = current_command_bus(active_command_bus, "set_lockout").await?;
+    let result = command_bus
         .set_lockout(enabled)
         .await
         .map_err(map_app_command_error)?;
-    let snapshot = state.snapshot().await;
-    emit_snapshot(&app, &snapshot);
-    Ok(snapshot)
+    if result.changed {
+        state.mark_show_file_dirty().await;
+    }
+    Ok(state.snapshot().await)
 }
 
 #[tauri::command]
@@ -1261,6 +1291,48 @@ mod tests {
 
         assert_eq!(snapshot.cued_scene_id, Some("1::Verse".to_string()));
         assert!(snapshot.lockout);
+        assert!(!snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn set_lockout_marks_show_file_dirty_when_state_changes() {
+        let state = ShellState::default();
+        state
+            .show
+            .replace_snapshot(crate::show::types::ShowSnapshot {
+                lockout: false,
+                scene_configs: vec![crate::show::types::SceneConfig {
+                    scene_id: "1::Intro".to_string(),
+                    scene_index: 1,
+                    scene_name: "Intro".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: None,
+            })
+            .await;
+        let lifecycle = lifecycle_with_show(&state).await;
+
+        let snapshot = set_lockout_snapshot(state.clone(), lifecycle.command_bus_holder(), true)
+            .await
+            .unwrap();
+
+        assert!(snapshot.lockout);
+        assert!(snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn set_lockout_noop_keeps_show_file_clean() {
+        let state = ShellState::default();
+        let lifecycle = lifecycle_with_show(&state).await;
+
+        let snapshot = set_lockout_snapshot(state.clone(), lifecycle.command_bus_holder(), false)
+            .await
+            .unwrap();
+
+        assert!(!snapshot.lockout);
         assert!(!snapshot.show_file_dirty);
     }
 
