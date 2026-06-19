@@ -22,6 +22,7 @@ Move all `ShellState` source-of-truth state to its final owners in one refactor:
 - `AppLifecycle` owns runtime lifecycle state.
 - `lv1/`, `fade/`, and `logging/` keep their existing domain ownership.
 - `projector/` owns only a coalescing projection cache.
+- `AppEventBus` is app-lifetime state shared by show, lifecycle/runtime actors, and projector.
 
 Remove `ShellState` instead of adding a temporary compatibility facade.
 
@@ -74,6 +75,24 @@ No LV1 protocol behavior changes are part of this refactor.
 ### `projector/`
 
 The projector owns a cache only so it can coalesce changes and emit `AppViewState` at 10 Hz when dirty. It is not a source-of-truth owner.
+
+The projector owns `AppViewState.state_version`. Versions are projection sequence numbers, not show/runtime generation values. They start above the frontend's initial `0` and increase every time the projector emits an `AppViewState`.
+
+## Event Bus Lifetime
+
+There should be one app-lifetime `AppEventBus` managed at app setup and shared with:
+
+- `ShowStateHandle`
+- `AppLifecycle`
+- the active LV1 actor
+- the active fade engine
+- scene recall automation
+- projector
+- any event-driven monitors that remain after the cutover
+
+Runtime connection attempts must not create a disconnected event bus that isolates LV1/fade events from show events. Runtime actors may subscribe/publish for the active runtime generation, but they use the app-lifetime bus.
+
+This is required because show command handlers publish `ShowEvent` facts and the projector must observe those facts without polling `show`.
 
 ## Command And Effects Model
 
@@ -129,16 +148,38 @@ There is no projection dirty notifier outside these inputs.
 
 The projector cache is dirty when an event or log arrives. It emits at the existing 10 Hz cadence.
 
+The projector starts at app setup, not only after a successful LV1 connection. It owns the initial disconnected projection and emits the first `AppViewState` through `app-status-changed`. Startup, connect, reconnect, discovery, show-file, and command flows update source owners and publish events; they do not return or directly emit full app state.
+
 ### Show Events
 
 Show events must carry the current show-owned projection payload needed by the projector. The projector applies that payload with an `apply_show_state`-style cache update and does not pull state from `show`.
 
-`ShowEvent` should include:
+Define a show-owned projection DTO such as `ShowProjectionState` with exactly the show-owned fields needed by `AppViewState`:
+
+- `lockout`
+- `scene_configs`
+- `cued_scene_id`
+- `selected_scene_id`
+- `show_file_path`
+- derived or stored show-file display name
+- `show_file_dirty`
+- `show_file_last_saved_at`
+- `discovered_lv1_systems`
+- `connected_lv1_identity`
+- `pending_lv1_identity`
+- `reconnect`
+- `last_event_at`, if retained as a UI field
+
+`ShowProjectionState` is a DTO derived from private `ShowState`. It is not the source-of-truth state type.
+
+`ShowEvent` includes:
 
 - a reason enum for diagnostics/tests
-- the current show-owned state payload needed for `AppViewState`
+- `state: ShowProjectionState`
 
-This payload is a projection payload derived from `ShowState`; it is not the source-of-truth `ShowState` itself.
+Every show/app mutation that affects UI state publishes a `ShowEvent` carrying the full current `ShowProjectionState`. This avoids partial event replay and lets the projector replace its show-owned cache in one operation.
+
+The projector cache exposes `apply_show_state(state: ShowProjectionState)`. It must not call `ShowStateHandle`, `show.get_*`, `show.snapshot`, or any equivalent show read path.
 
 ### LV1 And Fade Events
 
@@ -173,6 +214,8 @@ Tauri commands must not:
 
 React updates app state only from `app-status-changed`. Command return values are command-specific results for control flow and user feedback, not app state snapshots.
 
+`get_app_status` should be removed or changed so it no longer returns `AppViewState`; recovery state delivery comes from projector emission. If a command exists only to force a refresh, it should request or cause a source-owner event rather than directly returning app state.
+
 ## Runtime Lifecycle Cutover
 
 Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLifecycle`.
@@ -189,6 +232,8 @@ Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLife
 
 Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect.
 
+Generation is runtime lifecycle state. It guards runtime handle installation, stale task cleanup, LV1/fade command routing, and reconnect/disconnect behavior. It is distinct from projector `state_version`.
+
 ## Show-Owned Connection Metadata
 
 Connection UI metadata currently stored in shell state moves to `show/`:
@@ -202,11 +247,22 @@ Commands and lifecycle operations that change this metadata should publish `Show
 
 `lv1/` still owns the live connection mirror. `show/` owns only app/UI metadata derived from discovery, connect intent, connected identity, and reconnect status.
 
+Connection metadata changes should be modeled as show-owned commands or show-owned command helpers called through `AppCommandBus` where practical. Lifecycle may coordinate runtime tasks, but UI metadata updates should still end by mutating private `ShowState` and publishing `ShowEvent`.
+
 ## Show-File Ownership
 
 Show-file DTO import/export, validation, selected-scene restoration, file metadata, dirty tracking, and operational logs are handled through `show::commands`.
 
 Native dialogs and physical file IO may remain adapter/infrastructure responsibilities, but command handlers own the state transaction around successful load/save/new operations.
+
+Saving should be an explicit two-step transaction:
+
+1. Tauri/infrastructure asks `AppCommandBus` to export the current show file DTO for a proposed `saved_at` timestamp.
+2. Tauri/infrastructure writes the file and backup successfully.
+3. Tauri/infrastructure calls `AppCommandBus` to mark the show saved with `path` and `saved_at`.
+4. The show command handler updates file metadata, marks the show clean, logs the save, and publishes `ShowEvent`.
+
+The show must not be marked clean before physical IO succeeds.
 
 The saved show-file format remains unchanged unless a separate design explicitly changes it.
 
@@ -232,15 +288,20 @@ The implementation should be a single cutover, not a compatibility-preserving se
 Expected structural changes:
 
 - Expand private `ShowState` to include all show-owned app/session fields.
-- Add a show-owned projection payload type for events and projector cache updates.
+- Add `ShowProjectionState` for events and projector cache updates.
 - Change `ShowEvent` to carry the current show-owned projection payload.
 - Move command logic from `ShellState` and Tauri command handlers into `show::commands`.
 - Move runtime handles and generation logic into `AppLifecycle`.
 - Remove `ShellState` and its tests or rewrite tests against `show::commands`, `AppCommandBus`, `AppLifecycle`, and projector cache.
 - Update `AppCommandBus` to route all app/session commands and queries.
 - Update projector cache to apply show state from events, not pull from show.
+- Move `state_version` ownership into projector cache as projection sequence state.
+- Start the projector at app setup so the frontend receives initial disconnected state from `app-status-changed`.
+- Use one app-lifetime `AppEventBus` shared by show, lifecycle/runtime actors, and projector.
 - Update React command handling so command returns are not applied as app state.
 - Remove direct command/log emits of `app-status-changed`.
+
+`ShowSnapshot` should not remain the name for source-of-truth state. During the cutover, either remove it or rename DTO usage to clarify intent, such as `ShowProjectionState` for UI projection and `ShowFileState` or existing show-file DTO names for persistence. If a DTO named `ShowSnapshot` remains temporarily, it must not be the source-of-truth type and should be targeted for removal in the same cutover.
 
 The branch does not need to compile at every intermediate edit. The final commit must compile, pass tests, and preserve safety behavior.
 
@@ -257,6 +318,9 @@ Add or update tests/static checks for these invariants:
 - Only projector code emits `app-status-changed`.
 - Projector does not pull state from `show`; it applies show state delivered by `ShowEvent`.
 - Show/app mutations publish `ShowEvent` carrying current show-owned projection payload.
+- There is one app-lifetime `AppEventBus`; runtime connect paths do not create isolated buses for projector-visible events.
+- Projector owns `state_version` and initial disconnected `AppViewState` emission.
+- Save commands do not mark the show clean before file IO succeeds.
 - Logs reach UI only through projector logging input.
 - UI-requested recall validation remains out of Tauri adapters.
 - CLI/probe binary remains buildable.
