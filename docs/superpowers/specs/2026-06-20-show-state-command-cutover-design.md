@@ -262,7 +262,7 @@ Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLife
 - clearing runtime handles for a matching generation
 - clearing reconnect/runtime state on disconnect
 
-Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect. Show-owned disconnect metadata cleanup must either receive and validate a generation or be called only from a listener/orchestrator that has already proven the disconnect belongs to the active generation, with tests covering stale disconnect events.
+Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect. Show-owned disconnect metadata cleanup is driven by generated disconnect facts on the app-lifetime `AppEventBus`. User-requested disconnect may publish that generated disconnect fact from lifecycle after aborting runtime handles, using the captured active generation and reason, but lifecycle must not directly mutate show-owned connection metadata.
 
 Generation is runtime lifecycle state. It guards runtime handle installation, stale task cleanup, LV1/fade command routing, reconnect/disconnect behavior, and runtime event projection. It is distinct from projector `state_version`.
 
@@ -279,7 +279,7 @@ Commands and lifecycle operations that change this metadata should publish `Show
 
 `lv1/` still owns the live connection mirror. `show/` owns only app/UI metadata derived from discovery, connect intent, connected identity, and reconnect status.
 
-Connection metadata changes should be modeled as show-owned commands or show-owned command helpers called through `AppCommandBus` where practical. Lifecycle may coordinate runtime tasks, but UI metadata updates should still end by mutating private `ShowState` and publishing `ShowEvent`.
+Connection metadata changes should be modeled as show-owned commands or show-owned command helpers called through `AppCommandBus`. Lifecycle may coordinate runtime tasks and publish runtime lifecycle facts, but UI metadata updates should still flow through the show-owned runtime listener into `AppCommandBus`, then mutate private `ShowState` and publish `ShowEvent`.
 
 `show/` is responsible for handling active-generation disconnect facts that affect show-owned connection metadata. The projector must not clear or rewrite those fields in response to LV1 events.
 

@@ -1258,7 +1258,7 @@ git commit -m "refactor: move runtime lifecycle into AppLifecycle"
 - Produces: `AppCommandBus::set_discovered_lv1_systems(systems) -> Result<ShowCommandResult, AppCommandError>`.
 - Produces: `AppCommandBus::set_pending_lv1_identity(identity) -> Result<ShowCommandResult, AppCommandError>`.
 - Produces: lifecycle-owned `connect_to_identity` orchestration.
-- Produces: lifecycle-owned disconnect cleanup that calls show command for metadata updates.
+- Produces: lifecycle-owned disconnect cleanup that publishes a generated LV1 disconnect fact; show metadata updates flow through the show-owned runtime listener and `AppCommandBus`.
 
 - [ ] **Step 1: Write failing app-lifetime bus test**
 
@@ -1443,7 +1443,7 @@ Add or update the show-owned runtime listener so it consumes `RuntimeLifecycleEv
 
 Define `ConnectFailureMode` in `src-tauri/src/lifecycle/mod.rs` so lifecycle-owned connect orchestration does not depend on `ui/commands.rs`.
 
-- [ ] **Step 7: Move disconnect handling into lifecycle and show commands**
+- [ ] **Step 7: Move disconnect handling into lifecycle and generated event flow**
 
 Implement `AppLifecycle::disconnect_current_runtime(&self) -> Result<ShowCommandResult, String>`:
 
@@ -1451,16 +1451,20 @@ Implement `AppLifecycle::disconnect_current_runtime(&self) -> Result<ShowCommand
 pub async fn disconnect_current_runtime(&self) -> Result<ShowCommandResult, String> {
     let generation = self.active_generation().await;
     self.abort_current_runtime().await;
-    Ok(crate::show::commands::handle_runtime_disconnected(
-        &self.show,
+    let reason = "Disconnected by user".to_string();
+    self.event_bus.publish_lv1(
         generation,
-        "Disconnected by user".to_string(),
-    )
-    .await)
+        crate::lv1::events::Lv1Event::Disconnected {
+            reason: reason.clone(),
+        },
+    );
+    Ok(ShowCommandResult { changed: true })
 }
 ```
 
-Do not fetch `current_command_bus()` after aborting runtime handles in this method. The disconnect metadata update uses the lifecycle-owned `ShowStateHandle` directly through `show::commands::handle_runtime_disconnected`.
+Lifecycle does not call `show::commands::handle_runtime_disconnected` or `AppCommandBus::handle_runtime_disconnected` directly for user-requested disconnect cleanup. Intentional disconnect must reliably publish a generated LV1 disconnect fact after runtime abort using the captured active generation. The show-owned runtime listener receives that fact and drives show-owned connection metadata through `AppCommandBus::handle_runtime_disconnected(generation, reason)`. The command result only acknowledges that lifecycle published the disconnect fact; app state changes still arrive through the projector event path.
+
+Add a test for `disconnect_current_runtime` that proves a connected identity is cleared by the listener/command-bus path after the generated disconnect fact, and that the projector receives the same generated disconnect fact for LV1-owned projection cleanup.
 
 - [ ] **Step 8: Run connection command tests**
 
