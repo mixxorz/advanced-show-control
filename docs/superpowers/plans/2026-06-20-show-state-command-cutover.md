@@ -803,7 +803,16 @@ pub async fn set_active_runtime_generation(show: &ShowStateHandle, generation: u
 pub async fn handle_runtime_disconnected(show: &ShowStateHandle, generation: u64, reason: String) -> ShowCommandResult
 ```
 
-`handle_runtime_disconnected` first validates `generation` against the show-owned active runtime generation tracked from `RuntimeLifecycleEvent::ActiveGenerationChanged`. If stale, it returns `ShowCommandResult { changed: false }` and publishes nothing. If active, it clears `connected_lv1_identity` and `pending_lv1_identity`, sets reconnect metadata according to current behavior from `ShellState`, and publishes `ShowProjectionReason::Disconnected`.
+`handle_runtime_disconnected` first validates `generation` against the show-owned active runtime generation tracked from `RuntimeLifecycleEvent::ActiveGenerationChanged`. If stale, it returns `ShowCommandResult { changed: false }` and publishes nothing. If active, it applies this exact transition and publishes `ShowProjectionReason::Disconnected` only when at least one visible field changed:
+
+- `connected_lv1_identity = None`
+- `pending_lv1_identity = None`
+- `reconnect.active = false`
+- `reconnect.attempt = 0`
+- `reconnect.reason = Some(reason)` if the existing `ReconnectState` has a reason/message field; otherwise store the disconnect reason in `last_event_at` only if current behavior already uses that field for event text
+- `last_event_at = Some(current_timestamp_millis())`
+
+Do not clear discovered systems, selected scene, cued scene, show-file metadata, scene configs, lockout, or active runtime generation.
 
 `set_active_runtime_generation` updates the show-owned active runtime generation used only for stale runtime fact filtering. It should not publish a `ShowEvent` unless a visible show-owned field changes.
 
@@ -1355,19 +1364,22 @@ git commit -m "refactor: move runtime lifecycle into AppLifecycle"
 - Produces: lifecycle-owned `connect_to_identity` orchestration.
 - Produces: lifecycle-owned disconnect cleanup that publishes a generated LV1 disconnect fact; show metadata updates flow through the show-owned runtime listener and `AppCommandBus`.
 
-- [ ] **Step 1: Write failing disconnected command-bus test**
+- [ ] **Step 1: Write failing disconnected discovery command-bus test**
 
 In `src-tauri/src/lifecycle/mod.rs` tests, add:
 
 ```rust
 #[tokio::test]
-async fn disconnected_show_commands_use_app_lifetime_command_bus() {
+async fn disconnected_discovery_metadata_uses_app_lifetime_command_bus() {
     let event_bus = AppEventBus::default();
     let show = ShowStateHandle::new_empty(event_bus.clone());
     let lifecycle = AppLifecycle::new(event_bus, show);
     let bus = lifecycle.current_command_bus().await;
 
-    let result = bus.set_lockout(true).await.unwrap();
+    let result = bus
+        .set_discovered_lv1_systems(vec![discovered_system("10.0.0.2")])
+        .await
+        .unwrap();
 
     assert!(result.changed);
 }
@@ -1429,7 +1441,7 @@ async fn stale_generation_disconnect_does_not_clear_show_owned_connection_metada
 Run:
 
 ```bash
-cargo nextest run -p advanced-show-control lifecycle::tests::disconnected_show_commands_use_app_lifetime_command_bus show::commands::tests::active_generation_disconnect_clears_show_owned_connection_metadata
+cargo nextest run -p advanced-show-control lifecycle::tests::disconnected_discovery_metadata_uses_app_lifetime_command_bus show::commands::tests::active_generation_disconnect_clears_show_owned_connection_metadata
 ```
 
 Expected: fail until commands/lifecycle are wired.
@@ -1647,7 +1659,7 @@ Delete `src-tauri/src/commands.rs` and remove `pub mod commands;` from `src-taur
 Run:
 
 ```bash
-cargo nextest run -p advanced-show-control ui::tests commands::tests
+cargo nextest run -p advanced-show-control ui::commands
 ```
 
 ```bash
