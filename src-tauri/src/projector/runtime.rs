@@ -3,11 +3,9 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::{broadcast, oneshot};
 
-use crate::app_state::ShellState;
 use crate::logging::UiLogEvent;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
-use crate::show::events::ShowProjectionState;
 
 use super::ProjectionCache;
 
@@ -15,7 +13,7 @@ pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct ProjectorInputs<R: Runtime> {
     pub app: AppHandle<R>,
-    pub shell_state: ShellState,
+    pub initial_view_state: Option<crate::app_state::AppViewState>,
     pub generation: u64,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
@@ -26,7 +24,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
     tokio::spawn(async move {
         let ProjectorInputs {
             app,
-            shell_state,
+            initial_view_state,
             generation,
             mut events,
             mut logs,
@@ -44,24 +42,10 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         );
 
         let mut cache = ProjectionCache::new();
-        let snapshot = shell_state.snapshot().await;
-        cache.seed_from_view_state(&snapshot);
         cache.set_active_generation(generation);
-        cache.apply_show_state(ShowProjectionState {
-            lockout: snapshot.lockout,
-            scene_configs: snapshot.scene_configs,
-            cued_scene_id: snapshot.cued_scene_id,
-            selected_scene_id: snapshot.selected_scene_id,
-            show_file_path: snapshot.show_file_path.map(Into::into),
-            show_file_name: snapshot.show_file_name,
-            show_file_dirty: snapshot.show_file_dirty,
-            show_file_last_saved_at: snapshot.show_file_last_saved_at,
-            discovered_lv1_systems: snapshot.discovered_lv1_systems,
-            connected_lv1_identity: snapshot.connected_lv1_identity,
-            pending_lv1_identity: snapshot.pending_lv1_identity,
-            reconnect: snapshot.reconnect,
-            last_event_at: snapshot.last_event_at,
-        });
+        if let Some(initial_view_state) = initial_view_state {
+            cache.seed_from_view_state(&initial_view_state);
+        }
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
@@ -139,7 +123,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::LogSeverity;
+    use crate::app_state::{AppViewState, LogSeverity};
     use crate::runtime::events::AppEventBus;
     use crate::show::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
     use std::sync::{Arc, Mutex};
@@ -147,7 +131,7 @@ mod tests {
 
     fn spawn_started_projector(
         handle: AppHandle<impl Runtime>,
-        state: ShellState,
+        initial_view_state: Option<AppViewState>,
         generation: u64,
         events: broadcast::Receiver<AppEvent>,
         logs: broadcast::Receiver<UiLogEvent>,
@@ -155,7 +139,7 @@ mod tests {
         let (start_tx, start_rx) = oneshot::channel();
         let projector = spawn_projector(ProjectorInputs {
             app: handle,
-            shell_state: state,
+            initial_view_state,
             generation,
             events,
             logs,
@@ -170,7 +154,6 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
-        let state = ShellState::new(event_bus.clone());
         let (log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -180,7 +163,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, None, 0, event_bus.subscribe(), log_rx);
 
         log_tx
             .send(UiLogEvent {
@@ -235,8 +218,6 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
-        let state = ShellState::new(event_bus.clone());
-        state.show.set_lockout(true).await;
         let (_log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -246,7 +227,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, None, 0, event_bus.subscribe(), log_rx);
 
         event_bus.publish(AppEvent::Show(ShowEvent::StateChanged {
             reason: ShowProjectionReason::ShowState,
@@ -278,7 +259,6 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
-        let state = ShellState::new(event_bus.clone());
         let (_log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -288,7 +268,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, None, 0, event_bus.subscribe(), log_rx);
 
         let event = AppEvent::Show(ShowEvent::StateChanged {
             reason: ShowProjectionReason::ShowState,

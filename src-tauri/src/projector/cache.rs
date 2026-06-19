@@ -94,9 +94,6 @@ impl ProjectionCache {
             }
             Lv1Event::Disconnected { .. } => {
                 self.lv1_snapshot = None;
-                self.connected_lv1_identity = None;
-                self.pending_lv1_identity = None;
-                self.reconnect_state = ReconnectState::default();
             }
             Lv1Event::SceneChanged(scene) => {
                 self.ensure_lv1_snapshot().scene = Some(scene.clone());
@@ -447,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_clears_connection_metadata_on_disconnect() {
+    fn cache_clears_lv1_snapshot_on_disconnect() {
         let mut cache = ProjectionCache::new();
 
         cache.connected_lv1_identity = Some(Lv1SystemIdentity {
@@ -477,9 +474,61 @@ mod tests {
         let snapshot = cache.build_snapshot();
 
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
-        assert_eq!(snapshot.connected_lv1_identity, None);
-        assert_eq!(snapshot.pending_lv1_identity, None);
-        assert_eq!(snapshot.reconnect, ReconnectState::default());
+        assert!(snapshot.current_scene.is_none());
+        assert_eq!(snapshot.scenes.len(), 0);
+    }
+
+    #[test]
+    fn lv1_disconnect_does_not_clear_show_owned_connection_metadata() {
+        let mut cache = ProjectionCache::new();
+
+        let connected_identity = Lv1SystemIdentity {
+            uuid: Some("connected-uuid".to_string()),
+            host: Some("lv1.local".to_string()),
+            address: "192.0.2.10".to_string(),
+            port: 7788,
+        };
+        let pending_identity = Lv1SystemIdentity {
+            uuid: Some("pending-uuid".to_string()),
+            host: Some("pending.local".to_string()),
+            address: "192.0.2.11".to_string(),
+            port: 7788,
+        };
+        let reconnect = ReconnectState {
+            active: true,
+            attempt: 42,
+        };
+
+        cache.apply_show_state(ShowProjectionState {
+            lockout: false,
+            scene_configs: Vec::new(),
+            cued_scene_id: None,
+            selected_scene_id: None,
+            show_file_path: None,
+            show_file_name: "Untitled Show".to_string(),
+            show_file_dirty: false,
+            show_file_last_saved_at: None,
+            discovered_lv1_systems: Vec::new(),
+            connected_lv1_identity: Some(connected_identity.clone()),
+            pending_lv1_identity: Some(pending_identity.clone()),
+            reconnect: reconnect.clone(),
+            last_event_at: None,
+        });
+
+        let changed = cache.apply_lv1_event(
+            0,
+            &Lv1Event::Disconnected {
+                reason: "link lost".to_string(),
+            },
+        );
+
+        let snapshot = cache.build_snapshot();
+
+        assert!(changed);
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.connected_lv1_identity, Some(connected_identity));
+        assert_eq!(snapshot.pending_lv1_identity, Some(pending_identity));
+        assert_eq!(snapshot.reconnect, reconnect);
     }
 
     #[test]

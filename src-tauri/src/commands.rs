@@ -827,7 +827,6 @@ async fn connect_to_target<R: Runtime>(
     let _installed_snapshot = install_connected_runtime(
         &app,
         &state,
-        shell_state,
         generation,
         snapshot,
         events,
@@ -924,7 +923,6 @@ async fn startup_discovery_or_current_snapshot(
 async fn install_connected_runtime<R: Runtime>(
     app: &AppHandle<R>,
     state: &ShellState,
-    shell_state: ShellState,
     generation: u64,
     snapshot: AppViewState,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -936,7 +934,7 @@ async fn install_connected_runtime<R: Runtime>(
     let show_events = events.resubscribe();
     runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
         app: app.clone(),
-        shell_state,
+        initial_view_state: Some(snapshot.clone()),
         generation,
         events,
         logs: ui_log_receiver(app)?,
@@ -1056,7 +1054,6 @@ mod tests {
 
     fn spawn_started_projector<R: Runtime>(
         handle: AppHandle<R>,
-        state: ShellState,
         generation: u64,
         events: tokio::sync::broadcast::Receiver<AppEvent>,
         logs: tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>,
@@ -1064,7 +1061,7 @@ mod tests {
         let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
-            shell_state: state,
+            initial_view_state: None,
             generation,
             events,
             logs,
@@ -1079,7 +1076,7 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
-        let state = ShellState::new(event_bus.clone());
+        let _state = ShellState::new(event_bus.clone());
         let (log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -1091,7 +1088,7 @@ mod tests {
 
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
-            shell_state: state,
+            initial_view_state: None,
             generation: 0,
             events: event_bus.subscribe(),
             logs: log_rx,
@@ -1549,8 +1546,7 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
         let event_bus = AppEventBus::default();
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-        let projector =
-            spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, generation, event_bus.subscribe(), log_rx);
 
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
@@ -1987,7 +1983,6 @@ mod tests {
         let snapshot = install_connected_runtime(
             &handle,
             &state,
-            state.clone(),
             generation,
             initial_snapshot,
             events,
@@ -2049,7 +2044,6 @@ mod tests {
         install_connected_runtime(
             &handle,
             &state,
-            state.clone(),
             generation,
             initial_snapshot,
             event_bus.subscribe(),
@@ -2119,8 +2113,7 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-        let projector =
-            spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, generation, event_bus.subscribe(), log_rx);
 
         for gain_db in [1.0, 2.0, 3.0] {
             event_bus.publish(AppEvent::Lv1 {
@@ -2191,8 +2184,7 @@ mod tests {
 
         let event_bus = AppEventBus::new(4);
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-        let projector =
-            spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, generation, event_bus.subscribe(), log_rx);
 
         for gain_db in 0..32 {
             event_bus.publish(AppEvent::Lv1 {
@@ -2263,7 +2255,6 @@ mod tests {
         install_connected_runtime(
             &handle,
             &state,
-            state.clone(),
             stale_generation,
             stale_snapshot,
             AppEventBus::default().subscribe(),
@@ -2308,7 +2299,6 @@ mod tests {
         install_connected_runtime(
             &handle,
             &state,
-            state.clone(),
             generation,
             initial_snapshot,
             event_bus.subscribe(),
@@ -2357,7 +2347,6 @@ mod tests {
             install_connected_runtime(
                 &handle,
                 &state,
-                state.clone(),
                 generation,
                 initial_snapshot,
                 AppEventBus::default().subscribe(),
