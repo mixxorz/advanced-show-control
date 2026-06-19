@@ -704,7 +704,12 @@ async fn drain_show_events(events: &mut tokio::sync::broadcast::Receiver<AppEven
 Run:
 
 ```bash
-cargo nextest run -p advanced-show-control show::commands::tests::new_show_file_updates_metadata_and_publishes_state show::commands::tests::changed_scene_duration_marks_show_dirty_in_command
+cargo nextest run -p advanced-show-control \
+  show::commands::tests::new_show_file_updates_metadata_and_publishes_state \
+  show::commands::tests::changed_scene_duration_marks_show_dirty_in_command \
+  show::commands::tests::load_show_file_sets_metadata_restores_selection_and_publishes_once \
+  show::commands::tests::load_show_file_marks_dirty_when_invalid_entries_are_pruned \
+  show::commands::tests::load_show_file_falls_back_when_saved_selection_is_absent
 ```
 
 Expected: fail because commands do not yet update all metadata/publish desired reasons.
@@ -1623,17 +1628,20 @@ The method should:
 - abort current runtime handles
 - call `begin_connecting` for a new generation after old runtime handles are cleared
 - get `self.current_command_bus().await`; do not create a new `AppCommandBus`
-- spawn LV1 actor and fade engine with the app-lifetime bus and generation
-- spawn scene recall fader with generation
-- package the spawned handles/tasks into `RuntimeHandles` without installing command-bus runtime targets yet
+- construct LV1 actor and fade engine handles/tasks in a paused/not-yet-producing state tagged with generation; do not let them publish runtime facts yet
+- package the paused handles/tasks into `RuntimeHandles` without installing command-bus runtime targets yet
 - call `install_runtime(generation, handles)`
 - if `install_runtime` rejects the generation, immediately abort the returned handles, leave command-bus runtime targets unchanged, and return a stale-generation error
 - if `install_runtime` accepts the generation, set generation-scoped LV1 and fade runtime targets on the app-lifetime command bus with `set_runtime_targets(generation, lv1, fade)`
+- only after command-bus runtime targets are installed, start/resume LV1 actor and fade engine event-producing loops
+- only after command-bus runtime targets are installed, spawn/start the scene recall fader with generation
 - update pending/connected identity through `AppCommandBus`
 - publish show events through show commands
 - never emit `app-status-changed` directly
 
-The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade producers before that event has been published. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes that event and generated LV1 disconnect facts.
+The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade/scene-recall event producers before that event has been published and before command-bus runtime targets are installed. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes that event and generated LV1 disconnect facts.
+
+Add a connection-ordering test with fake paused runtime handles: trigger an initial scene-change/recall fact before `set_runtime_targets` and assert it is not published or processed; then start the producers after `set_runtime_targets` and assert scene recall can see LV1/fade targets through `AppCommandBus`. If fake handles are not practical, expose a lifecycle test seam that records call order and assert `set_runtime_targets` occurs before any runtime producer start call.
 
 `clear_runtime_targets(generation)` must clear LV1/fade targets only when `generation` matches the currently installed runtime target generation. Stale cleanup must not clear newer runtime targets.
 
@@ -1671,6 +1679,12 @@ async fn disconnect_current_runtime_publishes_active_generation_disconnect_befor
     let show = ShowStateHandle::new_empty(event_bus.clone());
     let lifecycle = AppLifecycle::new(event_bus.clone(), show.clone());
     let generation = lifecycle.begin_connecting().await.unwrap();
+    lifecycle
+        .current_command_bus()
+        .await
+        .set_active_runtime_generation(generation)
+        .await
+        .unwrap();
     establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
 
     lifecycle.disconnect_current_runtime().await.unwrap();
@@ -1695,6 +1709,57 @@ async fn disconnect_current_runtime_publishes_active_generation_disconnect_befor
     assert!(state.pending_lv1_identity.is_none());
 }
 ```
+
+Also add a separate monitor-ordering test that proves the listener path works without racing the active-generation update:
+
+```rust
+#[tokio::test]
+async fn show_runtime_metadata_monitor_clears_disconnect_after_generation_update() {
+    let event_bus = AppEventBus::default();
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
+    let command_bus = AppCommandBus::new();
+    command_bus.set_show_target(show.clone());
+    let monitor = spawn_show_runtime_metadata_monitor(event_bus.subscribe(), command_bus);
+    let generation = 9;
+
+    event_bus.publish_runtime_generation_changed(generation);
+    for _ in 0..10 {
+        if show.active_runtime_generation_for_test().await == generation {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(show.active_runtime_generation_for_test().await, generation);
+
+    event_bus.publish_lv1(
+        generation,
+        Lv1Event::Disconnected {
+            reason: "test disconnect".to_string(),
+        },
+    );
+    for _ in 0..10 {
+        let state = show.projection_state_for_test().await;
+        if state.connected_lv1_identity.is_none() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+
+    let state = show.projection_state_for_test().await;
+    assert!(state.connected_lv1_identity.is_none());
+    assert!(state.pending_lv1_identity.is_none());
+    monitor.abort();
+}
+```
+
+`clear_runtime_after_disconnect(generation)` must do generation-checked cleanup in this order:
+
+- clear app-command-bus LV1/fade runtime targets only if their installed generation equals `generation`
+- clear/abort lifecycle runtime handles only if the lifecycle active generation still equals `generation`
+- then advance to a new inactive generation and publish `RuntimeLifecycleEvent::ActiveGenerationChanged { generation: new_generation }` so late facts from aborted tasks with the old generation are ignored by projector and show runtime metadata monitor
+
+If cleanup observes that a newer generation is already active, it must not clear targets or publish a replacement generation.
 
 - [ ] **Step 8: Run connection command tests**
 
