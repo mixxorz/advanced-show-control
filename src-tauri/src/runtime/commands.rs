@@ -8,7 +8,8 @@ use crate::fade::types::FadeConfig;
 use crate::lv1::commands::Lv1ParameterWrite;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::handle::Lv1ActorHandle;
-use crate::lv1::types::Lv1StateSnapshot;
+use crate::lv1::types::{ChannelInfo, Lv1StateSnapshot};
+use crate::show::commands::{CueSceneResult, SelectedSceneResult, ShowCommandResult};
 use crate::show::handle::ShowStateHandle;
 use crate::show::types::{SceneConfig, ShowSnapshot};
 
@@ -125,6 +126,105 @@ impl AppCommandBus {
             Some(show) => Ok(show.get_lockout().await),
             None => Err(AppCommandError::ShowUnavailable),
         }
+    }
+
+    async fn show_target(&self) -> Result<ShowStateHandle, AppCommandError> {
+        self.targets
+            .lock()
+            .await
+            .show
+            .clone()
+            .ok_or(AppCommandError::ShowUnavailable)
+    }
+
+    pub async fn set_lockout(&self, enabled: bool) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::set_lockout(&show, enabled).await)
+    }
+
+    pub async fn set_scene_duration_ms(
+        &self,
+        scene_id: String,
+        duration_ms: u64,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::set_scene_duration_ms(&show, scene_id, duration_ms)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn set_scene_scope_faders_enabled(
+        &self,
+        scene_id: String,
+        enabled: bool,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::set_scene_scope_faders_enabled(&show, scene_id, enabled)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn set_scene_scope_pan_enabled(
+        &self,
+        scene_id: String,
+        enabled: bool,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::set_scene_scope_pan_enabled(&show, scene_id, enabled)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn set_channel_scoped(
+        &self,
+        scene_id: String,
+        group: i32,
+        channel: i32,
+        scoped: bool,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::set_channel_scoped(&show, scene_id, group, channel, scoped)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn set_all_channels_scoped(
+        &self,
+        scene_id: String,
+        scoped: bool,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::set_all_channels_scoped(&show, scene_id, scoped)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn cue_scene(&self, scene_id: String) -> Result<CueSceneResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::cue_scene(&show, scene_id)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn select_scene_config(
+        &self,
+        scene_id: String,
+    ) -> Result<SelectedSceneResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::select_scene_config(&show, scene_id)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn store_scene_config(
+        &self,
+        scene_id: String,
+        channels: Vec<ChannelInfo>,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::store_scene_config(&show, scene_id, channels)
+            .await
+            .map_err(AppCommandError::CommandFailed)
     }
 
     pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
@@ -321,8 +421,53 @@ mod tests {
     use crate::fade::commands::FadeCommand;
     use crate::fade::curve::FadeCurve;
     use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
+    use crate::lv1::types::ChannelInfo;
     use crate::runtime::events::AppEventBus;
     use crate::show::handle::ShowStateHandle;
+    use crate::show::types::{ChannelConfig, SceneConfig, SceneScopeToggles, ShowSnapshot};
+
+    fn scene_config() -> SceneConfig {
+        SceneConfig {
+            scene_id: "1::Intro".to_string(),
+            scene_index: 1,
+            scene_name: "Intro".to_string(),
+            duration_ms: 0,
+            channel_configs: vec![ChannelConfig {
+                group: 0,
+                channel: 1,
+                fader_db: Some(-12.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            scoped_channels: Vec::new(),
+            scope_toggles: SceneScopeToggles::default(),
+        }
+    }
+
+    fn channel_info() -> ChannelInfo {
+        ChannelInfo {
+            group: 0,
+            channel: 1,
+            name: "Vocal".to_string(),
+            gain_db: -12.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }
+    }
+
+    async fn bus_with_show_snapshot(snapshot: ShowSnapshot) -> (AppCommandBus, AppEventBus) {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        show.replace_snapshot(snapshot).await;
+        let bus = AppCommandBus::new();
+        bus.set_show(Some(show)).await;
+        (bus, event_bus)
+    }
 
     #[tokio::test]
     async fn command_bus_constructs_without_event_bus() {
@@ -494,6 +639,230 @@ mod tests {
 
         assert!(!snapshot.lockout);
         assert!(snapshot.scene_configs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_lockout_routes_to_show_state() {
+        let (bus, event_bus) = bus_with_show_snapshot(ShowSnapshot::empty()).await;
+        let mut events = event_bus.subscribe();
+
+        let result = bus.set_lockout(true).await.unwrap();
+
+        assert!(result.changed);
+        assert!(bus.get_show_snapshot().await.unwrap().lockout);
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            crate::runtime::events::AppEvent::Show(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn set_scene_duration_routes_to_show_state() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let result = bus
+            .set_scene_duration_ms("1::Intro".to_string(), 2_500)
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+        let updated = bus
+            .get_scene_config("1::Intro".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.duration_ms, 2_500);
+    }
+
+    #[tokio::test]
+    async fn scope_edit_routes_to_show_state() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let result = bus
+            .set_channel_scoped("1::Intro".to_string(), 0, 1, true)
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+        let updated = bus
+            .get_scene_config("1::Intro".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.scoped_channels.len(), 1);
+        assert_eq!(updated.scoped_channels[0].group, 0);
+        assert_eq!(updated.scoped_channels[0].channel, 1);
+    }
+
+    #[tokio::test]
+    async fn all_channels_scope_routes_to_show_state() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let result = bus
+            .set_all_channels_scoped("1::Intro".to_string(), true)
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+        let updated = bus
+            .get_scene_config("1::Intro".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.scoped_channels.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn scene_scope_toggles_route_to_show_state() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let faders = bus
+            .set_scene_scope_faders_enabled("1::Intro".to_string(), false)
+            .await
+            .unwrap();
+        let pan = bus
+            .set_scene_scope_pan_enabled("1::Intro".to_string(), true)
+            .await
+            .unwrap();
+
+        assert!(faders.changed);
+        assert!(pan.changed);
+        let updated = bus
+            .get_scene_config("1::Intro".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!updated.scope_toggles.faders);
+        assert!(updated.scope_toggles.pan);
+    }
+
+    #[tokio::test]
+    async fn cue_scene_routes_to_show_state_and_returns_scene() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let result = bus.cue_scene("1::Intro".to_string()).await.unwrap();
+
+        assert!(result.changed);
+        assert_eq!(result.scene.scene_id, "1::Intro");
+        assert_eq!(
+            bus.get_show_snapshot().await.unwrap().cued_scene_id,
+            Some("1::Intro".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn select_scene_config_validates_through_show_state() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let result = bus
+            .select_scene_config("1::Intro".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(result.scene.scene_id, "1::Intro");
+    }
+
+    #[tokio::test]
+    async fn store_scene_config_routes_to_show_state_with_lv1_channels() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let result = bus
+            .store_scene_config("1::Intro".to_string(), vec![channel_info()])
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+        let updated = bus
+            .get_scene_config("1::Intro".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.channel_configs.len(), 1);
+        assert_eq!(updated.channel_configs[0].fader_db, Some(-12.0));
+    }
+
+    #[tokio::test]
+    async fn low_risk_show_commands_return_show_unavailable_without_target() {
+        let bus = AppCommandBus::new();
+
+        assert_eq!(
+            bus.set_lockout(true).await.unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.set_scene_duration_ms("1::Intro".to_string(), 100)
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.set_channel_scoped("1::Intro".to_string(), 0, 1, true)
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.set_all_channels_scoped("1::Intro".to_string(), true)
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.set_scene_scope_faders_enabled("1::Intro".to_string(), false)
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.set_scene_scope_pan_enabled("1::Intro".to_string(), true)
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.cue_scene("1::Intro".to_string()).await.unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.select_scene_config("1::Intro".to_string())
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.store_scene_config("1::Intro".to_string(), vec![channel_info()])
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
     }
 
     #[tokio::test]
