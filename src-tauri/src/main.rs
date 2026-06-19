@@ -1,6 +1,6 @@
 use advanced_show_control::app_state::ShellState;
 use advanced_show_control::commands;
-use advanced_show_control::commands::ActiveCommandBus;
+use advanced_show_control::lifecycle::ActiveCommandBus;
 use advanced_show_control::logging;
 use tauri::Manager;
 

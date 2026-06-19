@@ -1,4 +1,5 @@
 use crate::fade::actor::spawn_engine;
+use crate::lifecycle::ActiveCommandBus;
 use crate::lv1::actor::spawn_actor;
 use crate::lv1::discovery::resolve_target;
 use crate::lv1::events::Lv1Event;
@@ -6,9 +7,7 @@ use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::scene_recall::spawn_scene_recall_fader;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
-use tokio::sync::Mutex;
 use tokio::task::spawn_blocking;
 
 use crate::app_state::{
@@ -19,19 +18,6 @@ use crate::show_file::{backup_folder, default_show_folder, read_show_file, write
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
 const MAX_DISCOVERY_TIMEOUT_MS: u64 = 6000;
-
-#[derive(Clone, Default)]
-pub struct ActiveCommandBus(pub Arc<Mutex<Option<AppCommandBus>>>);
-
-impl ActiveCommandBus {
-    pub async fn set(&self, command_bus: Option<AppCommandBus>) {
-        *self.0.lock().await = command_bus;
-    }
-
-    pub async fn current(&self) -> Option<AppCommandBus> {
-        self.0.lock().await.clone()
-    }
-}
 
 #[tauri::command]
 pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppViewState, String> {

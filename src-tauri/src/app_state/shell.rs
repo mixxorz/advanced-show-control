@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::lifecycle::ActiveCommandBus;
 use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use crate::runtime::commands::AppCommandBus;
 use crate::show::handle::ShowStateHandle;
@@ -10,7 +11,6 @@ use crate::show::types::ShowSnapshot;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::commands::ActiveCommandBus;
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
 use super::view::{
@@ -722,7 +722,7 @@ mod tests {
             scene_recall_fader: None,
         };
 
-        let active_command_bus = crate::commands::ActiveCommandBus::default();
+        let active_command_bus = crate::lifecycle::ActiveCommandBus::default();
 
         match state
             .install_runtime_handles(generation, current_handles, &active_command_bus)
@@ -758,7 +758,7 @@ mod tests {
     async fn replacement_connect_cleanup_aborts_existing_runtime_and_clears_command_bus() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        let active_command_bus = crate::commands::ActiveCommandBus::default();
+        let active_command_bus = crate::lifecycle::ActiveCommandBus::default();
         let command_bus = AppCommandBus::new(crate::runtime::events::AppEventBus::default());
 
         let installed = state
