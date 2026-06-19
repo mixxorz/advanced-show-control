@@ -4,10 +4,11 @@
 //! boundaries. Business logic should route through `crate::runtime::commands::AppCommandBus`.
 
 use crate::app_state::ShellState;
-use crate::commands;
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use tauri::Manager;
+
+pub mod commands;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
@@ -52,5 +53,14 @@ mod tests {
     #[test]
     fn build_app_constructs_builder() {
         let _builder = super::build_app();
+    }
+
+    #[test]
+    fn command_adapter_exports_existing_command_names() {
+        let _ = super::commands::get_app_status;
+        let _ = super::commands::connect_lv1;
+        let _ = super::commands::disconnect_lv1;
+        let _ = super::commands::recall_scene;
+        let _ = super::commands::set_lockout;
     }
 }
