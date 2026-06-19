@@ -489,7 +489,7 @@ mod tests {
             if matches!(
                 event,
                 AppEvent::SceneRecall {
-                    generation: 0,
+                    generation: 1,
                     event: crate::scene_recall::events::SceneRecallEvent::StartRequested { .. }
                 }
             ) {
@@ -860,11 +860,11 @@ mod tests {
         for _ in 0..2 {
             match next_app_event(&mut events).await {
                 AppEvent::SceneRecall {
-                    generation: 0,
+                    generation: 1,
                     event: SceneRecallEvent::Ready { .. },
                 } => seen_ready = true,
                 AppEvent::SceneRecall {
-                    generation: 0,
+                    generation: 1,
                     event: SceneRecallEvent::StartRequested { .. },
                 } => seen_start_requested = true,
                 other => panic!("unexpected event: {other:?}"),
@@ -1021,7 +1021,7 @@ mod tests {
             let event = events.recv().await.unwrap();
             match event {
                 AppEvent::SceneRecall {
-                    generation: 0,
+                    generation: 1,
                     event: _,
                 } => return event,
                 _ => continue,
@@ -1034,7 +1034,7 @@ mod tests {
     ) -> SceneRecallEvent {
         loop {
             if let AppEvent::SceneRecall {
-                generation: 0,
+                generation: 1,
                 event,
             } = events.recv().await.unwrap()
             {

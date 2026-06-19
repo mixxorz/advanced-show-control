@@ -1060,7 +1060,7 @@ mod tests {
         while let Ok(event) = events.try_recv() {
             match event {
                 AppEvent::Fade {
-                    generation: 7,
+                    generation: 0,
                     event:
                         FadeEvent::ChannelOverride {
                             group,
