@@ -1,6 +1,7 @@
 //! Show-owned application command handlers.
 
 use crate::lv1::types::ChannelInfo;
+use crate::show::show_file::{LoadValidationReport, ShowFile, export_show_file, import_show_file};
 
 use super::handle::ShowStateHandle;
 use super::types::SceneConfig;
@@ -19,6 +20,18 @@ pub struct CueSceneResult {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectedSceneResult {
     pub scene: SceneConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewShowFileResult {
+    pub selected_scene_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoadShowFileResult {
+    pub selected_scene_id: Option<String>,
+    pub saved_at: String,
+    pub report: LoadValidationReport,
 }
 
 pub async fn set_lockout(show: &ShowStateHandle, enabled: bool) -> ShowCommandResult {
@@ -116,5 +129,45 @@ pub async fn store_scene_config(
 
     Ok(ShowCommandResult {
         changed: show.store_scene_config(scene_id, channels).await?,
+    })
+}
+
+pub async fn new_show_file(
+    show: &ShowStateHandle,
+    lv1: Option<crate::lv1::types::Lv1StateSnapshot>,
+) -> Result<NewShowFileResult, String> {
+    show.clear().await;
+    if let Some(lv1) = lv1
+        && !lv1.scene_list.is_empty()
+    {
+        show.reconcile_scene_list(lv1.scene_list).await;
+    }
+
+    let selected_scene_id = show
+        .get_snapshot()
+        .await
+        .scene_configs
+        .first()
+        .map(|scene| scene.scene_id.clone());
+
+    Ok(NewShowFileResult { selected_scene_id })
+}
+
+pub async fn export_show_file_for_save(show: &ShowStateHandle, saved_at: String) -> ShowFile {
+    export_show_file(show.get_snapshot().await, saved_at)
+}
+
+pub async fn load_show_file_from_dto(
+    show: &ShowStateHandle,
+    file: &mut ShowFile,
+    lv1: crate::lv1::types::Lv1StateSnapshot,
+) -> Result<LoadShowFileResult, String> {
+    let imported = import_show_file(file, &lv1)?;
+    show.replace_snapshot(imported.snapshot).await;
+
+    Ok(LoadShowFileResult {
+        selected_scene_id: imported.selected_scene_id,
+        saved_at: file.saved_at.clone(),
+        report: imported.report,
     })
 }

@@ -9,8 +9,11 @@ use crate::lv1::commands::Lv1ParameterWrite;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::types::{ChannelInfo, Lv1StateSnapshot};
-use crate::show::commands::{CueSceneResult, SelectedSceneResult, ShowCommandResult};
+use crate::show::commands::{
+    CueSceneResult, LoadShowFileResult, NewShowFileResult, SelectedSceneResult, ShowCommandResult,
+};
 use crate::show::handle::ShowStateHandle;
+use crate::show::show_file::ShowFile;
 use crate::show::types::{SceneConfig, ShowSnapshot};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -227,6 +230,35 @@ impl AppCommandBus {
             .map_err(AppCommandError::CommandFailed)
     }
 
+    pub async fn new_show_file(
+        &self,
+        lv1: Option<Lv1StateSnapshot>,
+    ) -> Result<NewShowFileResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::new_show_file(&show, lv1)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn export_show_file_for_save(
+        &self,
+        saved_at: String,
+    ) -> Result<ShowFile, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::export_show_file_for_save(&show, saved_at).await)
+    }
+
+    pub async fn load_show_file_from_dto(
+        &self,
+        file: &mut ShowFile,
+        lv1: Lv1StateSnapshot,
+    ) -> Result<LoadShowFileResult, AppCommandError> {
+        let show = self.show_target().await?;
+        crate::show::commands::load_show_file_from_dto(&show, file, lv1)
+            .await
+            .map_err(AppCommandError::CommandFailed)
+    }
+
     pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
         let lv1 = self.targets.lock().await.lv1.clone();
         match lv1 {
@@ -424,6 +456,10 @@ mod tests {
     use crate::lv1::types::ChannelInfo;
     use crate::runtime::events::AppEventBus;
     use crate::show::handle::ShowStateHandle;
+    use crate::show::show_file::{
+        SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileSafety, ShowFileSceneConfig,
+        ShowFileSceneScopeToggles,
+    };
     use crate::show::types::{ChannelConfig, SceneConfig, SceneScopeToggles, ShowSnapshot};
 
     fn scene_config() -> SceneConfig {
@@ -881,6 +917,134 @@ mod tests {
                 .unwrap_err(),
             AppCommandError::ShowUnavailable
         );
+        assert_eq!(
+            bus.new_show_file(None).await.unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        assert_eq!(
+            bus.export_show_file_for_save("saved".to_string())
+                .await
+                .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+        let mut file = ShowFile {
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
+            app_version: "0.1.0".to_string(),
+            saved_at: "saved".to_string(),
+            safety: ShowFileSafety { lockout: true },
+            cued_scene_id: None,
+            scene_configs: vec![ShowFileSceneConfig {
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 1_000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
+            }],
+        };
+        assert_eq!(
+            bus.load_show_file_from_dto(
+                &mut file,
+                Lv1StateSnapshot {
+                    connection: crate::lv1::types::ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: vec![crate::lv1::types::SceneListEntry {
+                        index: 1,
+                        name: "Intro".to_string()
+                    }],
+                    channels: Vec::new(),
+                }
+            )
+            .await
+            .unwrap_err(),
+            AppCommandError::ShowUnavailable
+        );
+    }
+
+    #[tokio::test]
+    async fn new_show_file_routes_through_show_state_and_reconciles_lv1_scenes() {
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+        show.replace_snapshot(ShowSnapshot {
+            lockout: true,
+            scene_configs: vec![scene_config()],
+            cued_scene_id: Some("1:Intro".to_string()),
+        })
+        .await;
+        bus.set_show(Some(show)).await;
+        let lv1 = Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![crate::lv1::types::SceneListEntry {
+                index: 2,
+                name: "Verse".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+
+        let result = bus.new_show_file(Some(lv1)).await.unwrap();
+
+        assert_eq!(result.selected_scene_id, Some("2::Verse".to_string()));
+        let snapshot = bus.get_show_snapshot().await.unwrap();
+        assert!(!snapshot.lockout);
+        assert_eq!(snapshot.scene_configs[0].scene_id, "2::Verse");
+    }
+
+    #[tokio::test]
+    async fn export_show_file_for_save_routes_through_show_state() {
+        let snapshot = ShowSnapshot {
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+
+        let file = bus
+            .export_show_file_for_save("saved".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(file.saved_at, "saved");
+        assert_eq!(file.scene_configs[0].scene_name, "Intro");
+    }
+
+    #[tokio::test]
+    async fn load_show_file_from_dto_routes_through_show_state() {
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        bus.set_show(Some(ShowStateHandle::new_empty(event_bus)))
+            .await;
+        let lv1 = Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![crate::lv1::types::SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+        let mut file = ShowFile {
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
+            app_version: "0.1.0".to_string(),
+            saved_at: "saved".to_string(),
+            safety: ShowFileSafety { lockout: true },
+            cued_scene_id: None,
+            scene_configs: vec![ShowFileSceneConfig {
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 1_000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
+            }],
+        };
+
+        let result = bus.load_show_file_from_dto(&mut file, lv1).await.unwrap();
+
+        assert_eq!(result.selected_scene_id, Some("1::Intro".to_string()));
+        assert!(!result.report.removed_anything());
+        assert!(bus.get_show_snapshot().await.unwrap().lockout);
+        assert_eq!(result.saved_at, "saved");
     }
 
     #[tokio::test]
