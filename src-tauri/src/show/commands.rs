@@ -1,6 +1,6 @@
 //! Show-owned application command handlers.
 
-use crate::lv1::types::ChannelInfo;
+use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use crate::show::show_file::{LoadValidationReport, ShowFile, export_show_file, import_show_file};
 
 use super::handle::ShowStateHandle;
@@ -32,6 +32,12 @@ pub struct LoadShowFileResult {
     pub selected_scene_id: Option<String>,
     pub saved_at: String,
     pub report: LoadValidationReport,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecallSceneResult {
+    pub scene: SceneConfig,
+    pub lv1_scene_index: i32,
 }
 
 pub async fn set_lockout(show: &ShowStateHandle, enabled: bool) -> ShowCommandResult {
@@ -118,6 +124,40 @@ pub async fn select_scene_config(
     Ok(SelectedSceneResult { scene })
 }
 
+pub fn validate_recall_scene_request(
+    show: &super::types::ShowSnapshot,
+    lv1: &Lv1StateSnapshot,
+    scene_id: &str,
+) -> Result<RecallSceneResult, String> {
+    if show.lockout {
+        return Err("Recall blocked: lockout is enabled".to_string());
+    }
+
+    let scene = show
+        .scene_configs
+        .iter()
+        .find(|scene| scene.scene_id == scene_id)
+        .cloned()
+        .ok_or_else(|| "Scene config not found".to_string())?;
+
+    if lv1.connection != ConnectionStatus::Connected {
+        return Err("Recall blocked: LV1 is disconnected".to_string());
+    }
+
+    let lv1_scene = lv1
+        .scene_list
+        .iter()
+        .find(|candidate| {
+            candidate.index == scene.scene_index && candidate.name == scene.scene_name
+        })
+        .ok_or_else(|| "Recall blocked: scene identity mismatch".to_string())?;
+
+    Ok(RecallSceneResult {
+        scene,
+        lv1_scene_index: lv1_scene.index,
+    })
+}
+
 pub async fn store_scene_config(
     show: &ShowStateHandle,
     scene_id: String,
@@ -170,4 +210,90 @@ pub async fn load_show_file_from_dto(
         saved_at: file.saved_at.clone(),
         report: imported.report,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
+
+    fn recall_show(lockout: bool) -> ShowSnapshot {
+        ShowSnapshot {
+            lockout,
+            scene_configs: vec![SceneConfig {
+                scene_id: "1::Verse".to_string(),
+                scene_index: 1,
+                scene_name: "Verse".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            cued_scene_id: Some("1::Verse".to_string()),
+        }
+    }
+
+    fn recall_lv1(connection: ConnectionStatus, name: &str) -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection,
+            scene: None,
+            scene_list: vec![SceneListEntry {
+                index: 1,
+                name: name.to_string(),
+            }],
+            channels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn validate_recall_scene_request_blocks_lockout_before_lv1_identity() {
+        let show = recall_show(true);
+        let lv1 = recall_lv1(ConnectionStatus::Connected, "Different");
+
+        let err = validate_recall_scene_request(&show, &lv1, "1::Verse").unwrap_err();
+
+        assert_eq!(err, "Recall blocked: lockout is enabled");
+    }
+
+    #[test]
+    fn validate_recall_scene_request_blocks_missing_scene_config() {
+        let show = recall_show(false);
+        let lv1 = recall_lv1(ConnectionStatus::Connected, "Verse");
+
+        let err = validate_recall_scene_request(&show, &lv1, "2::Chorus").unwrap_err();
+
+        assert_eq!(err, "Scene config not found");
+    }
+
+    #[test]
+    fn validate_recall_scene_request_blocks_disconnected_lv1() {
+        let show = recall_show(false);
+        let lv1 = recall_lv1(ConnectionStatus::Disconnected, "Verse");
+
+        let err = validate_recall_scene_request(&show, &lv1, "1::Verse").unwrap_err();
+
+        assert_eq!(err, "Recall blocked: LV1 is disconnected");
+    }
+
+    #[test]
+    fn validate_recall_scene_request_blocks_scene_identity_mismatch() {
+        let show = recall_show(false);
+        let lv1 = recall_lv1(ConnectionStatus::Connected, "Different");
+
+        let err = validate_recall_scene_request(&show, &lv1, "1::Verse").unwrap_err();
+
+        assert_eq!(err, "Recall blocked: scene identity mismatch");
+    }
+
+    #[test]
+    fn validate_recall_scene_request_returns_matching_lv1_scene_index() {
+        let show = recall_show(false);
+        let lv1 = recall_lv1(ConnectionStatus::Connected, "Verse");
+
+        let result = validate_recall_scene_request(&show, &lv1, "1::Verse").unwrap();
+
+        assert_eq!(result.scene.scene_id, "1::Verse");
+        assert_eq!(result.lv1_scene_index, 1);
+    }
 }
