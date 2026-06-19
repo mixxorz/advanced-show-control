@@ -1,45 +1,5 @@
-use advanced_show_control::app_state::ShellState;
-use advanced_show_control::commands;
-use advanced_show_control::lifecycle::AppLifecycle;
-use advanced_show_control::logging;
-use tauri::Manager;
-
 fn main() {
-    tauri::Builder::default()
-        .manage(ShellState::default())
-        .manage(AppLifecycle::default())
-        .setup(|app| {
-            let shell_state = (*app.state::<ShellState>()).clone();
-            let logging_guard = logging::init_logging(app.handle(), shell_state.clone())?;
-            app.manage(logging_guard);
-            tracing::info!(event = "app_started", "Starting Advanced Show Control");
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            commands::get_app_status,
-            commands::refresh_lv1_discovery,
-            commands::new_show_file,
-            commands::open_show_file_dialog,
-            commands::save_show_file,
-            commands::save_show_file_as_dialog,
-            commands::set_scene_duration_ms,
-            commands::select_scene_config,
-            commands::cue_scene,
-            commands::recall_scene,
-            commands::connect_lv1,
-            commands::connect_lv1_system,
-            commands::attempt_reconnect_lv1,
-            commands::startup_auto_connect_lv1,
-            commands::disconnect_lv1,
-            commands::reconnect_timed_out,
-            commands::abort_all_fades,
-            commands::store_scene_config,
-            commands::set_channel_scoped,
-            commands::set_all_channels_scoped,
-            commands::set_scene_scope_faders_enabled,
-            commands::set_scene_scope_pan_enabled,
-            commands::set_lockout,
-        ])
+    advanced_show_control::ui::build_app()
         .run(tauri::generate_context!())
         .expect("failed to run Advanced Show Control");
 }
