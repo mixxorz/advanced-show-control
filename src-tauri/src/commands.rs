@@ -2124,7 +2124,7 @@ mod tests {
 
         for gain_db in [1.0, 2.0, 3.0] {
             event_bus.publish(AppEvent::Lv1 {
-                generation: 0,
+                generation,
                 event: Lv1Event::FaderChanged {
                     group: 1,
                     channel: 1,
@@ -2196,7 +2196,7 @@ mod tests {
 
         for gain_db in 0..32 {
             event_bus.publish(AppEvent::Lv1 {
-                generation: 0,
+                generation,
                 event: Lv1Event::FaderChanged {
                     group: 1,
                     channel: 1,

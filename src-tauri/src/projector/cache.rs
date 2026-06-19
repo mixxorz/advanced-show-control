@@ -11,7 +11,7 @@ use crate::lv1::events::Lv1Event;
 use crate::lv1::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
-use crate::show::types::ShowSnapshot;
+use crate::show::events::ShowProjectionState;
 
 pub const MAX_PROJECTOR_LOGS: usize = 200;
 
@@ -25,6 +25,9 @@ pub struct ProjectionCache {
     reconnect_state: ReconnectState,
     fade_state: AppFadeState,
     selected_scene_id: Option<String>,
+    lockout: bool,
+    scene_configs: Vec<crate::show::types::SceneConfig>,
+    cued_scene_id: Option<String>,
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
@@ -50,6 +53,9 @@ impl ProjectionCache {
             reconnect_state: ReconnectState::default(),
             fade_state: AppFadeState::Idle,
             selected_scene_id: None,
+            lockout: false,
+            scene_configs: Vec::new(),
+            cued_scene_id: None,
             show_file_path: None,
             show_file_dirty: false,
             show_file_last_saved_at: None,
@@ -59,7 +65,29 @@ impl ProjectionCache {
         }
     }
 
-    pub fn apply_lv1_event(&mut self, event: &Lv1Event) {
+    pub fn set_active_generation(&mut self, generation: u64) {
+        self.generation = generation;
+    }
+
+    pub fn apply_show_state(&mut self, state: ShowProjectionState) {
+        self.lockout = state.lockout;
+        self.scene_configs = state.scene_configs;
+        self.cued_scene_id = state.cued_scene_id;
+        self.selected_scene_id = state.selected_scene_id;
+        self.show_file_path = state.show_file_path;
+        self.show_file_dirty = state.show_file_dirty;
+        self.show_file_last_saved_at = state.show_file_last_saved_at;
+        self.discovered_lv1_systems = state.discovered_lv1_systems;
+        self.connected_lv1_identity = state.connected_lv1_identity;
+        self.pending_lv1_identity = state.pending_lv1_identity;
+        self.reconnect_state = state.reconnect;
+        self.last_event_at = state.last_event_at;
+    }
+
+    pub fn apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool {
+        if generation != self.generation {
+            return false;
+        }
         match event {
             Lv1Event::Connected => {
                 self.ensure_lv1_snapshot().connection = ConnectionStatus::Connected;
@@ -123,6 +151,7 @@ impl ProjectionCache {
                 self.ensure_lv1_snapshot().channels = channels.clone();
             }
         }
+        true
     }
 
     pub fn apply_fade_event(&mut self, event: &FadeEvent) {
@@ -212,7 +241,7 @@ impl ProjectionCache {
         self.last_event_at = snapshot.last_event_at.clone();
     }
 
-    pub fn build_snapshot(&mut self, show: ShowSnapshot) -> AppViewState {
+    pub fn build_snapshot(&mut self) -> AppViewState {
         self.generation = self.generation.saturating_add(1);
         let state_version = self.generation;
 
@@ -267,9 +296,9 @@ impl ProjectionCache {
             channel_count: channels.len(),
             channels,
             fade_state: self.fade_state.clone(),
-            lockout: show.lockout,
-            scene_configs: show.scene_configs,
-            cued_scene_id: show.cued_scene_id,
+            lockout: self.lockout,
+            scene_configs: self.scene_configs.clone(),
+            cued_scene_id: self.cued_scene_id.clone(),
             selected_scene_id: self.selected_scene_id.clone(),
             show_file_name: self
                 .show_file_path
@@ -317,22 +346,12 @@ mod tests {
     use crate::app_state::LogSeverity;
     use crate::fade::types::FadeParameter;
     use crate::lv1::types::{ChannelInfo, SceneState};
-    use crate::show::types::SceneConfig;
-
-    fn empty_show() -> ShowSnapshot {
-        ShowSnapshot {
-            lockout: false,
-            scene_configs: Vec::<SceneConfig>::new(),
-            cued_scene_id: None,
-        }
-    }
-
     #[test]
     fn cache_builds_initial_disconnected_snapshot_with_incrementing_versions() {
         let mut cache = ProjectionCache::new();
 
-        let first = cache.build_snapshot(empty_show());
-        let second = cache.build_snapshot(empty_show());
+        let first = cache.build_snapshot();
+        let second = cache.build_snapshot();
 
         assert_eq!(first.connection, AppConnectionState::Disconnected);
         assert_eq!(first.show_file_name, "Untitled Show");
@@ -344,24 +363,30 @@ mod tests {
     fn cache_applies_lv1_scene_and_topology_events() {
         let mut cache = ProjectionCache::new();
 
-        cache.apply_lv1_event(&Lv1Event::Connected);
-        cache.apply_lv1_event(&Lv1Event::SceneChanged(SceneState {
-            index: 3,
-            name: "Bridge".to_string(),
-        }));
-        cache.apply_lv1_event(&Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
-            group: 1,
-            channel: 2,
-            name: "Vox".to_string(),
-            gain_db: -5.0,
-            muted: false,
-            pan: Some(0.0),
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }]));
+        cache.apply_lv1_event(0, &Lv1Event::Connected);
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::SceneChanged(SceneState {
+                index: 3,
+                name: "Bridge".to_string(),
+            }),
+        );
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
+                group: 1,
+                channel: 2,
+                name: "Vox".to_string(),
+                gain_db: -5.0,
+                muted: false,
+                pan: Some(0.0),
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }]),
+        );
 
-        let snapshot = cache.build_snapshot(empty_show());
+        let snapshot = cache.build_snapshot();
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Bridge");
@@ -412,7 +437,7 @@ mod tests {
             severity: LogSeverity::Warning,
             message: "projected log".to_string(),
         });
-        let snapshot = cache.build_snapshot(empty_show());
+        let snapshot = cache.build_snapshot();
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Intro");
@@ -442,11 +467,14 @@ mod tests {
             attempt: 42,
         };
 
-        cache.apply_lv1_event(&Lv1Event::Disconnected {
-            reason: "link lost".to_string(),
-        });
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::Disconnected {
+                reason: "link lost".to_string(),
+            },
+        );
 
-        let snapshot = cache.build_snapshot(empty_show());
+        let snapshot = cache.build_snapshot();
 
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert_eq!(snapshot.connected_lv1_identity, None);
@@ -459,26 +487,17 @@ mod tests {
         let mut cache = ProjectionCache::new();
 
         cache.apply_fade_event(&FadeEvent::FadeStarted);
-        assert_eq!(
-            cache.build_snapshot(empty_show()).fade_state,
-            AppFadeState::Running
-        );
+        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Running);
 
         cache.apply_fade_event(&FadeEvent::ChannelOverride {
             group: 1,
             channel: 1,
             parameter: FadeParameter::FaderDb,
         });
-        assert_eq!(
-            cache.build_snapshot(empty_show()).fade_state,
-            AppFadeState::Blocked
-        );
+        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Blocked);
 
         cache.apply_fade_event(&FadeEvent::FadeCompleted);
-        assert_eq!(
-            cache.build_snapshot(empty_show()).fade_state,
-            AppFadeState::Idle
-        );
+        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Idle);
     }
 
     #[test]
@@ -492,10 +511,7 @@ mod tests {
             parameter: FadeParameter::FaderDb,
         });
 
-        assert_eq!(
-            cache.build_snapshot(empty_show()).fade_state,
-            AppFadeState::Running
-        );
+        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Running);
     }
 
     #[test]
@@ -509,7 +525,7 @@ mod tests {
             });
         }
 
-        let snapshot = cache.build_snapshot(empty_show());
+        let snapshot = cache.build_snapshot();
 
         assert_eq!(snapshot.logs.len(), MAX_PROJECTOR_LOGS);
         assert_eq!(snapshot.logs[0].id, 3);

@@ -5,8 +5,9 @@ use tokio::sync::{broadcast, oneshot};
 
 use crate::app_state::ShellState;
 use crate::logging::UiLogEvent;
-use crate::runtime::events::AppEvent;
 use crate::runtime::events::log_lagged_subscriber;
+use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
+use crate::show::events::ShowProjectionState;
 
 use super::ProjectionCache;
 
@@ -43,7 +44,24 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         );
 
         let mut cache = ProjectionCache::new();
-        cache.seed_from_view_state(&shell_state.snapshot().await);
+        let snapshot = shell_state.snapshot().await;
+        cache.seed_from_view_state(&snapshot);
+        cache.set_active_generation(generation);
+        cache.apply_show_state(ShowProjectionState {
+            lockout: snapshot.lockout,
+            scene_configs: snapshot.scene_configs,
+            cued_scene_id: snapshot.cued_scene_id,
+            selected_scene_id: snapshot.selected_scene_id,
+            show_file_path: snapshot.show_file_path.map(Into::into),
+            show_file_name: snapshot.show_file_name,
+            show_file_dirty: snapshot.show_file_dirty,
+            show_file_last_saved_at: snapshot.show_file_last_saved_at,
+            discovered_lv1_systems: snapshot.discovered_lv1_systems,
+            connected_lv1_identity: snapshot.connected_lv1_identity,
+            pending_lv1_identity: snapshot.pending_lv1_identity,
+            reconnect: snapshot.reconnect,
+            last_event_at: snapshot.last_event_at,
+        });
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
@@ -53,8 +71,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
             tokio::select! {
                 _ = interval.tick() => {
                     if dirty {
-                        let show = shell_state.show.get_snapshot().await;
-                        let snapshot = cache.build_snapshot(show);
+                        let snapshot = cache.build_snapshot();
                         emit_snapshot(&app, &snapshot);
                         dirty = false;
                     }
@@ -102,16 +119,20 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &crate::app_state::Ap
 
 fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool {
     match event {
-        AppEvent::Lv1 { event, .. } => {
-            cache.apply_lv1_event(event);
+        AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
+            cache.set_active_generation(*generation);
             true
         }
+        AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
         AppEvent::Fade { event, .. } => {
             cache.apply_fade_event(event);
             true
         }
         AppEvent::SceneRecall { .. } => false,
-        AppEvent::Show(_) | AppEvent::Runtime(_) => true,
+        AppEvent::Show(crate::show::events::ShowEvent::StateChanged { state, .. }) => {
+            cache.apply_show_state(state.clone());
+            true
+        }
     }
 }
 
