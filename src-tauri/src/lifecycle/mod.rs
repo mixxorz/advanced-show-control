@@ -37,6 +37,41 @@ impl AppLifecycle {
     pub async fn current_command_bus(&self) -> Option<AppCommandBus> {
         self.command_bus.current().await
     }
+
+    pub async fn clear_runtime_handles(
+        &self,
+        state: &crate::app_state::ShellState,
+        generation: u64,
+    ) {
+        state
+            .clear_runtime_handles(generation, &self.command_bus)
+            .await;
+    }
+
+    pub async fn abort_current_runtime(&self, state: &crate::app_state::ShellState) {
+        state.abort_current_runtime(&self.command_bus).await;
+    }
+
+    pub async fn clear_runtime_handles_with_active_generation(
+        &self,
+        state: &crate::app_state::ShellState,
+        generation: u64,
+    ) {
+        state
+            .clear_runtime_handles_with_active_generation(generation, &self.command_bus)
+            .await;
+    }
+
+    pub async fn install_runtime_handles(
+        &self,
+        state: &crate::app_state::ShellState,
+        generation: u64,
+        next: crate::app_state::RuntimeHandles,
+    ) -> Result<(), crate::app_state::RuntimeHandles> {
+        state
+            .install_runtime_handles(generation, next, &self.command_bus)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -76,5 +111,55 @@ mod tests {
         holder.set(Some(command_bus)).await;
 
         assert!(lifecycle.current_command_bus().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_installs_command_bus_with_runtime_handles() {
+        let lifecycle = AppLifecycle::default();
+        let state = crate::app_state::ShellState::default();
+        let (generation, _) = state.disconnect().await;
+        let command_bus = AppCommandBus::new(AppEventBus::default());
+
+        assert!(
+            lifecycle
+                .install_runtime_handles(
+                    &state,
+                    generation,
+                    crate::app_state::RuntimeHandles {
+                        command_bus: Some(command_bus),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_ok()
+        );
+
+        assert!(lifecycle.current_command_bus().await.is_some());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_clear_runtime_handles_clears_current_bus() {
+        let lifecycle = AppLifecycle::default();
+        let state = crate::app_state::ShellState::default();
+        let (generation, _) = state.disconnect().await;
+        let command_bus = AppCommandBus::new(AppEventBus::default());
+
+        assert!(
+            lifecycle
+                .install_runtime_handles(
+                    &state,
+                    generation,
+                    crate::app_state::RuntimeHandles {
+                        command_bus: Some(command_bus),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_ok()
+        );
+
+        lifecycle.clear_runtime_handles(&state, generation).await;
+
+        assert!(lifecycle.current_command_bus().await.is_none());
     }
 }

@@ -432,9 +432,7 @@ pub async fn disconnect_lv1(
     if let Some(command_bus) = active_command_bus.current().await {
         command_bus.set_generation(generation).await;
     }
-    state
-        .clear_runtime_handles(generation, &active_command_bus)
-        .await;
+    lifecycle.clear_runtime_handles(&state, generation).await;
     tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -447,25 +445,17 @@ pub async fn reconnect_timed_out(
     lifecycle: State<'_, AppLifecycle>,
     attempt: u64,
 ) -> Result<AppViewState, String> {
-    reconnect_timed_out_snapshot(
-        app,
-        (*state).clone(),
-        lifecycle.command_bus_holder(),
-        attempt,
-    )
-    .await
+    reconnect_timed_out_snapshot(app, (*state).clone(), &lifecycle, attempt).await
 }
 
 async fn reconnect_timed_out_snapshot<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    lifecycle: &AppLifecycle,
     attempt: u64,
 ) -> Result<AppViewState, String> {
     if let Some(generation) = state.reconnect_timeout_generation(attempt).await {
-        state
-            .clear_runtime_handles(generation, &active_command_bus)
-            .await;
+        lifecycle.clear_runtime_handles(&state, generation).await;
     }
     let snapshot = state.reconnect_timed_out(attempt).await;
     emit_snapshot(&app, &snapshot);
@@ -503,7 +493,7 @@ pub async fn connect_lv1(
     connect_to_target(
         app,
         (*state).clone(),
-        lifecycle.command_bus_holder(),
+        &lifecycle,
         identity,
         ConnectFailureMode::ClearConnectedIdentity,
     )
@@ -520,7 +510,7 @@ pub async fn connect_lv1_system(
     let snapshot = connect_to_target(
         app.clone(),
         (*state).clone(),
-        lifecycle.command_bus_holder(),
+        &lifecycle,
         identity.clone(),
         ConnectFailureMode::ClearConnectedIdentity,
     )
@@ -555,13 +545,13 @@ pub async fn attempt_reconnect_lv1(
     state: State<'_, ShellState>,
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
-    attempt_reconnect_lv1_snapshot(app, (*state).clone(), lifecycle.command_bus_holder()).await
+    attempt_reconnect_lv1_snapshot(app, (*state).clone(), &lifecycle).await
 }
 
 async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    lifecycle: &AppLifecycle,
 ) -> Result<AppViewState, String> {
     let Some(connected_identity) = state.connected_lv1_identity().await else {
         let snapshot = state.snapshot().await;
@@ -596,7 +586,7 @@ async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
     connect_to_target(
         app,
         state,
-        active_command_bus,
+        lifecycle,
         identity,
         ConnectFailureMode::PreserveConnectedIdentity,
     )
@@ -643,7 +633,7 @@ pub async fn startup_auto_connect_lv1(
 async fn connect_to_target<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    lifecycle: &AppLifecycle,
     identity: crate::connection_state::Lv1SystemIdentity,
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
@@ -665,7 +655,7 @@ async fn connect_to_target<R: Runtime>(
         port = identity.port,
         "Connecting to LV1"
     );
-    state.abort_current_runtime(&active_command_bus).await;
+    lifecycle.abort_current_runtime(&state).await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
         .set_pending_lv1_identity(generation, Some(identity.clone()))
@@ -749,7 +739,7 @@ async fn connect_to_target<R: Runtime>(
         snapshot,
         events,
         runtime_handles,
-        &active_command_bus,
+        lifecycle,
     )
     .await?;
 
@@ -759,8 +749,8 @@ async fn connect_to_target<R: Runtime>(
         .establish_connected_lv1_identity(generation, identity)
         .await
     else {
-        state
-            .clear_runtime_handles_with_active_generation(generation, &active_command_bus)
+        lifecycle
+            .clear_runtime_handles_with_active_generation(&state, generation)
             .await;
         let snapshot = state.snapshot().await;
         return Ok(snapshot);
@@ -846,21 +836,21 @@ async fn install_connected_runtime<R: Runtime>(
     snapshot: AppViewState,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     mut runtime_handles: RuntimeHandles,
-    active_command_bus: &ActiveCommandBus,
+    lifecycle: &AppLifecycle,
 ) -> Result<AppViewState, String> {
     let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
 
     runtime_handles.projector = Some(spawn_shell_state_projector(
         app.clone(),
         shell_state,
-        active_command_bus.clone(),
+        lifecycle.command_bus_holder(),
         generation,
         events,
         projector_start_rx,
     ));
 
-    if let Err(mut stale_handles) = state
-        .install_runtime_handles(generation, runtime_handles, active_command_bus)
+    if let Err(mut stale_handles) = lifecycle
+        .install_runtime_handles(state, generation, runtime_handles)
         .await
     {
         stale_handles.abort_all().await;
@@ -1197,17 +1187,13 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let state = ShellState::default();
-        let active_command_bus = ActiveCommandBus::default();
+        let lifecycle = AppLifecycle::default();
         let reconnecting = enter_reconnect_state(&state).await;
 
-        let snapshot = reconnect_timed_out_snapshot(
-            handle,
-            state,
-            active_command_bus,
-            reconnecting.reconnect.attempt,
-        )
-        .await
-        .expect("timeout command should return snapshot");
+        let snapshot =
+            reconnect_timed_out_snapshot(handle, state, &lifecycle, reconnecting.reconnect.attempt)
+                .await
+                .expect("timeout command should return snapshot");
 
         assert!(!snapshot.reconnect.active);
     }
@@ -1248,11 +1234,12 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let state = ShellState::default();
-        let active_command_bus = ActiveCommandBus::default();
+        let lifecycle = AppLifecycle::default();
         let reconnecting = enter_reconnect_state(&state).await;
         let command_bus = AppCommandBus::new(AppEventBus::default());
-        let installed = state
+        let installed = lifecycle
             .install_runtime_handles(
+                &state,
                 1,
                 RuntimeHandles {
                     active_generation: 0,
@@ -1266,23 +1253,22 @@ mod tests {
                         std::future::pending::<()>().await;
                     })),
                 },
-                &active_command_bus,
             )
             .await;
         assert!(installed.is_ok());
-        assert!(active_command_bus.current().await.is_some());
+        assert!(lifecycle.current_command_bus().await.is_some());
 
         let snapshot = reconnect_timed_out_snapshot(
             handle,
             state.clone(),
-            active_command_bus.clone(),
+            &lifecycle,
             reconnecting.reconnect.attempt,
         )
         .await
         .expect("timeout command should return snapshot");
 
         assert!(!snapshot.reconnect.active);
-        assert!(active_command_bus.current().await.is_none());
+        assert!(lifecycle.current_command_bus().await.is_none());
         let handles = state.handles.lock().await;
         assert_eq!(handles.active_generation, 0);
         assert!(handles.command_bus.is_none());
@@ -1323,7 +1309,7 @@ mod tests {
         let snapshot = reconnect_timed_out_snapshot(
             handle,
             state,
-            ActiveCommandBus::default(),
+            &AppLifecycle::default(),
             first_reconnect.reconnect.attempt,
         )
         .await
@@ -1657,7 +1643,7 @@ mod tests {
         let events = event_bus.subscribe();
         event_bus.publish(AppEvent::Fade(FadeEvent::FadeStarted));
 
-        let active_command_bus = ActiveCommandBus::default();
+        let lifecycle = AppLifecycle::default();
         let snapshot = install_connected_runtime(
             &handle,
             &state,
@@ -1666,7 +1652,7 @@ mod tests {
             initial_snapshot,
             events,
             RuntimeHandles::default(),
-            &active_command_bus,
+            &lifecycle,
         )
         .await
         .expect("connected runtime should install successfully");
@@ -1873,7 +1859,7 @@ mod tests {
             stale_snapshot,
             AppEventBus::default().subscribe(),
             RuntimeHandles::default(),
-            &ActiveCommandBus::default(),
+            &AppLifecycle::default(),
         )
         .await
         .expect("stale install should return current snapshot to command caller");
@@ -1907,7 +1893,7 @@ mod tests {
         let scene_recall_fader = tokio::spawn(async {
             std::future::pending::<()>().await;
         });
-        let active_command_bus = ActiveCommandBus::default();
+        let lifecycle = AppLifecycle::default();
 
         install_connected_runtime(
             &handle,
@@ -1924,7 +1910,7 @@ mod tests {
                 projector: None,
                 scene_recall_fader: Some(scene_recall_fader),
             },
-            &active_command_bus,
+            &lifecycle,
         )
         .await
         .expect("connected runtime should install successfully");
