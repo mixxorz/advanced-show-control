@@ -611,6 +611,84 @@ async fn changed_scene_duration_marks_show_dirty_in_command() {
         other => panic!("unexpected event: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn load_show_file_sets_metadata_restores_selection_and_publishes_once() {
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let show = ShowStateHandle::new_empty(event_bus);
+    let lv1 = recall_lv1(ConnectionStatus::Connected, "Verse");
+    let file = show_file_with_selected_scene("1::Verse");
+
+    let result = load_show_file_from_dto(
+        &show,
+        std::path::PathBuf::from("/tmp/session.lv1show"),
+        file,
+        Some(lv1),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(result.selected_scene_id, Some("1::Verse".to_string()));
+    let event = events.recv().await.unwrap();
+    match event {
+        AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
+            assert_eq!(reason, ShowProjectionReason::ShowFileLoaded);
+            assert_eq!(state.show_file_path, Some(std::path::PathBuf::from("/tmp/session.lv1show")));
+            assert_eq!(state.show_file_name, "session.lv1show");
+            assert!(!state.show_file_dirty);
+            assert!(state.show_file_last_saved_at.is_some());
+            assert_eq!(state.selected_scene_id, Some("1::Verse".to_string()));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+    assert!(events.try_recv().is_err(), "load should publish one full show state event");
+}
+
+#[tokio::test]
+async fn load_show_file_marks_dirty_when_invalid_entries_are_pruned() {
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let show = ShowStateHandle::new_empty(event_bus);
+    let lv1 = recall_lv1(ConnectionStatus::Connected, "Intro");
+    let file = show_file_with_scenes(["1::Intro", "99::Missing"]);
+
+    load_show_file_from_dto(&show, std::path::PathBuf::from("/tmp/pruned.lv1show"), file, Some(lv1))
+        .await
+        .unwrap();
+
+    let event = events.recv().await.unwrap();
+    match event {
+        AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
+            assert_eq!(reason, ShowProjectionReason::ShowFileLoaded);
+            assert!(state.show_file_dirty);
+            assert_eq!(state.scene_configs.len(), 1);
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn load_show_file_falls_back_when_saved_selection_is_absent() {
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let show = ShowStateHandle::new_empty(event_bus);
+    let lv1 = recall_lv1(ConnectionStatus::Connected, "Intro");
+    let file = show_file_with_missing_selected_scene("99::Missing");
+
+    let result = load_show_file_from_dto(&show, std::path::PathBuf::from("/tmp/fallback.lv1show"), file, Some(lv1))
+        .await
+        .unwrap();
+
+    assert_eq!(result.selected_scene_id, Some("1::Intro".to_string()));
+    let event = events.recv().await.unwrap();
+    match event {
+        AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
+            assert_eq!(state.selected_scene_id, Some("1::Intro".to_string()));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
 ```
 
 Add helper in the test module:
@@ -1545,15 +1623,19 @@ The method should:
 - abort current runtime handles
 - call `begin_connecting` for a new generation after old runtime handles are cleared
 - get `self.current_command_bus().await`; do not create a new `AppCommandBus`
-- set generation-scoped LV1 and fade runtime targets on the app-lifetime command bus with `set_runtime_targets(generation, lv1, fade)`
 - spawn LV1 actor and fade engine with the app-lifetime bus and generation
 - spawn scene recall fader with generation
-- install runtime handles if generation is still current
+- package the spawned handles/tasks into `RuntimeHandles` without installing command-bus runtime targets yet
+- call `install_runtime(generation, handles)`
+- if `install_runtime` rejects the generation, immediately abort the returned handles, leave command-bus runtime targets unchanged, and return a stale-generation error
+- if `install_runtime` accepts the generation, set generation-scoped LV1 and fade runtime targets on the app-lifetime command bus with `set_runtime_targets(generation, lv1, fade)`
 - update pending/connected identity through `AppCommandBus`
 - publish show events through show commands
 - never emit `app-status-changed` directly
 
 The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade producers before that event has been published. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes that event and generated LV1 disconnect facts.
+
+`clear_runtime_targets(generation)` must clear LV1/fade targets only when `generation` matches the currently installed runtime target generation. Stale cleanup must not clear newer runtime targets.
 
 Define `ConnectFailureMode` in `src-tauri/src/lifecycle/mod.rs` so lifecycle-owned connect orchestration does not depend on `ui/commands.rs`.
 
@@ -1564,21 +1646,55 @@ Implement `AppLifecycle::disconnect_current_runtime(&self) -> Result<ShowCommand
 ```rust
 pub async fn disconnect_current_runtime(&self) -> Result<ShowCommandResult, String> {
     let generation = self.active_generation().await;
-    self.abort_current_runtime().await;
     let reason = "Disconnected by user".to_string();
+    self.abort_runtime_handles_without_advancing_generation().await;
     self.event_bus.publish_lv1(
         generation,
         crate::lv1::events::Lv1Event::Disconnected {
             reason: reason.clone(),
         },
     );
+    self.clear_runtime_after_disconnect(generation).await;
     Ok(ShowCommandResult { changed: true })
 }
 ```
 
-Lifecycle does not call `show::commands::handle_runtime_disconnected` or `AppCommandBus::handle_runtime_disconnected` directly for user-requested disconnect cleanup. Intentional disconnect must reliably publish a generated LV1 disconnect fact after runtime abort using the captured active generation. The show-owned runtime listener receives that fact and drives show-owned connection metadata through `AppCommandBus::handle_runtime_disconnected(generation, reason)`. The command result only acknowledges that lifecycle published the disconnect fact; app state changes still arrive through the projector event path.
+Lifecycle does not call `show::commands::handle_runtime_disconnected` or `AppCommandBus::handle_runtime_disconnected` directly for user-requested disconnect cleanup. Intentional disconnect uses a controlled order: capture the active generation, abort runtime handles without advancing active generation, publish a generated LV1 disconnect fact for that still-active generation, then clear runtime targets/handles with generation-checked cleanup. The show-owned runtime listener receives that fact and drives show-owned connection metadata through `AppCommandBus::handle_runtime_disconnected(generation, reason)`. The command result only acknowledges that lifecycle published the disconnect fact; app state changes still arrive through the projector event path.
 
-Add a test for `disconnect_current_runtime` that proves a connected identity is cleared by the listener/command-bus path after the generated disconnect fact, and that the projector receives the same generated disconnect fact for LV1-owned projection cleanup.
+Add a test for `disconnect_current_runtime`:
+
+```rust
+#[tokio::test]
+async fn disconnect_current_runtime_publishes_active_generation_disconnect_before_clearing() {
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    let lifecycle = AppLifecycle::new(event_bus.clone(), show.clone());
+    let generation = lifecycle.begin_connecting().await.unwrap();
+    establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
+
+    lifecycle.disconnect_current_runtime().await.unwrap();
+
+    let mut saw_disconnect = false;
+    for _ in 0..8 {
+        if let Ok(AppEvent::Lv1(generated)) = events.recv().await
+            && generated.generation == generation
+            && matches!(generated.event, Lv1Event::Disconnected { .. })
+        {
+            saw_disconnect = true;
+            break;
+        }
+    }
+    assert!(saw_disconnect);
+
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+    let state = show.projection_state_for_test().await;
+    assert!(state.connected_lv1_identity.is_none());
+    assert!(state.pending_lv1_identity.is_none());
+}
+```
 
 - [ ] **Step 8: Run connection command tests**
 
@@ -1754,18 +1870,31 @@ Add:
 
 ```tsx
 it("does not apply command return values as app state", async () => {
+  let listener: AppStatusListener | null = null;
+  const sentinel = appViewState({
+    lockout: true,
+    showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show",
+  });
   const services = testServices({
-    newShowFile: async () => ({ selectedSceneId: "1::Intro" }),
+    listenForAppStatus: async (next) => {
+      listener = next;
+      return () => undefined;
+    },
+    frontendReady: async () => undefined,
+    newShowFile: async () => sentinel,
   });
   render(<AppRuntime services={services} />);
 
   await userEvent.click(screen.getByRole("button", { name: /new show/i }));
 
-  expect(screen.queryByText("1::Intro")).not.toBeInTheDocument();
+  expect(screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show")).not.toBeInTheDocument();
+
+  act(() => listener?.(sentinel));
+  expect(await screen.findByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show")).toBeInTheDocument();
 });
 ```
 
-Use the current New Show button label from the rendered app shell. If that label changes during implementation, update the test query to the new visible label in the same commit.
+Use the current New Show button label from the rendered app shell. If that label changes during implementation, update the test query to the new visible label in the same commit. The test must prove command-return shaped `AppViewState` is ignored until the listener receives the same sentinel snapshot.
 
 - [ ] **Step 3: Run failing frontend tests**
 
@@ -2275,7 +2404,7 @@ Expected: pass.
 Run:
 
 ```bash
-rg "ShellState|ActiveCommandBus|emit_snapshot|Result<AppViewState|get_app_status|ShowSnapshot" src-tauri/src ui/src
+rg "ShellState|ActiveCommandBus|emit_snapshot|Result\s*<\s*AppViewState|get_app_status|ShowSnapshot|Promise\s*<\s*AppViewState|invoke\s*<\s*AppViewState|AppViewState\s*>" src-tauri/src ui/src
 ```
 
 Expected:
@@ -2285,6 +2414,7 @@ Expected:
 - no `emit_snapshot`
 - no mutating command returning `Result<AppViewState`
 - no frontend command service returning `AppViewState`
+- no frontend command invoke or callback returning `Promise<AppViewState>` / `invoke<AppViewState>`; `AppViewState` is allowed only for listener payloads, React app state, and type definitions
 - no source-of-truth type named `ShowSnapshot`
 
 Remove every `ShowSnapshot` match from `src-tauri/src` and `ui/src`. Historical docs outside those paths can remain unchanged.
