@@ -295,9 +295,8 @@ where
             event.record(&mut visitor);
             if let Some(message) = visitor.ui_message() {
                 let ui_event = UiLogEvent { severity, message };
-                if self.tx.send(ui_event).is_err() {
-                    // No active projector is subscribed yet; logs are best-effort UI state.
-                }
+                // UI logs are best-effort; there may be no active projector yet.
+                let _ = self.tx.send(ui_event);
             }
         }
     }

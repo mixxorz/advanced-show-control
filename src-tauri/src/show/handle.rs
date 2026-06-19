@@ -166,11 +166,16 @@ impl ShowStateHandle {
         changed
     }
 
-    pub async fn scene_reconciliation_diagnostic(&self, scenes: Vec<SceneListEntry>) -> String {
+    async fn scene_reconciliation_diagnostic(&self, scenes: Vec<SceneListEntry>) -> String {
         self.state
             .lock()
             .await
             .scene_reconciliation_diagnostic(&scenes)
+    }
+
+    pub(crate) async fn handle_lv1_scene_list_changed(&self, scenes: Vec<SceneListEntry>) -> bool {
+        let _ = self.scene_reconciliation_diagnostic(scenes.clone()).await;
+        self.reconcile_scene_list(scenes).await
     }
 
     pub async fn replace_snapshot(&self, snapshot: ShowSnapshot) {
@@ -196,9 +201,30 @@ impl ShowStateHandle {
     }
 }
 
+pub fn spawn_lv1_scene_list_monitor(
+    show: ShowStateHandle,
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::SceneListChanged(scenes))) => {
+                    show.handle_lv1_scene_list_changed(scenes).await;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    crate::runtime::events::log_lagged_subscriber("show-scene-list-monitor", count);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lv1::types::SceneListEntry;
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::events::{ShowEvent, ShowSnapshotChange};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
@@ -219,11 +245,15 @@ mod tests {
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
         expected_reason: ShowSnapshotChange,
     ) {
-        let event = events.recv().await.unwrap();
-        assert!(matches!(
-            event,
-            AppEvent::Show(ShowEvent::SnapshotChanged { reason }) if reason == expected_reason
-        ));
+        loop {
+            let event = events.recv().await.unwrap();
+            if matches!(
+                event,
+                AppEvent::Show(ShowEvent::SnapshotChanged { reason }) if reason == expected_reason
+            ) {
+                break;
+            }
+        }
     }
 
     #[tokio::test]
@@ -285,5 +315,41 @@ mod tests {
         show.clear().await;
 
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn lv1_scene_list_monitor_reconciles_show_state() {
+        let event_bus = AppEventBus::default();
+        let mut show_events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        show.replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![SceneConfig {
+                scene_id: "1::Verse".to_string(),
+                scene_index: 1,
+                scene_name: "Verse".to_string(),
+                duration_ms: 1_500,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            cued_scene_id: None,
+        })
+        .await;
+        recv_show_event(&mut show_events, ShowSnapshotChange::SnapshotReplaced).await;
+
+        let monitor = spawn_lv1_scene_list_monitor(show.clone(), event_bus.subscribe());
+        event_bus.publish(AppEvent::Lv1(
+            crate::lv1::events::Lv1Event::SceneListChanged(vec![SceneListEntry {
+                index: 1,
+                name: "Verse Big".to_string(),
+            }]),
+        ));
+
+        recv_show_event(&mut show_events, ShowSnapshotChange::SceneListReconciled).await;
+        let snapshot = show.get_snapshot().await;
+        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse Big");
+        assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
+        monitor.abort();
     }
 }

@@ -1,5 +1,5 @@
 use crate::fade::actor::spawn_engine;
-use crate::lifecycle::{ActiveCommandBus, AppLifecycle};
+use crate::lifecycle::{ActiveCommandBus, AppLifecycle, spawn_lifecycle_event_monitor};
 use crate::lv1::actor::spawn_actor;
 use crate::lv1::discovery::resolve_target;
 use crate::projector::{ProjectorInputs, spawn_projector};
@@ -774,6 +774,7 @@ async fn connect_to_target<R: Runtime>(
             fade_command_bus.clone(),
             event_bus.clone(),
         )),
+        ..Default::default()
     };
 
     let initial_snapshot = lv1.get_state().await;
@@ -926,16 +927,26 @@ async fn install_connected_runtime<R: Runtime>(
     lifecycle: &AppLifecycle,
 ) -> Result<AppViewState, String> {
     let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
-
+    let lifecycle_events = events.resubscribe();
+    let show_events = events.resubscribe();
     runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
         app: app.clone(),
         shell_state,
-        active_command_bus: lifecycle.command_bus_holder(),
         generation,
         events,
         logs: ui_log_receiver(app)?,
         start_rx: projector_start_rx,
     }));
+    runtime_handles.lifecycle_event_monitor = Some(spawn_lifecycle_event_monitor(
+        generation,
+        state.clone(),
+        lifecycle.clone(),
+        lifecycle_events,
+    ));
+    runtime_handles.show_scene_list_monitor = Some(crate::show::spawn_lv1_scene_list_monitor(
+        state.show.clone(),
+        show_events,
+    ));
 
     if let Err(mut stale_handles) = lifecycle
         .install_runtime_handles(state, generation, runtime_handles)
@@ -1041,7 +1052,6 @@ mod tests {
     fn spawn_started_projector<R: Runtime>(
         handle: AppHandle<R>,
         state: ShellState,
-        active_command_bus: ActiveCommandBus,
         generation: u64,
         events: tokio::sync::broadcast::Receiver<AppEvent>,
         logs: tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>,
@@ -1050,7 +1060,6 @@ mod tests {
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
             shell_state: state,
-            active_command_bus,
             generation,
             events,
             logs,
@@ -1066,7 +1075,6 @@ mod tests {
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
-        let active_command_bus = ActiveCommandBus::default();
         let (log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -1079,7 +1087,6 @@ mod tests {
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
             shell_state: state,
-            active_command_bus,
             generation: 0,
             events: event_bus.subscribe(),
             logs: log_rx,
@@ -1537,14 +1544,8 @@ mod tests {
         let (generation, _) = state.begin_connecting().await;
         let event_bus = AppEventBus::default();
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-        let projector = spawn_started_projector(
-            handle,
-            state,
-            ActiveCommandBus::default(),
-            generation,
-            event_bus.subscribe(),
-            log_rx,
-        );
+        let projector =
+            spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
 
         event_bus.publish(AppEvent::Lv1(Lv1Event::Connected));
         tokio::task::yield_now().await;
@@ -1578,6 +1579,7 @@ mod tests {
                     scene_recall_fader: Some(tokio::spawn(async {
                         std::future::pending::<()>().await;
                     })),
+                    ..Default::default()
                 },
             )
             .await;
@@ -1997,6 +1999,76 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn connected_runtime_projector_preserves_initial_scenes_when_logs_arrive() {
+        let app = mock_app();
+        let log_tx = manage_ui_log_receiver(&app);
+        let handle = app.handle().clone();
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_listener = observed.clone();
+
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            observed_for_listener.lock().unwrap().push(payload);
+        });
+
+        let state = ShellState::default();
+        let (generation, _) = state.begin_connecting().await;
+        let initial_snapshot = state
+            .begin_connection(
+                generation,
+                Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: Some(crate::lv1::types::SceneState {
+                        index: 1,
+                        name: "Intro".to_string(),
+                    }),
+                    scene_list: vec![crate::lv1::types::SceneListEntry {
+                        index: 1,
+                        name: "Intro".to_string(),
+                    }],
+                    channels: Vec::new(),
+                },
+            )
+            .await
+            .expect("current generation should accept the initial snapshot");
+
+        let event_bus = AppEventBus::default();
+        let lifecycle = AppLifecycle::default();
+        install_connected_runtime(
+            &handle,
+            &state,
+            state.clone(),
+            generation,
+            initial_snapshot,
+            event_bus.subscribe(),
+            RuntimeHandles::default(),
+            &lifecycle,
+        )
+        .await
+        .expect("connected runtime should install successfully");
+
+        log_tx
+            .send(crate::logging::UiLogEvent {
+                severity: crate::app_state::LogSeverity::Info,
+                message: "connected log".to_string(),
+            })
+            .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(crate::projector::PROJECTOR_INTERVAL).await;
+        tokio::task::yield_now().await;
+
+        let observed = observed.lock().unwrap();
+        let projected = observed
+            .last()
+            .expect("projector should emit after receiving a log");
+        assert_eq!(projected["connection"], "connected");
+        assert_eq!(projected["currentScene"]["name"], "Intro");
+        assert_eq!(projected["scenes"].as_array().unwrap().len(), 1);
+        assert_eq!(projected["logs"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn projector_coalesces_runtime_updates_to_ten_hz() {
         let app = mock_app();
         let handle = app.handle().clone();
@@ -2036,14 +2108,8 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-        let projector = spawn_started_projector(
-            handle,
-            state,
-            ActiveCommandBus::default(),
-            generation,
-            event_bus.subscribe(),
-            log_rx,
-        );
+        let projector =
+            spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
 
         for gain_db in [1.0, 2.0, 3.0] {
             event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
@@ -2111,14 +2177,8 @@ mod tests {
 
         let event_bus = AppEventBus::new(4);
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-        let projector = spawn_started_projector(
-            handle,
-            state,
-            ActiveCommandBus::default(),
-            generation,
-            event_bus.subscribe(),
-            log_rx,
-        );
+        let projector =
+            spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
 
         for gain_db in 0..32 {
             event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
@@ -2242,6 +2302,7 @@ mod tests {
                 command_bus: None,
                 projector: None,
                 scene_recall_fader: Some(scene_recall_fader),
+                ..Default::default()
             },
             &lifecycle,
         )

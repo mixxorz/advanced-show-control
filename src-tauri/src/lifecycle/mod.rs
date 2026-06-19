@@ -4,8 +4,10 @@
 //! runtime task handles, generation, command bus installation, and projector startup.
 
 use crate::runtime::commands::AppCommandBus;
+use crate::runtime::events::AppEvent;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 #[derive(Clone, Default)]
 pub struct ActiveCommandBus(pub Arc<Mutex<Option<AppCommandBus>>>);
@@ -72,6 +74,28 @@ impl AppLifecycle {
             .install_runtime_handles(generation, next, &self.command_bus)
             .await
     }
+}
+
+pub fn spawn_lifecycle_event_monitor(
+    generation: u64,
+    state: crate::app_state::ShellState,
+    lifecycle: AppLifecycle,
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected { .. })) => {
+                    lifecycle.clear_runtime_handles(&state, generation).await;
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    crate::runtime::events::log_lagged_subscriber("lifecycle-event-monitor", count);
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -159,5 +183,52 @@ mod tests {
         lifecycle.clear_runtime_handles(&state, generation).await;
 
         assert!(lifecycle.current_command_bus().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn lifecycle_event_monitor_clears_runtime_handles_on_disconnect() {
+        let lifecycle = AppLifecycle::default();
+        let state = crate::app_state::ShellState::default();
+        let event_bus = crate::runtime::events::AppEventBus::default();
+        let (generation, _) = state.begin_connecting().await;
+        let command_bus = AppCommandBus::new();
+
+        assert!(
+            lifecycle
+                .install_runtime_handles(
+                    &state,
+                    generation,
+                    crate::app_state::RuntimeHandles {
+                        command_bus: Some(command_bus),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .is_ok()
+        );
+        let monitor = spawn_lifecycle_event_monitor(
+            generation,
+            state,
+            lifecycle.clone(),
+            event_bus.subscribe(),
+        );
+
+        event_bus.publish(crate::runtime::events::AppEvent::Lv1(
+            crate::lv1::events::Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_millis(500), async {
+            loop {
+                if lifecycle.current_command_bus().await.is_none() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("disconnect monitor should clear runtime handles");
+        monitor.abort();
     }
 }

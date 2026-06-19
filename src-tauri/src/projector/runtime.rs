@@ -4,9 +4,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::{broadcast, oneshot};
 
 use crate::app_state::ShellState;
-use crate::lifecycle::ActiveCommandBus;
 use crate::logging::UiLogEvent;
-use crate::lv1::events::Lv1Event;
 use crate::runtime::events::AppEvent;
 use crate::runtime::events::log_lagged_subscriber;
 
@@ -17,7 +15,6 @@ pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
 pub struct ProjectorInputs<R: Runtime> {
     pub app: AppHandle<R>,
     pub shell_state: ShellState,
-    pub active_command_bus: ActiveCommandBus,
     pub generation: u64,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
@@ -29,7 +26,6 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         let ProjectorInputs {
             app,
             shell_state,
-            active_command_bus,
             generation,
             mut events,
             mut logs,
@@ -47,6 +43,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         );
 
         let mut cache = ProjectionCache::new();
+        cache.seed_from_view_state(&shell_state.snapshot().await);
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
@@ -65,7 +62,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
                 received = events.recv() => {
                     match received {
                         Ok(app_event) => {
-                            if apply_projector_event(&mut cache, &shell_state, generation, &active_command_bus, &app_event).await {
+                            if apply_projector_event(&mut cache, &app_event) {
                                 dirty = true;
                             }
                         }
@@ -103,29 +100,10 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &crate::app_state::Ap
     }
 }
 
-async fn apply_projector_event(
-    cache: &mut ProjectionCache,
-    shell_state: &ShellState,
-    generation: u64,
-    active_command_bus: &ActiveCommandBus,
-    event: &AppEvent,
-) -> bool {
+fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool {
     match event {
         AppEvent::Lv1(event) => {
-            if let Lv1Event::SceneListChanged(scenes) = event {
-                let _ = shell_state
-                    .show
-                    .scene_reconciliation_diagnostic(scenes.clone())
-                    .await;
-            }
-
             cache.apply_lv1_event(event);
-
-            if matches!(event, Lv1Event::Disconnected { .. }) {
-                shell_state
-                    .clear_runtime_handles(generation, active_command_bus)
-                    .await;
-            }
             true
         }
         AppEvent::Fade(event) => {
@@ -150,7 +128,6 @@ mod tests {
     fn spawn_started_projector(
         handle: AppHandle<impl Runtime>,
         state: ShellState,
-        active_command_bus: ActiveCommandBus,
         generation: u64,
         events: broadcast::Receiver<AppEvent>,
         logs: broadcast::Receiver<UiLogEvent>,
@@ -159,7 +136,6 @@ mod tests {
         let projector = spawn_projector(ProjectorInputs {
             app: handle,
             shell_state: state,
-            active_command_bus,
             generation,
             events,
             logs,
@@ -175,7 +151,6 @@ mod tests {
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
-        let active_command_bus = ActiveCommandBus::default();
         let (log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -185,14 +160,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(
-            handle,
-            state,
-            active_command_bus,
-            0,
-            event_bus.subscribe(),
-            log_rx,
-        );
+        let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
 
         log_tx
             .send(UiLogEvent {
@@ -222,6 +190,26 @@ mod tests {
         assert!(projector_source.contains("app.emit(\"app-status-changed\""));
     }
 
+    #[test]
+    fn projector_runtime_does_not_call_owner_side_effects() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let projector_source =
+            std::fs::read_to_string(manifest_dir.join("src/projector/runtime.rs")).unwrap();
+
+        let forbidden = [
+            ["Active", "Command", "Bus"].join(""),
+            ["clear", "runtime", "handles"].join("_"),
+            ["reconcile", "scene", "list"].join("_"),
+            ["scene", "reconciliation", "diagnostic"].join("_"),
+        ];
+        for term in forbidden {
+            assert!(
+                !projector_source.contains(&term),
+                "found forbidden term {term}"
+            );
+        }
+    }
+
     #[tokio::test]
     async fn show_event_marks_cache_dirty_and_pulls_show_snapshot() {
         let app = mock_app();
@@ -229,7 +217,6 @@ mod tests {
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
         state.show.set_lockout(true).await;
-        let active_command_bus = ActiveCommandBus::default();
         let (_log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -239,14 +226,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(
-            handle,
-            state,
-            active_command_bus,
-            0,
-            event_bus.subscribe(),
-            log_rx,
-        );
+        let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
 
         event_bus.publish(AppEvent::Show(ShowEvent::SnapshotChanged {
             reason: ShowSnapshotChange::Lockout,
@@ -264,7 +244,6 @@ mod tests {
         let handle = app.handle().clone();
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
-        let active_command_bus = ActiveCommandBus::default();
         let (_log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
@@ -274,14 +253,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(
-            handle,
-            state,
-            active_command_bus,
-            0,
-            event_bus.subscribe(),
-            log_rx,
-        );
+        let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
 
         let event = AppEvent::Show(ShowEvent::SnapshotChanged {
             reason: ShowSnapshotChange::Lockout,

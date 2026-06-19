@@ -8,7 +8,9 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 use crate::fade::events::FadeEvent;
 use crate::logging::UiLogEvent;
 use crate::lv1::events::Lv1Event;
-use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
+use crate::lv1::types::{
+    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
+};
 use crate::show::types::ShowSnapshot;
 
 pub const MAX_PROJECTOR_LOGS: usize = 200;
@@ -147,6 +149,67 @@ impl ProjectionCache {
         while self.logs.len() > MAX_PROJECTOR_LOGS {
             self.logs.pop_front();
         }
+    }
+
+    pub fn seed_from_view_state(&mut self, snapshot: &AppViewState) {
+        self.generation = snapshot.state_version;
+        self.lv1_snapshot = match snapshot.connection {
+            AppConnectionState::Disconnected => None,
+            AppConnectionState::Connecting | AppConnectionState::Connected => {
+                Some(Lv1StateSnapshot {
+                    connection: match snapshot.connection {
+                        AppConnectionState::Disconnected => ConnectionStatus::Disconnected,
+                        AppConnectionState::Connecting => ConnectionStatus::Connecting,
+                        AppConnectionState::Connected => ConnectionStatus::Connected,
+                    },
+                    scene: snapshot.current_scene.as_ref().map(|scene| SceneState {
+                        index: scene.index,
+                        name: scene.name.clone(),
+                    }),
+                    scene_list: snapshot
+                        .scenes
+                        .iter()
+                        .map(|scene| SceneListEntry {
+                            index: scene.index,
+                            name: scene.name.clone(),
+                        })
+                        .collect(),
+                    channels: snapshot
+                        .channels
+                        .iter()
+                        .map(|channel| ChannelInfo {
+                            group: channel.group,
+                            channel: channel.channel,
+                            name: channel.name.clone(),
+                            gain_db: 0.0,
+                            muted: false,
+                            pan: None,
+                            balance: None,
+                            width: None,
+                            pan_mode: None,
+                        })
+                        .collect(),
+                })
+            }
+        };
+        self.discovered_lv1_systems = snapshot.discovered_lv1_systems.clone();
+        self.connected_lv1_identity = snapshot.connected_lv1_identity.clone();
+        self.pending_lv1_identity = snapshot.pending_lv1_identity.clone();
+        self.reconnect_state = snapshot.reconnect.clone();
+        self.fade_state = snapshot.fade_state.clone();
+        self.selected_scene_id = snapshot.selected_scene_id.clone();
+        self.show_file_path = snapshot.show_file_path.as_ref().map(PathBuf::from);
+        self.show_file_dirty = snapshot.show_file_dirty;
+        self.show_file_last_saved_at = snapshot.show_file_last_saved_at.clone();
+        self.logs = snapshot.logs.iter().cloned().collect();
+        self.next_log_id = snapshot
+            .logs
+            .iter()
+            .map(|entry| entry.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.last_event_at = snapshot.last_event_at.clone();
     }
 
     pub fn build_snapshot(&mut self, show: ShowSnapshot) -> AppViewState {
@@ -304,6 +367,58 @@ mod tests {
         assert_eq!(snapshot.current_scene.unwrap().name, "Bridge");
         assert_eq!(snapshot.channel_count, 1);
         assert_eq!(snapshot.channels[0].name, "Vox");
+    }
+
+    #[test]
+    fn cache_seeds_from_connected_view_state() {
+        let mut cache = ProjectionCache::new();
+        cache.seed_from_view_state(&AppViewState {
+            connection: AppConnectionState::Connected,
+            discovered_lv1_systems: Vec::new(),
+            connected_lv1_identity: None,
+            pending_lv1_identity: None,
+            reconnect: ReconnectState::default(),
+            current_scene: Some(SceneSummary {
+                index: 1,
+                name: "Intro".to_string(),
+            }),
+            scenes: vec![SceneSummary {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            scene_count: 1,
+            channel_count: 0,
+            channels: Vec::new(),
+            fade_state: AppFadeState::Idle,
+            lockout: false,
+            scene_configs: Vec::new(),
+            cued_scene_id: None,
+            selected_scene_id: None,
+            show_file_name: "Untitled Show".to_string(),
+            show_file_path: None,
+            show_file_dirty: false,
+            show_file_last_saved_at: None,
+            logs: vec![AppLogEntry {
+                id: 7,
+                timestamp: "2026-01-01T00:00:00.000Z".to_string(),
+                severity: LogSeverity::Info,
+                message: "seed log".to_string(),
+            }],
+            last_event_at: None,
+            state_version: 11,
+        });
+
+        cache.append_log(UiLogEvent {
+            severity: LogSeverity::Warning,
+            message: "projected log".to_string(),
+        });
+        let snapshot = cache.build_snapshot(empty_show());
+
+        assert_eq!(snapshot.connection, AppConnectionState::Connected);
+        assert_eq!(snapshot.current_scene.unwrap().name, "Intro");
+        assert_eq!(snapshot.scenes.len(), 1);
+        assert_eq!(snapshot.logs[0].id, 7);
+        assert_eq!(snapshot.logs[1].id, 8);
     }
 
     #[test]

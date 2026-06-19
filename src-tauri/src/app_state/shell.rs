@@ -27,6 +27,8 @@ pub struct RuntimeHandles {
     pub command_bus: Option<AppCommandBus>,
     pub projector: Option<JoinHandle<()>>,
     pub scene_recall_fader: Option<JoinHandle<()>>,
+    pub lifecycle_event_monitor: Option<JoinHandle<()>>,
+    pub show_scene_list_monitor: Option<JoinHandle<()>>,
 }
 
 /// Lock ordering: always acquire `inner` before `show.state` to avoid deadlocks.
@@ -571,6 +573,12 @@ impl RuntimeHandles {
         if let Some(scene_recall_fader) = self.scene_recall_fader.take() {
             scene_recall_fader.abort();
         }
+        if let Some(lifecycle_event_monitor) = self.lifecycle_event_monitor.take() {
+            lifecycle_event_monitor.abort();
+        }
+        if let Some(show_scene_list_monitor) = self.show_scene_list_monitor.take() {
+            show_scene_list_monitor.abort();
+        }
         self.active_generation = 0;
         self.lv1 = None;
         self.fade = None;
@@ -846,6 +854,7 @@ mod tests {
             command_bus: None,
             projector: Some(tokio::spawn(async {})),
             scene_recall_fader: None,
+            ..Default::default()
         };
 
         let active_command_bus = crate::lifecycle::ActiveCommandBus::default();
@@ -865,6 +874,7 @@ mod tests {
             command_bus: None,
             projector: Some(tokio::spawn(async {})),
             scene_recall_fader: None,
+            ..Default::default()
         };
 
         let rejected = state
@@ -901,6 +911,7 @@ mod tests {
                     scene_recall_fader: Some(tokio::spawn(async {
                         std::future::pending::<()>().await;
                     })),
+                    ..Default::default()
                 },
                 &active_command_bus,
             )
