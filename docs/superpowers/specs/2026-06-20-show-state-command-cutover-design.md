@@ -150,7 +150,7 @@ There is no projection dirty notifier outside these inputs.
 
 The projector cache is dirty when an event or log arrives. It emits at the existing 10 Hz cadence.
 
-The projector and its subscriptions are constructed during app setup, before runtime event producers start. It owns the initial disconnected projection and emits the first `AppViewState` through `app-status-changed` only after the frontend has registered its listener and signaled readiness. Startup, connect, reconnect, discovery, show-file, and command flows update source owners and publish events; they do not return or directly emit full app state.
+The projector and its subscriptions are constructed only after the frontend has registered its listener and signaled readiness. Lifecycle supplies the initial show projection to the projector at construction time; the projector seeds its cache before its event loop emits. Startup, connect, reconnect, discovery, show-file, and command flows update source owners and publish events; they do not return or directly emit full app state.
 
 `AppEventBus` remains a lossy broadcast facts bus with no replay. This cutover assumes the projector does not lag past show events. Lag recovery for `ShowProjectionState` is deferred. Do not add watch channels, resync request events, projector pull exceptions, or replay-last event-bus behavior in this refactor. Existing lag handling should remain diagnostic only.
 
@@ -178,7 +178,7 @@ Define a show-owned projection DTO such as `ShowProjectionState` with exactly th
 
 `ShowEvent` includes:
 
-- a reason enum for diagnostics/tests
+- an optional or coarse reason enum for diagnostics/tests, such as show-state, connection metadata, or file metadata
 - `state: ShowProjectionState`
 
 Every show/app mutation that affects UI state publishes a `ShowEvent` carrying the full current `ShowProjectionState`. This avoids partial event replay and lets the projector replace its show-owned cache in one operation.
@@ -199,7 +199,7 @@ LV1 and fade events update projector cache fields directly from event payloads b
 
 LV1/fade events must not update show-owned connection metadata such as discovered systems, connected identity, pending identity, reconnect state, selected scene, show-file metadata, or lockout/config/cue state.
 
-Disconnected handling is not a projector side effect. For an active-generation `Disconnected` fact, the projector updates only LV1-owned projection fields. `show/` listens to the same generated disconnected fact, validates it against its internally tracked active runtime generation, updates show-owned connection UI metadata through private `ShowState`, and publishes `ShowEvent { state: ShowProjectionState }` for the projector to apply. Stale disconnect facts must not clear show-owned connection metadata.
+Disconnected handling is not a projector side effect. For an active-generation `Disconnected` fact, the projector updates only LV1-owned projection fields. An app-lifetime show runtime metadata monitor listens to the same generated disconnected fact, validates it against locally tracked active runtime generation from runtime lifecycle events, updates show-owned connection UI metadata through `AppCommandBus` and private `ShowState`, and publishes `ShowEvent { state: ShowProjectionState }` for the projector to apply. Stale disconnect facts must not clear show-owned connection metadata.
 
 ### Logs
 
@@ -238,9 +238,9 @@ The startup sequence is directly orchestrated:
 
 1. Create the app-lifetime `AppEventBus`.
 2. Create `ShowStateHandle` and `AppLifecycle`.
-3. Construct projector inputs and register projector/listeners.
-4. Wait for React to register its listener and invoke `frontend_ready`.
-5. Publish or apply initial show projection state.
+3. Wait for React to register its listener and invoke `frontend_ready`.
+4. Build projector inputs, including initial show projection state supplied once by lifecycle.
+5. Spawn the projector and seed its cache before the event loop starts.
 6. Emit the initial disconnected `AppViewState` from the projector.
 7. Start discovery, auto-connect, or other event-producing runtime work.
 8. Enter normal event-driven runtime mode.
@@ -257,11 +257,11 @@ Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLife
 
 - beginning a connection attempt and allocating the next generation
 - publishing that generation as the active runtime generation on the app-lifetime event bus
-- installing connected runtime handles for the active generation
+- installing connected runtime handles and generation-scoped command targets together for the active generation
 - rejecting stale runtime handles
 - exposing the app command bus
 - aborting the current runtime
-- clearing runtime handles for a matching generation
+- clearing runtime handles and generation-scoped command targets together for a matching generation
 - clearing reconnect/runtime state on disconnect
 
 Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect. Show-owned disconnect metadata cleanup is driven by generated disconnect facts on the app-lifetime `AppEventBus`. User-requested disconnect may publish that generated disconnect fact from lifecycle after aborting runtime handles, using the captured active generation and reason, but lifecycle must not directly mutate show-owned connection metadata.
@@ -300,7 +300,7 @@ Saving should be an explicit two-phase transaction:
 
 The show must not be marked clean before physical IO succeeds.
 
-The saved show-file format remains unchanged unless a separate design explicitly changes it.
+The saved show-file format remains unchanged unless a separate design explicitly changes it. Export should come directly from `ShowState` or private show-domain mapping helpers, not via `ShowProjectionState`; persistence should not depend on frontend projection fields.
 
 ## Scene Recall Safety
 
@@ -332,7 +332,7 @@ Expected structural changes:
 - Update `AppCommandBus` to route all app/session commands and queries.
 - Update projector cache to apply show state from events, not pull from show.
 - Move `state_version` ownership into projector cache as projection sequence state.
-- Construct the projector and subscriptions at app setup, then emit initial disconnected state only after `frontend_ready`.
+- Construct the projector and subscriptions after `frontend_ready`, seed it with initial show projection state from lifecycle, then emit initial disconnected state.
 - Use one app-lifetime `AppEventBus` shared by show, lifecycle/runtime actors, and projector.
 - Add generation to runtime-originated event payloads, publish active runtime generation changes, and ignore stale-generation runtime events in projector and show-owned runtime listeners.
 - Remove projector cache side effects for show-owned connection metadata on disconnect.
