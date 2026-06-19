@@ -2,18 +2,17 @@ use crate::fade::actor::spawn_engine;
 use crate::lifecycle::{ActiveCommandBus, AppLifecycle};
 use crate::lv1::actor::spawn_actor;
 use crate::lv1::discovery::resolve_target;
-use crate::lv1::events::Lv1Event;
+use crate::projector::{ProjectorInputs, spawn_projector};
 use crate::runtime::commands::AppCommandBus;
-use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use crate::runtime::events::{AppEvent, AppEventBus};
 use crate::scene_recall::spawn_scene_recall_fader;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::task::spawn_blocking;
 
-use crate::app_state::{
-    AppConnectionState, AppViewState, ProjectionOutcome, RuntimeHandles, ShellState,
-};
+use crate::app_state::{AppConnectionState, AppViewState, RuntimeHandles, ShellState};
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
+use crate::ui::UiLogReceiverState;
 
 const DEFAULT_DISCOVERY_TIMEOUT_MS: u64 = 1000;
 const MIN_DISCOVERY_TIMEOUT_MS: u64 = 100;
@@ -928,14 +927,15 @@ async fn install_connected_runtime<R: Runtime>(
 ) -> Result<AppViewState, String> {
     let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
 
-    runtime_handles.projector = Some(spawn_shell_state_projector(
-        app.clone(),
+    runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
+        app: app.clone(),
         shell_state,
-        lifecycle.command_bus_holder(),
+        active_command_bus: lifecycle.command_bus_holder(),
         generation,
         events,
-        projector_start_rx,
-    ));
+        logs: take_ui_log_receiver(app)?,
+        start_rx: projector_start_rx,
+    }));
 
     if let Err(mut stale_handles) = lifecycle
         .install_runtime_handles(state, generation, runtime_handles)
@@ -959,94 +959,16 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     }
 }
 
-const SHELL_PROJECTION_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
-
-fn spawn_shell_state_projector<R: Runtime>(
-    app: AppHandle<R>,
-    state: ShellState,
-    active_command_bus: ActiveCommandBus,
-    generation: u64,
-    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
-    projector_start_rx: tokio::sync::oneshot::Receiver<()>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        if projector_start_rx.await.is_err() {
-            return;
-        }
-
-        tracing::debug!(
-            event = "shell_state_projector_started",
-            generation = generation,
-            "shell-state projector started"
-        );
-        let mut projection_interval = tokio::time::interval(SHELL_PROJECTION_INTERVAL);
-        projection_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        projection_interval.tick().await;
-        let mut dirty = false;
-        loop {
-            tokio::select! {
-                _ = projection_interval.tick() => {
-                    if dirty {
-                        if let Some(snapshot) = state.snapshot_for_generation(generation).await {
-                            emit_snapshot(&app, &snapshot);
-                        }
-                        dirty = false;
-                    }
-                }
-                received = events.recv() => {
-                    match received {
-                        Ok(app_event) => {
-                            if apply_projector_event(&state, generation, &active_command_bus, &app_event).await.was_applied() {
-                                dirty = true;
-                            }
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                            dirty = true;
-                            log_lagged_subscriber("shell-state-projector", count);
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    }
-                }
-            }
-        }
-    })
-}
-
-async fn apply_projector_event(
-    state: &ShellState,
-    generation: u64,
-    active_command_bus: &ActiveCommandBus,
-    event: &AppEvent,
-) -> ProjectionOutcome {
-    match event {
-        AppEvent::Lv1(event) => {
-            if let Lv1Event::SceneListChanged(scenes) = event {
-                let _ = state
-                    .show
-                    .scene_reconciliation_diagnostic(scenes.clone())
-                    .await;
-            }
-
-            let outcome = state.apply_lv1_event_to_projection(generation, event).await;
-            if !outcome.was_applied() {
-                return outcome;
-            }
-
-            if matches!(event, Lv1Event::Disconnected { .. }) {
-                state
-                    .clear_runtime_handles(generation, active_command_bus)
-                    .await;
-            }
-            ProjectionOutcome::Applied
-        }
-        AppEvent::Fade(event) => {
-            state
-                .apply_fade_event_to_projection(generation, event)
-                .await
-        }
-        AppEvent::SceneRecall(_) => ProjectionOutcome::Ignored,
-        AppEvent::Show(_) => ProjectionOutcome::Ignored,
-    }
+fn take_ui_log_receiver<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<tokio::sync::mpsc::Receiver<crate::logging::UiLogEvent>, String> {
+    let state = app.state::<UiLogReceiverState>();
+    let mut guard = state
+        .lock()
+        .map_err(|_| "Failed to access UI log receiver".to_string())?;
+    guard
+        .take()
+        .ok_or_else(|| "UI log receiver is already attached to the projector".to_string())
 }
 
 async fn save_show_file_to_path(
@@ -1090,7 +1012,9 @@ fn ensure_show_file_folder(path: std::path::PathBuf) -> Result<std::path::PathBu
 #[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
+    use crate::app_state::ProjectionOutcome;
     use crate::fade::events::FadeEvent;
+    use crate::lv1::events::Lv1Event;
     use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
     use std::fs;
     use std::sync::{Arc, Mutex};
@@ -1112,24 +1036,77 @@ mod tests {
         path
     }
 
-    fn spawn_started_shell_state_projector<R: Runtime>(
+    fn spawn_started_projector<R: Runtime>(
         handle: AppHandle<R>,
         state: ShellState,
         active_command_bus: ActiveCommandBus,
         generation: u64,
         events: tokio::sync::broadcast::Receiver<AppEvent>,
+        logs: tokio::sync::mpsc::Receiver<crate::logging::UiLogEvent>,
     ) -> tokio::task::JoinHandle<()> {
         let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
-        let projector = spawn_shell_state_projector(
-            handle,
-            state,
+        let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
+            app: handle,
+            shell_state: state,
             active_command_bus,
             generation,
             events,
-            projector_start_rx,
-        );
+            logs,
+            start_rx: projector_start_rx,
+        });
         let _ = projector_start_tx.send(());
         projector
+    }
+
+    #[tokio::test]
+    async fn runtime_projector_accepts_log_input() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let state = ShellState::new(event_bus.clone());
+        let active_command_bus = ActiveCommandBus::default();
+        let (log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received_events = received.clone();
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            received_events.lock().unwrap().push(payload);
+        });
+
+        let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
+            app: handle,
+            shell_state: state,
+            active_command_bus,
+            generation: 0,
+            events: event_bus.subscribe(),
+            logs: log_rx,
+            start_rx: {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                let _ = tx.send(());
+                rx
+            },
+        });
+
+        log_tx
+            .send(crate::logging::UiLogEvent {
+                severity: crate::app_state::LogSeverity::Info,
+                message: "runtime projector log".to_string(),
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(
+            crate::projector::PROJECTOR_INTERVAL + std::time::Duration::from_millis(60),
+        )
+        .await;
+
+        projector.abort();
+        assert!(received.lock().unwrap().iter().any(|snapshot| {
+            snapshot["logs"].as_array().is_some_and(|logs| {
+                logs.iter()
+                    .any(|entry| entry["message"] == "runtime projector log")
+            })
+        }));
     }
 
     fn remembered_preferences(
@@ -1558,12 +1535,14 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let event_bus = AppEventBus::default();
-        let projector = spawn_started_shell_state_projector(
+        let (_log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let projector = spawn_started_projector(
             handle,
             state,
             ActiveCommandBus::default(),
             generation,
             event_bus.subscribe(),
+            log_rx,
         );
 
         event_bus.publish(AppEvent::Lv1(Lv1Event::Connected));
@@ -2054,12 +2033,14 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::default();
-        let projector = spawn_started_shell_state_projector(
+        let (_log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let projector = spawn_started_projector(
             handle,
             state,
             ActiveCommandBus::default(),
             generation,
             event_bus.subscribe(),
+            log_rx,
         );
 
         for gain_db in [1.0, 2.0, 3.0] {
@@ -2127,12 +2108,14 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::new(4);
-        let projector = spawn_started_shell_state_projector(
+        let (_log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let projector = spawn_started_projector(
             handle,
             state,
             ActiveCommandBus::default(),
             generation,
             event_bus.subscribe(),
+            log_rx,
         );
 
         for gain_db in 0..32 {
