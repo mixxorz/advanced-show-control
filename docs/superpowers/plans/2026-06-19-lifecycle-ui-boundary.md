@@ -511,7 +511,7 @@ git commit -m "refactor: route runtime handles through lifecycle"
 **Interfaces:**
 - Consumes: existing `ShellState`, `AppLifecycle`, logging setup, and existing command functions.
 - Produces:
-  - `pub fn build_app<R: tauri::Runtime>() -> tauri::Builder<R>`
+  - `pub fn build_app() -> tauri::Builder<tauri::Wry>`
   - `main.rs` that calls `advanced_show_control::ui::build_app().run(...)`
 
 - [ ] **Step 1: Add a UI module test for managed state setup**
@@ -550,7 +550,7 @@ use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use tauri::Manager;
 
-pub fn build_app<R: tauri::Runtime>() -> tauri::Builder<R> {
+pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .manage(ShellState::default())
         .manage(AppLifecycle::default())
