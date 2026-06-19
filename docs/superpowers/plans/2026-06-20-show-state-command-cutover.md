@@ -807,9 +807,7 @@ pub async fn handle_runtime_disconnected(show: &ShowStateHandle, generation: u64
 
 - `connected_lv1_identity = None`
 - `pending_lv1_identity = None`
-- `reconnect.active = false`
-- `reconnect.attempt = 0`
-- `reconnect.reason = Some(reason)` if the existing `ReconnectState` has a reason/message field; otherwise store the disconnect reason in `last_event_at` only if current behavior already uses that field for event text
+- `reconnect = ReconnectState { active: false, attempt: 0 }`
 - `last_event_at = Some(current_timestamp_millis())`
 
 Do not clear discovered systems, selected scene, cued scene, show-file metadata, scene configs, lockout, or active runtime generation.
@@ -1413,7 +1411,34 @@ async fn active_generation_disconnect_clears_show_owned_connection_metadata() {
 }
 ```
 
-Also add a show runtime-listener test that publishes `RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 9 }`, then publishes `AppEvent::Lv1(GeneratedAppEvent { generation: 8, event: Lv1Event::Disconnected { ... } })`, and asserts show-owned connection metadata is not cleared. This test should exercise the listener/orchestrator path, not only the direct command function.
+Add a lifecycle monitor test that exercises the listener/orchestrator path, not only the direct command function:
+
+```rust
+#[tokio::test]
+async fn show_runtime_metadata_monitor_ignores_stale_disconnect_facts() {
+    let event_bus = AppEventBus::default();
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
+    let command_bus = AppCommandBus::new();
+    command_bus.set_show_target(show.clone());
+    let monitor = spawn_show_runtime_metadata_monitor(event_bus.subscribe(), command_bus);
+
+    event_bus.publish_runtime_generation_changed(9);
+    event_bus.publish_lv1(
+        8,
+        Lv1Event::Disconnected {
+            reason: "stale disconnect".to_string(),
+        },
+    );
+    for _ in 0..5 {
+        tokio::task::yield_now().await;
+    }
+
+    let state = show.projection_state_for_test().await;
+    assert!(state.connected_lv1_identity.is_some());
+    monitor.abort();
+}
+```
 
 Add a stale disconnect test:
 
