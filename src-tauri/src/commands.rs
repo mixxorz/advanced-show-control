@@ -77,6 +77,28 @@ async fn resolve_connect_target(
         .map_err(|err| format!("Failed to resolve LV1 target: {err}"))?
 }
 
+async fn current_command_bus(
+    active_command_bus: ActiveCommandBus,
+    command_name: &'static str,
+) -> Result<AppCommandBus, String> {
+    active_command_bus.current().await.ok_or_else(|| {
+        tracing::warn!(
+            event = "command_blocked",
+            command = command_name,
+            reason = "app command bus is unavailable",
+            "Command blocked: app command bus is unavailable"
+        );
+        "App command bus is unavailable".to_string()
+    })
+}
+
+fn map_app_command_error(error: crate::runtime::commands::AppCommandError) -> String {
+    match error {
+        crate::runtime::commands::AppCommandError::CommandFailed(message) => message,
+        other => other.to_string(),
+    }
+}
+
 #[tauri::command]
 pub async fn new_show_file(
     app: AppHandle,
@@ -114,10 +136,17 @@ pub async fn open_show_file_dialog(
 pub async fn set_scene_duration_ms(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
     duration_ms: u64,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.set_scene_duration_ms(scene_id, duration_ms).await?;
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "set_scene_duration_ms").await?;
+    command_bus
+        .set_scene_duration_ms(scene_id, duration_ms)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -126,8 +155,15 @@ pub async fn set_scene_duration_ms(
 pub async fn select_scene_config(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<AppViewState, String> {
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "select_scene_config").await?;
+    command_bus
+        .select_scene_config(scene_id.clone())
+        .await
+        .map_err(map_app_command_error)?;
     let snapshot = state.select_scene_config(scene_id).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
@@ -137,55 +173,75 @@ pub async fn select_scene_config(
 pub async fn cue_scene(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<AppViewState, String> {
-    let snapshot = cue_scene_snapshot((*state).clone(), scene_id).await?;
+    let snapshot =
+        cue_scene_snapshot((*state).clone(), lifecycle.command_bus_holder(), scene_id).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
-async fn cue_scene_snapshot(state: ShellState, scene_id: String) -> Result<AppViewState, String> {
+async fn cue_scene_snapshot(
+    state: ShellState,
+    active_command_bus: ActiveCommandBus,
+    scene_id: String,
+) -> Result<AppViewState, String> {
     tracing::debug!(
         event = "scene_cue_requested",
         scene_id = %scene_id,
         "Scene cue requested"
     );
 
-    let scene = state
-        .show
-        .get_scene_config(scene_id.clone())
+    let command_bus = current_command_bus(active_command_bus, "cue_scene").await?;
+    let result = command_bus
+        .cue_scene(scene_id.clone())
         .await
-        .ok_or_else(|| {
-            tracing::warn!(
-                event = "scene_cue_blocked",
-                scene_id = %scene_id,
-                reason = "scene config not found",
-                "Scene cue blocked: scene config not found"
-            );
-            "Scene config not found".to_string()
+        .map_err(|error| {
+            if matches!(
+                error,
+                crate::runtime::commands::AppCommandError::CommandFailed(_)
+            ) {
+                tracing::warn!(
+                    event = "scene_cue_blocked",
+                    scene_id = %scene_id,
+                    reason = "scene config not found",
+                    "Scene cue blocked: scene config not found"
+                );
+            }
+            map_app_command_error(error)
         })?;
-
-    let snapshot = state.cue_scene(scene_id.clone()).await?;
 
     tracing::info!(
         event = "scene_cued",
-        scene_id = %scene.scene_id,
-        scene_index = scene.scene_index,
-        scene_name = %scene.scene_name,
+        scene_id = %result.scene.scene_id,
+        scene_index = result.scene.scene_index,
+        scene_name = %result.scene.scene_name,
         "Scene cued: {}",
-        scene.scene_name
+        result.scene.scene_name
     );
 
-    Ok(snapshot)
+    Ok(state.snapshot().await)
 }
 
 #[tauri::command]
 pub async fn store_scene_config(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.store_scene_config(scene_id).await?;
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "store_scene_config").await?;
+    let lv1 = state
+        .lv1_snapshot()
+        .await
+        .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
+    command_bus
+        .store_scene_config(scene_id, lv1.channels)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -311,14 +367,19 @@ async fn recall_scene_snapshot(
 pub async fn set_channel_scoped(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
     group: i32,
     channel: i32,
     scoped: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "set_channel_scoped").await?;
+    command_bus
         .set_channel_scoped(scene_id, group, channel, scoped)
-        .await?;
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -327,10 +388,17 @@ pub async fn set_channel_scoped(
 pub async fn set_all_channels_scoped(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
     scoped: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.set_all_channels_scoped(scene_id, scoped).await?;
+    let command_bus =
+        current_command_bus(lifecycle.command_bus_holder(), "set_all_channels_scoped").await?;
+    command_bus
+        .set_all_channels_scoped(scene_id, scoped)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -339,12 +407,20 @@ pub async fn set_all_channels_scoped(
 pub async fn set_scene_scope_faders_enabled(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
     enabled: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state
+    let command_bus = current_command_bus(
+        lifecycle.command_bus_holder(),
+        "set_scene_scope_faders_enabled",
+    )
+    .await?;
+    command_bus
         .set_scene_scope_faders_enabled(scene_id, enabled)
-        .await?;
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -353,10 +429,20 @@ pub async fn set_scene_scope_faders_enabled(
 pub async fn set_scene_scope_pan_enabled(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
     enabled: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.set_scene_scope_pan_enabled(scene_id, enabled).await?;
+    let command_bus = current_command_bus(
+        lifecycle.command_bus_holder(),
+        "set_scene_scope_pan_enabled",
+    )
+    .await?;
+    command_bus
+        .set_scene_scope_pan_enabled(scene_id, enabled)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -404,15 +490,15 @@ pub async fn save_show_file_as_dialog(
 pub async fn set_lockout(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     enabled: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot = state.set_lockout(enabled).await;
-    tracing::info!(
-        event = "lockout_changed",
-        enabled = enabled,
-        "Lockout {}",
-        if enabled { "enabled" } else { "disabled" }
-    );
+    let command_bus = current_command_bus(lifecycle.command_bus_holder(), "set_lockout").await?;
+    command_bus
+        .set_lockout(enabled)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -1088,6 +1174,10 @@ mod tests {
     #[tokio::test]
     async fn cue_scene_updates_show_state_even_when_lockout_is_enabled() {
         let state = ShellState::default();
+        let active_command_bus = ActiveCommandBus::default();
+        let command_bus = AppCommandBus::new();
+        command_bus.set_show(Some(state.show.clone())).await;
+        active_command_bus.set(Some(command_bus)).await;
         state
             .show
             .replace_snapshot(crate::show::types::ShowSnapshot {
@@ -1105,20 +1195,119 @@ mod tests {
             })
             .await;
 
-        let snapshot = cue_scene_snapshot(state.clone(), "1::Verse".to_string())
-            .await
-            .unwrap();
+        let snapshot =
+            cue_scene_snapshot(state.clone(), active_command_bus, "1::Verse".to_string())
+                .await
+                .unwrap();
 
         assert_eq!(snapshot.cued_scene_id, Some("1::Verse".to_string()));
         assert!(snapshot.lockout);
-        assert!(snapshot.show_file_dirty);
+        assert!(!snapshot.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn set_scene_duration_ms_routes_through_command_bus() {
+        let state = ShellState::default();
+        state
+            .show
+            .replace_snapshot(crate::show::types::ShowSnapshot {
+                lockout: false,
+                scene_configs: vec![crate::show::types::SceneConfig {
+                    scene_id: "1::Intro".to_string(),
+                    scene_index: 1,
+                    scene_name: "Intro".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: None,
+            })
+            .await;
+        let lifecycle = AppLifecycle::default();
+        let command_bus = AppCommandBus::new();
+        command_bus.set_show(Some(state.show.clone())).await;
+
+        lifecycle.set_command_bus(Some(command_bus)).await;
+
+        let resolved = current_command_bus(lifecycle.command_bus_holder(), "set_scene_duration_ms")
+            .await
+            .unwrap();
+
+        resolved
+            .set_scene_duration_ms("1::Intro".to_string(), 2500)
+            .await
+            .unwrap();
+
+        assert_eq!(state.snapshot().await.selected_scene_id, None);
+    }
+
+    #[tokio::test]
+    async fn select_scene_config_updates_shell_projection_after_bus_validation() {
+        let state = ShellState::default();
+        state
+            .show
+            .replace_snapshot(crate::show::types::ShowSnapshot {
+                lockout: false,
+                scene_configs: vec![crate::show::types::SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: None,
+            })
+            .await;
+        let lifecycle = AppLifecycle::default();
+        let command_bus = AppCommandBus::new();
+        command_bus.set_show(Some(state.show.clone())).await;
+
+        lifecycle.set_command_bus(Some(command_bus)).await;
+
+        let resolved = current_command_bus(lifecycle.command_bus_holder(), "select_scene_config")
+            .await
+            .unwrap();
+
+        resolved
+            .select_scene_config("1::Verse".to_string())
+            .await
+            .unwrap();
+
+        let snapshot = state
+            .select_scene_config("1::Verse".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(snapshot.selected_scene_id, Some("1::Verse".to_string()));
+    }
+
+    #[tokio::test]
+    async fn cue_scene_rejects_when_command_bus_is_unavailable() {
+        let state = ShellState::default();
+
+        let err = cue_scene_snapshot(
+            state.clone(),
+            ActiveCommandBus::default(),
+            "1::Verse".to_string(),
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err, "App command bus is unavailable");
     }
 
     #[tokio::test]
     async fn cue_scene_rejects_unknown_scene_id() {
         let state = ShellState::default();
+        let command_bus = AppCommandBus::new();
+        command_bus.set_show(Some(state.show.clone())).await;
+        let active_command_bus = ActiveCommandBus::default();
+        active_command_bus.set(Some(command_bus)).await;
 
-        let err = cue_scene_snapshot(state.clone(), "99::Missing".to_string())
+        let err = cue_scene_snapshot(state.clone(), active_command_bus, "99::Missing".to_string())
             .await
             .unwrap_err();
 

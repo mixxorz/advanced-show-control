@@ -86,6 +86,10 @@ impl ShellState {
         snapshot_from_parts(inner, show, state_version)
     }
 
+    pub async fn lv1_snapshot(&self) -> Option<Lv1StateSnapshot> {
+        self.inner.lock().await.lv1_snapshot.clone()
+    }
+
     pub async fn snapshot_for_generation(&self, generation: u64) -> Option<AppViewState> {
         let inner_guard = self.inner.lock().await;
         if inner_guard.generation != generation {
