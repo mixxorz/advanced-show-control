@@ -171,7 +171,7 @@ cargo nextest run -p advanced-show-control runtime::events::tests::runtime_event
 
 Expected: fail to compile because generated runtime `AppEvent` variants, `RuntimeLifecycleEvent`, `ShowProjectionState`, `ShowProjectionReason`, `ShowEvent::StateChanged`, and `command_set_lockout` do not exist.
 
-- [ ] **Step 4: Implement generated event wrapper**
+- [ ] **Step 4: Implement generated event variants**
 
 Change `src-tauri/src/runtime/events.rs`:
 
@@ -193,15 +193,11 @@ pub enum RuntimeLifecycleEvent {
 
 Update existing tests in this file to use generated runtime variants such as `AppEvent::Lv1 { generation: 0, event: ... }`. Keep `Show` unchanged.
 
-Add an `AppEventBus` helper:
+Add an `AppEventBus` helper for lifecycle generation changes only. Runtime event publishing helpers are added in Task 2 with the runtime publisher cutover.
 
 ```rust
 pub fn publish_runtime_generation_changed(&self, generation: u64) -> usize {
     self.publish(AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }))
-}
-
-pub fn publish_lv1(&self, generation: u64, event: Lv1Event) -> usize {
-    self.publish(AppEvent::Lv1 { generation, event })
 }
 ```
 
@@ -1107,7 +1103,8 @@ On tick:
 
 ```rust
 let snapshot = cache.build_snapshot();
-emit_snapshot(&app, &snapshot);
+// Projector-local app-status-changed emission.
+app.emit("app-status-changed", &snapshot)?;
 ```
 
 - [ ] **Step 9: Inspect projector runtime for show pulls**
@@ -1151,7 +1148,7 @@ git commit -m "refactor: project show state from events"
 - Produces: `AppLifecycle::new(event_bus: AppEventBus, show: ShowStateHandle) -> Self`.
 - Produces: `AppLifecycle::frontend_ready<R: Runtime>(&self, app: AppHandle<R>, logs: broadcast::Receiver<UiLogEvent>) -> Result<(), String>`.
 - Produces: `AppLifecycle::begin_connecting(&self) -> Option<u64>`.
-- Produces: `AppLifecycle::install_runtime_transaction(&self, generation: u64, handles: RuntimeHandles, lv1: Lv1ActorHandle, fade: FadeEngineHandle) -> Result<(), RuntimeInstallRejection>`.
+- Produces: `AppLifecycle::install_runtime_transaction(&self, generation: u64, handles: RuntimeHandles) -> Result<(), RuntimeInstallRejection>`.
 - Produces: `AppLifecycle::clear_runtime_transaction(&self, generation: u64)`.
 - Produces: app-lifetime projector handle storage outside `RuntimeHandles`.
 - Produces: app-lifetime/show-capable `AppCommandBus` available before LV1 runtime connection.
@@ -1185,7 +1182,7 @@ async fn lifecycle_rejects_stale_runtime_install() {
     let current = lifecycle.begin_connecting().await.unwrap();
 
     let rejected = lifecycle
-        .install_runtime_transaction(stale, RuntimeHandles::default(), test_lv1_handle(), test_fade_handle())
+        .install_runtime_transaction(stale, RuntimeHandles::with_runtime_targets(test_lv1_handle(), test_fade_handle()))
         .await
         .is_err();
 
@@ -1272,7 +1269,7 @@ pub struct AppLifecycle {
 }
 ```
 
-Implement `new`, `begin_connecting`, `active_generation`, `install_runtime_transaction`, `clear_runtime_transaction`, `abort_current_runtime`, and `current_command_bus`. Do not derive `Default` for `LifecycleInner` unless `AppCommandBus` intentionally implements `Default`; construct it explicitly in `AppLifecycle::new`. `new` must create an app-lifetime `AppCommandBus` with the show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates generation-scoped LV1/fade targets and lifecycle task handles together; it must not replace the app-lifetime bus.
+Implement `new`, `begin_connecting`, `active_generation`, `install_runtime_transaction`, `clear_runtime_transaction`, `abort_current_runtime`, and `current_command_bus`. Do not derive `Default` for `LifecycleInner` unless `AppCommandBus` intentionally implements `Default`; construct it explicitly in `AppLifecycle::new`. `new` must create an app-lifetime `AppCommandBus` with the show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates generation-scoped LV1/fade targets from `handles.lv1` / `handles.fade` and lifecycle task handles together; it must not replace the app-lifetime bus. If either runtime target is missing, reject the transaction before installing anything.
 
 Use this concrete shape in `AppLifecycle::new`:
 
@@ -1341,7 +1338,7 @@ fn spawn_show_runtime_metadata_monitor(
 
 The monitor is app-lifetime because it must observe every active-generation change and every generated LV1 disconnect fact across reconnects. It owns local `active_generation` state for stale filtering. It must not call `ShowStateHandle` or `show::commands` directly; it routes validated active-generation disconnects through the app-lifetime `AppCommandBus` method above.
 
-For tests, expose a private `spawn_show_runtime_metadata_monitor_for_test` wrapper or injected callback that notifies after the monitor has processed an input event, including ignored stale events. Do not use scheduler polling or show-state generation accessors to observe monitor progress.
+For tests, expose a private `spawn_show_runtime_metadata_monitor_for_test` wrapper or injected callback that sends one notification per processed event, including ignored stale events. The notification should identify the processed event kind, for example `MonitorProcessedEvent::RuntimeGeneration { generation }`, `MonitorProcessedEvent::Lv1Disconnect { generation, active: bool }`, or `MonitorProcessedEvent::Other`. Tests must wait for the specific disconnect notification they care about, not merely for the first monitor notification. Do not use scheduler polling or show-state generation accessors to observe monitor progress.
 
 `begin_connecting` must publish `AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })` after incrementing the active generation, so projector and show-owned runtime listeners accept events from the new runtime.
 
@@ -1474,11 +1471,11 @@ async fn show_runtime_metadata_monitor_ignores_stale_disconnect_facts() {
     establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
     let command_bus = AppCommandBus::new();
     command_bus.set_show_target(show.clone());
-    let (notified_tx, notified_rx) = tokio::sync::oneshot::channel();
+    let (notified_tx, mut notified_rx) = tokio::sync::mpsc::unbounded_channel();
     let monitor = spawn_show_runtime_metadata_monitor_for_test(
         event_bus.subscribe(),
         command_bus,
-        Some(notified_tx),
+        notified_tx,
     );
 
     event_bus.publish_runtime_generation_changed(9);
@@ -1488,7 +1485,7 @@ async fn show_runtime_metadata_monitor_ignores_stale_disconnect_facts() {
             reason: "stale disconnect".to_string(),
         },
     );
-    let _ = notified_rx.await;
+    wait_for_monitor_disconnect(&mut notified_rx, 8, false).await;
 
     let state = show.projection_state_for_test().await;
     assert!(state.connected_lv1_identity.is_some());
@@ -1584,7 +1581,7 @@ The method should:
 - get `self.current_command_bus().await`; do not create a new `AppCommandBus`
 - spawn LV1 actor and fade engine with the app-lifetime bus and generation
 - package the spawned LV1/fade handles into `RuntimeHandles` without scene recall fader yet
-- install lifecycle handles and generation-scoped LV1/fade command-bus runtime targets together through one lifecycle transaction, `install_runtime_transaction(generation, handles, lv1, fade)`
+- install lifecycle handles and generation-scoped LV1/fade command-bus runtime targets together through one lifecycle transaction, `install_runtime_transaction(generation, handles)`; the transaction derives command-bus targets from `handles.lv1` and `handles.fade`
 - if that transaction rejects the generation, immediately abort the returned handles and return a stale-generation error; the transaction must not leave command-bus targets installed for a rejected generation
 - after the transaction accepts the generation and command-bus runtime targets are installed, wait for or query the initial LV1 state through the app-lifetime command bus
 - if the initial LV1 state is unavailable or not connected, immediately abort the accepted runtime handles, call `clear_runtime_transaction(generation)`, apply the `fail_connect` / `fail_reconnect` equivalent show command for `failure_mode`, and return the connection error without establishing connected identity
@@ -1598,7 +1595,7 @@ The `begin_connecting` call inside this method is what publishes the active runt
 
 Add a connect-failure cleanup test proving that when initial LV1 state is unavailable or disconnected, lifecycle aborts the accepted handles, calls `clear_runtime_transaction(generation)`, applies the correct failed-connect or failed-reconnect show metadata for `failure_mode`, does not establish connected identity, and does not start scene recall fader.
 
-Add a connection-ordering test or lifecycle seam assertion proving `install_runtime_transaction(generation, handles, lv1, fade)` installs command-bus targets before scene recall fader startup. The test should simulate or record an initial scene-change/recall event and assert scene recall automation cannot run before LV1/fade targets are installed.
+Add a connection-ordering test or lifecycle seam assertion proving `install_runtime_transaction(generation, handles)` installs command-bus targets before scene recall fader startup. The test should simulate or record an initial scene-change/recall event and assert scene recall automation cannot run before LV1/fade targets are installed.
 
 `clear_runtime_transaction(generation)` must clear lifecycle handles and LV1/fade command-bus targets together only when `generation` matches the currently installed runtime generation. Stale cleanup must not clear newer handles or targets.
 
@@ -1669,11 +1666,11 @@ async fn show_runtime_metadata_monitor_clears_disconnect_after_generation_update
     establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
     let command_bus = AppCommandBus::new();
     command_bus.set_show_target(show.clone());
-    let (notified_tx, notified_rx) = tokio::sync::oneshot::channel();
+    let (notified_tx, mut notified_rx) = tokio::sync::mpsc::unbounded_channel();
     let monitor = spawn_show_runtime_metadata_monitor_for_test(
         event_bus.subscribe(),
         command_bus,
-        Some(notified_tx),
+        notified_tx,
     );
     let generation = 9;
 
@@ -1684,7 +1681,7 @@ async fn show_runtime_metadata_monitor_clears_disconnect_after_generation_update
             reason: "test disconnect".to_string(),
         },
     );
-    notified_rx.await.unwrap();
+    wait_for_monitor_disconnect(&mut notified_rx, generation, true).await;
 
     let state = show.projection_state_for_test().await;
     assert!(state.connected_lv1_identity.is_none());
@@ -1732,7 +1729,7 @@ git commit -m "refactor: route connection metadata through show commands"
 **Interfaces:**
 - Produces: `#[tauri::command] pub async fn frontend_ready(app, lifecycle) -> Result<(), String>`.
 - Produces: all mutating Tauri commands return command-specific result or `()`; none return `AppViewState`.
-- Removes: direct `emit_snapshot` helper outside projector.
+- Removes: direct snapshot-emission helper outside projector.
 
 - [ ] **Step 1: Move command implementations to ui/commands.rs**
 
@@ -1843,7 +1840,7 @@ git commit -m "refactor: make tauri commands thin wrappers"
 **Interfaces:**
 - Consumes: `frontend_ready` Tauri command from Task 7.
 - Produces: `AppRuntimeServices.frontendReady: () => Promise<void>`.
-- Produces: command service methods returning `Promise<void>` or named command-specific result types, not `Promise<AppViewState>`.
+- Produces: ignored command service methods returning `Promise<unknown>` or named command-specific result types, not `Promise<AppViewState>`.
 
 - [ ] **Step 1: Write failing frontend-ready order test**
 
@@ -1919,31 +1916,31 @@ In `ui/src/AppRuntime.tsx`, change `AppRuntimeServices`:
 export type AppRuntimeServices = {
   frontendReady: () => Promise<void>;
   abortAll: () => Promise<void> | void;
-  attemptReconnectLv1: () => Promise<void>;
-  connectLv1System: (identity: Lv1SystemIdentity) => Promise<void>;
-  disconnectLv1: () => Promise<void>;
+  attemptReconnectLv1: () => Promise<unknown>;
+  connectLv1System: (identity: Lv1SystemIdentity) => Promise<unknown>;
+  disconnectLv1: () => Promise<unknown>;
   listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
-  newShowFile: () => Promise<void>;
-  openShowFile: () => Promise<void>;
-  reconnectTimedOut: (attempt: number) => Promise<void>;
-  refreshLv1Discovery: () => Promise<void>;
-  saveShowFile: () => Promise<void>;
-  saveShowFileAs: () => Promise<void>;
-  cueScene: (sceneId: string) => Promise<void>;
-  recallScene: (sceneId: string) => Promise<void>;
-  selectSceneConfig: (sceneId: string) => Promise<void>;
-  setAllChannelsScoped: (sceneId: string, scoped: boolean) => Promise<void>;
-  setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => Promise<void>;
-  setLockout: (enabled: boolean) => Promise<void>;
-  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<void>;
-  setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
-  setSceneScopePanEnabled: (sceneId: string, enabled: boolean) => Promise<void>;
-  startupAutoConnectLv1: () => Promise<void>;
-  storeSceneConfig: (sceneId: string) => Promise<void>;
+  newShowFile: () => Promise<unknown>;
+  openShowFile: () => Promise<unknown>;
+  reconnectTimedOut: (attempt: number) => Promise<unknown>;
+  refreshLv1Discovery: () => Promise<unknown>;
+  saveShowFile: () => Promise<unknown>;
+  saveShowFileAs: () => Promise<unknown>;
+  cueScene: (sceneId: string) => Promise<unknown>;
+  recallScene: (sceneId: string) => Promise<unknown>;
+  selectSceneConfig: (sceneId: string) => Promise<unknown>;
+  setAllChannelsScoped: (sceneId: string, scoped: boolean) => Promise<unknown>;
+  setChannelScoped: (sceneId: string, group: number, channel: number, scoped: boolean) => Promise<unknown>;
+  setLockout: (enabled: boolean) => Promise<unknown>;
+  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<unknown>;
+  setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => Promise<unknown>;
+  setSceneScopePanEnabled: (sceneId: string, enabled: boolean) => Promise<unknown>;
+  startupAutoConnectLv1: () => Promise<unknown>;
+  storeSceneConfig: (sceneId: string) => Promise<unknown>;
 };
 ```
 
-Use `Promise<void>` for commands whose result is ignored by React. Replace `void` with a named result type only when the frontend consumes fields from that command. Do not use `AppViewState` as a command result.
+Use `Promise<unknown>` at the `AppRuntimeServices` boundary for commands whose result is ignored by React so tests can return sentinels proving command results are not applied as app state. Replace `unknown` with a named result type only when the frontend consumes fields from that command. Do not use `AppViewState` as a command result.
 
 - [ ] **Step 5: Replace runSnapshot with runCommand**
 
@@ -1957,7 +1954,7 @@ with:
 
 ```ts
 const runCommand = useCallback(
-  async (command: () => Promise<void>) => {
+  async (command: () => Promise<unknown>) => {
     setCommandError(null);
     try {
       await command();
