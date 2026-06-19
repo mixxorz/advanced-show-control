@@ -657,6 +657,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn no_op_show_command_through_bus_does_not_publish_show_event() {
+        let snapshot = ShowSnapshot {
+            lockout: true,
+            scene_configs: vec![scene_config()],
+            ..ShowSnapshot::empty()
+        };
+        let (bus, event_bus) = bus_with_show_snapshot(snapshot).await;
+        let mut events = event_bus.subscribe();
+
+        while events.try_recv().is_ok() {}
+
+        let result = bus.set_lockout(true).await.unwrap();
+
+        assert!(!result.changed);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn set_scene_duration_routes_to_show_state() {
         let snapshot = ShowSnapshot {
             scene_configs: vec![scene_config()],

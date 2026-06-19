@@ -1315,6 +1315,31 @@ mod tests {
         assert_eq!(state.snapshot().await.cued_scene_id, None);
     }
 
+    async fn lifecycle_with_show(state: &ShellState) -> AppLifecycle {
+        let lifecycle = AppLifecycle::default();
+        let bus = AppCommandBus::new();
+        bus.set_show(Some(state.show.clone())).await;
+        lifecycle.set_command_bus(Some(bus)).await;
+        lifecycle
+    }
+
+    #[tokio::test]
+    async fn cue_scene_updates_show_state_through_command_bus_and_returns_snapshot() {
+        let state = recall_state_with_unstored_scene(true).await;
+        let lifecycle = lifecycle_with_show(&state).await;
+
+        let snapshot = cue_scene_snapshot(
+            state.clone(),
+            lifecycle.command_bus_holder(),
+            "1::Verse".to_string(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(snapshot.cued_scene_id, Some("1::Verse".to_string()));
+        assert!(snapshot.lockout);
+    }
+
     async fn recall_state_with_unstored_scene(lockout: bool) -> ShellState {
         let state = ShellState::default();
         state
