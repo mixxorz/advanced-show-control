@@ -1,5 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::lv1::types::SceneListEntry;
 
 use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot, scene_id};
@@ -187,9 +188,18 @@ fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneLi
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
-    pub lockout: bool,
-    pub scene_configs: Vec<SceneConfig>,
-    pub cued_scene_id: Option<String>,
+    pub(crate) lockout: bool,
+    pub(crate) scene_configs: Vec<SceneConfig>,
+    pub(crate) cued_scene_id: Option<String>,
+    pub(crate) selected_scene_id: Option<String>,
+    pub(crate) show_file_path: Option<std::path::PathBuf>,
+    pub(crate) show_file_dirty: bool,
+    pub(crate) show_file_last_saved_at: Option<String>,
+    pub(crate) discovered_lv1_systems: Vec<DiscoveredLv1System>,
+    pub(crate) connected_lv1_identity: Option<Lv1SystemIdentity>,
+    pub(crate) pending_lv1_identity: Option<Lv1SystemIdentity>,
+    pub(crate) reconnect: ReconnectState,
+    pub(crate) last_event_at: Option<String>,
 }
 
 impl ShowState {
@@ -198,6 +208,32 @@ impl ShowState {
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
             cued_scene_id: self.cued_scene_id.clone(),
+        }
+    }
+
+    pub fn projection_state(&self) -> super::events::ShowProjectionState {
+        let show_file_name = self
+            .show_file_path
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| "Untitled Show".to_string());
+
+        super::events::ShowProjectionState {
+            lockout: self.lockout,
+            scene_configs: self.scene_configs.clone(),
+            cued_scene_id: self.cued_scene_id.clone(),
+            selected_scene_id: self.selected_scene_id.clone(),
+            show_file_path: self.show_file_path.clone(),
+            show_file_name,
+            show_file_dirty: self.show_file_dirty,
+            show_file_last_saved_at: self.show_file_last_saved_at.clone(),
+            discovered_lv1_systems: self.discovered_lv1_systems.clone(),
+            connected_lv1_identity: self.connected_lv1_identity.clone(),
+            pending_lv1_identity: self.pending_lv1_identity.clone(),
+            reconnect: self.reconnect.clone(),
+            last_event_at: self.last_event_at.clone(),
         }
     }
 
@@ -430,6 +466,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -466,6 +503,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(!state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -492,6 +530,7 @@ mod tests {
                 scene_config("1::Verse", 200, vec![]),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -532,6 +571,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(!state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -558,6 +598,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
@@ -585,6 +626,7 @@ mod tests {
                 named_scene_config(2, "Chorus", 300),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -611,6 +653,7 @@ mod tests {
                 named_scene_config(2, "Chorus", 300),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -636,6 +679,7 @@ mod tests {
                 named_scene_config(1, "Chorus", 300),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -663,6 +707,7 @@ mod tests {
                 named_scene_config(2, "Chorus", 300),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(
@@ -686,6 +731,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
             ],
             cued_scene_id: Some("1::Verse".to_string()),
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[scene_entry(0, "Intro")]));
@@ -702,6 +748,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -725,6 +772,7 @@ mod tests {
                 named_scene_config(2, "Chorus", 300),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         let diagnostic = state.scene_reconciliation_diagnostic(&[
@@ -749,6 +797,7 @@ mod tests {
                 named_scene_config(2, "Chorus", 300),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -776,6 +825,7 @@ mod tests {
                 named_scene_config(3, "Chorus", 400),
             ],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[
@@ -801,6 +851,7 @@ mod tests {
             lockout: false,
             scene_configs: vec![scene_config("1::scene-1", 1_000, vec![])],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         let err = state.set_scene_duration_ms("1::scene-1", 99).unwrap_err();
@@ -829,6 +880,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(state.set_channel_scoped("1::scene-1", 0, 1, true).unwrap());
@@ -841,6 +893,7 @@ mod tests {
             lockout: false,
             scene_configs: vec![],
             cued_scene_id: None,
+            ..Default::default()
         };
         let channels = vec![ChannelInfo {
             group: 0,
@@ -876,6 +929,7 @@ mod tests {
             lockout: false,
             scene_configs: vec![],
             cued_scene_id: None,
+            ..Default::default()
         };
         let channels = vec![channel(0, 1, "Lead", -7.5)];
 
@@ -893,6 +947,7 @@ mod tests {
             lockout: false,
             scene_configs: vec![],
             cued_scene_id: None,
+            ..Default::default()
         };
         let channels = vec![channel(0, 1, "Lead", -7.5)];
 
@@ -920,6 +975,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(
@@ -954,6 +1010,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(
@@ -1001,6 +1058,7 @@ mod tests {
                 }],
             )],
             cued_scene_id: None,
+            ..Default::default()
         };
 
         assert!(

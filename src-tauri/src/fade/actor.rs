@@ -144,7 +144,7 @@ async fn run_engine(
 
             app_event = app_events.recv() => {
                 match app_event {
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::FaderChanged { group, channel, gain_db })) => {
+                    Ok(AppEvent::Lv1 { event: crate::lv1::events::Lv1Event::FaderChanged { group, channel, gain_db }, .. }) => {
                         if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
                             && state.channels[pos].is_override(gain_db)
                         {
@@ -174,7 +174,7 @@ async fn run_engine(
                             }
                         }
                     }
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::PanChanged { group, channel, pan })) => {
+                    Ok(AppEvent::Lv1 { event: crate::lv1::events::Lv1Event::PanChanged { group, channel, pan }, .. }) => {
                         handle_pan_family_pan_report(
                             &mut state,
                             group,
@@ -184,7 +184,7 @@ async fn run_engine(
                             &mut fade_completed_emitted,
                         );
                     }
-                    Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected { .. })) => {
+                    Ok(AppEvent::Lv1 { event: crate::lv1::events::Lv1Event::Disconnected { .. }, .. }) => {
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
@@ -366,7 +366,10 @@ async fn send_batch(
     if let Err(err) = command_bus.write_batch(writes).await {
         let reason = format!("{err:?}");
         tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
-        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed { reason }));
+        event_bus.publish(AppEvent::Fade {
+            generation: 0,
+            event: FadeEvent::WriteFailed { reason },
+        });
     }
 }
 
@@ -382,7 +385,10 @@ async fn send_batch_if_generation(
     {
         let reason = format!("{err:?}");
         tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
-        event_bus.publish(AppEvent::Fade(FadeEvent::WriteFailed { reason }));
+        event_bus.publish(AppEvent::Fade {
+            generation: 0,
+            event: FadeEvent::WriteFailed { reason },
+        });
         return false;
     }
 
@@ -633,19 +639,22 @@ mod tests {
         while write_rx.try_recv().is_ok() {}
         while events.try_recv().is_ok() {}
 
-        event_bus.publish(AppEvent::Lv1(match parameter {
-            FadeParameter::Balance => crate::lv1::events::Lv1Event::BalanceChanged {
-                group: 0,
-                channel: 0,
-                balance: -45.0,
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: match parameter {
+                FadeParameter::Balance => crate::lv1::events::Lv1Event::BalanceChanged {
+                    group: 0,
+                    channel: 0,
+                    balance: -45.0,
+                },
+                FadeParameter::Width => crate::lv1::events::Lv1Event::WidthChanged {
+                    group: 0,
+                    channel: 0,
+                    width: -45.0,
+                },
+                _ => unreachable!(),
             },
-            FadeParameter::Width => crate::lv1::events::Lv1Event::WidthChanged {
-                group: 0,
-                channel: 0,
-                width: -45.0,
-            },
-            _ => unreachable!(),
-        }));
+        });
 
         let writes = tokio::time::timeout(std::time::Duration::from_millis(1500), write_rx.recv())
             .await
@@ -666,8 +675,14 @@ mod tests {
         let mut saw_cancelled = false;
         while let Ok(event) = events.try_recv() {
             match event {
-                AppEvent::Fade(FadeEvent::ChannelOverride { .. }) => saw_override = true,
-                AppEvent::Fade(FadeEvent::ChannelCancelled { .. }) => saw_cancelled = true,
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelOverride { .. },
+                } => saw_override = true,
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelCancelled { .. },
+                } => saw_cancelled = true,
                 _ => {}
             }
         }
@@ -726,22 +741,33 @@ mod tests {
         let mut cancelled = std::collections::HashSet::new();
         while let Ok(event) = events.try_recv() {
             match event {
-                AppEvent::Fade(FadeEvent::ChannelOverride {
-                    group,
-                    channel,
-                    parameter,
-                }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event:
+                        FadeEvent::ChannelOverride {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                } => {
                     assert_eq!((group, channel, parameter), (0, 0, FadeParameter::Pan));
                     saw_override = true;
                 }
-                AppEvent::Fade(FadeEvent::ChannelCancelled {
-                    group,
-                    channel,
-                    parameter,
-                }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event:
+                        FadeEvent::ChannelCancelled {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                } => {
                     cancelled.insert((group, channel, parameter));
                 }
-                AppEvent::Fade(FadeEvent::FadeCompleted) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::FadeCompleted,
+                } => {
                     panic!("unexpected FadeCompleted while unrelated target remains")
                 }
                 _ => {}
@@ -785,22 +811,33 @@ mod tests {
         let mut saw_fade_completed = false;
         while let Ok(event) = events.try_recv() {
             match event {
-                AppEvent::Fade(FadeEvent::ChannelOverride {
-                    group,
-                    channel,
-                    parameter,
-                }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event:
+                        FadeEvent::ChannelOverride {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                } => {
                     assert_eq!((group, channel, parameter), (0, 0, FadeParameter::Pan));
                     saw_override = true;
                 }
-                AppEvent::Fade(FadeEvent::ChannelCancelled {
-                    group,
-                    channel,
-                    parameter,
-                }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event:
+                        FadeEvent::ChannelCancelled {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                } => {
                     cancelled.insert((group, channel, parameter));
                 }
-                AppEvent::Fade(FadeEvent::FadeCompleted) => saw_fade_completed = true,
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::FadeCompleted,
+                } => saw_fade_completed = true,
                 _ => {}
             }
         }
@@ -860,13 +897,22 @@ mod tests {
 
         while let Ok(event) = events.try_recv() {
             match event {
-                AppEvent::Fade(FadeEvent::ChannelOverride { .. }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelOverride { .. },
+                } => {
                     panic!("unexpected ChannelOverride event")
                 }
-                AppEvent::Fade(FadeEvent::ChannelCancelled { .. }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelCancelled { .. },
+                } => {
                     panic!("unexpected ChannelCancelled event")
                 }
-                AppEvent::Fade(FadeEvent::FadeCompleted) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::FadeCompleted,
+                } => {
                     panic!("unexpected FadeCompleted event")
                 }
                 _ => {}
@@ -927,13 +973,22 @@ mod tests {
 
         while let Ok(event) = events.try_recv() {
             match event {
-                AppEvent::Fade(FadeEvent::ChannelOverride { .. }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelOverride { .. },
+                } => {
                     panic!("unexpected ChannelOverride event")
                 }
-                AppEvent::Fade(FadeEvent::ChannelCancelled { .. }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelCancelled { .. },
+                } => {
                     panic!("unexpected ChannelCancelled event")
                 }
-                AppEvent::Fade(FadeEvent::FadeCompleted) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::FadeCompleted,
+                } => {
                     panic!("unexpected FadeCompleted event")
                 }
                 _ => {}
@@ -995,22 +1050,33 @@ mod tests {
         let mut saw_fade_completed = false;
         while let Ok(event) = events.try_recv() {
             match event {
-                AppEvent::Fade(FadeEvent::ChannelOverride {
-                    group,
-                    channel,
-                    parameter,
-                }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event:
+                        FadeEvent::ChannelOverride {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                } => {
                     assert_eq!((group, channel, parameter), (0, 0, FadeParameter::Pan));
                     saw_override = true;
                 }
-                AppEvent::Fade(FadeEvent::ChannelCancelled {
-                    group,
-                    channel,
-                    parameter,
-                }) => {
+                AppEvent::Fade {
+                    generation: 0,
+                    event:
+                        FadeEvent::ChannelCancelled {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                } => {
                     cancelled.insert((group, channel, parameter));
                 }
-                AppEvent::Fade(FadeEvent::FadeCompleted) => saw_fade_completed = true,
+                AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::FadeCompleted,
+                } => saw_fade_completed = true,
                 _ => {}
             }
         }
@@ -1344,7 +1410,10 @@ mod tests {
             .unwrap()
             .unwrap();
         match event {
-            AppEvent::Fade(FadeEvent::WriteFailed { reason }) => {
+            AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::WriteFailed { reason },
+            } => {
                 assert!(
                     reason
                         == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
@@ -1370,7 +1439,13 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(matches!(event, AppEvent::Fade(FadeEvent::FadeCompleted)));
+        assert!(matches!(
+            event,
+            AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeCompleted
+            }
+        ));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
                 .await
@@ -1431,7 +1506,10 @@ mod tests {
         );
 
         match events.recv().await.unwrap() {
-            AppEvent::Fade(FadeEvent::WriteFailed { reason }) => {
+            AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::WriteFailed { reason },
+            } => {
                 assert!(
                     reason
                         == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
@@ -1547,7 +1625,10 @@ mod tests {
         let mut saw_write_failed = false;
         loop {
             match tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await {
-                Ok(Ok(AppEvent::Fade(FadeEvent::WriteFailed { reason }))) => {
+                Ok(Ok(AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::WriteFailed { reason },
+                })) => {
                     assert!(
                         reason
                             == crate::runtime::commands::AppCommandError::StaleGeneration
@@ -1556,7 +1637,10 @@ mod tests {
                     );
                     saw_write_failed = true;
                 }
-                Ok(Ok(AppEvent::Fade(FadeEvent::ChannelCancelled { .. }))) => {}
+                Ok(Ok(AppEvent::Fade {
+                    generation: 0,
+                    event: FadeEvent::ChannelCancelled { .. },
+                })) => {}
                 Ok(Ok(other)) => panic!("unexpected event: {other:?}"),
                 Ok(Err(_)) | Err(_) => break,
             }

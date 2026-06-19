@@ -52,10 +52,10 @@ pub fn spawn_scene_recall_fader(
                 tokio::select! {
                     event = events.recv() => {
                         match event {
-                            Ok(AppEvent::Lv1(Lv1Event::SceneListChanged(scene_list))) => {
+                            Ok(AppEvent::Lv1 { event: Lv1Event::SceneListChanged(scene_list), .. }) => {
                                 recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
                             }
-                            Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
+                            Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
                                 pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
                             }
                             Ok(_) => {}
@@ -81,10 +81,16 @@ pub fn spawn_scene_recall_fader(
             }
 
             match events.recv().await {
-                Ok(AppEvent::Lv1(Lv1Event::SceneListChanged(scene_list))) => {
+                Ok(AppEvent::Lv1 {
+                    event: Lv1Event::SceneListChanged(scene_list),
+                    ..
+                }) => {
                     recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
                 }
-                Ok(AppEvent::Lv1(Lv1Event::SceneChanged(scene))) => {
+                Ok(AppEvent::Lv1 {
+                    event: Lv1Event::SceneChanged(scene),
+                    ..
+                }) => {
                     pending_scene = Some(PendingSceneObservation::new(
                         scene,
                         tokio::time::Instant::now(),
@@ -137,12 +143,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("LV1 state is unavailable: {err}"),
                 },
-            ));
+            });
             return;
         }
     };
@@ -159,12 +166,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("failed to fetch scene config: {err}"),
                 },
-            ));
+            });
             return;
         }
     };
@@ -175,12 +183,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("failed to fetch lockout: {err}"),
                 },
-            ));
+            });
             return;
         }
     };
@@ -198,17 +207,19 @@ async fn process_scene_observation(
             }
             tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
             tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::Ready {
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::Ready {
                     scene_label: scene_label.clone(),
                     target_count: fade_config.targets.len(),
                 },
-            ));
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::StartRequested {
+            });
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::StartRequested {
                     scene_label: scene_label.clone(),
                 },
-            ));
+            });
             match command_bus
                 .start_fade_if_generation(generation, fade_config)
                 .await
@@ -216,12 +227,13 @@ async fn process_scene_observation(
                 Ok(()) => (),
                 Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
                 Err(err) => {
-                    event_bus.publish(AppEvent::SceneRecall(
-                        crate::scene_recall::events::SceneRecallEvent::Blocked {
+                    event_bus.publish(AppEvent::SceneRecall {
+                        generation: 0,
+                        event: crate::scene_recall::events::SceneRecallEvent::Blocked {
                             scene_label,
                             reason: format!("failed to start fade: {err:?}"),
                         },
-                    ));
+                    });
                 }
             }
         }
@@ -229,12 +241,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::Skipped {
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::Skipped {
                     scene_label: scene_label(&observation.scene),
                     reason,
                 },
-            ));
+            });
         }
         RecallPolicyDecision::Blocked { reason } => {
             if !is_generation_current(generation, command_bus).await {
@@ -247,12 +260,13 @@ async fn process_scene_observation(
                 reason = %reason,
                 "Scene recall blocked for {scene_label}: {reason}"
             );
-            event_bus.publish(AppEvent::SceneRecall(
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish(AppEvent::SceneRecall {
+                generation: 0,
+                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label,
                     reason,
                 },
-            ));
+            });
         }
     }
 }
@@ -306,7 +320,10 @@ mod tests {
     use std::time::Duration;
 
     async fn arm_recall_state(event_bus: &AppEventBus) {
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -387,7 +404,10 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         arm_recall_state(&event_bus).await;
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
 
         match next_scene_recall_event(&mut events).await {
             SceneRecallEvent::Blocked { reason, .. } => {
@@ -414,7 +434,10 @@ mod tests {
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
 
         assert!(next_blocked_scene_recall_event(&mut events).await);
 
@@ -443,7 +466,10 @@ mod tests {
 
         // Bump generation BEFORE the scene change — any fade started after this is stale
         command_bus.set_generation(2).await;
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
 
         // Advance past the 25 ms settle delay so the actor processes the scene change
         yield_to_actor().await;
@@ -462,9 +488,10 @@ mod tests {
         while let Ok(event) = events.try_recv() {
             if matches!(
                 event,
-                AppEvent::SceneRecall(
-                    crate::scene_recall::events::SceneRecallEvent::StartRequested { .. }
-                )
+                AppEvent::SceneRecall {
+                    generation: 0,
+                    event: crate::scene_recall::events::SceneRecallEvent::StartRequested { .. }
+                }
             ) {
                 saw_start_requested = true;
             }
@@ -500,7 +527,10 @@ mod tests {
         arm_recall_state(&event_bus).await;
 
         // Publish the scene change with generation still valid
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         yield_to_actor().await;
 
         // Flip generation while the actor is settling (before it dispatches start_fade)
@@ -537,7 +567,10 @@ mod tests {
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -589,18 +622,26 @@ mod tests {
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(song_3_at(4))));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_before_current_move(),
-        )));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(song_3_at(4)),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_before_current_move()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(2_050)).await;
         yield_to_actor().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_after_current_move(),
-        )));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(song_3_at(3))));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_after_current_move()),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(song_3_at(3)),
+        });
         yield_to_actor().await;
 
         assert!(matches!(
@@ -632,18 +673,26 @@ mod tests {
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(song_3_at(4))));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_before_non_current_rename(),
-        )));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(song_3_at(4)),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_before_non_current_rename()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(2_050)).await;
         yield_to_actor().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_after_non_current_rename(),
-        )));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(song_3_at(4))));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_after_non_current_rename()),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(song_3_at(4)),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -677,18 +726,26 @@ mod tests {
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(song_3_at(4))));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_before_current_move(),
-        )));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(song_3_at(4)),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_before_current_move()),
+        });
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(2_050)).await;
         tokio::task::yield_now().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(song_3_at(3))));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_after_current_move(),
-        )));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(song_3_at(3)),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_after_current_move()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -725,13 +782,18 @@ mod tests {
         tokio::time::advance(Duration::from_millis(500)).await;
         yield_to_actor().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_before_current_move(),
-        )));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_before_current_move(),
-        )));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_before_current_move()),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_before_current_move()),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -773,17 +835,22 @@ mod tests {
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_before_non_current_rename(),
-        )));
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneListChanged(
-            scene_list_after_non_current_rename(),
-        )));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_before_non_current_rename()),
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneListChanged(scene_list_after_non_current_rename()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(500)).await;
         yield_to_actor().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -792,10 +859,14 @@ mod tests {
         let mut seen_start_requested = false;
         for _ in 0..2 {
             match next_app_event(&mut events).await {
-                AppEvent::SceneRecall(SceneRecallEvent::Ready { .. }) => seen_ready = true,
-                AppEvent::SceneRecall(SceneRecallEvent::StartRequested { .. }) => {
-                    seen_start_requested = true
-                }
+                AppEvent::SceneRecall {
+                    generation: 0,
+                    event: SceneRecallEvent::Ready { .. },
+                } => seen_ready = true,
+                AppEvent::SceneRecall {
+                    generation: 0,
+                    event: SceneRecallEvent::StartRequested { .. },
+                } => seen_start_requested = true,
                 other => panic!("unexpected event: {other:?}"),
             }
         }
@@ -840,7 +911,10 @@ mod tests {
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
@@ -902,7 +976,10 @@ mod tests {
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(intro_scene())));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         tokio::task::yield_now().await;
@@ -921,7 +998,10 @@ mod tests {
         tokio::task::yield_now().await;
         loop {
             match events.try_recv() {
-                Ok(AppEvent::SceneRecall(event)) => {
+                Ok(AppEvent::SceneRecall {
+                    generation: 0,
+                    event,
+                }) => {
                     panic!("unexpected scene recall event: {event:?}")
                 }
                 Ok(_) => continue,
@@ -940,7 +1020,10 @@ mod tests {
         loop {
             let event = events.recv().await.unwrap();
             match event {
-                AppEvent::SceneRecall(_) => return event,
+                AppEvent::SceneRecall {
+                    generation: 0,
+                    event: _,
+                } => return event,
                 _ => continue,
             }
         }
@@ -950,7 +1033,11 @@ mod tests {
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     ) -> SceneRecallEvent {
         loop {
-            if let AppEvent::SceneRecall(event) = events.recv().await.unwrap() {
+            if let AppEvent::SceneRecall {
+                generation: 0,
+                event,
+            } = events.recv().await.unwrap()
+            {
                 break event;
             }
         }

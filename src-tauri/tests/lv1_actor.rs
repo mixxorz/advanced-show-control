@@ -14,7 +14,13 @@ fn make_lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
 async fn wait_for_connected(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Ok(event) = events.recv().await {
-            if matches!(event, AppEvent::Lv1(Lv1Event::Connected)) {
+            if matches!(
+                event,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ) {
                 return;
             }
         }
@@ -42,7 +48,13 @@ async fn actor_connects_and_emits_connected_event() {
         .unwrap()
         .unwrap();
 
-    assert!(matches!(event, AppEvent::Lv1(Lv1Event::Connected)));
+    assert!(matches!(
+        event,
+        AppEvent::Lv1 {
+            event: Lv1Event::Connected,
+            ..
+        }
+    ));
     server.await.unwrap();
 }
 
@@ -78,8 +90,14 @@ async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
     let result = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while let Ok(event) = events.recv().await {
             match event {
-                AppEvent::Lv1(Lv1Event::Disconnected { .. }) => got_disconnect = true,
-                AppEvent::Lv1(Lv1Event::Connected) if got_disconnect => {
+                AppEvent::Lv1 {
+                    event: Lv1Event::Disconnected { .. },
+                    ..
+                } => got_disconnect = true,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                } if got_disconnect => {
                     got_reconnect = true;
                     break;
                 }
@@ -122,7 +140,11 @@ async fn actor_parses_and_emits_scene_changed() {
     let mut scene_event = None;
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
         while let Ok(event) = events.recv().await {
-            if let AppEvent::Lv1(Lv1Event::SceneChanged(s)) = event {
+            if let AppEvent::Lv1 {
+                event: Lv1Event::SceneChanged(s),
+                ..
+            } = event
+            {
                 scene_event = Some(s);
                 break;
             }
@@ -406,7 +428,13 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Ok(event) = events.recv().await {
-            if matches!(event, AppEvent::Lv1(Lv1Event::Disconnected { .. })) {
+            if matches!(
+                event,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Disconnected { .. },
+                    ..
+                }
+            ) {
                 break;
             }
         }
@@ -560,7 +588,13 @@ async fn silent_server_disconnects_after_ping_timeout() {
     // Wait for Connected event (no timeout needed — TCP I/O drives this)
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Ok(event) = events.recv().await {
-            if matches!(event, AppEvent::Lv1(Lv1Event::Connected)) {
+            if matches!(
+                event,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ) {
                 return;
             }
         }
@@ -576,7 +610,11 @@ async fn silent_server_disconnects_after_ping_timeout() {
     // Assert Disconnected is published and names the ping timeout as the reason
     let disconnect_reason = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         while let Ok(event) = events.recv().await {
-            if let AppEvent::Lv1(Lv1Event::Disconnected { reason }) = event {
+            if let AppEvent::Lv1 {
+                event: Lv1Event::Disconnected { reason },
+                ..
+            } = event
+            {
                 return Some(reason);
             }
         }

@@ -365,6 +365,7 @@ fn scene_list_reconciliation_creates_default_configs() {
         lockout: false,
         scene_configs: Vec::new(),
         cued_scene_id: None,
+        ..Default::default()
     };
     assert!(state.reconcile_scene_fade_configs(&[
         SceneListEntry {
@@ -408,6 +409,7 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
             }],
         )],
         cued_scene_id: None,
+        ..Default::default()
     };
 
     assert!(state.reconcile_scene_fade_configs(&[
@@ -460,6 +462,7 @@ fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
             }],
         )],
         cued_scene_id: None,
+        ..Default::default()
     };
 
     assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {

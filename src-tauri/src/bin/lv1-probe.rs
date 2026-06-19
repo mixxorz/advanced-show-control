@@ -507,7 +507,7 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
     loop {
         match events.recv().await {
             Ok(app_event) => {
-                let AppEvent::Lv1(event) = app_event else {
+                let AppEvent::Lv1 { event, .. } = app_event else {
                     continue;
                 };
 
@@ -716,7 +716,7 @@ async fn run_fade_test(
         loop {
             match lv1_events.recv().await {
                 Ok(app_event) => {
-                    let AppEvent::Lv1(event) = app_event else {
+                    let AppEvent::Lv1 { event, .. } = app_event else {
                         continue;
                     };
 
@@ -774,21 +774,36 @@ async fn run_fade_test(
 
     loop {
         match fade_events.recv().await {
-            Ok(AppEvent::Fade(FadeEvent::FadeStarted)) => println!("[fade-started]"),
-            Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeStarted,
+            }) => println!("[fade-started]"),
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeCompleted,
+            }) => {
                 println!("[fade-complete] reached {target_db:.1} dB");
                 break;
             }
-            Ok(AppEvent::Fade(FadeEvent::FadeAborted)) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeAborted,
+            }) => {
                 println!("[fade-aborted]");
                 break;
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelOverride { group, channel, .. })) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::ChannelOverride { group, channel, .. },
+            }) => {
                 println!(
                     "[override] group={group} ch={channel} — manual move detected, channel cancelled"
                 );
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelCancelled { group, channel, .. })) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::ChannelCancelled { group, channel, .. },
+            }) => {
                 println!("[cancelled] group={group} ch={channel}");
             }
             Ok(_) => {}
@@ -988,7 +1003,10 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             match lv1_events.recv().await {
-                Ok(AppEvent::Lv1(Lv1Event::Connected)) => {
+                Ok(AppEvent::Lv1 {
+                    generation: 0,
+                    event: Lv1Event::Connected,
+                }) => {
                     println!("[connected] {host}:{port}");
                     break;
                 }
@@ -1140,7 +1158,10 @@ async fn run_pan_family_smoke_step(
 
     loop {
         match fade_events.recv().await {
-            Ok(AppEvent::Fade(FadeEvent::FadeStarted)) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeStarted,
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1152,7 +1173,10 @@ async fn run_pan_family_smoke_step(
                     }),
                 )?;
             }
-            Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeCompleted,
+            }) => {
                 println!("[fade-complete] {label}");
                 write_smoke_log_entry(
                     log_path,
@@ -1166,7 +1190,10 @@ async fn run_pan_family_smoke_step(
                 )?;
                 break;
             }
-            Ok(AppEvent::Fade(FadeEvent::FadeAborted)) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::FadeAborted,
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1183,11 +1210,15 @@ async fn run_pan_family_smoke_step(
                 )
                 .into());
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelOverride {
-                group,
-                channel,
-                parameter,
-            })) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event:
+                    FadeEvent::ChannelOverride {
+                        group,
+                        channel,
+                        parameter,
+                    },
+            }) => {
                 println!(
                     "[override] group={group} ch={channel} parameter={parameter:?}; stopping smoke test"
                 );
@@ -1207,11 +1238,15 @@ async fn run_pan_family_smoke_step(
                 )
                 .into());
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelCancelled {
-                group,
-                channel,
-                parameter,
-            })) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event:
+                    FadeEvent::ChannelCancelled {
+                        group,
+                        channel,
+                        parameter,
+                    },
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1223,11 +1258,15 @@ async fn run_pan_family_smoke_step(
                     }),
                 )?;
             }
-            Ok(AppEvent::Fade(FadeEvent::ChannelCompleted {
-                group,
-                channel,
-                parameter,
-            })) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event:
+                    FadeEvent::ChannelCompleted {
+                        group,
+                        channel,
+                        parameter,
+                    },
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1239,7 +1278,10 @@ async fn run_pan_family_smoke_step(
                     }),
                 )?;
             }
-            Ok(AppEvent::Fade(FadeEvent::WriteFailed { reason })) => {
+            Ok(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::WriteFailed { reason },
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({ "event": "write_failed", "label": label, "reason": reason }),
@@ -1250,11 +1292,15 @@ async fn run_pan_family_smoke_step(
                 )
                 .into());
             }
-            Ok(AppEvent::Lv1(Lv1Event::PanChanged {
-                group,
-                channel,
-                pan,
-            })) => {
+            Ok(AppEvent::Lv1 {
+                generation: 0,
+                event:
+                    Lv1Event::PanChanged {
+                        group,
+                        channel,
+                        pan,
+                    },
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1266,11 +1312,15 @@ async fn run_pan_family_smoke_step(
                     }),
                 )?;
             }
-            Ok(AppEvent::Lv1(Lv1Event::BalanceChanged {
-                group,
-                channel,
-                balance,
-            })) => {
+            Ok(AppEvent::Lv1 {
+                generation: 0,
+                event:
+                    Lv1Event::BalanceChanged {
+                        group,
+                        channel,
+                        balance,
+                    },
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1282,11 +1332,15 @@ async fn run_pan_family_smoke_step(
                     }),
                 )?;
             }
-            Ok(AppEvent::Lv1(Lv1Event::WidthChanged {
-                group,
-                channel,
-                width,
-            })) => {
+            Ok(AppEvent::Lv1 {
+                generation: 0,
+                event:
+                    Lv1Event::WidthChanged {
+                        group,
+                        channel,
+                        width,
+                    },
+            }) => {
                 write_smoke_log_entry(
                     log_path,
                     serde_json::json!({
@@ -1388,7 +1442,7 @@ async fn wait_for_channels_with_mute_settle(
             event = events.recv() => {
                 match event {
                     Ok(app_event) => {
-                        let AppEvent::Lv1(event) = app_event else {
+                        let AppEvent::Lv1 { event, .. } = app_event else {
                             continue;
                         };
 
@@ -1464,7 +1518,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
         loop {
             match events.recv().await {
                 Ok(app_event) => {
-                    let AppEvent::Lv1(event) = app_event else {
+                    let AppEvent::Lv1 { event, .. } = app_event else {
                         continue;
                     };
 
@@ -1875,7 +1929,7 @@ mod tests {
             loop {
                 match events.recv().await {
                     Ok(app_event) => {
-                        let AppEvent::Lv1(event) = app_event else {
+                        let AppEvent::Lv1 { event, .. } = app_event else {
                             continue;
                         };
 
@@ -1970,7 +2024,7 @@ mod tests {
             loop {
                 match events.recv().await {
                     Ok(app_event) => {
-                        let AppEvent::Lv1(event) = app_event else {
+                        let AppEvent::Lv1 { event, .. } = app_event else {
                             continue;
                         };
 

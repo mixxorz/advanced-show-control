@@ -16,7 +16,10 @@ impl EngineState {
     }
 
     pub(crate) fn fan_out(&mut self, event: FadeEvent) {
-        self.event_bus.publish(AppEvent::Fade(event));
+        self.event_bus.publish(AppEvent::Fade {
+            generation: 0,
+            event,
+        });
     }
 
     pub(crate) fn is_active(&self) -> bool {

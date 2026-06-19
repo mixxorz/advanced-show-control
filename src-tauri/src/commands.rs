@@ -1547,7 +1547,10 @@ mod tests {
         let projector =
             spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
 
-        event_bus.publish(AppEvent::Lv1(Lv1Event::Connected));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::Connected,
+        });
         tokio::task::yield_now().await;
         tokio::time::advance(std::time::Duration::from_millis(100)).await;
         tokio::task::yield_now().await;
@@ -1970,7 +1973,10 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let events = event_bus.subscribe();
-        event_bus.publish(AppEvent::Fade(FadeEvent::FadeStarted));
+        event_bus.publish(AppEvent::Fade {
+            generation: 0,
+            event: FadeEvent::FadeStarted,
+        });
 
         let lifecycle = AppLifecycle::default();
         let snapshot = install_connected_runtime(
@@ -2112,11 +2118,14 @@ mod tests {
             spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
 
         for gain_db in [1.0, 2.0, 3.0] {
-            event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
-                group: 1,
-                channel: 1,
-                gain_db,
-            }));
+            event_bus.publish(AppEvent::Lv1 {
+                generation: 0,
+                event: Lv1Event::FaderChanged {
+                    group: 1,
+                    channel: 1,
+                    gain_db,
+                },
+            });
         }
 
         tokio::task::yield_now().await;
@@ -2181,11 +2190,14 @@ mod tests {
             spawn_started_projector(handle, state, generation, event_bus.subscribe(), log_rx);
 
         for gain_db in 0..32 {
-            event_bus.publish(AppEvent::Lv1(Lv1Event::FaderChanged {
-                group: 1,
-                channel: 1,
-                gain_db: gain_db as f64,
-            }));
+            event_bus.publish(AppEvent::Lv1 {
+                generation: 0,
+                event: Lv1Event::FaderChanged {
+                    group: 1,
+                    channel: 1,
+                    gain_db: gain_db as f64,
+                },
+            });
             tokio::task::yield_now().await;
         }
 

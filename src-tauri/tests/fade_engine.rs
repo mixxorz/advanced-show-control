@@ -93,7 +93,10 @@ async fn no_global_fade_completed_for(
     let completed = tokio::time::timeout(timeout, async {
         loop {
             match events.recv().await {
-                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
+                Ok(AppEvent::Fade {
+                    event: FadeEvent::FadeCompleted,
+                    ..
+                }) => return true,
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
@@ -114,7 +117,7 @@ async fn wait_for_app_fade_event(
     tokio::time::timeout(timeout, async {
         loop {
             match events.recv().await {
-                Ok(AppEvent::Fade(event)) if pred(&event) => return event,
+                Ok(AppEvent::Fade { event, .. }) if pred(&event) => return event,
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -387,7 +390,10 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
     let completed = tokio::time::timeout(std::time::Duration::from_millis(150), async {
         loop {
             match app_events.recv().await {
-                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
+                Ok(AppEvent::Fade {
+                    event: FadeEvent::FadeCompleted,
+                    ..
+                }) => return true,
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
@@ -605,7 +611,10 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
     let still_running = tokio::time::timeout(std::time::Duration::from_millis(400), async {
         loop {
             match app_events.recv().await {
-                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return false,
+                Ok(AppEvent::Fade {
+                    event: FadeEvent::FadeCompleted,
+                    ..
+                }) => return false,
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
@@ -680,7 +689,10 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
     wait_for_app_event(&mut app_events, std::time::Duration::from_secs(3), |e| {
         matches!(
             e,
-            AppEvent::Lv1(advanced_show_control::lv1::events::Lv1Event::ChannelTopologyChanged(_))
+            AppEvent::Lv1 {
+                event: advanced_show_control::lv1::events::Lv1Event::ChannelTopologyChanged(_),
+                ..
+            }
         )
     })
     .await;
@@ -728,11 +740,15 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
     let pan_cancelled = tokio::time::timeout(std::time::Duration::from_millis(200), async {
         loop {
             match app_events.recv().await {
-                Ok(AppEvent::Fade(FadeEvent::ChannelCancelled {
-                    group,
-                    channel,
-                    parameter,
-                })) if group == 0 && channel == 0 && parameter == FadeParameter::Pan => {
+                Ok(AppEvent::Fade {
+                    event:
+                        FadeEvent::ChannelCancelled {
+                            group,
+                            channel,
+                            parameter,
+                        },
+                    ..
+                }) if group == 0 && channel == 0 && parameter == FadeParameter::Pan => {
                     return true;
                 }
                 Ok(_) => continue,
@@ -1396,7 +1412,10 @@ async fn disconnect_aborts_active_fade() {
     let completed = tokio::time::timeout(std::time::Duration::from_millis(250), async {
         loop {
             match app_events.recv().await {
-                Ok(AppEvent::Fade(FadeEvent::FadeCompleted)) => return true,
+                Ok(AppEvent::Fade {
+                    event: FadeEvent::FadeCompleted,
+                    ..
+                }) => return true,
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,

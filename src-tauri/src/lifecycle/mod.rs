@@ -85,7 +85,10 @@ pub fn spawn_lifecycle_event_monitor(
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::Disconnected { .. })) => {
+                Ok(AppEvent::Lv1 {
+                    event: crate::lv1::events::Lv1Event::Disconnected { .. },
+                    ..
+                }) => {
                     lifecycle.clear_runtime_handles(&state, generation).await;
                 }
                 Ok(_) => {}
@@ -213,11 +216,12 @@ mod tests {
             event_bus.subscribe(),
         );
 
-        event_bus.publish(crate::runtime::events::AppEvent::Lv1(
-            crate::lv1::events::Lv1Event::Disconnected {
+        event_bus.publish(crate::runtime::events::AppEvent::Lv1 {
+            generation: 0,
+            event: crate::lv1::events::Lv1Event::Disconnected {
                 reason: "test disconnect".to_string(),
             },
-        ));
+        });
 
         tokio::time::timeout(std::time::Duration::from_millis(500), async {
             loop {

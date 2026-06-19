@@ -19,14 +19,20 @@ async fn app_event_bus_carries_lv1_events_without_actor_subscriber_api() {
     let bus = AppEventBus::new(16);
     let mut rx = bus.subscribe();
 
-    bus.publish(AppEvent::Lv1(Lv1Event::SceneChanged(SceneState {
-        index: 4,
-        name: "Outro".to_string(),
-    })));
+    bus.publish(AppEvent::Lv1 {
+        generation: 0,
+        event: Lv1Event::SceneChanged(SceneState {
+            index: 4,
+            name: "Outro".to_string(),
+        }),
+    });
 
     let event = rx.recv().await.unwrap();
     match event {
-        AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
+        AppEvent::Lv1 {
+            event: Lv1Event::SceneChanged(scene),
+            ..
+        } => {
             assert_eq!(scene.index, 4);
             assert_eq!(scene.name, "Outro");
         }
@@ -73,7 +79,10 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             match events.recv().await {
-                Ok(AppEvent::Lv1(Lv1Event::ChannelTopologyChanged(_))) => break,
+                Ok(AppEvent::Lv1 {
+                    event: Lv1Event::ChannelTopologyChanged(_),
+                    ..
+                }) => break,
                 Ok(_) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {

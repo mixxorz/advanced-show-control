@@ -5,7 +5,7 @@ use tokio::sync::Mutex;
 use crate::lv1::types::{ChannelInfo, SceneListEntry};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
-use super::events::{ShowEvent, ShowSnapshotChange};
+use super::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
 use super::state::ShowState;
 use super::types::{SceneConfig, ShowSnapshot};
 
@@ -23,9 +23,12 @@ impl ShowStateHandle {
         }
     }
 
-    fn publish_snapshot_changed(&self, reason: ShowSnapshotChange) {
+    fn publish_state_changed(&self, reason: ShowProjectionReason, state: &ShowState) {
         self.event_bus
-            .publish(AppEvent::Show(ShowEvent::SnapshotChanged { reason }));
+            .publish(AppEvent::Show(ShowEvent::StateChanged {
+                reason,
+                state: state.projection_state(),
+            }));
     }
 
     pub async fn get_snapshot(&self) -> ShowSnapshot {
@@ -37,9 +40,10 @@ impl ShowStateHandle {
     }
 
     pub async fn cue_scene(&self, scene_id: String) -> Result<bool, String> {
-        let changed = self.state.lock().await.cue_scene(&scene_id)?;
+        let mut state = self.state.lock().await;
+        let changed = state.cue_scene(&scene_id)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::CueScene);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
@@ -48,12 +52,23 @@ impl ShowStateHandle {
         self.state.lock().await.lockout
     }
 
-    pub async fn set_lockout(&self, enabled: bool) -> bool {
-        let changed = self.state.lock().await.set_lockout(enabled);
+    #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.
+    pub(crate) async fn initial_projection_state(&self) -> ShowProjectionState {
+        let state = self.state.lock().await;
+        state.projection_state()
+    }
+
+    pub(crate) async fn command_set_lockout(&self, enabled: bool) -> bool {
+        let mut state = self.state.lock().await;
+        let changed = state.set_lockout(enabled);
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::Lockout);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         changed
+    }
+
+    pub async fn set_lockout(&self, enabled: bool) -> bool {
+        self.command_set_lockout(enabled).await
     }
 
     pub async fn set_scene_duration(
@@ -61,13 +76,10 @@ impl ShowStateHandle {
         scene_id: String,
         duration_ms: u64,
     ) -> Result<bool, String> {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .set_scene_duration_ms(&scene_id, duration_ms)?;
+        let mut state = self.state.lock().await;
+        let changed = state.set_scene_duration_ms(&scene_id, duration_ms)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::SceneDuration);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
@@ -77,13 +89,10 @@ impl ShowStateHandle {
         scene_id: String,
         enabled: bool,
     ) -> Result<bool, String> {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .set_scene_scope_faders_enabled(&scene_id, enabled)?;
+        let mut state = self.state.lock().await;
+        let changed = state.set_scene_scope_faders_enabled(&scene_id, enabled)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::SceneScopeFaders);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
@@ -93,13 +102,10 @@ impl ShowStateHandle {
         scene_id: String,
         enabled: bool,
     ) -> Result<bool, String> {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .set_scene_scope_pan_enabled(&scene_id, enabled)?;
+        let mut state = self.state.lock().await;
+        let changed = state.set_scene_scope_pan_enabled(&scene_id, enabled)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::SceneScopePan);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
@@ -111,13 +117,10 @@ impl ShowStateHandle {
         channel: i32,
         scoped: bool,
     ) -> Result<bool, String> {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .set_channel_scoped(&scene_id, group, channel, scoped)?;
+        let mut state = self.state.lock().await;
+        let changed = state.set_channel_scoped(&scene_id, group, channel, scoped)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::ChannelScope);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
@@ -127,13 +130,10 @@ impl ShowStateHandle {
         scene_id: String,
         scoped: bool,
     ) -> Result<bool, String> {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .set_all_channels_scoped(&scene_id, scoped)?;
+        let mut state = self.state.lock().await;
+        let changed = state.set_all_channels_scoped(&scene_id, scoped)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::AllChannelsScope);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
@@ -143,25 +143,19 @@ impl ShowStateHandle {
         scene_id: String,
         channels: Vec<ChannelInfo>,
     ) -> Result<bool, String> {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .store_scene_config(&scene_id, &channels)?;
+        let mut state = self.state.lock().await;
+        let changed = state.store_scene_config(&scene_id, &channels)?;
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::StoreSceneConfig);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         Ok(changed)
     }
 
     pub async fn reconcile_scene_list(&self, scenes: Vec<SceneListEntry>) -> bool {
-        let changed = self
-            .state
-            .lock()
-            .await
-            .reconcile_scene_fade_configs(&scenes);
+        let mut state = self.state.lock().await;
+        let changed = state.reconcile_scene_fade_configs(&scenes);
         if changed {
-            self.publish_snapshot_changed(ShowSnapshotChange::SceneListReconciled);
+            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
         }
         changed
     }
@@ -185,8 +179,7 @@ impl ShowStateHandle {
         }
 
         state.replace_snapshot(snapshot);
-        drop(state);
-        self.publish_snapshot_changed(ShowSnapshotChange::SnapshotReplaced);
+        self.publish_state_changed(ShowProjectionReason::ShowState, &state);
     }
 
     pub async fn clear(&self) {
@@ -196,8 +189,7 @@ impl ShowStateHandle {
         }
 
         state.clear();
-        drop(state);
-        self.publish_snapshot_changed(ShowSnapshotChange::Cleared);
+        self.publish_state_changed(ShowProjectionReason::ShowState, &state);
     }
 }
 
@@ -208,7 +200,10 @@ pub fn spawn_lv1_scene_list_monitor(
     tokio::spawn(async move {
         loop {
             match events.recv().await {
-                Ok(AppEvent::Lv1(crate::lv1::events::Lv1Event::SceneListChanged(scenes))) => {
+                Ok(AppEvent::Lv1 {
+                    event: crate::lv1::events::Lv1Event::SceneListChanged(scenes),
+                    ..
+                }) => {
                     show.handle_lv1_scene_list_changed(scenes).await;
                 }
                 Ok(_) => {}
@@ -226,7 +221,7 @@ mod tests {
     use super::*;
     use crate::lv1::types::SceneListEntry;
     use crate::runtime::events::{AppEvent, AppEventBus};
-    use crate::show::events::{ShowEvent, ShowSnapshotChange};
+    use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
 
     fn scene_config() -> SceneConfig {
@@ -243,16 +238,36 @@ mod tests {
 
     async fn recv_show_event(
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
-        expected_reason: ShowSnapshotChange,
+        expected_reason: ShowProjectionReason,
     ) {
         loop {
             let event = events.recv().await.unwrap();
             if matches!(
                 event,
-                AppEvent::Show(ShowEvent::SnapshotChanged { reason }) if reason == expected_reason
+                AppEvent::Show(ShowEvent::StateChanged { reason, .. }) if reason == expected_reason
             ) {
                 break;
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn show_event_carries_full_projection_state() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+
+        show.command_set_lockout(true).await;
+
+        let event = events.recv().await.unwrap();
+        match event {
+            AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
+                assert_eq!(reason, ShowProjectionReason::ShowState);
+                assert!(state.lockout);
+                assert_eq!(state.show_file_name, "Untitled Show");
+                assert!(!state.show_file_dirty);
+            }
+            other => panic!("unexpected event: {other:?}"),
         }
     }
 
@@ -264,7 +279,7 @@ mod tests {
 
         assert!(show.set_lockout(true).await);
 
-        recv_show_event(&mut events, ShowSnapshotChange::Lockout).await;
+        recv_show_event(&mut events, ShowProjectionReason::ShowState).await;
     }
 
     #[tokio::test]
@@ -291,7 +306,7 @@ mod tests {
         })
         .await;
 
-        recv_show_event(&mut events, ShowSnapshotChange::SnapshotReplaced).await;
+        recv_show_event(&mut events, ShowProjectionReason::ShowState).await;
     }
 
     #[tokio::test]
@@ -336,17 +351,18 @@ mod tests {
             cued_scene_id: None,
         })
         .await;
-        recv_show_event(&mut show_events, ShowSnapshotChange::SnapshotReplaced).await;
+        recv_show_event(&mut show_events, ShowProjectionReason::ShowState).await;
 
         let monitor = spawn_lv1_scene_list_monitor(show.clone(), event_bus.subscribe());
-        event_bus.publish(AppEvent::Lv1(
-            crate::lv1::events::Lv1Event::SceneListChanged(vec![SceneListEntry {
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: crate::lv1::events::Lv1Event::SceneListChanged(vec![SceneListEntry {
                 index: 1,
                 name: "Verse Big".to_string(),
             }]),
-        ));
+        });
 
-        recv_show_event(&mut show_events, ShowSnapshotChange::SceneListReconciled).await;
+        recv_show_event(&mut show_events, ShowProjectionReason::ShowState).await;
         let snapshot = show.get_snapshot().await;
         assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse Big");
         assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);

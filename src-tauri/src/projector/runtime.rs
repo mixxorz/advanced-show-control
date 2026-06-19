@@ -102,16 +102,16 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &crate::app_state::Ap
 
 fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool {
     match event {
-        AppEvent::Lv1(event) => {
+        AppEvent::Lv1 { event, .. } => {
             cache.apply_lv1_event(event);
             true
         }
-        AppEvent::Fade(event) => {
+        AppEvent::Fade { event, .. } => {
             cache.apply_fade_event(event);
             true
         }
-        AppEvent::SceneRecall(_) => false,
-        AppEvent::Show(_) => true,
+        AppEvent::SceneRecall { .. } => false,
+        AppEvent::Show(_) | AppEvent::Runtime(_) => true,
     }
 }
 
@@ -120,8 +120,7 @@ mod tests {
     use super::*;
     use crate::app_state::LogSeverity;
     use crate::runtime::events::AppEventBus;
-    use crate::show::events::ShowEvent;
-    use crate::show::events::ShowSnapshotChange;
+    use crate::show::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
     use std::sync::{Arc, Mutex};
     use tauri::{Listener, test::mock_app};
 
@@ -228,8 +227,23 @@ mod tests {
 
         let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
 
-        event_bus.publish(AppEvent::Show(ShowEvent::SnapshotChanged {
-            reason: ShowSnapshotChange::Lockout,
+        event_bus.publish(AppEvent::Show(ShowEvent::StateChanged {
+            reason: ShowProjectionReason::ShowState,
+            state: ShowProjectionState {
+                lockout: true,
+                scene_configs: vec![],
+                cued_scene_id: None,
+                selected_scene_id: None,
+                show_file_path: None,
+                show_file_name: "Untitled Show".to_string(),
+                show_file_dirty: false,
+                show_file_last_saved_at: None,
+                discovered_lv1_systems: vec![],
+                connected_lv1_identity: None,
+                pending_lv1_identity: None,
+                reconnect: Default::default(),
+                last_event_at: None,
+            },
         }));
         tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
 
@@ -255,8 +269,23 @@ mod tests {
 
         let projector = spawn_started_projector(handle, state, 0, event_bus.subscribe(), log_rx);
 
-        let event = AppEvent::Show(ShowEvent::SnapshotChanged {
-            reason: ShowSnapshotChange::Lockout,
+        let event = AppEvent::Show(ShowEvent::StateChanged {
+            reason: ShowProjectionReason::ShowState,
+            state: ShowProjectionState {
+                lockout: true,
+                scene_configs: vec![],
+                cued_scene_id: None,
+                selected_scene_id: None,
+                show_file_path: None,
+                show_file_name: "Untitled Show".to_string(),
+                show_file_dirty: false,
+                show_file_last_saved_at: None,
+                discovered_lv1_systems: vec![],
+                connected_lv1_identity: None,
+                pending_lv1_identity: None,
+                reconnect: Default::default(),
+                last_event_at: None,
+            },
         });
         event_bus.publish(event.clone());
         event_bus.publish(event);

@@ -179,7 +179,10 @@ impl ActorState {
     }
 
     pub(super) fn fan_out(&mut self, event: Lv1Event) {
-        self.event_bus.publish(AppEvent::Lv1(event));
+        self.event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event,
+        });
     }
 
     pub(super) fn diagnose(&mut self, message: impl Into<String>) {
@@ -352,12 +355,15 @@ mod tests {
 
         let event = loop {
             let event = rx.recv().await.unwrap();
-            if matches!(event, AppEvent::Lv1(_)) {
+            if matches!(event, AppEvent::Lv1 { .. }) {
                 break event;
             }
         };
         match event {
-            AppEvent::Lv1(Lv1Event::SceneChanged(scene)) => {
+            AppEvent::Lv1 {
+                event: Lv1Event::SceneChanged(scene),
+                ..
+            } => {
                 assert_eq!(scene.index, 3);
                 assert_eq!(scene.name, "Bridge");
             }
