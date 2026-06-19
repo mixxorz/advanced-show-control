@@ -343,7 +343,7 @@ The branch does not need to compile at every intermediate edit. The final commit
 
 ## Guardrails
 
-Add or update tests/static checks for these invariants:
+Verify these invariants through behavior tests, compiler visibility, final searches, and code review checkpoints. Do not add brittle static guard tests for these architecture rules:
 
 - `ShellState` is removed.
 - `ActiveCommandBus` is removed.
@@ -380,8 +380,11 @@ cargo build --workspace
 Also run frontend checks after command contract changes:
 
 ```bash
+npm --prefix ui run format:check
+npm --prefix ui run lint
 npm --prefix ui run typecheck
 npm --prefix ui run test
+npm --prefix ui run build
 ```
 
 Run the preserved probe binary build or full workspace build to ensure `lv1-probe` remains valid.

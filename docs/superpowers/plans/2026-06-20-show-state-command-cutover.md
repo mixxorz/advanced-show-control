@@ -27,7 +27,8 @@
 - No saved show-file format redesign.
 - No frontend `AppViewState` schema redesign.
 - Preserve lockout, exact scene identity, generation guards, disconnect behavior, manual override, abort, overlap, and same-scene safety behavior.
-- Run verification before claiming completion: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo nextest run --workspace`, `cargo build --workspace`, `npm --prefix ui run typecheck`, `npm --prefix ui run test`.
+- Run verification before claiming completion: `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo nextest run --workspace`, `cargo build --workspace`, `npm --prefix ui run format:check`, `npm --prefix ui run lint`, `npm --prefix ui run typecheck`, `npm --prefix ui run test`, `npm --prefix ui run build`.
+- Do not add static guard tests for architecture rules. Use concrete behavior tests, compiler visibility, final searches, and code review checkpoints instead.
 
 ---
 
@@ -648,7 +649,7 @@ This helper publishes only when `apply` returns `changed == true`. No-op command
 
 - [ ] **Step 4: Move dirty/file metadata updates into command handlers**
 
-In `src-tauri/src/show/commands.rs`, implement command handlers that mutate `ShowState` directly through `mutate_for_command`.
+In `src-tauri/src/show/commands.rs`, implement command handlers that mutate `ShowState` through explicit `ShowState` mutation methods inside `mutate_for_command`. Do not make `ShowState` fields public or `pub(super)` to make command examples compile.
 
 Example for duration:
 
@@ -684,6 +685,43 @@ pub(crate) fn mark_dirty(&mut self) {
 }
 ```
 
+Also add small mutation/accessor methods needed by commands. Keep fields private and put this logic in `show/state.rs`, for example:
+
+```rust
+pub(crate) fn reset_for_new_show(&mut self, lv1: Option<&Lv1StateSnapshot>) -> Option<String> {
+    self.clear();
+    if let Some(lv1) = lv1
+        && !lv1.scene_list.is_empty()
+    {
+        self.reconcile_scene_fade_configs(&lv1.scene_list);
+    }
+    self.selected_scene_id = self.scene_configs.first().map(|scene| scene.scene_id.clone());
+    self.show_file_path = None;
+    self.show_file_dirty = false;
+    self.show_file_last_saved_at = None;
+    self.selected_scene_id.clone()
+}
+
+pub(crate) fn mark_saved(&mut self, path: std::path::PathBuf, saved_at: String) {
+    self.show_file_path = Some(path);
+    self.show_file_last_saved_at = Some(saved_at);
+    self.show_file_dirty = false;
+}
+
+pub(crate) fn set_discovered_lv1_systems(
+    &mut self,
+    systems: Vec<DiscoveredLv1System>,
+) -> bool {
+    if self.discovered_lv1_systems == systems {
+        return false;
+    }
+    self.discovered_lv1_systems = systems;
+    true
+}
+```
+
+Add equivalent methods for pending identity, connected identity, reconnect state, active runtime generation, and active-generation disconnect metadata cleanup. Command handlers should call these methods rather than assigning fields directly.
+
 - [ ] **Step 5: Implement new/load/save metadata commands**
 
 In `src-tauri/src/show/commands.rs`, implement:
@@ -695,17 +733,8 @@ pub async fn new_show_file(
 ) -> Result<NewShowFileResult, String> {
     let selected_scene_id = show
         .mutate_for_command(ShowProjectionReason::ShowFileCreated, |state| {
-            state.clear();
-            if let Some(lv1) = lv1
-                && !lv1.scene_list.is_empty()
-            {
-                state.reconcile_scene_fade_configs(&lv1.scene_list);
-            }
-            state.selected_scene_id = state.scene_configs.first().map(|scene| scene.scene_id.clone());
-            state.show_file_path = None;
-            state.show_file_dirty = false;
-            state.show_file_last_saved_at = None;
-            (true, state.selected_scene_id.clone())
+            let selected_scene_id = state.reset_for_new_show(lv1.as_ref());
+            (true, selected_scene_id)
         })
         .await;
 
@@ -723,9 +752,7 @@ pub async fn mark_show_file_saved(
     saved_at: String,
 ) -> ShowCommandResult {
     show.mutate_for_command(ShowProjectionReason::ShowFileSaved, |state| {
-        state.show_file_path = Some(path);
-        state.show_file_last_saved_at = Some(saved_at);
-        state.show_file_dirty = false;
+        state.mark_saved(path, saved_at);
         (true, ())
     })
     .await;
@@ -745,12 +772,8 @@ pub async fn set_discovered_lv1_systems(
 ) -> ShowCommandResult {
     let changed = show
         .mutate_for_command(ShowProjectionReason::DiscoveryUpdated, |state| {
-            if state.discovered_lv1_systems == systems {
-                (false, false)
-            } else {
-                state.discovered_lv1_systems = systems;
-                (true, true)
-            }
+            let changed = state.set_discovered_lv1_systems(systems);
+            (changed, changed)
         })
         .await;
     ShowCommandResult { changed }
@@ -1013,21 +1036,15 @@ let snapshot = cache.build_snapshot();
 emit_snapshot(&app, &snapshot);
 ```
 
-- [ ] **Step 9: Add static guard against show pulls**
+- [ ] **Step 9: Inspect projector runtime for show pulls**
 
-In `projector::runtime::tests::projector_runtime_does_not_call_owner_side_effects`, add forbidden terms:
+Do not add static guard tests. Inspect `src-tauri/src/projector/runtime.rs` during review and run:
 
-```rust
-["get", "snapshot"].join("_")
+```bash
+rg "ShowStateHandle|\.get_snapshot\(|\.projection_state_for_test\(|shell_state" src-tauri/src/projector
 ```
 
-and direct text checks for:
-
-```rust
-"ShowStateHandle"
-"show."
-"shell_state"
-```
+Expected: no matches in production projector code. Mentions of `ShowProjectionState` are allowed.
 
 - [ ] **Step 10: Run projector tests**
 
@@ -1125,7 +1142,8 @@ async fn lifecycle_exposes_show_command_bus_before_runtime_connection() {
     let lifecycle = AppLifecycle::new(event_bus, show);
 
     let bus = lifecycle.current_command_bus().await;
-    assert!(bus.has_show_target_for_test());
+    let result = bus.set_lockout(true).await.unwrap();
+    assert!(result.changed);
 }
 ```
 
@@ -1179,7 +1197,32 @@ pub struct AppLifecycle {
 }
 ```
 
-Implement `new`, `begin_connecting`, `active_generation`, `install_runtime`, `clear_runtime_handles`, `abort_current_runtime`, and `current_command_bus`. `new` must create an app-lifetime `AppCommandBus` with show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates only generation-scoped LV1/fade targets and task handles; it must not replace the app-lifetime bus.
+Implement `new`, `begin_connecting`, `active_generation`, `install_runtime`, `clear_runtime_handles`, `abort_current_runtime`, and `current_command_bus`. `new` must create an app-lifetime `AppCommandBus` with the show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates only generation-scoped LV1/fade targets and task handles; it must not replace the app-lifetime bus.
+
+Use this concrete shape in `AppLifecycle::new`:
+
+```rust
+let command_bus = AppCommandBus::new();
+command_bus.set_show_target(show.clone());
+```
+
+If `AppCommandBus` currently requires constructor arguments or async target installation, change it in this task so construction is app-lifetime and show-capable without requiring runtime handles. Provide methods with these names:
+
+```rust
+impl AppCommandBus {
+    pub fn new() -> Self;
+    pub fn set_show_target(&self, show: ShowStateHandle);
+    pub fn set_runtime_targets(
+        &self,
+        generation: u64,
+        lv1: crate::lv1::handle::Lv1ActorHandle,
+        fade: crate::fade::handle::FadeEngineHandle,
+    );
+    pub fn clear_runtime_targets(&self, generation: u64);
+}
+```
+
+Runtime-only command methods return a runtime-unavailable error when their generation-scoped target is absent. Show-owned commands continue to work while disconnected through the installed show target.
 
 `begin_connecting` must publish `AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })` after incrementing the active generation, so projector and show-owned runtime listeners accept events from the new runtime.
 
@@ -1439,7 +1482,18 @@ The method should:
 
 The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade producers before that event has been published.
 
-Add or update the show-owned runtime listener so it consumes `RuntimeLifecycleEvent::ActiveGenerationChanged` by calling `AppCommandBus::set_active_runtime_generation(generation)`, and consumes generated LV1 disconnect facts by calling `AppCommandBus::handle_runtime_disconnected(generated.generation, reason)`. The listener must not clear show-owned metadata for stale disconnect facts.
+Add a concrete lifecycle-owned monitor task named `spawn_show_runtime_metadata_monitor` in `src-tauri/src/lifecycle/mod.rs`:
+
+```rust
+fn spawn_show_runtime_metadata_monitor(
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+    command_bus: AppCommandBus,
+) -> JoinHandle<()>
+```
+
+Spawn this monitor once when `AppLifecycle::new` creates the app-lifetime command bus, store its handle outside generation-scoped runtime handles, and abort it only when the app lifecycle is dropped. It is app-lifetime because it must observe every `RuntimeLifecycleEvent::ActiveGenerationChanged` and every generated LV1 disconnect fact across reconnects.
+
+The monitor consumes `RuntimeLifecycleEvent::ActiveGenerationChanged` by calling `AppCommandBus::set_active_runtime_generation(generation)`, and consumes generated LV1 disconnect facts by calling `AppCommandBus::handle_runtime_disconnected(generated.generation, reason)`. The show command validates generation, so stale disconnect facts must not clear show-owned metadata. This monitor must not call `ShowStateHandle` or `show::commands` directly.
 
 Define `ConnectFailureMode` in `src-tauri/src/lifecycle/mod.rs` so lifecycle-owned connect orchestration does not depend on `ui/commands.rs`.
 
@@ -1492,49 +1546,14 @@ git commit -m "refactor: route connection metadata through show commands"
 - Modify: `src-tauri/src/ui/commands.rs`
 - Modify: `src-tauri/src/commands.rs`
 - Modify: `src-tauri/src/lib.rs`
-- Test: `src-tauri/src/ui/mod.rs`
-- Test: rewrite `src-tauri/src/commands.rs` tests under `ui::commands`
+- Test: rewrite behavior-focused `src-tauri/src/commands.rs` tests under `ui::commands` where practical.
 
 **Interfaces:**
 - Produces: `#[tauri::command] pub async fn frontend_ready(app, lifecycle) -> Result<(), String>`.
 - Produces: all mutating Tauri commands return command-specific result or `()`; none return `AppViewState`.
 - Removes: direct `emit_snapshot` helper outside projector.
 
-- [ ] **Step 1: Add static failing tests for command boundary**
-
-Create `src-tauri/src/ui/commands_tests.rs` and add:
-
-```rust
-#[test]
-fn tauri_commands_do_not_return_app_view_state() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(manifest_dir.join("src/ui/commands.rs")).unwrap();
-
-    assert!(!source.contains("Result<AppViewState"));
-    assert!(!source.contains("-> AppViewState"));
-}
-
-#[test]
-fn tauri_commands_do_not_emit_app_status_changed() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(manifest_dir.join("src/ui/commands.rs")).unwrap();
-
-    assert!(!source.contains("app-status-changed"));
-    assert!(!source.contains("app.emit"));
-}
-```
-
-- [ ] **Step 2: Run failing tests**
-
-Run:
-
-```bash
-cargo nextest run -p advanced-show-control ui::tests::tauri_commands_do_not_return_app_view_state ui::tests::tauri_commands_do_not_emit_app_status_changed
-```
-
-Expected: fail while current commands return `AppViewState` and emit snapshots.
-
-- [ ] **Step 3: Move command implementations to ui/commands.rs**
+- [ ] **Step 1: Move command implementations to ui/commands.rs**
 
 Replace any `src-tauri/src/ui/commands.rs` re-export of `crate::commands::*` with real Tauri command wrappers. Keep helper functions such as file dialogs and IO here, but route state changes through `AppCommandBus`.
 
@@ -1564,7 +1583,7 @@ pub async fn frontend_ready<R: Runtime>(
 }
 ```
 
-- [ ] **Step 4: Remove direct snapshot returns from wrappers**
+- [ ] **Step 2: Remove direct snapshot returns from wrappers**
 
 For each command in the invoke handler, use these return types:
 
@@ -1592,15 +1611,15 @@ For each command in the invoke handler, use these return types:
 - `set_scene_scope_pan_enabled -> Result<ShowCommandResult, String>`
 - `set_lockout -> Result<ShowCommandResult, String>`
 
-- [ ] **Step 5: Update invoke handler**
+- [ ] **Step 3: Update invoke handler**
 
 In `src-tauri/src/ui/mod.rs`, register `commands::frontend_ready` and remove `commands::get_app_status` from the invoke handler.
 
-- [ ] **Step 6: Remove `src-tauri/src/commands.rs`**
+- [ ] **Step 4: Remove `src-tauri/src/commands.rs`**
 
 Delete `src-tauri/src/commands.rs` and remove `pub mod commands;` from `src-tauri/src/lib.rs`. All Tauri command wrappers live in `src-tauri/src/ui/commands.rs`.
 
-- [ ] **Step 7: Run command boundary tests**
+- [ ] **Step 5: Run command boundary tests**
 
 Run:
 
@@ -1614,7 +1633,15 @@ cargo nextest run -p advanced-show-control ui
 
 Expected: pass.
 
-- [ ] **Step 8: Commit**
+Also run these searches and inspect the output instead of adding static guard tests:
+
+```bash
+rg "Result<AppViewState|-> AppViewState|app-status-changed|app\.emit" src-tauri/src/ui/commands.rs
+```
+
+Expected: no matches. If there are matches, remove the direct snapshot return or direct emit.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src-tauri/src/ui src-tauri/src/commands.rs src-tauri/src/lib.rs src-tauri/src/runtime/commands.rs
@@ -1967,42 +1994,7 @@ git commit -m "refactor: enforce show file save transaction"
 - Consumes: prior tasks' replacement lifecycle/show/projector APIs.
 - Produces: `app_state` module as view DTO exports only.
 
-- [ ] **Step 1: Add failing static guard tests**
-
-Create `src-tauri/src/architecture_tests.rs`:
-
-```rust
-#[test]
-fn shell_state_source_is_removed() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    assert!(!manifest_dir.join("src/app_state/shell.rs").exists());
-
-    let src = std::fs::read_to_string(manifest_dir.join("src/app_state/mod.rs")).unwrap();
-    assert!(!src.contains("ShellState"));
-    assert!(!src.contains("RuntimeHandles"));
-}
-
-#[test]
-fn no_active_command_bus_source_remains() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lifecycle = std::fs::read_to_string(manifest_dir.join("src/lifecycle/mod.rs")).unwrap();
-    assert!(!lifecycle.contains("ActiveCommandBus"));
-}
-```
-
-Register `mod architecture_tests;` in `src-tauri/src/lib.rs` under `#[cfg(test)]`.
-
-- [ ] **Step 2: Run failing guard tests**
-
-Run:
-
-```bash
-cargo nextest run -p advanced-show-control architecture_tests
-```
-
-Expected: fail because shell files still exist.
-
-- [ ] **Step 3: Remove shell module exports**
+- [ ] **Step 1: Remove shell module exports**
 
 Change `src-tauri/src/app_state/mod.rs` to:
 
@@ -2015,11 +2007,11 @@ pub use view::{
 };
 ```
 
-- [ ] **Step 4: Delete shell-owned files**
+- [ ] **Step 2: Delete shell-owned files**
 
 Delete the listed `app_state` shell/test/mapping files with apply_patch delete operations.
 
-- [ ] **Step 5: Fix remaining imports**
+- [ ] **Step 3: Fix remaining imports**
 
 Run searches:
 
@@ -2031,17 +2023,7 @@ Expected after fixes: no matches in `src-tauri/src`.
 
 Replace remaining code with the concrete APIs from prior tasks: `AppLifecycle`, `ShowStateHandle`, `show::commands`, `AppCommandBus`, `ProjectionCache`, and `ProjectorInputs`.
 
-- [ ] **Step 6: Run architecture tests**
-
-Run:
-
-```bash
-cargo nextest run -p advanced-show-control architecture_tests
-```
-
-Expected: pass.
-
-- [ ] **Step 7: Run broad Rust compile check**
+- [ ] **Step 4: Run broad Rust compile check**
 
 Run:
 
@@ -2051,10 +2033,10 @@ cargo check --workspace --all-targets
 
 Expected: pass. Fix compile errors by removing stale imports and updating tests.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add src-tauri/src/app_state src-tauri/src/lib.rs src-tauri/src/architecture_tests.rs src-tauri/src
+git add src-tauri/src/app_state src-tauri/src/lib.rs src-tauri/src
 git commit -m "refactor: remove ShellState"
 ```
 
@@ -2066,86 +2048,15 @@ git commit -m "refactor: remove ShellState"
 - Modify: `src-tauri/src/projector/runtime.rs`
 - Modify: `src-tauri/src/logging.rs`
 - Modify: `src-tauri/src/ui/commands.rs`
-- Modify: `src-tauri/src/architecture_tests.rs`
 - Modify: `docs/architecture.md`
 - Modify: `docs/roadmap.md`
 
 **Interfaces:**
 - Consumes: no shell state, thin Tauri wrappers, projector cache.
 - Produces: exactly one `app.emit("app-status-changed"...)` call site in projector.
-- Produces: static guardrails matching the spec.
+- Produces: final architecture documentation and search-reviewed guardrails matching the spec.
 
-- [ ] **Step 1: Add projector-only emit guard**
-
-In `src-tauri/src/architecture_tests.rs`:
-
-```rust
-#[test]
-fn only_projector_emits_app_status_changed() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let files = [
-        "src/projector/runtime.rs",
-        "src/ui/commands.rs",
-        "src/logging.rs",
-        "src/lifecycle/mod.rs",
-        "src/show/commands.rs",
-    ];
-
-    for file in files {
-        let source = std::fs::read_to_string(manifest_dir.join(file)).unwrap();
-        let contains_emit = source.contains("app-status-changed") && source.contains("app.emit");
-        if file == "src/projector/runtime.rs" {
-            assert!(contains_emit, "projector should emit app-status-changed");
-        } else {
-            assert!(!contains_emit, "{file} must not emit app-status-changed");
-        }
-    }
-}
-```
-
-- [ ] **Step 2: Add no show pull guard**
-
-In `src-tauri/src/architecture_tests.rs`:
-
-```rust
-#[test]
-fn projector_does_not_pull_from_show() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = std::fs::read_to_string(manifest_dir.join("src/projector/runtime.rs")).unwrap();
-
-    for forbidden in ["ShowStateHandle", "get_snapshot", "projection_state", "show.", "shell_state"] {
-        assert!(!source.contains(forbidden), "projector runtime contains forbidden {forbidden}");
-    }
-}
-```
-
-- [ ] **Step 3: Add no isolated event bus guard**
-
-In `src-tauri/src/architecture_tests.rs`:
-
-```rust
-#[test]
-fn connect_paths_do_not_create_isolated_event_bus() {
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let lifecycle = std::fs::read_to_string(manifest_dir.join("src/lifecycle/mod.rs")).unwrap();
-    let ui_commands = std::fs::read_to_string(manifest_dir.join("src/ui/commands.rs")).unwrap();
-
-    assert!(!lifecycle.contains("AppEventBus::default()"));
-    assert!(!ui_commands.contains("AppEventBus::default()"));
-}
-```
-
-- [ ] **Step 4: Run failing guard tests**
-
-Run:
-
-```bash
-cargo nextest run -p advanced-show-control architecture_tests
-```
-
-Expected: fail while direct emit or show pull remains.
-
-- [ ] **Step 5: Remove remaining direct emit/log paths**
+- [ ] **Step 1: Remove remaining direct emit/log paths**
 
 Search:
 
@@ -2160,7 +2071,16 @@ Required final state:
 - No Rust code references `ShellState` or `ActiveCommandBus`.
 - No Tauri command returns `AppViewState`.
 
-- [ ] **Step 6: Update docs/architecture.md**
+Also inspect these narrower projector/lifecycle searches instead of adding static guard tests:
+
+```bash
+rg "ShowStateHandle|\.get_snapshot\(|\.projection_state_for_test\(|shell_state" src-tauri/src/projector
+rg "AppEventBus::default\(\)" src-tauri/src/lifecycle.rs src-tauri/src/lifecycle src-tauri/src/ui/commands.rs
+```
+
+Expected: no matches in production code. Mentions of `ShowProjectionState` are allowed.
+
+- [ ] **Step 2: Update docs/architecture.md**
 
 Replace transitional statements with final architecture:
 
@@ -2170,20 +2090,20 @@ Replace transitional statements with final architecture:
 - Projector emits `app-status-changed` and does not pull from show.
 - React state updates only from `app-status-changed`.
 
-- [ ] **Step 7: Run architecture guard tests**
+- [ ] **Step 3: Run architecture-related tests**
 
 Run:
 
 ```bash
-cargo nextest run -p advanced-show-control architecture_tests projector logging ui
+cargo nextest run -p advanced-show-control projector logging ui
 ```
 
 Expected: pass.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add src-tauri/src/projector src-tauri/src/logging.rs src-tauri/src/ui src-tauri/src/architecture_tests.rs docs/architecture.md docs/roadmap.md
+git add src-tauri/src/projector src-tauri/src/logging.rs src-tauri/src/ui docs/architecture.md docs/roadmap.md
 git commit -m "test: guard show state cutover architecture"
 ```
 
@@ -2240,7 +2160,27 @@ cargo build --workspace
 
 Expected: pass, including the preserved `lv1-probe` binary.
 
-- [ ] **Step 5: Run frontend typecheck**
+- [ ] **Step 5: Run frontend format check**
+
+Run:
+
+```bash
+npm --prefix ui run format:check
+```
+
+Expected: pass.
+
+- [ ] **Step 6: Run frontend lint**
+
+Run:
+
+```bash
+npm --prefix ui run lint
+```
+
+Expected: pass.
+
+- [ ] **Step 7: Run frontend typecheck**
 
 Run:
 
@@ -2250,7 +2190,7 @@ npm --prefix ui run typecheck
 
 Expected: pass.
 
-- [ ] **Step 6: Run frontend tests**
+- [ ] **Step 8: Run frontend tests**
 
 Run:
 
@@ -2260,7 +2200,7 @@ npm --prefix ui run test
 
 Expected: pass.
 
-- [ ] **Step 7: Run frontend build**
+- [ ] **Step 9: Run frontend build**
 
 Run:
 
@@ -2270,7 +2210,7 @@ npm --prefix ui run build
 
 Expected: pass.
 
-- [ ] **Step 8: Inspect final architecture searches**
+- [ ] **Step 10: Inspect final architecture searches**
 
 Run:
 
@@ -2289,7 +2229,7 @@ Expected:
 
 Remove every `ShowSnapshot` match from `src-tauri/src` and `ui/src`. Historical docs outside those paths can remain unchanged.
 
-- [ ] **Step 9: Commit cleanup fixes**
+- [ ] **Step 11: Commit cleanup fixes**
 
 When verification caused file changes, commit them:
 
@@ -2300,7 +2240,7 @@ git commit -m "fix: complete show state cutover verification"
 
 When verification caused no file changes, do not create an empty commit.
 
-- [ ] **Step 10: Request final code review**
+- [ ] **Step 12: Request final code review**
 
 Use superpowers:requesting-code-review with:
 
