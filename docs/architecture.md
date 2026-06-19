@@ -2,13 +2,14 @@
 
 ## Overview
 
-The runtime is split into seven boundary pieces:
+The runtime is split into eight boundary pieces:
 
 - `Lv1Actor`
 - `FadeEngine`
 - `ShowState`
 - `SceneRecallFader`
-- `Tauri Shell`
+- `Tauri UI Adapter`
+- `AppLifecycle`
 - `AppEventBus`
 - `AppCommandBus`
 
@@ -42,7 +43,8 @@ The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcast
 - `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
 - `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
 - `SceneRecallFader` owns scene recall policy and decision-making.
-- `Tauri Shell` owns UI projection, shell commands, and user-facing state derived from the runtime.
+- `Tauri UI Adapter` owns Tauri setup, command registration, dialogs, and frontend serialization boundaries.
+- `AppLifecycle` owns the current runtime command-bus holder seam and delegates generation-sensitive runtime handle installation/cleanup to `ShellState` until the projector and command-boundary phases replace that temporary split.
 
 `ShellState` is the Tauri-side view of the runtime, not the owner of show logic or recall policy.
 
@@ -152,10 +154,12 @@ The Tauri shell projection only applies events for the active generation, and st
 
 Rust modules live under `src-tauri/src/` in the `advanced-show-control` package. Tauri-specific adapter code and core app modules are separated by module boundaries, not crate boundaries.
 
-The Tauri shell lives under `src-tauri/src/`:
+The Tauri UI adapter and lifecycle seams live under `src-tauri/src/`:
 
-- `src-tauri/src/app_state/` for `ShellState`, projections, logs, show-file mapping, and view models.
-- `src-tauri/src/commands.rs` for shell commands.
+- `src-tauri/src/ui/` for Tauri setup and frontend command adapter exports.
+- `src-tauri/src/lifecycle/` for app runtime lifecycle ownership seams.
+- `src-tauri/src/commands.rs` for existing command implementations during the transition.
+- `src-tauri/src/app_state/` for `ShellState`, projections, logs, show-file mapping, and view models until later projector/show phases remove that temporary ownership.
 - `src-tauri/src/connection_state.rs` and `src-tauri/src/connection_preferences.rs` for shell-facing connection state.
 
 ## Non-Goals
