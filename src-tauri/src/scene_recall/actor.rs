@@ -382,7 +382,7 @@ mod tests {
     async fn unavailable_lv1_state_blocks_before_start() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
 
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
@@ -403,7 +403,7 @@ mod tests {
     async fn blocked_recall_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -427,7 +427,7 @@ mod tests {
     async fn stale_generation_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -485,7 +485,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn generation_flip_between_scene_change_and_fade_start_blocks_fade() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -524,7 +524,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn valid_recall_starts_fade() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -576,7 +576,7 @@ mod tests {
     async fn current_scene_move_sequence_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -619,7 +619,7 @@ mod tests {
     async fn non_current_rename_delayed_pair_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -664,7 +664,7 @@ mod tests {
     async fn scene_changed_before_changed_scene_list_in_same_burst_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -708,7 +708,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn identical_scene_list_resend_does_not_block_real_recall() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -758,7 +758,7 @@ mod tests {
     async fn valid_recall_after_scene_list_edit_window_starts_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
@@ -824,7 +824,7 @@ mod tests {
     async fn mismatched_fresh_lv1_snapshot_blocks_recall() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) =
@@ -884,7 +884,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn skipped_recall_does_not_abort_existing_fade() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new(event_bus.clone());
+        let command_bus = AppCommandBus::new();
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;

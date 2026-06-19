@@ -570,7 +570,7 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let event_bus = AppEventBus::default();
         let lv1 = crate::lv1::handle::Lv1ActorHandle::new(tx);
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         bus.set_lv1(Some(lv1)).await;
         let engine = spawn_engine(bus.clone(), event_bus.clone());
         bus.set_fade(Some(engine.clone())).await;
@@ -1102,7 +1102,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let event_bus = AppEventBus::default();
         let lv1 = crate::lv1::handle::Lv1ActorHandle::new(tx);
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         bus.set_lv1(Some(lv1)).await;
         let engine = spawn_engine(bus.clone(), event_bus.clone());
         bus.set_fade(Some(engine.clone())).await;
@@ -1203,7 +1203,7 @@ mod tests {
     #[tokio::test]
     async fn stale_expected_generation_is_rejected_before_lv1_state_lookup() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;
@@ -1238,7 +1238,7 @@ mod tests {
     #[tokio::test]
     async fn generation_flip_while_lv1_snapshot_is_pending_is_rejected_after_snapshot() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;
@@ -1287,7 +1287,7 @@ mod tests {
     async fn zero_duration_recall_fade_uses_generation_checked_write_batch() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;
@@ -1382,7 +1382,7 @@ mod tests {
     async fn timed_recall_fade_tick_uses_generation_checked_write_batch() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;
@@ -1444,8 +1444,8 @@ mod tests {
 
     #[tokio::test]
     async fn mixed_generation_writes_on_same_tick_route_separately() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let _event_bus = AppEventBus::default();
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(4);
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;
@@ -1512,7 +1512,7 @@ mod tests {
     async fn stale_checked_write_cancels_generation_owned_targets() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;

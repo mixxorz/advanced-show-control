@@ -9,7 +9,6 @@ use crate::lv1::commands::Lv1ParameterWrite;
 use crate::lv1::events::Lv1ActorError;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::types::Lv1StateSnapshot;
-use crate::runtime::events::AppEventBus;
 use crate::show::handle::ShowStateHandle;
 use crate::show::types::{SceneConfig, ShowSnapshot};
 
@@ -43,7 +42,7 @@ pub struct AppCommandBus {
 }
 
 impl AppCommandBus {
-    pub fn new(_event_bus: AppEventBus) -> Self {
+    pub fn new() -> Self {
         Self {
             targets: Arc::new(Mutex::new(AppCommandTargets::default())),
         }
@@ -295,6 +294,12 @@ impl AppCommandBus {
     }
 }
 
+impl Default for AppCommandBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
     AppCommandError::CommandFailed(error.to_string())
 }
@@ -320,9 +325,17 @@ mod tests {
     use crate::show::handle::ShowStateHandle;
 
     #[tokio::test]
+    async fn command_bus_constructs_without_event_bus() {
+        let bus = AppCommandBus::new();
+
+        let err = bus.get_lv1_state().await.unwrap_err();
+
+        assert_eq!(err, AppCommandError::Lv1Unavailable);
+    }
+
+    #[tokio::test]
     async fn missing_lv1_returns_lv1_unavailable() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
 
         let err = bus.get_lv1_state().await.unwrap_err();
 
@@ -333,7 +346,7 @@ mod tests {
     async fn missing_fade_returns_fade_unavailable_without_event_bus_log() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let config = FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
@@ -358,8 +371,7 @@ mod tests {
 
     #[tokio::test]
     async fn stale_generation_rejects_before_sending_fade_command() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
         bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
         bus.set_generation(2).await;
@@ -387,8 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_fade_if_generation_sends_expected_generation_to_fade_engine() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
         bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
         bus.set_generation(2).await;
@@ -425,8 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn clearing_targets_invalidates_cloned_bus_handles() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
 
@@ -466,8 +476,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_show_returns_show_unavailable() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
 
         let err = bus.get_show_snapshot().await.unwrap_err();
 
@@ -477,7 +486,7 @@ mod tests {
     #[tokio::test]
     async fn present_show_returns_snapshot() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus.clone());
+        let bus = AppCommandBus::new();
         bus.set_show(Some(ShowStateHandle::new_empty(event_bus.clone())))
             .await;
 
@@ -491,7 +500,7 @@ mod tests {
     async fn set_pan_routes_to_lv1_without_event_bus_log() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
 
@@ -514,8 +523,7 @@ mod tests {
 
     #[tokio::test]
     async fn recall_scene_sends_index_to_lv1_actor() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
 
@@ -540,7 +548,7 @@ mod tests {
     async fn missing_lv1_for_balance_returns_error_without_event_bus_log() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
 
         let err = bus.set_balance(1, 3, 0.25).await.unwrap_err();
 
@@ -552,7 +560,7 @@ mod tests {
     async fn write_batch_routes_to_lv1_without_reply() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
 
@@ -580,7 +588,7 @@ mod tests {
     async fn write_batch_if_generation_rejects_stale_generation_before_sending() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
         bus.set_generation(2).await;
@@ -603,7 +611,7 @@ mod tests {
     async fn write_batch_if_generation_routes_fresh_writes() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
         bus.set_generation(2).await;
@@ -630,8 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn write_batch_if_generation_leaves_lv1_unlocked_during_write() {
-        let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
         bus.set_generation(2).await;

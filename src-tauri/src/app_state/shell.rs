@@ -765,7 +765,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let active_command_bus = crate::lifecycle::ActiveCommandBus::default();
-        let command_bus = AppCommandBus::new(crate::runtime::events::AppEventBus::default());
+        let command_bus = AppCommandBus::new();
 
         let installed = state
             .install_runtime_handles(

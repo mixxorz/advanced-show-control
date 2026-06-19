@@ -77,14 +77,12 @@ impl AppLifecycle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::events::AppEventBus;
-
     #[tokio::test]
     async fn active_command_bus_tracks_current_bus() {
         let holder = ActiveCommandBus::default();
         assert!(holder.current().await.is_none());
 
-        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let command_bus = AppCommandBus::new();
         holder.set(Some(command_bus.clone())).await;
         assert!(holder.current().await.is_some());
 
@@ -97,7 +95,7 @@ mod tests {
         let lifecycle = AppLifecycle::default();
         assert!(lifecycle.current_command_bus().await.is_none());
 
-        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let command_bus = AppCommandBus::new();
         lifecycle.set_command_bus(Some(command_bus)).await;
         assert!(lifecycle.current_command_bus().await.is_some());
     }
@@ -107,7 +105,7 @@ mod tests {
         let lifecycle = AppLifecycle::default();
         let holder = lifecycle.command_bus_holder();
 
-        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let command_bus = AppCommandBus::new();
         holder.set(Some(command_bus)).await;
 
         assert!(lifecycle.current_command_bus().await.is_some());
@@ -118,7 +116,7 @@ mod tests {
         let lifecycle = AppLifecycle::default();
         let state = crate::app_state::ShellState::default();
         let (generation, _) = state.disconnect().await;
-        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let command_bus = AppCommandBus::new();
 
         assert!(
             lifecycle
@@ -142,7 +140,7 @@ mod tests {
         let lifecycle = AppLifecycle::default();
         let state = crate::app_state::ShellState::default();
         let (generation, _) = state.disconnect().await;
-        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let command_bus = AppCommandBus::new();
 
         assert!(
             lifecycle

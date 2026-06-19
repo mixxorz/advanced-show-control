@@ -668,7 +668,7 @@ async fn connect_to_target<R: Runtime>(
     let shell_state = state.clone();
 
     let lv1 = spawn_actor(identity.address.clone(), identity.port, event_bus.clone());
-    let command_bus = AppCommandBus::new(event_bus.clone());
+    let command_bus = AppCommandBus::new();
     command_bus.set_generation(generation).await;
     command_bus.set_lv1(Some(lv1.clone())).await;
     command_bus.set_show(Some(shell_state.show.clone())).await;
@@ -1163,9 +1163,7 @@ mod tests {
     async fn recall_scene_blocks_without_lv1_state() {
         let state = recall_state_with_unstored_scene(false).await;
         let active_command_bus = ActiveCommandBus::default();
-        active_command_bus
-            .set(Some(AppCommandBus::new(AppEventBus::default())))
-            .await;
+        active_command_bus.set(Some(AppCommandBus::new())).await;
 
         let err = recall_scene_snapshot(state, active_command_bus, "1::Verse".to_string())
             .await
@@ -1237,7 +1235,7 @@ mod tests {
         let state = ShellState::default();
         let lifecycle = AppLifecycle::default();
         let reconnecting = enter_reconnect_state(&state).await;
-        let command_bus = AppCommandBus::new(AppEventBus::default());
+        let command_bus = AppCommandBus::new();
         let installed = lifecycle
             .install_runtime_handles(
                 &state,
@@ -1579,7 +1577,7 @@ mod tests {
         let holder = ActiveCommandBus::default();
         assert!(holder.current().await.is_none());
 
-        let bus = AppCommandBus::new(AppEventBus::default());
+        let bus = AppCommandBus::new();
         holder.set(Some(bus.clone())).await;
 
         assert!(holder.current().await.is_some());

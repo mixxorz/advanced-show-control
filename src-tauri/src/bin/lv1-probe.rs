@@ -705,7 +705,7 @@ async fn run_fade_test(
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
-    let command_bus = AppCommandBus::new(event_bus.clone());
+    let command_bus = AppCommandBus::new();
     command_bus.set_lv1(Some(lv1.clone())).await;
     let engine = spawn_engine(command_bus.clone(), event_bus.clone());
     command_bus.set_fade(Some(engine.clone())).await;
@@ -979,7 +979,7 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
-    let command_bus = AppCommandBus::new(event_bus.clone());
+    let command_bus = AppCommandBus::new();
     command_bus.set_lv1(Some(lv1.clone())).await;
     let engine = spawn_engine(command_bus.clone(), event_bus.clone());
     command_bus.set_fade(Some(engine.clone())).await;
