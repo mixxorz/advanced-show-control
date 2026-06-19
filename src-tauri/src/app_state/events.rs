@@ -3,8 +3,8 @@ use crate::lv1::events::Lv1Event;
 use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use crate::show::types::scene_id;
 
-use super::shell::{MAX_LOGS, ShellInner, ShellState, refresh_discovered_statuses};
-use super::view::{AppFadeState, AppLogEntry, AppViewState, LogSeverity};
+use super::shell::{ShellInner, ShellState, refresh_discovered_statuses};
+use super::view::{AppFadeState, AppViewState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionOutcome {
@@ -261,24 +261,6 @@ fn apply_fade_event_locked(inner: &mut ShellInner, event: &FadeEvent) {
         }
         FadeEvent::ChannelCancelled { .. } => {}
         FadeEvent::WriteFailed { .. } => {}
-    }
-}
-
-impl ShellInner {
-    #[allow(dead_code)]
-    pub(super) fn append_log(&mut self, severity: LogSeverity, message: String) {
-        self.next_log_id += 1;
-        let timestamp = crate::time::current_timestamp_millis();
-        self.last_event_at = Some(timestamp.clone());
-        self.logs.push_back(AppLogEntry {
-            id: self.next_log_id,
-            timestamp,
-            severity,
-            message,
-        });
-        while self.logs.len() > MAX_LOGS {
-            self.logs.pop_front();
-        }
     }
 }
 

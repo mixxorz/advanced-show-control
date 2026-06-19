@@ -133,10 +133,7 @@ async fn apply_projector_event(
             true
         }
         AppEvent::SceneRecall(_) => false,
-        AppEvent::Show(_) => {
-            cache.mark_show_stale();
-            true
-        }
+        AppEvent::Show(_) => true,
     }
 }
 

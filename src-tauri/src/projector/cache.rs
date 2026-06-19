@@ -29,7 +29,6 @@ pub struct ProjectionCache {
     logs: VecDeque<AppLogEntry>,
     next_log_id: u64,
     last_event_at: Option<String>,
-    show_stale: bool,
 }
 
 impl Default for ProjectionCache {
@@ -55,7 +54,6 @@ impl ProjectionCache {
             logs: VecDeque::new(),
             next_log_id: 1,
             last_event_at: None,
-            show_stale: true,
         }
     }
 
@@ -75,7 +73,6 @@ impl ProjectionCache {
             }
             Lv1Event::SceneListChanged(scene_list) => {
                 self.ensure_lv1_snapshot().scene_list = scene_list.clone();
-                self.mark_show_stale();
             }
             Lv1Event::FaderChanged {
                 group,
@@ -150,16 +147,6 @@ impl ProjectionCache {
         while self.logs.len() > MAX_PROJECTOR_LOGS {
             self.logs.pop_front();
         }
-    }
-
-    pub fn mark_show_stale(&mut self) {
-        self.show_stale = true;
-    }
-
-    pub fn take_show_stale(&mut self) -> bool {
-        let stale = self.show_stale;
-        self.show_stale = false;
-        stale
     }
 
     pub fn build_snapshot(&mut self, show: ShowSnapshot) -> AppViewState {
@@ -412,15 +399,5 @@ mod tests {
         assert_eq!(snapshot.logs.len(), MAX_PROJECTOR_LOGS);
         assert_eq!(snapshot.logs[0].id, 3);
         assert_eq!(snapshot.logs.last().unwrap().message, "log 201");
-    }
-
-    #[test]
-    fn show_stale_flag_is_explicitly_consumed() {
-        let mut cache = ProjectionCache::new();
-
-        assert!(cache.take_show_stale());
-        assert!(!cache.take_show_stale());
-        cache.mark_show_stale();
-        assert!(cache.take_show_stale());
     }
 }
