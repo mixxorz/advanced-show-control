@@ -1,7 +1,10 @@
 use super::shell::ShellState;
 use super::test_support::{begin_test_connection, connected_state_with_scene_and_channel};
 use super::view::ShowSnapshot;
-use crate::show_file::{ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSceneConfig};
+use crate::show::show_file::{
+    ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
+    ShowFileSceneScopeToggles,
+};
 use std::sync::{Arc, Mutex};
 use tracing::field::{Field, Visit};
 use tracing_subscriber::Layer;
@@ -68,98 +71,6 @@ impl Visit for WarningVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         self.record_field(field.name(), format!("{value:?}"));
     }
-}
-
-fn populated_show_snapshot() -> ShowSnapshot {
-    ShowSnapshot {
-        lockout: true,
-        cued_scene_id: None,
-        scene_configs: vec![super::view::SceneConfig {
-            scene_id: "1::Intro".to_string(),
-            scene_index: 1,
-            scene_name: "Intro".to_string(),
-            duration_ms: 5000,
-            channel_configs: vec![super::view::ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-8.0),
-                pan: Some(-12.0),
-                balance: Some(3.0),
-                width: Some(1.2),
-                pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-            }],
-            scoped_channels: vec![super::view::ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-            scope_toggles: crate::show::types::SceneScopeToggles {
-                faders: false,
-                pan: true,
-            },
-        }],
-    }
-}
-
-#[tokio::test]
-async fn export_show_file_contains_current_configs() {
-    let state = ShellState::default();
-    begin_test_connection(&state, connected_state_with_scene_and_channel()).await;
-    state.show.replace_snapshot(populated_show_snapshot()).await;
-
-    let file = state.export_show_file("saved".to_string()).await;
-
-    assert_eq!(file.schema_version, 1);
-    assert!(file.safety.lockout);
-    assert_eq!(file.saved_at, "saved");
-    assert_eq!(file.scene_configs[0].scene_index, 1);
-    assert_eq!(file.scene_configs[0].duration_ms, 5000);
-    assert_eq!(
-        file.scene_configs[0].channel_configs,
-        vec![ShowFileChannelConfig {
-            group: 0,
-            channel: 2,
-            fader_db: Some(-8.0),
-            pan: Some(-12.0),
-            balance: Some(3.0),
-            width: Some(1.2),
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }]
-    );
-    assert_eq!(
-        file.scene_configs[0].scoped_channels,
-        vec![ShowFileChannelRef {
-            group: 0,
-            channel: 2
-        }]
-    );
-    assert!(!file.scene_configs[0].scope_toggles.faders);
-    assert!(file.scene_configs[0].scope_toggles.pan);
-}
-
-#[tokio::test]
-async fn export_load_export_round_trips_show_file_mapping() {
-    let source = ShellState::default();
-    begin_test_connection(&source, connected_state_with_scene_and_channel()).await;
-    source
-        .show
-        .replace_snapshot(populated_show_snapshot())
-        .await;
-
-    let exported = source.export_show_file("saved".to_string()).await;
-
-    let target = ShellState::default();
-    begin_test_connection(&target, connected_state_with_scene_and_channel()).await;
-    let mut imported = exported.clone();
-    target
-        .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), &mut imported)
-        .await
-        .unwrap();
-
-    let round_tripped = target.export_show_file("saved-again".to_string()).await;
-
-    assert_eq!(round_tripped.schema_version, exported.schema_version);
-    assert_eq!(round_tripped.safety, exported.safety);
-    assert_eq!(round_tripped.scene_configs, exported.scene_configs);
 }
 
 fn lv1_scene_only_snapshot() -> crate::lv1::types::Lv1StateSnapshot {
@@ -299,7 +210,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: true },
+        safety: ShowFileSafety { lockout: true },
         cued_scene_id: None,
         scene_configs: vec![
             ShowFileSceneConfig {
@@ -319,7 +230,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
             },
             ShowFileSceneConfig {
                 scene_index: 2,
@@ -327,7 +238,7 @@ async fn load_show_file_applies_kept_configs_and_logs_pruned_entries() {
                 duration_ms: 5000,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
             },
         ],
     };
@@ -374,7 +285,7 @@ async fn load_show_file_preserves_disabled_fader_scope_toggle() {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: false },
+        safety: ShowFileSafety { lockout: false },
         cued_scene_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             scene_index: 1,
@@ -393,7 +304,7 @@ async fn load_show_file_preserves_disabled_fader_scope_toggle() {
                 group: 0,
                 channel: 2,
             }],
-            scope_toggles: crate::show_file::ShowFileSceneScopeToggles {
+            scope_toggles: ShowFileSceneScopeToggles {
                 faders: false,
                 pan: false,
             },
@@ -497,7 +408,7 @@ async fn load_show_file_defaults_missing_pan_family_fields() {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: false },
+        safety: ShowFileSafety { lockout: false },
         cued_scene_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             scene_index: 1,
@@ -516,7 +427,7 @@ async fn load_show_file_defaults_missing_pan_family_fields() {
                 group: 0,
                 channel: 2,
             }],
-            scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+            scope_toggles: ShowFileSceneScopeToggles::default(),
         }],
     };
 
@@ -541,7 +452,7 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: false },
+        safety: ShowFileSafety { lockout: false },
         cued_scene_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             scene_index: 1,
@@ -560,7 +471,7 @@ async fn load_show_file_allows_empty_lv1_channels_when_scenes_exist() {
                 group: 0,
                 channel: 2,
             }],
-            scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+            scope_toggles: ShowFileSceneScopeToggles::default(),
         }],
     };
 
@@ -584,7 +495,7 @@ async fn load_show_file_clears_pruned_cued_scene_id() {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "123".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: false },
+        safety: ShowFileSafety { lockout: false },
         cued_scene_id: Some("2::Unused".to_string()),
         scene_configs: vec![
             ShowFileSceneConfig {
@@ -604,7 +515,7 @@ async fn load_show_file_clears_pruned_cued_scene_id() {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
             },
             ShowFileSceneConfig {
                 scene_index: 2,
@@ -612,7 +523,7 @@ async fn load_show_file_clears_pruned_cued_scene_id() {
                 duration_ms: 6000,
                 channel_configs: vec![],
                 scoped_channels: vec![],
-                scope_toggles: crate::show_file::ShowFileSceneScopeToggles::default(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
             },
         ],
     };
@@ -632,7 +543,7 @@ fn show_file_structural_round_trip_test() {
         schema_version: 1,
         app_version: "0.1.0".to_string(),
         saved_at: "2026-06-10T12:00:00Z".to_string(),
-        safety: crate::show_file::ShowFileSafety { lockout: true },
+        safety: ShowFileSafety { lockout: true },
         cued_scene_id: None,
         scene_configs: vec![
             ShowFileSceneConfig {
@@ -669,7 +580,7 @@ fn show_file_structural_round_trip_test() {
                         channel: 3,
                     },
                 ],
-                scope_toggles: crate::show_file::ShowFileSceneScopeToggles {
+                scope_toggles: ShowFileSceneScopeToggles {
                     faders: true,
                     pan: true,
                 },
@@ -691,7 +602,7 @@ fn show_file_structural_round_trip_test() {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: crate::show_file::ShowFileSceneScopeToggles {
+                scope_toggles: ShowFileSceneScopeToggles {
                     faders: false,
                     pan: false,
                 },

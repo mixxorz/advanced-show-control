@@ -1,13 +1,9 @@
 use std::path::PathBuf;
 
-use crate::show::types::scene_id;
+use crate::show::show_file::{ShowFile, export_show_file, import_show_file};
 
 use super::shell::ShellState;
 use super::view::AppViewState;
-use crate::show_file::{
-    SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety,
-    ShowFileSceneConfig, ShowFileSceneScopeToggles, prune_show_file_to_lv1_scenes,
-};
 
 impl ShellState {
     pub async fn new_show_file(&self) -> Result<AppViewState, String> {
@@ -47,50 +43,7 @@ impl ShellState {
 
     pub async fn export_show_file_for_save(&self, saved_at: String) -> Result<ShowFile, String> {
         let show = self.show.get_snapshot().await;
-
-        Ok(ShowFile {
-            schema_version: SHOW_FILE_SCHEMA_VERSION,
-            app_version: env!("CARGO_PKG_VERSION").to_string(),
-            saved_at,
-            safety: ShowFileSafety {
-                lockout: show.lockout,
-            },
-            cued_scene_id: show.cued_scene_id,
-            scene_configs: show
-                .scene_configs
-                .into_iter()
-                .map(|config| ShowFileSceneConfig {
-                    scene_index: config.scene_index,
-                    scene_name: config.scene_name.clone(),
-                    duration_ms: config.duration_ms,
-                    channel_configs: config
-                        .channel_configs
-                        .into_iter()
-                        .map(|target| ShowFileChannelConfig {
-                            group: target.group,
-                            channel: target.channel,
-                            fader_db: target.fader_db,
-                            pan: target.pan,
-                            balance: target.balance,
-                            width: target.width,
-                            pan_mode: target.pan_mode,
-                        })
-                        .collect(),
-                    scoped_channels: config
-                        .scoped_channels
-                        .into_iter()
-                        .map(|channel| ShowFileChannelRef {
-                            group: channel.group,
-                            channel: channel.channel,
-                        })
-                        .collect(),
-                    scope_toggles: ShowFileSceneScopeToggles {
-                        faders: config.scope_toggles.faders,
-                        pan: config.scope_toggles.pan,
-                    },
-                })
-                .collect(),
-        })
+        Ok(export_show_file(show, saved_at))
     }
 
     pub async fn current_show_file_path(&self) -> Option<PathBuf> {
@@ -108,71 +61,18 @@ impl ShellState {
             .lv1_snapshot
             .clone()
             .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
-        let report = prune_show_file_to_lv1_scenes(file, &lv1)?;
+        let imported = import_show_file(file, &lv1)?;
         drop(inner);
 
-        self.show
-            .replace_snapshot(crate::show::types::ShowSnapshot {
-                lockout: file.safety.lockout,
-                scene_configs: file
-                    .scene_configs
-                    .iter()
-                    .map(|config| crate::show::types::SceneConfig {
-                        scene_id: scene_id(config.scene_index, &config.scene_name),
-                        scene_index: config.scene_index,
-                        scene_name: config.scene_name.clone(),
-                        duration_ms: config.duration_ms,
-                        channel_configs: config
-                            .channel_configs
-                            .iter()
-                            .map(|target| crate::show::types::ChannelConfig {
-                                group: target.group,
-                                channel: target.channel,
-                                fader_db: target.fader_db,
-                                pan: target.pan,
-                                balance: target.balance,
-                                width: target.width,
-                                pan_mode: target.pan_mode.clone(),
-                            })
-                            .collect(),
-                        scoped_channels: config
-                            .scoped_channels
-                            .iter()
-                            .map(|channel| crate::show::types::ChannelRef {
-                                group: channel.group,
-                                channel: channel.channel,
-                            })
-                            .collect(),
-                        scope_toggles: crate::show::types::SceneScopeToggles {
-                            faders: config.scope_toggles.faders,
-                            pan: config.scope_toggles.pan,
-                        },
-                    })
-                    .collect(),
-                cued_scene_id: {
-                    let kept_scene_ids = file
-                        .scene_configs
-                        .iter()
-                        .map(|config| scene_id(config.scene_index, &config.scene_name))
-                        .collect::<std::collections::HashSet<_>>();
-
-                    file.cued_scene_id
-                        .clone()
-                        .filter(|scene_id| kept_scene_ids.contains(scene_id))
-                },
-            })
-            .await;
+        self.show.replace_snapshot(imported.snapshot).await;
 
         let mut inner = self.inner.lock().await;
-        inner.selected_scene_id = file
-            .scene_configs
-            .first()
-            .map(|config| scene_id(config.scene_index, &config.scene_name));
+        inner.selected_scene_id = imported.selected_scene_id;
         inner.show_file_path = Some(path);
         inner.show_file_last_saved_at = Some(file.saved_at.clone());
-        inner.show_file_dirty = report.removed_anything();
+        inner.show_file_dirty = imported.report.removed_anything();
 
-        for scene in report.removed_scenes {
+        for scene in imported.report.removed_scenes {
             tracing::warn!(
                 event = "show_file_scene_pruned",
                 scene = %scene,

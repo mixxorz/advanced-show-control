@@ -1,125 +1,15 @@
-use crate::lv1::types::Lv1StateSnapshot;
-use serde::{Deserialize, Serialize};
+pub use crate::show::show_file::{
+    ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
+    ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
+    ShowFileSceneScopeToggles, export_show_file, import_show_file, prune_show_file_to_lv1_scenes,
+};
+
 use std::fs;
 use std::fs::OpenOptions;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-
-pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
 const MAX_BACKUPS_PER_SHOW_FILE: usize = 10;
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFile {
-    pub schema_version: u32,
-    pub app_version: String,
-    pub saved_at: String,
-    pub safety: ShowFileSafety,
-    pub scene_configs: Vec<ShowFileSceneConfig>,
-    #[serde(default)]
-    pub cued_scene_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileSafety {
-    pub lockout: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileSceneConfig {
-    pub scene_index: i32,
-    pub scene_name: String,
-    pub duration_ms: u64,
-    pub channel_configs: Vec<ShowFileChannelConfig>,
-    pub scoped_channels: Vec<ShowFileChannelRef>,
-    #[serde(default)]
-    pub scope_toggles: ShowFileSceneScopeToggles,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-#[serde(default)]
-pub struct ShowFileSceneScopeToggles {
-    pub faders: bool,
-    pub pan: bool,
-}
-
-impl Default for ShowFileSceneScopeToggles {
-    fn default() -> Self {
-        Self {
-            faders: true,
-            pan: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelConfig {
-    pub group: i32,
-    pub channel: i32,
-    pub fader_db: Option<f64>,
-    pub pan: Option<f64>,
-    pub balance: Option<f64>,
-    pub width: Option<f64>,
-    pub pan_mode: Option<crate::lv1::types::PanMode>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelRef {
-    pub group: i32,
-    pub channel: i32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LoadValidationReport {
-    pub removed_scenes: Vec<String>,
-}
-
-impl LoadValidationReport {
-    pub fn removed_anything(&self) -> bool {
-        !self.removed_scenes.is_empty()
-    }
-}
-
-pub fn prune_show_file_to_lv1_scenes(
-    file: &mut ShowFile,
-    lv1: &Lv1StateSnapshot,
-) -> Result<LoadValidationReport, String> {
-    if lv1.scene_list.is_empty() {
-        return Err("Open a show file after LV1 scenes are loaded".to_string());
-    }
-
-    if file.schema_version != SHOW_FILE_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported show file schema version {}",
-            file.schema_version
-        ));
-    }
-
-    let mut report = LoadValidationReport::default();
-
-    file.scene_configs.retain(|config| {
-        let scene_matches = lv1
-            .scene_list
-            .iter()
-            .any(|scene| scene.index == config.scene_index && scene.name == config.scene_name);
-
-        if !scene_matches {
-            report
-                .removed_scenes
-                .push(format!("{}: {}", config.scene_index, config.scene_name));
-        }
-
-        scene_matches
-    });
-
-    Ok(report)
-}
 
 pub fn read_show_file(path: &Path) -> Result<ShowFile, String> {
     let json = fs::read_to_string(path)
@@ -377,7 +267,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::types::{ChannelInfo, ConnectionStatus, SceneListEntry};
+    use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
