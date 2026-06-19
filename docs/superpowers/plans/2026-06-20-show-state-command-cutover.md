@@ -1628,20 +1628,20 @@ The method should:
 - abort current runtime handles
 - call `begin_connecting` for a new generation after old runtime handles are cleared
 - get `self.current_command_bus().await`; do not create a new `AppCommandBus`
-- construct LV1 actor and fade engine handles/tasks in a paused/not-yet-producing state tagged with generation; do not let them publish runtime facts yet
-- package the paused handles/tasks into `RuntimeHandles` without installing command-bus runtime targets yet
+- spawn LV1 actor and fade engine with the app-lifetime bus and generation
+- immediately set generation-scoped LV1 and fade runtime targets on the app-lifetime command bus with `set_runtime_targets(generation, lv1, fade)`
+- package the spawned LV1/fade handles into `RuntimeHandles` without scene recall fader yet
 - call `install_runtime(generation, handles)`
-- if `install_runtime` rejects the generation, immediately abort the returned handles, leave command-bus runtime targets unchanged, and return a stale-generation error
-- if `install_runtime` accepts the generation, set generation-scoped LV1 and fade runtime targets on the app-lifetime command bus with `set_runtime_targets(generation, lv1, fade)`
-- only after command-bus runtime targets are installed, start/resume LV1 actor and fade engine event-producing loops
-- only after command-bus runtime targets are installed, spawn/start the scene recall fader with generation
+- if `install_runtime` rejects the generation, immediately abort the returned handles, call `clear_runtime_targets(generation)`, and return a stale-generation error
+- only after `install_runtime` accepts the generation and command-bus runtime targets are installed, spawn/start the scene recall fader with generation
+- install or record the scene recall fader handle for the accepted generation
 - update pending/connected identity through `AppCommandBus`
 - publish show events through show commands
 - never emit `app-status-changed` directly
 
-The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade/scene-recall event producers before that event has been published and before command-bus runtime targets are installed. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes that event and generated LV1 disconnect facts.
+The `begin_connecting` call inside this method is what publishes the active runtime generation event. LV1/fade actors may publish generated facts immediately after spawn, but scene recall automation must not start until command-bus LV1/fade runtime targets are installed and the generation is accepted. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes active-generation events and generated LV1 disconnect facts.
 
-Add a connection-ordering test with fake paused runtime handles: trigger an initial scene-change/recall fact before `set_runtime_targets` and assert it is not published or processed; then start the producers after `set_runtime_targets` and assert scene recall can see LV1/fade targets through `AppCommandBus`. If fake handles are not practical, expose a lifecycle test seam that records call order and assert `set_runtime_targets` occurs before any runtime producer start call.
+Add a connection-ordering test or lifecycle seam assertion proving `set_runtime_targets(generation, lv1, fade)` happens before scene recall fader startup. The test should simulate or record an initial scene-change/recall event and assert scene recall automation cannot run before LV1/fade targets are installed.
 
 `clear_runtime_targets(generation)` must clear LV1/fade targets only when `generation` matches the currently installed runtime target generation. Stale cleanup must not clear newer runtime targets.
 
