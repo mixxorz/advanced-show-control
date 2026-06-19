@@ -31,12 +31,30 @@ impl ShowStateHandle {
             }));
     }
 
+    pub(crate) async fn mutate_for_command<R, E>(
+        &self,
+        reason: ShowProjectionReason,
+        apply: impl FnOnce(&mut ShowState) -> Result<(bool, R), E>,
+    ) -> Result<R, E> {
+        let mut state = self.state.lock().await;
+        let (changed, result) = apply(&mut state)?;
+        if changed {
+            self.publish_state_changed(reason, &state);
+        }
+        Ok(result)
+    }
+
+    pub(crate) async fn query<R>(&self, read: impl FnOnce(&ShowState) -> R) -> R {
+        let state = self.state.lock().await;
+        read(&state)
+    }
+
     pub async fn get_snapshot(&self) -> ShowSnapshot {
-        self.state.lock().await.snapshot()
+        self.query(|state| state.snapshot()).await
     }
 
     pub async fn get_scene_config(&self, scene_id: String) -> Option<SceneConfig> {
-        self.state.lock().await.get_scene_config(&scene_id)
+        self.query(|state| state.get_scene_config(&scene_id)).await
     }
 
     pub async fn cue_scene(&self, scene_id: String) -> Result<bool, String> {
@@ -49,7 +67,7 @@ impl ShowStateHandle {
     }
 
     pub async fn get_lockout(&self) -> bool {
-        self.state.lock().await.lockout()
+        self.query(|state| state.lockout()).await
     }
 
     #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.
@@ -76,12 +94,11 @@ impl ShowStateHandle {
         scene_id: String,
         duration_ms: u64,
     ) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.set_scene_duration_ms(&scene_id, duration_ms)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
+        self.mutate_for_command(ShowProjectionReason::ShowState, move |state| {
+            let changed = state.set_scene_duration_ms(&scene_id, duration_ms)?;
+            Ok((changed, changed))
+        })
+        .await
     }
 
     pub async fn set_scene_scope_faders_enabled(

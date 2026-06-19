@@ -251,11 +251,12 @@ impl AppCommandBus {
 
     pub async fn load_show_file_from_dto(
         &self,
-        file: &mut ShowFile,
+        path: std::path::PathBuf,
+        file: ShowFile,
         lv1: Lv1StateSnapshot,
     ) -> Result<LoadShowFileResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::load_show_file_from_dto(&show, file, lv1)
+        crate::show::commands::load_show_file_from_dto(&show, path, file, Some(lv1))
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -951,7 +952,7 @@ mod tests {
                 .unwrap_err(),
             AppCommandError::ShowUnavailable
         );
-        let mut file = ShowFile {
+        let file = ShowFile {
             schema_version: SHOW_FILE_SCHEMA_VERSION,
             app_version: "0.1.0".to_string(),
             saved_at: "saved".to_string(),
@@ -968,7 +969,8 @@ mod tests {
         };
         assert_eq!(
             bus.load_show_file_from_dto(
-                &mut file,
+                std::path::PathBuf::from("/tmp/test.lv1show"),
+                file,
                 Lv1StateSnapshot {
                     connection: crate::lv1::types::ConnectionStatus::Connected,
                     scene: None,
@@ -1047,7 +1049,7 @@ mod tests {
             }],
             channels: Vec::new(),
         };
-        let mut file = ShowFile {
+        let file = ShowFile {
             schema_version: SHOW_FILE_SCHEMA_VERSION,
             app_version: "0.1.0".to_string(),
             saved_at: "saved".to_string(),
@@ -1063,7 +1065,10 @@ mod tests {
             }],
         };
 
-        let result = bus.load_show_file_from_dto(&mut file, lv1).await.unwrap();
+        let result = bus
+            .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), file, lv1)
+            .await
+            .unwrap();
 
         assert_eq!(result.selected_scene_id, Some("1::Intro".to_string()));
         assert!(!result.report.removed_anything());

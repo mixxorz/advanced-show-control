@@ -203,6 +203,116 @@ pub struct ShowState {
 }
 
 impl ShowState {
+    pub(crate) fn reset_for_new_show(
+        &mut self,
+        lv1: Option<&crate::lv1::types::Lv1StateSnapshot>,
+    ) -> Option<String> {
+        self.clear();
+        if let Some(lv1) = lv1
+            && !lv1.scene_list.is_empty()
+        {
+            self.reconcile_scene_fade_configs(&lv1.scene_list);
+        }
+        self.selected_scene_id = self
+            .scene_configs
+            .first()
+            .map(|scene| scene.scene_id.clone());
+        self.show_file_path = None;
+        self.show_file_dirty = false;
+        self.show_file_last_saved_at = None;
+        self.selected_scene_id.clone()
+    }
+
+    pub(crate) fn mark_saved(&mut self, path: std::path::PathBuf, saved_at: String) {
+        self.show_file_path = Some(path);
+        self.show_file_last_saved_at = Some(saved_at);
+        self.show_file_dirty = false;
+    }
+
+    pub(crate) fn set_selected_scene_id(&mut self, selected_scene_id: Option<String>) {
+        self.selected_scene_id = selected_scene_id;
+    }
+
+    pub(crate) fn mark_dirty(&mut self) {
+        self.show_file_dirty = true;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_discovered_lv1_systems(&mut self, systems: Vec<DiscoveredLv1System>) -> bool {
+        if self.discovered_lv1_systems == systems {
+            false
+        } else {
+            self.discovered_lv1_systems = systems;
+            true
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_pending_lv1_identity(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
+        if self.pending_lv1_identity == identity {
+            false
+        } else {
+            self.pending_lv1_identity = identity;
+            true
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn establish_connected_lv1_identity(&mut self, identity: Lv1SystemIdentity) -> bool {
+        let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
+            || self.pending_lv1_identity.is_some();
+        if changed {
+            self.connected_lv1_identity = Some(identity);
+            self.pending_lv1_identity = None;
+        }
+        changed
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear_connected_lv1_identity(&mut self) -> bool {
+        if self.connected_lv1_identity.is_none() {
+            false
+        } else {
+            self.connected_lv1_identity = None;
+            true
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn set_reconnect_state(&mut self, reconnect: ReconnectState) -> bool {
+        if self.reconnect == reconnect {
+            false
+        } else {
+            self.reconnect = reconnect;
+            true
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn handle_runtime_disconnected(&mut self, _reason: String) -> bool {
+        let mut changed = false;
+        if self.connected_lv1_identity.take().is_some() {
+            changed = true;
+        }
+        if self.pending_lv1_identity.take().is_some() {
+            changed = true;
+        }
+        let next = ReconnectState {
+            active: false,
+            attempt: 0,
+        };
+        if self.reconnect != next {
+            self.reconnect = next;
+            changed = true;
+        }
+        let timestamp = crate::time::current_timestamp_millis();
+        if self.last_event_at.as_ref() != Some(&timestamp) {
+            self.last_event_at = Some(timestamp);
+            changed = true;
+        }
+        changed
+    }
+
     pub(crate) fn lockout(&self) -> bool {
         self.lockout
     }

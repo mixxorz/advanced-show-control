@@ -135,12 +135,12 @@ pub async fn open_show_file_dialog(
     .map_err(|err| format!("Failed to open file dialog: {err}"))??
     .ok_or_else(|| "Open show file cancelled".to_string())?;
 
-    let mut file = read_show_file(&path)?;
+    let file = read_show_file(&path)?;
     let command_bus =
         current_command_bus(lifecycle.command_bus_holder(), "open_show_file_dialog").await?;
     let lv1 = state.lv1_snapshot_required_for_show_file().await?;
     let result = command_bus
-        .load_show_file_from_dto(&mut file, lv1)
+        .load_show_file_from_dto(path.clone(), file, lv1)
         .await
         .map_err(map_app_command_error)?;
     for scene in result.report.removed_scenes.iter() {
