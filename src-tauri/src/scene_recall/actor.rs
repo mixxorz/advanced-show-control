@@ -1102,7 +1102,7 @@ mod tests {
     }
 
     fn show_handle() -> crate::show::handle::ShowStateHandle {
-        crate::show::handle::ShowStateHandle::new_empty()
+        crate::show::handle::ShowStateHandle::new_empty(AppEventBus::default())
     }
 
     async fn seed_show(handle: &crate::show::handle::ShowStateHandle) {

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::lifecycle::ActiveCommandBus;
 use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use crate::runtime::commands::AppCommandBus;
+use crate::runtime::events::AppEventBus;
 use crate::show::handle::ShowStateHandle;
 use crate::show::types::ShowSnapshot;
 use tokio::sync::Mutex;
@@ -60,15 +61,20 @@ pub(super) struct ShellInner {
 impl Default for ShellState {
     fn default() -> Self {
         cover_state_variants();
-        Self {
-            handles: Arc::new(Mutex::new(RuntimeHandles::default())),
-            show: ShowStateHandle::new_empty(),
-            inner: Arc::new(Mutex::new(ShellInner::default())),
-        }
+        Self::new(AppEventBus::default())
     }
 }
 
 impl ShellState {
+    pub fn new(event_bus: AppEventBus) -> Self {
+        cover_state_variants();
+        Self {
+            handles: Arc::new(Mutex::new(RuntimeHandles::default())),
+            show: ShowStateHandle::new_empty(event_bus),
+            inner: Arc::new(Mutex::new(ShellInner::default())),
+        }
+    }
+
     pub async fn snapshot(&self) -> AppViewState {
         let inner_guard = self.inner.lock().await;
         let inner = snapshot_inner(&inner_guard);

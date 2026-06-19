@@ -322,7 +322,7 @@ mod tests {
     #[tokio::test]
     async fn missing_lv1_returns_lv1_unavailable() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new(event_bus.clone());
 
         let err = bus.get_lv1_state().await.unwrap_err();
 
@@ -359,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn stale_generation_rejects_before_sending_fade_command() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new(event_bus.clone());
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
         bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
         bus.set_generation(2).await;
@@ -388,7 +388,7 @@ mod tests {
     #[tokio::test]
     async fn start_fade_if_generation_sends_expected_generation_to_fade_engine() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
+        let bus = AppCommandBus::new(event_bus.clone());
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
         bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
         bus.set_generation(2).await;
@@ -477,8 +477,9 @@ mod tests {
     #[tokio::test]
     async fn present_show_returns_snapshot() {
         let event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new(event_bus);
-        bus.set_show(Some(ShowStateHandle::new_empty())).await;
+        let bus = AppCommandBus::new(event_bus.clone());
+        bus.set_show(Some(ShowStateHandle::new_empty(event_bus.clone())))
+            .await;
 
         let snapshot = bus.get_show_snapshot().await.unwrap();
 
