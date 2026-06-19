@@ -174,12 +174,24 @@ impl ShowStateHandle {
     }
 
     pub async fn replace_snapshot(&self, snapshot: ShowSnapshot) {
-        self.state.lock().await.replace_snapshot(snapshot);
+        let mut state = self.state.lock().await;
+        if state.snapshot() == snapshot {
+            return;
+        }
+
+        state.replace_snapshot(snapshot);
+        drop(state);
         self.publish_snapshot_changed(ShowSnapshotChange::SnapshotReplaced);
     }
 
     pub async fn clear(&self) {
-        self.state.lock().await.clear();
+        let mut state = self.state.lock().await;
+        if state.snapshot() == ShowSnapshot::empty() {
+            return;
+        }
+
+        state.clear();
+        drop(state);
         self.publish_snapshot_changed(ShowSnapshotChange::Cleared);
     }
 }
@@ -250,5 +262,28 @@ mod tests {
         .await;
 
         recv_show_event(&mut events, ShowSnapshotChange::SnapshotReplaced).await;
+    }
+
+    #[tokio::test]
+    async fn replace_snapshot_with_identical_state_does_not_publish_show_event() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+        let snapshot = show.get_snapshot().await;
+
+        show.replace_snapshot(snapshot).await;
+
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn clearing_empty_show_does_not_publish_show_event() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+
+        show.clear().await;
+
+        assert!(events.try_recv().is_err());
     }
 }
