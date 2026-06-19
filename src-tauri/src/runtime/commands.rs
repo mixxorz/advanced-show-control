@@ -10,7 +10,8 @@ use crate::lv1::events::Lv1ActorError;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::lv1::types::{ChannelInfo, Lv1StateSnapshot};
 use crate::show::commands::{
-    CueSceneResult, LoadShowFileResult, NewShowFileResult, SelectedSceneResult, ShowCommandResult,
+    CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult, SelectedSceneResult,
+    ShowCommandResult,
 };
 use crate::show::handle::ShowStateHandle;
 use crate::show::show_file::ShowFile;
@@ -257,6 +258,26 @@ impl AppCommandBus {
         crate::show::commands::load_show_file_from_dto(&show, file, lv1)
             .await
             .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn recall_scene_by_id(
+        &self,
+        scene_id: String,
+    ) -> Result<RecallSceneResult, AppCommandError> {
+        let show = self.show_target().await?;
+        let lv1 = self.get_lv1_state().await.map_err(|error| match error {
+            AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                "Recall blocked: LV1 state is unavailable".to_string(),
+            ),
+            other => other,
+        })?;
+        let show_snapshot = show.get_snapshot().await;
+        let result =
+            crate::show::commands::validate_recall_scene_request(&show_snapshot, &lv1, &scene_id)
+                .map_err(AppCommandError::CommandFailed)?;
+
+        self.recall_scene(result.lv1_scene_index).await?;
+        Ok(result)
     }
 
     pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
@@ -1093,6 +1114,187 @@ mod tests {
         }
 
         assert!(recall.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn recall_scene_by_id_validates_show_and_sends_matching_lv1_index() {
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+        show.replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![SceneConfig {
+                scene_id: "1::Verse".to_string(),
+                scene_index: 1,
+                scene_name: "Verse".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_id: Some("1::Verse".to_string()),
+        })
+        .await;
+        bus.set_show(Some(show)).await;
+
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+        let lv1 = Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![crate::lv1::types::SceneListEntry {
+                index: 1,
+                name: "Verse".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+
+        let (recall_tx, mut recall_rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            while let Some(command) = lv1_rx.recv().await {
+                match command {
+                    crate::lv1::commands::Lv1Command::GetState { reply } => {
+                        let _ = reply.send(lv1.clone());
+                    }
+                    crate::lv1::commands::Lv1Command::RecallScene { scene_index, reply } => {
+                        let _ = recall_tx.send(scene_index).await;
+                        let _ = reply.send(Ok(()));
+                    }
+                    _ => panic!("unexpected LV1 command"),
+                }
+            }
+        });
+
+        let result = bus
+            .recall_scene_by_id("1::Verse".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(recall_rx.recv().await, Some(1));
+        assert_eq!(result.scene.scene_id, "1::Verse");
+        assert_eq!(result.lv1_scene_index, 1);
+    }
+
+    #[tokio::test]
+    async fn recall_scene_by_id_blocks_lockout_before_sending_to_lv1() {
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+        show.replace_snapshot(ShowSnapshot {
+            lockout: true,
+            scene_configs: vec![SceneConfig {
+                scene_id: "1::Verse".to_string(),
+                scene_index: 1,
+                scene_name: "Verse".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_id: Some("1::Verse".to_string()),
+        })
+        .await;
+        bus.set_show(Some(show)).await;
+
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+        let lv1 = Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![crate::lv1::types::SceneListEntry {
+                index: 1,
+                name: "Verse".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+        let (recall_tx, mut recall_rx) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            while let Some(command) = lv1_rx.recv().await {
+                match command {
+                    crate::lv1::commands::Lv1Command::GetState { reply } => {
+                        let _ = reply.send(lv1.clone());
+                    }
+                    crate::lv1::commands::Lv1Command::RecallScene { scene_index, reply } => {
+                        let _ = recall_tx.send(scene_index).await;
+                        let _ = reply.send(Ok(()));
+                    }
+                    _ => panic!("unexpected LV1 command"),
+                }
+            }
+        });
+
+        let err = bus
+            .recall_scene_by_id("1::Verse".to_string())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            AppCommandError::CommandFailed("Recall blocked: lockout is enabled".to_string())
+        );
+        assert!(recall_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn recall_scene_by_id_blocks_identity_mismatch_before_sending_to_lv1() {
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+        show.replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![SceneConfig {
+                scene_id: "1::Verse".to_string(),
+                scene_index: 1,
+                scene_name: "Verse".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_id: Some("1::Verse".to_string()),
+        })
+        .await;
+        bus.set_show(Some(show)).await;
+
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
+        bus.set_lv1(Some(Lv1ActorHandle::new(lv1_tx))).await;
+        let lv1 = Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![crate::lv1::types::SceneListEntry {
+                index: 1,
+                name: "Different".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+        let (recall_tx, mut recall_rx) = tokio::sync::mpsc::channel(1);
+
+        tokio::spawn(async move {
+            while let Some(command) = lv1_rx.recv().await {
+                match command {
+                    crate::lv1::commands::Lv1Command::GetState { reply } => {
+                        let _ = reply.send(lv1.clone());
+                    }
+                    crate::lv1::commands::Lv1Command::RecallScene { scene_index, reply } => {
+                        let _ = recall_tx.send(scene_index).await;
+                        let _ = reply.send(Ok(()));
+                    }
+                    _ => panic!("unexpected LV1 command"),
+                }
+            }
+        });
+
+        let err = bus
+            .recall_scene_by_id("1::Verse".to_string())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err,
+            AppCommandError::CommandFailed("Recall blocked: scene identity mismatch".to_string())
+        );
+        assert!(recall_rx.try_recv().is_err());
     }
 
     #[tokio::test]
