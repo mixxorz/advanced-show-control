@@ -22,7 +22,7 @@ The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcast
 - `AppEventBus = facts`
 - `AppCommandBus = commands and queries`
 
-`AppEventBus` carries broadcast facts only.
+`AppEventBus` carries broadcast facts only. It currently carries LV1, fade, scene-recall, and show/app facts.
 
 `AppEventBus` must not carry log-only events. If something is only a diagnostic or user-facing log, emit a `tracing` event instead.
 
@@ -36,12 +36,13 @@ The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcast
 - Commands and queries are routed to the current live target.
 - Requests are not broadcast.
 - If the target is unavailable, the caller gets a clear failure.
+`AppCommandBus` does not own or receive `AppEventBus`; modules that publish facts own their event-bus reference directly.
 
 ## Core Ownership
 
 - `Lv1Actor` owns the LV1 TCP connection lifecycle and mirrored LV1 state. During a connected session, a scoped writer task owns the TCP write half and reports write failures back to the actor.
 - `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
-- `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
+- `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, show-file persistence, and show/app snapshot-change fact publication. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
 - `SceneRecallFader` owns scene recall policy and decision-making.
 - `Tauri UI Adapter` owns Tauri setup, command registration, dialogs, and frontend serialization boundaries.
 - `AppLifecycle` owns the current runtime command-bus holder seam and delegates generation-sensitive runtime handle installation/cleanup to `ShellState` as part of the current transitional split between the Tauri UI adapter, lifecycle seam, and shell-state projection.
