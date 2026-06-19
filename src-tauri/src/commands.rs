@@ -307,94 +307,28 @@ async fn recall_scene_snapshot(
         "Scene recall requested"
     );
 
-    let show = state.show.get_snapshot().await;
-    if show.lockout {
-        tracing::warn!(
-            event = "scene_recall_blocked",
-            scene_id = %scene_id,
-            reason = "lockout is enabled",
-            "Recall blocked: lockout is enabled"
-        );
-        return Err("Recall blocked: lockout is enabled".to_string());
-    }
-
-    let scene = show
-        .scene_configs
-        .iter()
-        .find(|scene| scene.scene_id == scene_id)
-        .cloned()
-        .ok_or_else(|| {
+    let command_bus = current_command_bus(active_command_bus, "recall_scene").await?;
+    let result = command_bus
+        .recall_scene_by_id(scene_id.clone())
+        .await
+        .map_err(|error| {
+            let message = map_app_command_error(error);
             tracing::warn!(
                 event = "scene_recall_blocked",
                 scene_id = %scene_id,
-                reason = "scene config not found",
-                "Scene recall blocked: scene config not found"
+                reason = %message,
+                "Scene recall blocked: {message}"
             );
-            "Scene config not found".to_string()
+            message
         })?;
-
-    let command_bus = active_command_bus.current().await.ok_or_else(|| {
-        tracing::warn!(
-            event = "scene_recall_blocked",
-            scene_id = %scene_id,
-            reason = "LV1 command target is unavailable",
-            "Scene recall blocked: LV1 command target is unavailable"
-        );
-        "Recall blocked: LV1 command target is unavailable".to_string()
-    })?;
-
-    let lv1 = command_bus.get_lv1_state().await.map_err(|error| {
-        tracing::warn!(
-            event = "scene_recall_blocked",
-            scene_id = %scene_id,
-            reason = "LV1 state is unavailable",
-            error = %error,
-            "Scene recall blocked: LV1 state is unavailable"
-        );
-        "Recall blocked: LV1 state is unavailable".to_string()
-    })?;
-
-    if lv1.connection != crate::lv1::types::ConnectionStatus::Connected {
-        tracing::warn!(
-            event = "scene_recall_blocked",
-            scene_id = %scene_id,
-            reason = "LV1 is disconnected",
-            "Recall blocked: LV1 is disconnected"
-        );
-        return Err("Recall blocked: LV1 is disconnected".to_string());
-    }
-
-    let Some(lv1_scene) = lv1.scene_list.iter().find(|candidate| {
-        candidate.index == scene.scene_index && candidate.name == scene.scene_name
-    }) else {
-        tracing::warn!(
-            event = "scene_recall_blocked",
-            scene_id = %scene_id,
-            reason = "scene identity mismatch",
-            "Recall blocked: scene identity mismatch"
-        );
-        return Err("Recall blocked: scene identity mismatch".to_string());
-    };
-
-    if let Err(error) = command_bus.recall_scene(lv1_scene.index).await {
-        tracing::warn!(
-            event = "scene_recall_command_failed",
-            scene_id = %scene.scene_id,
-            scene_index = scene.scene_index,
-            scene_name = %scene.scene_name,
-            error = %error,
-            "Scene recall command failed: {error}"
-        );
-        return Err(error.to_string());
-    }
 
     tracing::debug!(
         event = "scene_recall_command_sent",
-        scene_id = %scene.scene_id,
-        scene_index = scene.scene_index,
-        scene_name = %scene.scene_name,
+        scene_id = %result.scene.scene_id,
+        scene_index = result.scene.scene_index,
+        scene_name = %result.scene.scene_name,
         "Scene recall command sent: {}",
-        scene.scene_name
+        result.scene.scene_name
     );
 
     Ok(state.snapshot().await)
@@ -1465,6 +1399,56 @@ mod tests {
         lifecycle
     }
 
+    async fn lifecycle_with_recall_show(lockout: bool, with_lv1: bool) -> AppLifecycle {
+        let lifecycle = AppLifecycle::default();
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        let show = crate::show::handle::ShowStateHandle::new_empty(event_bus.clone());
+        show.replace_snapshot(crate::show::types::ShowSnapshot {
+            lockout,
+            scene_configs: vec![crate::show::types::SceneConfig {
+                scene_id: "1::Verse".to_string(),
+                scene_index: 1,
+                scene_name: "Verse".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_id: Some("1::Verse".to_string()),
+        })
+        .await;
+        bus.set_show(Some(show)).await;
+        if with_lv1 {
+            let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
+            bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
+                .await;
+            tokio::spawn(async move {
+                while let Some(command) = lv1_rx.recv().await {
+                    match command {
+                        crate::lv1::commands::Lv1Command::GetState { reply } => {
+                            let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
+                                connection: crate::lv1::types::ConnectionStatus::Connected,
+                                scene: None,
+                                scene_list: vec![crate::lv1::types::SceneListEntry {
+                                    index: 1,
+                                    name: "Verse".to_string(),
+                                }],
+                                channels: Vec::new(),
+                            });
+                        }
+                        crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
+                            let _ = reply.send(Ok(()));
+                        }
+                        _ => panic!("unexpected LV1 command"),
+                    }
+                }
+            });
+        }
+        lifecycle.set_command_bus(Some(bus)).await;
+        lifecycle
+    }
+
     #[tokio::test]
     async fn cue_scene_updates_show_state_through_command_bus_and_returns_snapshot() {
         let state = recall_state_with_unstored_scene(true).await;
@@ -1504,26 +1488,33 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_scene_blocks_when_lockout_is_enabled() {
+    async fn recall_scene_routes_lockout_block_through_command_bus() {
         let state = recall_state_with_unstored_scene(true).await;
-        let active_command_bus = ActiveCommandBus::default();
+        let lifecycle = lifecycle_with_recall_show(true, true).await;
 
-        let err = recall_scene_snapshot(state, active_command_bus, "1::Verse".to_string())
-            .await
-            .unwrap_err();
+        let err = recall_scene_snapshot(
+            state,
+            lifecycle.command_bus_holder(),
+            "1::Verse".to_string(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(err, "Recall blocked: lockout is enabled");
     }
 
     #[tokio::test]
-    async fn recall_scene_blocks_without_lv1_state() {
+    async fn recall_scene_routes_missing_lv1_state_through_command_bus() {
         let state = recall_state_with_unstored_scene(false).await;
-        let active_command_bus = ActiveCommandBus::default();
-        active_command_bus.set(Some(AppCommandBus::new())).await;
+        let lifecycle = lifecycle_with_recall_show(false, false).await;
 
-        let err = recall_scene_snapshot(state, active_command_bus, "1::Verse".to_string())
-            .await
-            .unwrap_err();
+        let err = recall_scene_snapshot(
+            state,
+            lifecycle.command_bus_holder(),
+            "1::Verse".to_string(),
+        )
+        .await
+        .unwrap_err();
 
         assert_eq!(err, "Recall blocked: LV1 state is unavailable");
     }
