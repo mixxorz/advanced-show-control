@@ -66,6 +66,9 @@ impl ProjectionCache {
             }
             Lv1Event::Disconnected { .. } => {
                 self.lv1_snapshot = None;
+                self.connected_lv1_identity = None;
+                self.pending_lv1_identity = None;
+                self.reconnect_state = ReconnectState::default();
             }
             Lv1Event::SceneChanged(scene) => {
                 self.ensure_lv1_snapshot().scene = Some(scene.clone());
@@ -316,6 +319,39 @@ mod tests {
         assert_eq!(snapshot.current_scene.unwrap().name, "Bridge");
         assert_eq!(snapshot.channel_count, 1);
         assert_eq!(snapshot.channels[0].name, "Vox");
+    }
+
+    #[test]
+    fn cache_clears_connection_metadata_on_disconnect() {
+        let mut cache = ProjectionCache::new();
+
+        cache.connected_lv1_identity = Some(Lv1SystemIdentity {
+            uuid: Some("connected-uuid".to_string()),
+            host: Some("lv1.local".to_string()),
+            address: "192.0.2.10".to_string(),
+            port: 7788,
+        });
+        cache.pending_lv1_identity = Some(Lv1SystemIdentity {
+            uuid: Some("pending-uuid".to_string()),
+            host: Some("pending.local".to_string()),
+            address: "192.0.2.11".to_string(),
+            port: 7788,
+        });
+        cache.reconnect_state = ReconnectState {
+            active: true,
+            attempt: 42,
+        };
+
+        cache.apply_lv1_event(&Lv1Event::Disconnected {
+            reason: "link lost".to_string(),
+        });
+
+        let snapshot = cache.build_snapshot(empty_show());
+
+        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+        assert_eq!(snapshot.connected_lv1_identity, None);
+        assert_eq!(snapshot.pending_lv1_identity, None);
+        assert_eq!(snapshot.reconnect, ReconnectState::default());
     }
 
     #[test]
