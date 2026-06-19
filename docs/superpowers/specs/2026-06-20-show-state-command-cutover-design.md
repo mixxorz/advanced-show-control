@@ -148,7 +148,9 @@ There is no projection dirty notifier outside these inputs.
 
 The projector cache is dirty when an event or log arrives. It emits at the existing 10 Hz cadence.
 
-The projector starts at app setup, not only after a successful LV1 connection. It owns the initial disconnected projection and emits the first `AppViewState` through `app-status-changed`. Startup, connect, reconnect, discovery, show-file, and command flows update source owners and publish events; they do not return or directly emit full app state.
+The projector and its subscriptions are constructed during app setup, before runtime event producers start. It owns the initial disconnected projection and emits the first `AppViewState` through `app-status-changed` only after the frontend has registered its listener and signaled readiness. Startup, connect, reconnect, discovery, show-file, and command flows update source owners and publish events; they do not return or directly emit full app state.
+
+`AppEventBus` remains a lossy broadcast facts bus with no replay. This cutover assumes the projector does not lag past show events. Lag recovery for `ShowProjectionState` is deferred. Do not add watch channels, resync request events, projector pull exceptions, or replay-last event-bus behavior in this refactor. Existing lag handling should remain diagnostic only.
 
 ### Show Events
 
@@ -183,7 +185,19 @@ The projector cache exposes `apply_show_state(state: ShowProjectionState)`. It m
 
 ### LV1 And Fade Events
 
-LV1 and fade events update projector cache fields directly from event payloads because their source owners publish enough facts to maintain the UI projection.
+Runtime-originated events, including LV1, fade, and scene-recall events, must carry the runtime generation that produced them. The projector tracks the active runtime generation and ignores runtime events from stale generations.
+
+LV1 and fade events update projector cache fields directly from event payloads because their source owners publish enough facts to maintain the UI projection. Direct LV1/fade projection is limited to LV1/fade-owned UI fields:
+
+- LV1 connection status
+- current LV1 scene
+- LV1 scene list
+- LV1 channel topology and live values needed for projection
+- fade state
+
+LV1/fade events must not update show-owned connection metadata such as discovered systems, connected identity, pending identity, reconnect state, selected scene, show-file metadata, or lockout/config/cue state.
+
+Disconnected handling is not a projector side effect. For an active-generation `Disconnected` fact, the projector updates only LV1-owned projection fields. `show/` listens to the same generated disconnected fact, updates show-owned connection UI metadata through private `ShowState`, and publishes `ShowEvent { state: ShowProjectionState }` for the projector to apply.
 
 ### Logs
 
@@ -216,6 +230,21 @@ React updates app state only from `app-status-changed`. Command return values ar
 
 `get_app_status` should be removed or changed so it no longer returns `AppViewState`; recovery state delivery comes from projector emission. If a command exists only to force a refresh, it should request or cause a source-owner event rather than directly returning app state.
 
+Frontend startup uses an explicit readiness handshake. React must register its `app-status-changed` listener before invoking a readiness command such as `frontend_ready`. The backend does not emit the initial `AppViewState` or start discovery/auto-connect/runtime producers until that readiness command is received.
+
+The startup sequence is directly orchestrated:
+
+1. Create the app-lifetime `AppEventBus`.
+2. Create `ShowStateHandle` and `AppLifecycle`.
+3. Construct projector inputs and register projector/listeners.
+4. Wait for React to register its listener and invoke `frontend_ready`.
+5. Publish or apply initial show projection state.
+6. Emit the initial disconnected `AppViewState` from the projector.
+7. Start discovery, auto-connect, or other event-producing runtime work.
+8. Enter normal event-driven runtime mode.
+
+Constructors should not start I/O or emit important events. Event producers start only through explicit lifecycle/start methods after listeners are registered.
+
 ## Runtime Lifecycle Cutover
 
 Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLifecycle`.
@@ -232,7 +261,7 @@ Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLife
 
 Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect.
 
-Generation is runtime lifecycle state. It guards runtime handle installation, stale task cleanup, LV1/fade command routing, and reconnect/disconnect behavior. It is distinct from projector `state_version`.
+Generation is runtime lifecycle state. It guards runtime handle installation, stale task cleanup, LV1/fade command routing, reconnect/disconnect behavior, and runtime event projection. It is distinct from projector `state_version`.
 
 ## Show-Owned Connection Metadata
 
@@ -249,13 +278,15 @@ Commands and lifecycle operations that change this metadata should publish `Show
 
 Connection metadata changes should be modeled as show-owned commands or show-owned command helpers called through `AppCommandBus` where practical. Lifecycle may coordinate runtime tasks, but UI metadata updates should still end by mutating private `ShowState` and publishing `ShowEvent`.
 
+`show/` is responsible for handling active-generation disconnect facts that affect show-owned connection metadata. The projector must not clear or rewrite those fields in response to LV1 events.
+
 ## Show-File Ownership
 
 Show-file DTO import/export, validation, selected-scene restoration, file metadata, dirty tracking, and operational logs are handled through `show::commands`.
 
 Native dialogs and physical file IO may remain adapter/infrastructure responsibilities, but command handlers own the state transaction around successful load/save/new operations.
 
-Saving should be an explicit two-step transaction:
+Saving should be an explicit two-phase transaction:
 
 1. Tauri/infrastructure asks `AppCommandBus` to export the current show file DTO for a proposed `saved_at` timestamp.
 2. Tauri/infrastructure writes the file and backup successfully.
@@ -296,8 +327,10 @@ Expected structural changes:
 - Update `AppCommandBus` to route all app/session commands and queries.
 - Update projector cache to apply show state from events, not pull from show.
 - Move `state_version` ownership into projector cache as projection sequence state.
-- Start the projector at app setup so the frontend receives initial disconnected state from `app-status-changed`.
+- Construct the projector and subscriptions at app setup, then emit initial disconnected state only after `frontend_ready`.
 - Use one app-lifetime `AppEventBus` shared by show, lifecycle/runtime actors, and projector.
+- Add generation to runtime-originated event payloads and ignore stale-generation runtime events in projector and show-owned runtime listeners.
+- Remove projector cache side effects for show-owned connection metadata on disconnect.
 - Update React command handling so command returns are not applied as app state.
 - Remove direct command/log emits of `app-status-changed`.
 
@@ -319,7 +352,11 @@ Add or update tests/static checks for these invariants:
 - Projector does not pull state from `show`; it applies show state delivered by `ShowEvent`.
 - Show/app mutations publish `ShowEvent` carrying current show-owned projection payload.
 - There is one app-lifetime `AppEventBus`; runtime connect paths do not create isolated buses for projector-visible events.
-- Projector owns `state_version` and initial disconnected `AppViewState` emission.
+- Projector owns `state_version` and initial disconnected `AppViewState` emission after frontend readiness.
+- Runtime-originated events carry generation and stale-generation runtime events do not affect projection or show-owned state.
+- Projector does not clear show-owned connection metadata in response to LV1 disconnect events.
+- The backend does not start runtime event producers or emit initial app state before `frontend_ready`.
+- Broadcast lag recovery for missed show projection events is intentionally deferred.
 - Save commands do not mark the show clean before file IO succeeds.
 - Logs reach UI only through projector logging input.
 - UI-requested recall validation remains out of Tauri adapters.
