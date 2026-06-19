@@ -44,13 +44,13 @@ The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcast
 - `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, and show-file persistence. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
 - `SceneRecallFader` owns scene recall policy and decision-making.
 - `Tauri UI Adapter` owns Tauri setup, command registration, dialogs, and frontend serialization boundaries.
-- `AppLifecycle` owns the current runtime command-bus holder seam and delegates generation-sensitive runtime handle installation/cleanup to `ShellState` until the projector and command-boundary phases replace that temporary split.
+- `AppLifecycle` owns the current runtime command-bus holder seam and delegates generation-sensitive runtime handle installation/cleanup to `ShellState` as part of the current transitional split between the Tauri UI adapter, lifecycle seam, and shell-state projection.
 
-`ShellState` is the Tauri-side view of the runtime, not the owner of show logic or recall policy.
+`ShellState` is the current Tauri-side projection of the runtime, not the owner of show logic or recall policy.
 
 ## Event Flow
 
-`LV1 TCP -> Lv1Actor -> AppEventBus -> FadeEngine / SceneRecallFader / Tauri Shell`
+`LV1 TCP -> Lv1Actor -> AppEventBus -> Tauri UI Adapter / AppLifecycle / ShellState projection`
 
 ```text
 ┌─────────┐     ┌──────────┐     ┌─────────────┐
