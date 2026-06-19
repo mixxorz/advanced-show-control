@@ -38,7 +38,7 @@ The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcast
 - If the target is unavailable, the caller gets a clear failure.
 `AppCommandBus` does not own or receive `AppEventBus`; modules that publish facts own their event-bus reference directly.
 
-Low-risk show/app mutations, show-file import/export mapping, and UI-requested recall validation/dispatch route through `AppCommandBus`. The `show/` module owns show-file DTOs, schema version, import/export mapping, pruning, validation against LV1 scene snapshots, and the UI-requested recall use case. The Tauri adapter still owns native dialogs and filesystem read/write plumbing, and it still returns/directly emits `AppViewState` snapshots until the projector-only and frontend command-contract phases remove that temporary behavior.
+Low-risk show/app mutations, show-file import/export mapping, UI-requested recall validation/dispatch, projector-cache runtime projection, and projector-owned UI log input route through their target module boundaries. The Tauri adapter still returns/directly emits `AppViewState` snapshots until the projector-only and frontend command-contract phases remove that temporary behavior.
 
 React command-result cleanup, `ShellState` removal, and `ActiveCommandBus` removal are still pending later phases. Projector-only `app-status-changed` emission is also pending: direct command emits remain transitional, but logging no longer emits `app-status-changed` directly.
 
@@ -114,9 +114,9 @@ Core + Tauri tracing events
 
 `FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
 
-During the transition, low-risk show/app mutations, show-file import/export mapping, and UI-requested recall validation/dispatch flow through `AppCommandBus`, while the Tauri command layer still returns and directly emits `AppViewState` snapshots. That temporary behavior stays in place until the projector-only and frontend command-contract phases remove it.
+During the transition, low-risk show/app mutations, show-file import/export mapping, UI-requested recall validation/dispatch, projector-cache runtime projection, and projector-owned UI log input route through their target module boundaries. The Tauri command layer still returns and directly emits `AppViewState` snapshots until the projector-only and frontend command-contract phases remove it.
 
-Projector cache, logging projection, React command-result cleanup, `ShellState` removal, and `ActiveCommandBus` removal are still pending for later phases.
+React command-result cleanup, `ShellState` removal, and `ActiveCommandBus` removal are still pending later phases. Projector-only `app-status-changed` emission is also pending: direct command emits remain transitional, but logging no longer emits `app-status-changed` directly.
 
 `FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation. Pan-family manual override is driven only by pan movement. A pan override cancels pan, balance, and width for that channel together. Balance and width reports do not trigger override cancellation. Fader fades are not cancelled by pan-family override.
 
