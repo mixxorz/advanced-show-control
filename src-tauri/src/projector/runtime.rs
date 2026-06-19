@@ -13,7 +13,6 @@ pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
 
 pub struct ProjectorInputs<R: Runtime> {
     pub app: AppHandle<R>,
-    pub initial_view_state: Option<crate::app_state::AppViewState>,
     pub generation: u64,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
@@ -24,7 +23,6 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
     tokio::spawn(async move {
         let ProjectorInputs {
             app,
-            initial_view_state,
             generation,
             mut events,
             mut logs,
@@ -43,9 +41,6 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
 
         let mut cache = ProjectionCache::new();
         cache.set_active_generation(generation);
-        if let Some(initial_view_state) = initial_view_state {
-            cache.seed_from_view_state(&initial_view_state);
-        }
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
@@ -123,7 +118,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::{AppViewState, LogSeverity};
+    use crate::app_state::LogSeverity;
     use crate::runtime::events::AppEventBus;
     use crate::show::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
     use std::sync::{Arc, Mutex};
@@ -131,7 +126,6 @@ mod tests {
 
     fn spawn_started_projector(
         handle: AppHandle<impl Runtime>,
-        initial_view_state: Option<AppViewState>,
         generation: u64,
         events: broadcast::Receiver<AppEvent>,
         logs: broadcast::Receiver<UiLogEvent>,
@@ -139,7 +133,6 @@ mod tests {
         let (start_tx, start_rx) = oneshot::channel();
         let projector = spawn_projector(ProjectorInputs {
             app: handle,
-            initial_view_state,
             generation,
             events,
             logs,
@@ -163,7 +156,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(handle, None, 0, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
 
         log_tx
             .send(UiLogEvent {
@@ -227,7 +220,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(handle, None, 0, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
 
         event_bus.publish(AppEvent::Show(ShowEvent::StateChanged {
             reason: ShowProjectionReason::ShowState,
@@ -268,7 +261,7 @@ mod tests {
             received_events.lock().unwrap().push(payload);
         });
 
-        let projector = spawn_started_projector(handle, None, 0, event_bus.subscribe(), log_rx);
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
 
         let event = AppEvent::Show(ShowEvent::StateChanged {
             reason: ShowProjectionReason::ShowState,

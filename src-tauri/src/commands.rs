@@ -934,7 +934,6 @@ async fn install_connected_runtime<R: Runtime>(
     let show_events = events.resubscribe();
     runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
         app: app.clone(),
-        initial_view_state: Some(snapshot.clone()),
         generation,
         events,
         logs: ui_log_receiver(app)?,
@@ -1061,7 +1060,6 @@ mod tests {
         let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
-            initial_view_state: None,
             generation,
             events,
             logs,
@@ -1088,7 +1086,6 @@ mod tests {
 
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
-            initial_view_state: None,
             generation: 0,
             events: event_bus.subscribe(),
             logs: log_rx,
@@ -2005,7 +2002,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn connected_runtime_projector_preserves_initial_scenes_when_logs_arrive() {
+    async fn connected_runtime_projector_starts_from_projector_owned_cache_state() {
         let app = mock_app();
         let log_tx = manage_ui_log_receiver(&app);
         let handle = app.handle().clone();
@@ -2067,9 +2064,9 @@ mod tests {
         let projected = observed
             .last()
             .expect("projector should emit after receiving a log");
-        assert_eq!(projected["connection"], "connected");
-        assert_eq!(projected["currentScene"]["name"], "Intro");
-        assert_eq!(projected["scenes"].as_array().unwrap().len(), 1);
+        assert_eq!(projected["connection"], "disconnected");
+        assert!(projected["currentScene"].is_null());
+        assert_eq!(projected["scenes"].as_array().unwrap().len(), 0);
         assert_eq!(projected["logs"].as_array().unwrap().len(), 1);
     }
 
