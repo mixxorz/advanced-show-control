@@ -39,6 +39,7 @@
   - Does not publish when a mutation returns `Ok(false)` or otherwise makes no state change.
 - Modify: `src-tauri/src/app_state/shell.rs`
   - Constructs `ShowStateHandle` with the app event bus.
+  - Adds `ShellState::new(event_bus: AppEventBus) -> Self` for production setup so show events publish to the shared runtime bus.
 - Modify: `src-tauri/src/runtime/commands.rs`
   - Removes `AppEventBus` from `AppCommandBus::new`.
   - Updates tests for the new `ShowStateHandle` constructor and the parameterless command-bus constructor.
@@ -212,12 +213,14 @@ git commit -m "refactor: add show events to app event bus"
 **Files:**
 - Modify: `src-tauri/src/show/handle.rs`
 - Modify: `src-tauri/src/app_state/shell.rs`
+- Modify: `src-tauri/src/commands.rs`
 - Modify: `src-tauri/src/runtime/commands.rs`
 - Modify: `src-tauri/src/scene_recall/actor.rs`
 
 **Interfaces:**
 - Consumes: `AppEventBus`, `AppEvent::Show(ShowEvent::SnapshotChanged { reason })`
 - Produces: `ShowStateHandle::new_empty(event_bus: AppEventBus) -> Self`
+- Produces: `ShellState::new(event_bus: AppEventBus) -> Self`
 
 - [ ] **Step 1: Add failing show-handle event publication tests**
 
@@ -395,23 +398,53 @@ For unconditional snapshot replacements and clears, publish after the mutation:
     }
 ```
 
-- [ ] **Step 5: Update production show-state construction**
+- [ ] **Step 5: Add explicit shell-state construction with the shared event bus**
 
-In `src-tauri/src/app_state/shell.rs`, update `ShellState::new` or the equivalent constructor from:
+In `src-tauri/src/app_state/shell.rs`, add this import:
 
 ```rust
-show: ShowStateHandle::new_empty(),
+use crate::runtime::events::AppEventBus;
+```
+
+Then replace the current `Default` construction body with an explicit constructor and have `Default` delegate to a standalone bus for tests and default-only call sites:
+
+```rust
+impl Default for ShellState {
+    fn default() -> Self {
+        Self::new(AppEventBus::default())
+    }
+}
+
+impl ShellState {
+    pub fn new(event_bus: AppEventBus) -> Self {
+        cover_state_variants();
+        Self {
+            handles: Arc::new(Mutex::new(RuntimeHandles::default())),
+            show: ShowStateHandle::new_empty(event_bus),
+            inner: Arc::new(Mutex::new(ShellInner::default())),
+        }
+    }
+```
+
+Do not leave production setup on `ShellState::default()`, because that would create a private event bus and hide show events from the shared runtime bus.
+
+- [ ] **Step 6: Update Tauri setup to pass the shared event bus to `ShellState`**
+
+In `src-tauri/src/commands.rs`, update the runtime setup state construction from:
+
+```rust
+let shell = ShellState::default();
 ```
 
 to:
 
 ```rust
-show: ShowStateHandle::new_empty(event_bus.clone()),
+let shell = ShellState::new(event_bus.clone());
 ```
 
-Use the existing `event_bus` argument already available to shell state construction.
+Use the existing runtime `event_bus` that is also passed to LV1/fade/recall/projection setup. If the local variable name differs, use the shared `AppEventBus` value from that setup scope.
 
-- [ ] **Step 6: Update test show-state construction call sites**
+- [ ] **Step 7: Update test show-state construction call sites**
 
 Replace test-only construction:
 
@@ -438,26 +471,26 @@ src-tauri/src/runtime/commands.rs
 src-tauri/src/scene_recall/actor.rs
 ```
 
-- [ ] **Step 7: Run show-handle tests**
+- [ ] **Step 8: Run show-handle tests**
 
 Run: `cargo nextest run -p advanced-show-control show::handle::tests`
 
 Expected: PASS.
 
-- [ ] **Step 8: Run show-related regression tests**
+- [ ] **Step 9: Run show-related regression tests**
 
 Run: `cargo nextest run -p advanced-show-control show app_state::shell::tests runtime::commands::tests::present_show_returns_snapshot scene_recall`
 
 Expected: PASS.
 
-- [ ] **Step 9: Commit show event ownership and publication**
+- [ ] **Step 10: Commit show event ownership and publication**
 
 Run: `git status --short`
 
 Then commit:
 
 ```bash
-git add src-tauri/src/show/handle.rs src-tauri/src/app_state/shell.rs src-tauri/src/runtime/commands.rs src-tauri/src/scene_recall/actor.rs
+git add src-tauri/src/show/handle.rs src-tauri/src/app_state/shell.rs src-tauri/src/commands.rs src-tauri/src/runtime/commands.rs src-tauri/src/scene_recall/actor.rs
 git commit -m "refactor: publish show snapshot events from show state"
 ```
 
