@@ -1,5 +1,6 @@
 //! Show-owned application command handlers.
 
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use crate::show::show_file::{LoadValidationReport, ShowFile, export_show_file, import_show_file};
 
@@ -195,6 +196,122 @@ pub async fn new_show_file(
         .await?;
 
     Ok(NewShowFileResult { selected_scene_id })
+}
+
+pub async fn mark_show_file_saved(
+    show: &ShowStateHandle,
+    path: std::path::PathBuf,
+    saved_at: String,
+) -> ShowCommandResult {
+    show.mutate_for_command(
+        super::events::ShowProjectionReason::FileMetadata,
+        move |state| {
+            state.mark_saved(path, saved_at);
+            Ok::<(bool, ()), std::convert::Infallible>((true, ()))
+        },
+    )
+    .await
+    .expect("infallible show file saved mutation");
+    ShowCommandResult { changed: true }
+}
+
+pub async fn set_discovered_lv1_systems(
+    show: &ShowStateHandle,
+    systems: Vec<DiscoveredLv1System>,
+) -> ShowCommandResult {
+    let changed = show
+        .mutate_for_command(
+            super::events::ShowProjectionReason::ConnectionMetadata,
+            move |state| {
+                let changed = state.set_discovered_lv1_systems(systems);
+                Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+            },
+        )
+        .await
+        .expect("infallible discovery mutation");
+    ShowCommandResult { changed }
+}
+
+pub async fn set_pending_lv1_identity(
+    show: &ShowStateHandle,
+    identity: Option<Lv1SystemIdentity>,
+) -> ShowCommandResult {
+    let changed = show
+        .mutate_for_command(
+            super::events::ShowProjectionReason::ConnectionMetadata,
+            move |state| {
+                let changed = state.set_pending_lv1_identity(identity);
+                Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+            },
+        )
+        .await
+        .expect("infallible pending identity mutation");
+    ShowCommandResult { changed }
+}
+
+pub async fn establish_connected_lv1_identity(
+    show: &ShowStateHandle,
+    identity: Lv1SystemIdentity,
+) -> ShowCommandResult {
+    let changed = show
+        .mutate_for_command(
+            super::events::ShowProjectionReason::ConnectionMetadata,
+            move |state| {
+                let changed = state.establish_connected_lv1_identity(identity);
+                Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+            },
+        )
+        .await
+        .expect("infallible connected identity mutation");
+    ShowCommandResult { changed }
+}
+
+pub async fn clear_connected_lv1_identity(show: &ShowStateHandle) -> ShowCommandResult {
+    let changed = show
+        .mutate_for_command(
+            super::events::ShowProjectionReason::ConnectionMetadata,
+            move |state| {
+                let changed = state.clear_connected_lv1_identity();
+                Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+            },
+        )
+        .await
+        .expect("infallible connected identity clear mutation");
+    ShowCommandResult { changed }
+}
+
+pub async fn set_reconnect_state(
+    show: &ShowStateHandle,
+    reconnect: ReconnectState,
+) -> ShowCommandResult {
+    let changed = show
+        .mutate_for_command(
+            super::events::ShowProjectionReason::ConnectionMetadata,
+            move |state| {
+                let changed = state.set_reconnect_state(reconnect);
+                Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+            },
+        )
+        .await
+        .expect("infallible reconnect mutation");
+    ShowCommandResult { changed }
+}
+
+pub async fn handle_runtime_disconnected(
+    show: &ShowStateHandle,
+    reason: String,
+) -> ShowCommandResult {
+    let changed = show
+        .mutate_for_command(
+            super::events::ShowProjectionReason::ConnectionMetadata,
+            move |state| {
+                let changed = state.handle_runtime_disconnected(reason);
+                Ok::<(bool, bool), std::convert::Infallible>((changed, changed))
+            },
+        )
+        .await
+        .expect("infallible runtime disconnect mutation");
+    ShowCommandResult { changed }
 }
 
 pub async fn export_show_file_for_save(show: &ShowStateHandle, saved_at: String) -> ShowFile {
