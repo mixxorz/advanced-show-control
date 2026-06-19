@@ -51,7 +51,7 @@ Remove `ShellState` instead of adding a temporary compatibility facade.
 `AppLifecycle` owns runtime lifecycle state:
 
 - generation
-- current `AppCommandBus`
+- app-lifetime `AppCommandBus`
 - LV1 actor handle/task
 - fade engine handle/task
 - scene recall fader task
@@ -60,7 +60,7 @@ Remove `ShellState` instead of adding a temporary compatibility facade.
 - stale-runtime installation and cleanup
 - disconnect/reconnect runtime abort behavior
 
-`ActiveCommandBus` should be removed. Tauri commands should access the current command bus through `AppLifecycle`.
+`ActiveCommandBus` should be removed. Tauri commands should access the app-lifetime command bus through `AppLifecycle`.
 
 ### `lv1/`, `fade/`, and `logging/`
 
@@ -185,7 +185,7 @@ The projector cache exposes `apply_show_state(state: ShowProjectionState)`. It m
 
 ### LV1 And Fade Events
 
-Runtime-originated events, including LV1, fade, and scene-recall events, must carry the runtime generation that produced them. The projector tracks the active runtime generation and ignores runtime events from stale generations.
+Runtime-originated events, including LV1, fade, and scene-recall events, must carry the runtime generation that produced them. Lifecycle publishes an app-lifetime runtime-generation event whenever a new runtime generation becomes active. The projector and show-owned runtime listeners track that active runtime generation internally and ignore runtime events from stale generations.
 
 LV1 and fade events update projector cache fields directly from event payloads because their source owners publish enough facts to maintain the UI projection. Direct LV1/fade projection is limited to LV1/fade-owned UI fields:
 
@@ -197,7 +197,7 @@ LV1 and fade events update projector cache fields directly from event payloads b
 
 LV1/fade events must not update show-owned connection metadata such as discovered systems, connected identity, pending identity, reconnect state, selected scene, show-file metadata, or lockout/config/cue state.
 
-Disconnected handling is not a projector side effect. For an active-generation `Disconnected` fact, the projector updates only LV1-owned projection fields. `show/` listens to the same generated disconnected fact, updates show-owned connection UI metadata through private `ShowState`, and publishes `ShowEvent { state: ShowProjectionState }` for the projector to apply.
+Disconnected handling is not a projector side effect. For an active-generation `Disconnected` fact, the projector updates only LV1-owned projection fields. `show/` listens to the same generated disconnected fact, validates it against its internally tracked active runtime generation, updates show-owned connection UI metadata through private `ShowState`, and publishes `ShowEvent { state: ShowProjectionState }` for the projector to apply. Stale disconnect facts must not clear show-owned connection metadata.
 
 ### Logs
 
@@ -214,7 +214,7 @@ Logs do not go through `AppEventBus` and are not stored in `show`.
 Tauri commands become thin wrappers:
 
 - deserialize frontend arguments
-- get the current `AppCommandBus` from `AppLifecycle`
+- get the app command bus from `AppLifecycle`, or call a lifecycle orchestration method for lifecycle-owned operations
 - call the corresponding command-bus method
 - map errors and command-specific results to the frontend response
 
@@ -249,17 +249,20 @@ Constructors should not start I/O or emit important events. Event producers star
 
 Move `RuntimeHandles` and generation logic out of `ShellState` and into `AppLifecycle`.
 
+`AppLifecycle` owns an app-lifetime/show-capable `AppCommandBus` from construction. This bus routes show/app/session commands while disconnected. Runtime connect and disconnect operations install or clear only the runtime command targets and generation-scoped handles. Discovery, new/open show file, lockout, and other show-owned commands must not require a live LV1 runtime.
+
 `AppLifecycle` should provide explicit operations for:
 
 - beginning a connection attempt and allocating the next generation
+- publishing that generation as the active runtime generation on the app-lifetime event bus
 - installing connected runtime handles for the active generation
 - rejecting stale runtime handles
-- exposing the current command bus
+- exposing the app command bus
 - aborting the current runtime
 - clearing runtime handles for a matching generation
 - clearing reconnect/runtime state on disconnect
 
-Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect.
+Disconnect cleanup remains generation-guarded. Stale tasks must not clear current runtime state or send commands after disconnect/reconnect. Show-owned disconnect metadata cleanup must either receive and validate a generation or be called only from a listener/orchestrator that has already proven the disconnect belongs to the active generation, with tests covering stale disconnect events.
 
 Generation is runtime lifecycle state. It guards runtime handle installation, stale task cleanup, LV1/fade command routing, reconnect/disconnect behavior, and runtime event projection. It is distinct from projector `state_version`.
 
@@ -329,7 +332,7 @@ Expected structural changes:
 - Move `state_version` ownership into projector cache as projection sequence state.
 - Construct the projector and subscriptions at app setup, then emit initial disconnected state only after `frontend_ready`.
 - Use one app-lifetime `AppEventBus` shared by show, lifecycle/runtime actors, and projector.
-- Add generation to runtime-originated event payloads and ignore stale-generation runtime events in projector and show-owned runtime listeners.
+- Add generation to runtime-originated event payloads, publish active runtime generation changes, and ignore stale-generation runtime events in projector and show-owned runtime listeners.
 - Remove projector cache side effects for show-owned connection metadata on disconnect.
 - Update React command handling so command returns are not applied as app state.
 - Remove direct command/log emits of `app-status-changed`.
@@ -354,6 +357,7 @@ Add or update tests/static checks for these invariants:
 - There is one app-lifetime `AppEventBus`; runtime connect paths do not create isolated buses for projector-visible events.
 - Projector owns `state_version` and initial disconnected `AppViewState` emission after frontend readiness.
 - Runtime-originated events carry generation and stale-generation runtime events do not affect projection or show-owned state.
+- Active runtime generation changes are published on the app-lifetime event bus and cause projector/show runtime listeners to accept events from the new generation.
 - Projector does not clear show-owned connection metadata in response to LV1 disconnect events.
 - The backend does not start runtime event producers or emit initial app state before `frontend_ready`.
 - Broadcast lag recovery for missed show projection events is intentionally deferred.

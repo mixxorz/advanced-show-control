@@ -4,7 +4,7 @@
 
 **Goal:** Remove `ShellState`, move app/session source state into private `show::ShowState`, move runtime lifecycle state into `AppLifecycle`, and make projector-only `AppViewState` delivery work through generated events and frontend readiness.
 
-**Architecture:** `show/` owns app/session state and publishes full `ShowProjectionState` payloads. `AppLifecycle` owns runtime handles, generation, current command bus, and frontend readiness startup orchestration. The projector is a dumb 10 Hz coalescing cache that consumes `AppEventBus` plus UI log input, ignores stale runtime generations, and never pulls from `show`.
+**Architecture:** `show/` owns app/session state and publishes full `ShowProjectionState` payloads. `AppLifecycle` owns runtime handles, generation, the app-lifetime command bus, and frontend readiness startup orchestration. The projector is a dumb 10 Hz coalescing cache that consumes `AppEventBus` plus UI log input, ignores stale runtime generations, and never pulls from `show`.
 
 **Tech Stack:** Rust/Tauri/Tokio, `tokio::sync::broadcast`, React/TypeScript, Vitest, cargo nextest.
 
@@ -13,9 +13,11 @@
 - Use the spec at `docs/superpowers/specs/2026-06-20-show-state-command-cutover-design.md` as the source of truth.
 - This is a single cutover; do not preserve `ShellState` with compatibility shims.
 - `show/` owns app/session state only; it does not own LV1, fade, or log state.
-- `AppLifecycle` owns runtime lifecycle state: generation, runtime handles, current command bus, startup readiness, and cleanup.
+- `AppLifecycle` owns runtime lifecycle state: generation, runtime handles, app-lifetime command bus, startup readiness, and cleanup.
 - `AppEventBus` is app-lifetime state shared by show, lifecycle/runtime actors, and projector.
 - Runtime-originated events carry generation; stale-generation runtime events must not affect projection or show-owned state.
+- `AppLifecycle` publishes active runtime generation changes on the app-lifetime `AppEventBus`; projector and show-owned runtime listeners use that event to update their internal active generation.
+- Show/app/session commands that do not require live LV1 runtime must work while disconnected through an app-lifetime/show-capable command bus or lifecycle-owned direct show path.
 - Projector does not pull from `show`; it applies `ShowProjectionState` from `ShowEvent`.
 - Projector does not clear or rewrite show-owned connection metadata on LV1 disconnect.
 - `AppEventBus` remains lossy; lag recovery for missed show projection events is intentionally deferred.
@@ -44,14 +46,14 @@
 - `src-tauri/src/show/handle.rs`: Keep a cloneable mutex-backed handle. Expose command execution helpers to `show::commands` only with `pub(super)`/`pub(crate)` where necessary. Remove broad public mutation setters.
 - `src-tauri/src/show/commands.rs`: Become the authoritative implementation of show/app/session commands and command-specific result types.
 - `src-tauri/src/show/show_file.rs`: Keep persistence DTOs and import/export mapping. Rename parameters from `ShowSnapshot` to `ShowProjectionState`.
-- `src-tauri/src/lifecycle/mod.rs`: Replace `ActiveCommandBus`; own runtime handles, generation, frontend readiness, projector startup, current command bus, and runtime cleanup.
-- `src-tauri/src/runtime/events.rs`: Make runtime-originated `AppEvent` variants carry generation, keep `ShowEvent` ungenerated, keep lag logging diagnostic only.
+- `src-tauri/src/lifecycle/mod.rs`: Replace `ActiveCommandBus`; own runtime handles, generation, frontend readiness, projector startup, app-lifetime command bus, and runtime cleanup.
+- `src-tauri/src/runtime/events.rs`: Make runtime-originated `AppEvent` variants carry generation, add lifecycle generation events, keep `ShowEvent` ungenerated, keep lag logging diagnostic only.
 - `src-tauri/src/runtime/commands.rs`: Route all show/app commands and read-only queries through `AppCommandBus`; expose lifecycle-friendly methods for LV1/fade command targets and generation.
 - `src-tauri/src/projector/cache.rs`: Own `state_version`, LV1/fade/log projection caches, show projection cache, `apply_show_state`, and generated runtime event application.
 - `src-tauri/src/projector/runtime.rs`: Consume app-lifetime bus/log channel, gate runtime events by generation, emit only after `frontend_ready`, no show pulls.
 - `src-tauri/src/commands.rs`: Delete after moving Tauri adapter commands to `src-tauri/src/ui/commands.rs`.
 - `src-tauri/src/ui/mod.rs`: Manage app-lifetime event bus, show handle, lifecycle, UI log receiver, projector bootstrap, and command registration.
-- `src-tauri/src/ui/commands.rs`: Thin Tauri command wrappers. All state changes go through `AppLifecycle::current_command_bus()` and `AppCommandBus`.
+- `src-tauri/src/ui/commands.rs`: Thin Tauri command wrappers. Show/app state changes go through the app-lifetime `AppCommandBus`; lifecycle-owned runtime operations go through `AppLifecycle` methods.
 - `src-tauri/src/lib.rs`: Update module exports after `app_state` shrink and command movement.
 - `src-tauri/src/lv1/actor.rs`, `src-tauri/src/fade/actor.rs`, `src-tauri/src/scene_recall/actor.rs`: Publish generated runtime events through the app-lifetime event bus.
 - `src-tauri/src/bin/lv1-probe.rs`: Should remain buildable; no behavior changes planned.
@@ -81,6 +83,8 @@
 - Produces: `AppEvent::Lv1(GeneratedAppEvent<Lv1Event>)`
 - Produces: `AppEvent::Fade(GeneratedAppEvent<FadeEvent>)`
 - Produces: `AppEvent::SceneRecall(GeneratedAppEvent<SceneRecallEvent>)`
+- Produces: `RuntimeLifecycleEvent::ActiveGenerationChanged { generation: u64 }`
+- Produces: `AppEvent::Runtime(RuntimeLifecycleEvent)`
 - Produces: `ShowProjectionState`
 - Produces: `ShowEvent::StateChanged { reason: ShowProjectionReason, state: ShowProjectionState }`
 - Produces: `ShowState::projection_state(&self) -> ShowProjectionState`
@@ -105,6 +109,26 @@ async fn runtime_events_carry_generation() {
         AppEvent::Lv1(generated) => {
             assert_eq!(generated.generation, 42);
             assert!(matches!(generated.event, Lv1Event::Connected));
+        }
+        other => panic!("unexpected event: {other:?}"),
+    }
+}
+```
+
+Also add:
+
+```rust
+#[tokio::test]
+async fn lifecycle_events_publish_active_generation_changes() {
+    let bus = AppEventBus::new(16);
+    let mut rx = bus.subscribe();
+
+    bus.publish_runtime_generation_changed(7);
+
+    let event = rx.recv().await.unwrap();
+    match event {
+        AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
+            assert_eq!(generation, 7);
         }
         other => panic!("unexpected event: {other:?}"),
     }
@@ -145,7 +169,7 @@ Run:
 cargo nextest run -p advanced-show-control runtime::events::tests::runtime_events_carry_generation show::handle::tests::show_event_carries_full_projection_state
 ```
 
-Expected: fail to compile because `GeneratedAppEvent`, `ShowProjectionState`, `ShowProjectionReason`, `ShowEvent::StateChanged`, and `command_set_lockout` do not exist.
+Expected: fail to compile because `GeneratedAppEvent`, `RuntimeLifecycleEvent`, `ShowProjectionState`, `ShowProjectionReason`, `ShowEvent::StateChanged`, and `command_set_lockout` do not exist.
 
 - [ ] **Step 4: Implement generated event wrapper**
 
@@ -160,14 +184,28 @@ pub struct GeneratedAppEvent<T> {
 
 #[derive(Debug, Clone)]
 pub enum AppEvent {
+    Runtime(RuntimeLifecycleEvent),
     Lv1(GeneratedAppEvent<Lv1Event>),
     Fade(GeneratedAppEvent<FadeEvent>),
     SceneRecall(GeneratedAppEvent<crate::scene_recall::events::SceneRecallEvent>),
     Show(ShowEvent),
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeLifecycleEvent {
+    ActiveGenerationChanged { generation: u64 },
+}
 ```
 
 Update existing tests in this file to wrap LV1 and scene recall events with `GeneratedAppEvent { generation: 0, event: ... }`. Keep `Show` unchanged.
+
+Add an `AppEventBus` helper:
+
+```rust
+pub fn publish_runtime_generation_changed(&self, generation: u64) -> usize {
+    self.publish(AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }))
+}
+```
 
 - [ ] **Step 5: Define show projection types**
 
@@ -719,17 +757,20 @@ pub async fn set_discovered_lv1_systems(
 }
 ```
 
-Add handlers for pending identity, connected identity, reconnect state, and active-generation disconnect with these exact names:
+Add handlers for pending identity, connected identity, reconnect state, active runtime generation tracking, and active-generation disconnect with these exact names:
 
 ```rust
 pub async fn set_pending_lv1_identity(show: &ShowStateHandle, identity: Option<Lv1SystemIdentity>) -> ShowCommandResult
 pub async fn establish_connected_lv1_identity(show: &ShowStateHandle, identity: Lv1SystemIdentity) -> ShowCommandResult
 pub async fn clear_connected_lv1_identity(show: &ShowStateHandle) -> ShowCommandResult
 pub async fn set_reconnect_state(show: &ShowStateHandle, reconnect: ReconnectState) -> ShowCommandResult
-pub async fn handle_runtime_disconnected(show: &ShowStateHandle, reason: String) -> ShowCommandResult
+pub async fn set_active_runtime_generation(show: &ShowStateHandle, generation: u64) -> ShowCommandResult
+pub async fn handle_runtime_disconnected(show: &ShowStateHandle, generation: u64, reason: String) -> ShowCommandResult
 ```
 
-`handle_runtime_disconnected` clears `connected_lv1_identity` and `pending_lv1_identity`, sets reconnect metadata according to current behavior from `ShellState`, and publishes `ShowProjectionReason::Disconnected`.
+`handle_runtime_disconnected` first validates `generation` against the show-owned active runtime generation tracked from `RuntimeLifecycleEvent::ActiveGenerationChanged`. If stale, it returns `ShowCommandResult { changed: false }` and publishes nothing. If active, it clears `connected_lv1_identity` and `pending_lv1_identity`, sets reconnect metadata according to current behavior from `ShellState`, and publishes `ShowProjectionReason::Disconnected`.
+
+`set_active_runtime_generation` updates the show-owned active runtime generation used only for stale runtime fact filtering. It should not publish a `ShowEvent` unless a visible show-owned field changes.
 
 - [ ] **Step 7: Run show command tests**
 
@@ -761,6 +802,7 @@ git commit -m "refactor: move app session mutations into show commands"
 - Consumes: `ShowProjectionState`, `GeneratedAppEvent<T>`.
 - Produces: `ProjectionCache::apply_show_state(&mut self, state: ShowProjectionState)`.
 - Produces: `ProjectionCache::set_active_generation(&mut self, generation: u64)`.
+- Produces: projector event handling for `AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })`.
 - Produces: `ProjectionCache::apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool` returns false for stale events.
 - Produces: `ProjectionCache::build_snapshot(&mut self) -> AppViewState` with no show argument.
 
@@ -813,6 +855,22 @@ fn cache_ignores_stale_runtime_events() {
 
     assert!(!changed);
     assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
+}
+```
+
+Add a connected-generation acceptance test:
+
+```rust
+#[test]
+fn cache_accepts_runtime_events_after_active_generation_changes() {
+    let mut cache = ProjectionCache::new();
+    cache.set_active_generation(1);
+
+    let changed = cache.apply_lv1_event(1, &Lv1Event::Connected);
+    let snapshot = cache.build_snapshot();
+
+    assert!(changed);
+    assert_eq!(snapshot.connection, AppConnectionState::Connected);
 }
 ```
 
@@ -934,6 +992,10 @@ In `src-tauri/src/projector/runtime.rs`, remove `shell_state` from `ProjectorInp
 
 ```rust
 match app_event {
+    AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
+        cache.set_active_generation(generation);
+        true
+    }
     AppEvent::Lv1(generated) => cache.apply_lv1_event(generated.generation, &generated.event),
     AppEvent::Fade(generated) => cache.apply_fade_event(generated.generation, &generated.event),
     AppEvent::SceneRecall(generated) => cache.apply_scene_recall_event(generated.generation, &generated.event),
@@ -1000,7 +1062,8 @@ git commit -m "refactor: project show state from events"
 - Produces: `AppLifecycle::begin_connecting(&self) -> Option<u64>`.
 - Produces: `AppLifecycle::install_runtime(&self, generation: u64, handles: RuntimeHandles) -> Result<(), RuntimeHandles>`.
 - Produces: app-lifetime projector handle storage outside `RuntimeHandles`.
-- Produces: `AppLifecycle::current_command_bus(&self) -> Option<AppCommandBus>`.
+- Produces: app-lifetime/show-capable `AppCommandBus` available before LV1 runtime connection.
+- Produces: `AppLifecycle::current_command_bus(&self) -> AppCommandBus`.
 - Removes: `ActiveCommandBus`.
 
 - [ ] **Step 1: Write failing lifecycle tests**
@@ -1037,6 +1100,33 @@ async fn lifecycle_rejects_stale_runtime_install() {
     assert!(rejected);
     assert_eq!(lifecycle.active_generation().await, current);
 }
+
+#[tokio::test]
+async fn lifecycle_publishes_active_generation_when_connecting_begins() {
+    let event_bus = AppEventBus::default();
+    let mut rx = event_bus.subscribe();
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    let lifecycle = AppLifecycle::new(event_bus, show);
+
+    let generation = lifecycle.begin_connecting().await.unwrap();
+
+    let event = rx.recv().await.unwrap();
+    assert!(matches!(
+        event,
+        AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
+            if event_generation == generation
+    ));
+}
+
+#[tokio::test]
+async fn lifecycle_exposes_show_command_bus_before_runtime_connection() {
+    let event_bus = AppEventBus::default();
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    let lifecycle = AppLifecycle::new(event_bus, show);
+
+    let bus = lifecycle.current_command_bus().await;
+    assert!(bus.has_show_target_for_test());
+}
 ```
 
 - [ ] **Step 2: Run failing lifecycle tests**
@@ -1058,7 +1148,6 @@ In `src-tauri/src/lifecycle/mod.rs`, define:
 pub struct RuntimeHandles {
     pub lv1: Option<crate::lv1::handle::Lv1ActorHandle>,
     pub fade: Option<crate::fade::handle::FadeEngineHandle>,
-    pub command_bus: Option<AppCommandBus>,
     pub scene_recall_fader: Option<JoinHandle<()>>,
     pub lifecycle_event_monitor: Option<JoinHandle<()>>,
     pub show_scene_list_monitor: Option<JoinHandle<()>>,
@@ -1079,7 +1168,7 @@ struct LifecycleInner {
     frontend_ready: bool,
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
-    command_bus: Option<AppCommandBus>,
+    command_bus: AppCommandBus,
 }
 
 #[derive(Clone)]
@@ -1090,7 +1179,9 @@ pub struct AppLifecycle {
 }
 ```
 
-Implement `new`, `begin_connecting`, `active_generation`, `install_runtime`, `clear_runtime_handles`, `abort_current_runtime`, and `current_command_bus`.
+Implement `new`, `begin_connecting`, `active_generation`, `install_runtime`, `clear_runtime_handles`, `abort_current_runtime`, and `current_command_bus`. `new` must create an app-lifetime `AppCommandBus` with show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates only generation-scoped LV1/fade targets and task handles; it must not replace the app-lifetime bus.
+
+`begin_connecting` must publish `AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })` after incrementing the active generation, so projector and show-owned runtime listeners accept events from the new runtime.
 
 - [ ] **Step 5: Implement frontend readiness projector start**
 
@@ -1163,6 +1254,7 @@ git commit -m "refactor: move runtime lifecycle into AppLifecycle"
 
 **Interfaces:**
 - Consumes: App-lifetime event bus and lifecycle from Task 5.
+- Consumes: app-lifetime/show-capable command bus from Task 5; show-owned commands remain available while disconnected.
 - Produces: `AppCommandBus::set_discovered_lv1_systems(systems) -> Result<ShowCommandResult, AppCommandError>`.
 - Produces: `AppCommandBus::set_pending_lv1_identity(identity) -> Result<ShowCommandResult, AppCommandError>`.
 - Produces: lifecycle-owned `connect_to_identity` orchestration.
@@ -1186,6 +1278,18 @@ async fn lifecycle_uses_app_lifetime_event_bus_for_runtime_handles() {
     let event = rx.recv().await.unwrap();
     assert!(matches!(event, AppEvent::Lv1(generated) if generated.generation == generation));
 }
+
+#[tokio::test]
+async fn disconnected_show_commands_use_app_lifetime_command_bus() {
+    let event_bus = AppEventBus::default();
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    let lifecycle = AppLifecycle::new(event_bus, show);
+    let bus = lifecycle.current_command_bus().await;
+
+    let result = bus.set_lockout(true).await.unwrap();
+
+    assert!(result.changed);
+}
 ```
 
 - [ ] **Step 2: Write failing disconnect show metadata test**
@@ -1201,7 +1305,8 @@ async fn active_generation_disconnect_clears_show_owned_connection_metadata() {
     establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
     drain_show_events(&mut events).await;
 
-    handle_runtime_disconnected(&show, "test disconnect".to_string()).await;
+    set_active_runtime_generation(&show, 9).await;
+    handle_runtime_disconnected(&show, 9, "test disconnect".to_string()).await;
 
     let event = events.recv().await.unwrap();
     match event {
@@ -1212,6 +1317,29 @@ async fn active_generation_disconnect_clears_show_owned_connection_metadata() {
         }
         other => panic!("unexpected event: {other:?}"),
     }
+}
+```
+
+Also add a show runtime-listener test that publishes `RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 9 }`, then publishes `AppEvent::Lv1(GeneratedAppEvent { generation: 8, event: Lv1Event::Disconnected { ... } })`, and asserts show-owned connection metadata is not cleared. This test should exercise the listener/orchestrator path, not only the direct command function.
+
+Add a stale disconnect test:
+
+```rust
+#[tokio::test]
+async fn stale_generation_disconnect_does_not_clear_show_owned_connection_metadata() {
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let show = ShowStateHandle::new_empty(event_bus);
+    establish_connected_lv1_identity(&show, identity("10.0.0.2")).await;
+    set_active_runtime_generation(&show, 9).await;
+    drain_show_events(&mut events).await;
+
+    let result = handle_runtime_disconnected(&show, 8, "stale disconnect".to_string()).await;
+
+    assert!(!result.changed);
+    assert!(events.try_recv().is_err());
+    let state = show.projection_state_for_test().await;
+    assert!(state.connected_lv1_identity.is_some());
 }
 ```
 
@@ -1235,8 +1363,11 @@ pub async fn set_pending_lv1_identity(&self, identity: Option<Lv1SystemIdentity>
 pub async fn establish_connected_lv1_identity(&self, identity: Lv1SystemIdentity) -> Result<ShowCommandResult, AppCommandError>
 pub async fn clear_connected_lv1_identity(&self) -> Result<ShowCommandResult, AppCommandError>
 pub async fn set_reconnect_state(&self, reconnect: ReconnectState) -> Result<ShowCommandResult, AppCommandError>
-pub async fn handle_runtime_disconnected(&self, reason: String) -> Result<ShowCommandResult, AppCommandError>
+pub async fn set_active_runtime_generation(&self, generation: u64) -> Result<ShowCommandResult, AppCommandError>
+pub async fn handle_runtime_disconnected(&self, generation: u64, reason: String) -> Result<ShowCommandResult, AppCommandError>
 ```
+
+`handle_runtime_disconnected` must forward the supplied generation to `show::commands::handle_runtime_disconnected`; callers that process runtime facts pass `generated.generation`.
 
 - [ ] **Step 5: Move discovery command to thin wrapper**
 
@@ -1273,12 +1404,12 @@ pub async fn refresh_lv1_discovery(
         })
         .collect();
 
-    let bus = lifecycle.current_command_bus().await.ok_or_else(|| "App command bus is unavailable".to_string())?;
+    let bus = lifecycle.current_command_bus().await;
     bus.set_discovered_lv1_systems(systems).await.map_err(map_app_command_error)
 }
 ```
 
-This still performs IO in adapter/infrastructure, but state mutation goes through command bus.
+This still performs IO in adapter/infrastructure, but state mutation goes through the app-lifetime command bus. This command must work before any LV1 runtime is connected.
 
 - [ ] **Step 6: Move connect orchestration into lifecycle**
 
@@ -1306,6 +1437,10 @@ The method should:
 - publish show events through show commands
 - never emit `app-status-changed` directly
 
+The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade producers before that event has been published.
+
+Add or update the show-owned runtime listener so it consumes `RuntimeLifecycleEvent::ActiveGenerationChanged` by calling `AppCommandBus::set_active_runtime_generation(generation)`, and consumes generated LV1 disconnect facts by calling `AppCommandBus::handle_runtime_disconnected(generated.generation, reason)`. The listener must not clear show-owned metadata for stale disconnect facts.
+
 Define `ConnectFailureMode` in `src-tauri/src/lifecycle/mod.rs` so lifecycle-owned connect orchestration does not depend on `ui/commands.rs`.
 
 - [ ] **Step 7: Move disconnect handling into lifecycle and show commands**
@@ -1314,9 +1449,11 @@ Implement `AppLifecycle::disconnect_current_runtime(&self) -> Result<ShowCommand
 
 ```rust
 pub async fn disconnect_current_runtime(&self) -> Result<ShowCommandResult, String> {
+    let generation = self.active_generation().await;
     self.abort_current_runtime().await;
     Ok(crate::show::commands::handle_runtime_disconnected(
         &self.show,
+        generation,
         "Disconnected by user".to_string(),
     )
     .await)
@@ -1405,7 +1542,7 @@ pub async fn set_lockout(
     lifecycle: State<'_, AppLifecycle>,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
-    let bus = current_command_bus(&lifecycle, "set_lockout").await?;
+    let bus = lifecycle.current_command_bus().await;
     bus.set_lockout(enabled).await.map_err(map_app_command_error)
 }
 ```
@@ -2024,7 +2161,7 @@ Required final state:
 Replace transitional statements with final architecture:
 
 - `ShowState` owns app/session state and publishes `ShowEvent { state: ShowProjectionState }`.
-- `AppLifecycle` owns generation/runtime handles/current command bus/frontend readiness.
+- `AppLifecycle` owns generation/runtime handles/app-lifetime command bus/frontend readiness.
 - `AppEventBus` is app-lifetime and generated runtime events carry generation.
 - Projector emits `app-status-changed` and does not pull from show.
 - React state updates only from `app-status-changed`.
