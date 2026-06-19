@@ -563,8 +563,8 @@ git commit -m "refactor: tag runtime events with generation"
 - Produces: `show::commands::load_show_file_from_dto(show, path, file, lv1) -> Result<LoadShowFileResult, String>` that updates metadata and publishes state.
 - Produces: `show::commands::mark_show_file_saved(show, path, saved_at) -> ShowCommandResult`.
 - Produces: `show::commands::set_discovered_lv1_systems(show, systems) -> ShowCommandResult`.
-- Produces: `show::commands::set_pending_lv1_identity(show, generation, identity) -> ShowCommandResult`.
-- Produces: `show::commands::establish_connected_lv1_identity(show, generation, identity) -> ShowCommandResult`.
+- Produces: `show::commands::set_pending_lv1_identity(show, identity) -> ShowCommandResult`.
+- Produces: `show::commands::establish_connected_lv1_identity(show, identity) -> ShowCommandResult`.
 - Produces: `show::commands::handle_runtime_disconnected(show, generation, reason) -> ShowCommandResult`.
 
 - [ ] **Step 1: Write failing command transaction tests**
@@ -1191,7 +1191,6 @@ Move `abort_all` implementation from `ShellState::RuntimeHandles` into this stru
 In `src-tauri/src/lifecycle/mod.rs`:
 
 ```rust
-#[derive(Default)]
 struct LifecycleInner {
     generation: u64,
     connecting: bool,
@@ -1210,7 +1209,7 @@ pub struct AppLifecycle {
 }
 ```
 
-Implement `new`, `begin_connecting`, `active_generation`, `install_runtime`, `clear_runtime_handles`, `abort_current_runtime`, and `current_command_bus`. `new` must create an app-lifetime `AppCommandBus` with the show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates only generation-scoped LV1/fade targets and task handles; it must not replace the app-lifetime bus.
+Implement `new`, `begin_connecting`, `active_generation`, `install_runtime`, `clear_runtime_handles`, `abort_current_runtime`, and `current_command_bus`. Do not derive `Default` for `LifecycleInner` unless `AppCommandBus` intentionally implements `Default`; construct it explicitly in `AppLifecycle::new`. `new` must create an app-lifetime `AppCommandBus` with the show target installed so disconnected show/app/session commands work before LV1 connects. Runtime install updates only generation-scoped LV1/fade targets and task handles; it must not replace the app-lifetime bus.
 
 Use this concrete shape in `AppLifecycle::new`:
 
@@ -1229,6 +1228,8 @@ If `AppCommandBus` currently requires constructor arguments or async target inst
 impl AppCommandBus {
     pub fn new() -> Self;
     pub fn set_show_target(&self, show: ShowStateHandle);
+    pub async fn set_active_runtime_generation(&self, generation: u64) -> Result<ShowCommandResult, AppCommandError>;
+    pub async fn handle_runtime_disconnected(&self, generation: u64, reason: String) -> Result<ShowCommandResult, AppCommandError>;
     pub fn set_runtime_targets(
         &self,
         generation: u64,
@@ -1240,6 +1241,39 @@ impl AppCommandBus {
 ```
 
 Store `show_runtime_metadata_monitor` in `LifecycleInner`, outside `RuntimeHandles`. Runtime-only command methods return a runtime-unavailable error when their generation-scoped target is absent. Show-owned commands continue to work while disconnected through the installed show target.
+
+Also define `spawn_show_runtime_metadata_monitor` in `src-tauri/src/lifecycle/mod.rs` in this task, because `AppLifecycle::new` spawns it:
+
+```rust
+fn spawn_show_runtime_metadata_monitor(
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+    command_bus: AppCommandBus,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })) => {
+                    let _ = command_bus.set_active_runtime_generation(generation).await;
+                }
+                Ok(AppEvent::Lv1(generated)) => {
+                    if let Lv1Event::Disconnected { reason } = generated.event {
+                        let _ = command_bus
+                            .handle_runtime_disconnected(generated.generation, reason)
+                            .await;
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::debug!(skipped, "show runtime metadata monitor lagged");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    })
+}
+```
+
+The monitor is app-lifetime because it must observe every active-generation change and every generated LV1 disconnect fact across reconnects. It must not call `ShowStateHandle` or `show::commands` directly; it routes through the app-lifetime `AppCommandBus` methods above. Those two command-bus methods must route to the Task 3 show commands in this task so the monitor compiles and works.
 
 `begin_connecting` must publish `AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })` after incrementing the active generation, so projector and show-owned runtime listeners accept events from the new runtime.
 
@@ -1315,6 +1349,7 @@ git commit -m "refactor: move runtime lifecycle into AppLifecycle"
 **Interfaces:**
 - Consumes: App-lifetime event bus and lifecycle from Task 5.
 - Consumes: app-lifetime/show-capable command bus from Task 5; show-owned commands remain available while disconnected.
+- Consumes: `spawn_show_runtime_metadata_monitor`, `AppCommandBus::set_active_runtime_generation`, and `AppCommandBus::handle_runtime_disconnected` from Task 5.
 - Produces: `AppCommandBus::set_discovered_lv1_systems(systems) -> Result<ShowCommandResult, AppCommandError>`.
 - Produces: `AppCommandBus::set_pending_lv1_identity(identity) -> Result<ShowCommandResult, AppCommandError>`.
 - Produces: lifecycle-owned `connect_to_identity` orchestration.
@@ -1399,9 +1434,9 @@ cargo nextest run -p advanced-show-control lifecycle::tests::disconnected_show_c
 
 Expected: fail until commands/lifecycle are wired.
 
-- [ ] **Step 4: Extend AppCommandBus for show metadata commands**
+- [ ] **Step 4: Extend AppCommandBus for remaining show metadata commands**
 
-In `src-tauri/src/runtime/commands.rs`, add methods that call `show::commands`:
+In `src-tauri/src/runtime/commands.rs`, add the remaining methods that call `show::commands`:
 
 ```rust
 pub async fn set_discovered_lv1_systems(&self, systems: Vec<DiscoveredLv1System>) -> Result<ShowCommandResult, AppCommandError>
@@ -1409,11 +1444,9 @@ pub async fn set_pending_lv1_identity(&self, identity: Option<Lv1SystemIdentity>
 pub async fn establish_connected_lv1_identity(&self, identity: Lv1SystemIdentity) -> Result<ShowCommandResult, AppCommandError>
 pub async fn clear_connected_lv1_identity(&self) -> Result<ShowCommandResult, AppCommandError>
 pub async fn set_reconnect_state(&self, reconnect: ReconnectState) -> Result<ShowCommandResult, AppCommandError>
-pub async fn set_active_runtime_generation(&self, generation: u64) -> Result<ShowCommandResult, AppCommandError>
-pub async fn handle_runtime_disconnected(&self, generation: u64, reason: String) -> Result<ShowCommandResult, AppCommandError>
 ```
 
-`handle_runtime_disconnected` must forward the supplied generation to `show::commands::handle_runtime_disconnected`; callers that process runtime facts pass `generated.generation`.
+`set_active_runtime_generation` and `handle_runtime_disconnected` already exist from Task 5 for the app-lifetime monitor. Keep their behavior unchanged: `handle_runtime_disconnected` forwards the supplied generation to `show::commands::handle_runtime_disconnected`; callers that process runtime facts pass `generated.generation`.
 
 - [ ] **Step 5: Move discovery command to thin wrapper**
 
@@ -1483,20 +1516,7 @@ The method should:
 - publish show events through show commands
 - never emit `app-status-changed` directly
 
-The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade producers before that event has been published.
-
-Add a concrete lifecycle-owned monitor task named `spawn_show_runtime_metadata_monitor` in `src-tauri/src/lifecycle/mod.rs`:
-
-```rust
-fn spawn_show_runtime_metadata_monitor(
-    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
-    command_bus: AppCommandBus,
-) -> JoinHandle<()>
-```
-
-Spawn this monitor once when `AppLifecycle::new` creates the app-lifetime command bus, store its handle outside generation-scoped runtime handles, and abort it only when the app lifecycle is dropped. It is app-lifetime because it must observe every `RuntimeLifecycleEvent::ActiveGenerationChanged` and every generated LV1 disconnect fact across reconnects.
-
-The monitor consumes `RuntimeLifecycleEvent::ActiveGenerationChanged` by calling `AppCommandBus::set_active_runtime_generation(generation)`, and consumes generated LV1 disconnect facts by calling `AppCommandBus::handle_runtime_disconnected(generated.generation, reason)`. The show command validates generation, so stale disconnect facts must not clear show-owned metadata. This monitor must not call `ShowStateHandle` or `show::commands` directly.
+The `begin_connecting` call inside this method is what publishes the active runtime generation event. Do not start LV1/fade producers before that event has been published. The app-lifetime `spawn_show_runtime_metadata_monitor` from Task 5 observes that event and generated LV1 disconnect facts.
 
 Define `ConnectFailureMode` in `src-tauri/src/lifecycle/mod.rs` so lifecycle-owned connect orchestration does not depend on `ui/commands.rs`.
 
