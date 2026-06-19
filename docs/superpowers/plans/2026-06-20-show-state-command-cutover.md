@@ -589,11 +589,13 @@ impl ShowStateHandle {
     pub(crate) async fn mutate_for_command<R>(
         &self,
         reason: ShowProjectionReason,
-        apply: impl FnOnce(&mut ShowState) -> R,
+        apply: impl FnOnce(&mut ShowState) -> (bool, R),
     ) -> R {
         let mut state = self.state.lock().await;
-        let result = apply(&mut state);
-        self.publish_state_changed(reason, &state);
+        let (changed, result) = apply(&mut state);
+        if changed {
+            self.publish_state_changed(reason, &state);
+        }
         result
     }
 
@@ -604,7 +606,7 @@ impl ShowStateHandle {
 }
 ```
 
-This helper intentionally publishes once per command. For no-op commands, command handlers decide whether to call it.
+This helper publishes only when `apply` returns `changed == true`. No-op commands must return `changed == false` so they do not publish a redundant `ShowEvent`.
 
 - [ ] **Step 4: Move dirty/file metadata updates into command handlers**
 
@@ -628,7 +630,7 @@ pub async fn set_scene_duration_ms(
             if changed {
                 state.mark_dirty();
             }
-            Ok::<bool, String>(changed)
+            (changed, Ok::<bool, String>(changed))
         })
         .await?;
 
@@ -665,7 +667,7 @@ pub async fn new_show_file(
             state.show_file_path = None;
             state.show_file_dirty = false;
             state.show_file_last_saved_at = None;
-            state.selected_scene_id.clone()
+            (true, state.selected_scene_id.clone())
         })
         .await;
 
@@ -686,6 +688,7 @@ pub async fn mark_show_file_saved(
         state.show_file_path = Some(path);
         state.show_file_last_saved_at = Some(saved_at);
         state.show_file_dirty = false;
+        (true, ())
     })
     .await;
     tracing::info!(event = "show_file_saved", "Show file saved");
@@ -705,10 +708,10 @@ pub async fn set_discovered_lv1_systems(
     let changed = show
         .mutate_for_command(ShowProjectionReason::DiscoveryUpdated, |state| {
             if state.discovered_lv1_systems == systems {
-                false
+                (false, false)
             } else {
                 state.discovered_lv1_systems = systems;
-                true
+                (true, true)
             }
         })
         .await;
@@ -996,6 +999,7 @@ git commit -m "refactor: project show state from events"
 - Produces: `AppLifecycle::frontend_ready<R: Runtime>(&self, app: AppHandle<R>, logs: broadcast::Receiver<UiLogEvent>) -> Result<(), String>`.
 - Produces: `AppLifecycle::begin_connecting(&self) -> Option<u64>`.
 - Produces: `AppLifecycle::install_runtime(&self, generation: u64, handles: RuntimeHandles) -> Result<(), RuntimeHandles>`.
+- Produces: app-lifetime projector handle storage outside `RuntimeHandles`.
 - Produces: `AppLifecycle::current_command_bus(&self) -> Option<AppCommandBus>`.
 - Removes: `ActiveCommandBus`.
 
@@ -1055,14 +1059,13 @@ pub struct RuntimeHandles {
     pub lv1: Option<crate::lv1::handle::Lv1ActorHandle>,
     pub fade: Option<crate::fade::handle::FadeEngineHandle>,
     pub command_bus: Option<AppCommandBus>,
-    pub projector: Option<JoinHandle<()>>,
     pub scene_recall_fader: Option<JoinHandle<()>>,
     pub lifecycle_event_monitor: Option<JoinHandle<()>>,
     pub show_scene_list_monitor: Option<JoinHandle<()>>,
 }
 ```
 
-Move `abort_all` implementation from `ShellState::RuntimeHandles` into this struct.
+Move `abort_all` implementation from `ShellState::RuntimeHandles` into this struct, but do not include or abort the app-lifetime projector in `RuntimeHandles`.
 
 - [ ] **Step 4: Implement lifecycle inner state**
 
@@ -1075,6 +1078,7 @@ struct LifecycleInner {
     connecting: bool,
     frontend_ready: bool,
     handles: RuntimeHandles,
+    projector: Option<JoinHandle<()>>,
     command_bus: Option<AppCommandBus>,
 }
 
@@ -1105,7 +1109,7 @@ pub async fn frontend_ready<R: Runtime>(
     inner.frontend_ready = true;
     let generation = inner.generation;
     let (start_tx, start_rx) = tokio::sync::oneshot::channel();
-    inner.handles.projector = Some(crate::projector::spawn_projector(crate::projector::ProjectorInputs {
+    inner.projector = Some(crate::projector::spawn_projector(crate::projector::ProjectorInputs {
         app,
         active_generation: generation,
         events: self.event_bus.subscribe(),
@@ -1291,8 +1295,8 @@ pub async fn connect_to_identity<R: Runtime>(
 
 The method should:
 
-- call `begin_connecting` for a generation
 - abort current runtime handles
+- call `begin_connecting` for a new generation after old runtime handles are cleared
 - create `AppCommandBus`
 - set generation, LV1, fade, and show targets
 - spawn LV1 actor and fade engine with the app-lifetime bus and generation
@@ -1311,14 +1315,15 @@ Implement `AppLifecycle::disconnect_current_runtime(&self) -> Result<ShowCommand
 ```rust
 pub async fn disconnect_current_runtime(&self) -> Result<ShowCommandResult, String> {
     self.abort_current_runtime().await;
-    let bus = self.current_command_bus().await.ok_or_else(|| "App command bus is unavailable".to_string())?;
-    bus.handle_runtime_disconnected("Disconnected by user".to_string())
-        .await
-        .map_err(|error| error.to_string())
+    Ok(crate::show::commands::handle_runtime_disconnected(
+        &self.show,
+        "Disconnected by user".to_string(),
+    )
+    .await)
 }
 ```
 
-Ensure ordering does not clear the command bus before the show command can run. Implement this by calling `show::commands::handle_runtime_disconnected(&self.show, "Disconnected by user".to_string()).await` directly inside lifecycle after aborting runtime handles.
+Do not fetch `current_command_bus()` after aborting runtime handles in this method. The disconnect metadata update uses the lifecycle-owned `ShowStateHandle` directly through `show::commands::handle_runtime_disconnected`.
 
 - [ ] **Step 8: Run connection command tests**
 
