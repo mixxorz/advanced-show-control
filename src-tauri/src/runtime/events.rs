@@ -50,6 +50,18 @@ impl AppEventBus {
         ))
     }
 
+    pub fn publish_lv1(&self, generation: u64, event: Lv1Event) -> usize {
+        self.publish(AppEvent::Lv1 { generation, event })
+    }
+
+    pub fn publish_fade(&self, generation: u64, event: FadeEvent) -> usize {
+        self.publish(AppEvent::Fade { generation, event })
+    }
+
+    pub fn publish_scene_recall(&self, generation: u64, event: SceneRecallEvent) -> usize {
+        self.publish(AppEvent::SceneRecall { generation, event })
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
         self.tx.subscribe()
     }

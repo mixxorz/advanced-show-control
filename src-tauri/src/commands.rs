@@ -754,13 +754,18 @@ async fn connect_to_target<R: Runtime>(
 
     let shell_state = state.clone();
 
-    let lv1 = spawn_actor(identity.address.clone(), identity.port, event_bus.clone());
+    let lv1 = spawn_actor(
+        identity.address.clone(),
+        identity.port,
+        event_bus.clone(),
+        generation,
+    );
     let command_bus = AppCommandBus::new();
     command_bus.set_generation(generation).await;
     command_bus.set_lv1(Some(lv1.clone())).await;
     command_bus.set_show(Some(shell_state.show.clone())).await;
     let fade_command_bus = command_bus.clone();
-    let fade = spawn_engine(command_bus, event_bus.clone());
+    let fade = spawn_engine(command_bus, event_bus.clone(), generation);
     fade_command_bus.set_fade(Some(fade.clone())).await;
 
     let mut runtime_handles = RuntimeHandles {

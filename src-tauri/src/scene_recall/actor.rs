@@ -143,13 +143,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("LV1 state is unavailable: {err}"),
                 },
-            });
+            );
             return;
         }
     };
@@ -166,13 +166,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("failed to fetch scene config: {err}"),
                 },
-            });
+            );
             return;
         }
     };
@@ -183,13 +183,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("failed to fetch lockout: {err}"),
                 },
-            });
+            );
             return;
         }
     };
@@ -207,19 +207,19 @@ async fn process_scene_observation(
             }
             tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
             tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::Ready {
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::Ready {
                     scene_label: scene_label.clone(),
                     target_count: fade_config.targets.len(),
                 },
-            });
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::StartRequested {
+            );
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::StartRequested {
                     scene_label: scene_label.clone(),
                 },
-            });
+            );
             match command_bus
                 .start_fade_if_generation(generation, fade_config)
                 .await
@@ -227,13 +227,13 @@ async fn process_scene_observation(
                 Ok(()) => (),
                 Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
                 Err(err) => {
-                    event_bus.publish(AppEvent::SceneRecall {
-                        generation: 0,
-                        event: crate::scene_recall::events::SceneRecallEvent::Blocked {
+                    event_bus.publish_scene_recall(
+                        generation,
+                        crate::scene_recall::events::SceneRecallEvent::Blocked {
                             scene_label,
                             reason: format!("failed to start fade: {err:?}"),
                         },
-                    });
+                    );
                 }
             }
         }
@@ -241,13 +241,13 @@ async fn process_scene_observation(
             if !is_generation_current(generation, command_bus).await {
                 return;
             }
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::Skipped {
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::Skipped {
                     scene_label: scene_label(&observation.scene),
                     reason,
                 },
-            });
+            );
         }
         RecallPolicyDecision::Blocked { reason } => {
             if !is_generation_current(generation, command_bus).await {
@@ -260,13 +260,13 @@ async fn process_scene_observation(
                 reason = %reason,
                 "Scene recall blocked for {scene_label}: {reason}"
             );
-            event_bus.publish(AppEvent::SceneRecall {
-                generation: 0,
-                event: crate::scene_recall::events::SceneRecallEvent::Blocked {
+            event_bus.publish_scene_recall(
+                generation,
+                crate::scene_recall::events::SceneRecallEvent::Blocked {
                     scene_label,
                     reason,
                 },
-            });
+            );
         }
     }
 }

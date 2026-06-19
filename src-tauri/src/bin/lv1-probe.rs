@@ -502,7 +502,7 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor(host.clone(), port, event_bus.clone());
+    let _handle = spawn_actor(host.clone(), port, event_bus.clone(), 0);
 
     loop {
         match events.recv().await {
@@ -704,10 +704,10 @@ async fn run_fade_test(
 
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
     command_bus.set_lv1(Some(lv1.clone())).await;
-    let engine = spawn_engine(command_bus.clone(), event_bus.clone());
+    let engine = spawn_engine(command_bus.clone(), event_bus.clone(), 0);
     command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = event_bus.subscribe();
 
@@ -993,10 +993,10 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
 
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
     command_bus.set_lv1(Some(lv1.clone())).await;
-    let engine = spawn_engine(command_bus.clone(), event_bus.clone());
+    let engine = spawn_engine(command_bus.clone(), event_bus.clone(), 0);
     command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = event_bus.subscribe();
 
@@ -1512,7 +1512,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone());
+    let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
 
     tokio::time::timeout(Duration::from_millis(timeout_ms), async {
         loop {
@@ -1923,7 +1923,7 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -2018,7 +2018,7 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone());
+        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {

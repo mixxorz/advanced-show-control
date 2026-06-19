@@ -24,9 +24,14 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WRITER_QUEUE_CAPACITY: usize = 64;
 
 /// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
-pub fn spawn_actor(host: String, port: u16, event_bus: AppEventBus) -> Lv1ActorHandle {
+pub fn spawn_actor(
+    host: String,
+    port: u16,
+    event_bus: AppEventBus,
+    generation: u64,
+) -> Lv1ActorHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_actor(host, port, event_bus, cmd_rx));
+    tokio::spawn(run_actor(host, port, event_bus, generation, cmd_rx));
     Lv1ActorHandle::new(cmd_tx)
 }
 
@@ -183,9 +188,10 @@ async fn run_actor(
     host: String,
     port: u16,
     event_bus: AppEventBus,
+    generation: u64,
     mut cmd_rx: mpsc::Receiver<Lv1Command>,
 ) {
-    let mut state = ActorState::new(event_bus);
+    let mut state = ActorState::new(event_bus, generation);
 
     loop {
         let mut client = loop {
@@ -511,7 +517,7 @@ mod tests {
     async fn drain_commands_reports_closed_command_channel() {
         let (tx, mut rx) = mpsc::channel(1);
         drop(tx);
-        let mut state = ActorState::new(AppEventBus::default());
+        let mut state = ActorState::new(AppEventBus::default(), 0);
 
         let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
 
@@ -521,7 +527,7 @@ mod tests {
     #[tokio::test]
     async fn drain_commands_reports_not_connected_for_flush_while_disconnected() {
         let (tx, mut rx) = mpsc::channel(1);
-        let mut state = ActorState::new(AppEventBus::default());
+        let mut state = ActorState::new(AppEventBus::default(), 0);
         let (reply_tx, reply_rx) = oneshot::channel();
         tx.try_send(Lv1Command::Flush { reply: reply_tx }).unwrap();
         drop(tx);
@@ -534,7 +540,7 @@ mod tests {
 
     #[test]
     fn drain_disconnected_command_rejects_recall_scene_when_not_connected() {
-        let state = ActorState::new(AppEventBus::default());
+        let state = ActorState::new(AppEventBus::default(), 0);
         let (reply, rx) = oneshot::channel();
 
         drain_disconnected_command(

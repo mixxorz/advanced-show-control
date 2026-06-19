@@ -3,7 +3,7 @@
 use std::time::Instant;
 
 use crate::osc::OscArg;
-use crate::runtime::events::{AppEvent, AppEventBus};
+use crate::runtime::events::AppEventBus;
 
 use super::events::Lv1Event;
 use super::parsers::{parse_channels_batch, parse_scene_list};
@@ -147,6 +147,7 @@ pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
 }
 
 pub(super) struct ActorState {
+    generation: u64,
     pub(super) connection: ConnectionStatus,
     pub(super) scene: Option<SceneState>,
     pub(super) scene_list: Vec<SceneListEntry>,
@@ -157,8 +158,9 @@ pub(super) struct ActorState {
 }
 
 impl ActorState {
-    pub(super) fn new(event_bus: AppEventBus) -> Self {
+    pub(super) fn new(event_bus: AppEventBus, generation: u64) -> Self {
         Self {
+            generation,
             connection: ConnectionStatus::Connecting,
             scene: None,
             scene_list: Vec::new(),
@@ -179,10 +181,7 @@ impl ActorState {
     }
 
     pub(super) fn fan_out(&mut self, event: Lv1Event) {
-        self.event_bus.publish(AppEvent::Lv1 {
-            generation: 0,
-            event,
-        });
+        self.event_bus.publish_lv1(self.generation, event);
     }
 
     pub(super) fn diagnose(&mut self, message: impl Into<String>) {
@@ -328,6 +327,7 @@ fn is_diagnostic_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::events::AppEvent;
 
     #[tokio::test]
     async fn actor_publishes_scene_changes_to_event_bus() {
@@ -336,7 +336,7 @@ mod tests {
 
         let bus = AppEventBus::new(16);
         let mut rx = bus.subscribe();
-        let mut state = ActorState::new(bus.clone());
+        let mut state = ActorState::new(bus.clone(), 7);
 
         handle_message(
             &mut state,
@@ -361,9 +361,11 @@ mod tests {
         };
         match event {
             AppEvent::Lv1 {
+                generation,
                 event: Lv1Event::SceneChanged(scene),
                 ..
             } => {
+                assert_eq!(generation, 7);
                 assert_eq!(scene.index, 3);
                 assert_eq!(scene.name, "Bridge");
             }
@@ -377,7 +379,7 @@ mod tests {
 
         let bus = AppEventBus::new(16);
         let mut rx = bus.subscribe();
-        let mut state = ActorState::new(bus.clone());
+        let mut state = ActorState::new(bus.clone(), 0);
 
         // Declares one channel record but carries none.
         handle_message(
@@ -411,7 +413,7 @@ mod tests {
     #[test]
     fn balance_message_does_not_change_mono_channel_balance() {
         let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus);
+        let mut state = ActorState::new(bus, 0);
         state.channels = vec![ChannelInfo {
             group: 0,
             channel: 0,
@@ -442,7 +444,7 @@ mod tests {
     #[tokio::test]
     async fn scene_list_message_emits_tracing_diagnostic() {
         let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus);
+        let mut state = ActorState::new(bus, 0);
 
         handle_message(
             &mut state,
@@ -462,7 +464,7 @@ mod tests {
     #[test]
     fn track_pan_message_updates_matching_channel() {
         let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus);
+        let mut state = ActorState::new(bus, 0);
         state.channels = vec![ChannelInfo {
             group: 0,
             channel: 0,
@@ -493,7 +495,7 @@ mod tests {
     #[test]
     fn balance_message_updates_matching_channel() {
         let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus);
+        let mut state = ActorState::new(bus, 0);
         state.channels = vec![ChannelInfo {
             group: 0,
             channel: 0,
@@ -524,7 +526,7 @@ mod tests {
     #[test]
     fn inactive_pan_arc_width_is_ignored() {
         let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus);
+        let mut state = ActorState::new(bus, 0);
         state.channels = vec![ChannelInfo {
             group: 0,
             channel: 0,
@@ -556,7 +558,7 @@ mod tests {
     #[test]
     fn active_pan_arc_width_updates_matching_channel() {
         let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus);
+        let mut state = ActorState::new(bus, 0);
         state.channels = vec![ChannelInfo {
             group: 0,
             channel: 0,

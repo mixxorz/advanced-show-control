@@ -13,19 +13,24 @@ use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
-pub fn spawn_engine(command_bus: AppCommandBus, event_bus: AppEventBus) -> FadeEngineHandle {
+pub fn spawn_engine(
+    command_bus: AppCommandBus,
+    event_bus: AppEventBus,
+    generation: u64,
+) -> FadeEngineHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_engine(command_bus, event_bus, cmd_rx));
+    tokio::spawn(run_engine(command_bus, event_bus, generation, cmd_rx));
     FadeEngineHandle::new(cmd_tx)
 }
 
 async fn run_engine(
     command_bus: AppCommandBus,
     event_bus: AppEventBus,
+    generation: u64,
     mut cmd_rx: mpsc::Receiver<FadeCommand>,
 ) {
     let mut app_events = event_bus.subscribe();
-    let mut state = EngineState::new(event_bus.clone());
+    let mut state = EngineState::new(event_bus.clone(), generation);
     let mut tick_interval: Option<tokio::time::Interval> = None;
     let mut fade_completed_emitted = false;
 
@@ -578,7 +583,7 @@ mod tests {
         let lv1 = crate::lv1::handle::Lv1ActorHandle::new(tx);
         let bus = AppCommandBus::new();
         bus.set_lv1(Some(lv1)).await;
-        let engine = spawn_engine(bus.clone(), event_bus.clone());
+        let engine = spawn_engine(bus.clone(), event_bus.clone(), 0);
         bus.set_fade(Some(engine.clone())).await;
         (event_bus, engine, rx)
     }
@@ -705,7 +710,7 @@ mod tests {
     async fn pan_report_cancels_balance_and_width_when_pan_target_is_missing() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 7);
         let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
 
         state
@@ -742,7 +747,7 @@ mod tests {
         while let Ok(event) = events.try_recv() {
             match event {
                 AppEvent::Fade {
-                    generation: 0,
+                    generation: 7,
                     event:
                         FadeEvent::ChannelOverride {
                             group,
@@ -754,7 +759,7 @@ mod tests {
                     saw_override = true;
                 }
                 AppEvent::Fade {
-                    generation: 0,
+                    generation: 7,
                     event:
                         FadeEvent::ChannelCancelled {
                             group,
@@ -765,7 +770,7 @@ mod tests {
                     cancelled.insert((group, channel, parameter));
                 }
                 AppEvent::Fade {
-                    generation: 0,
+                    generation: 7,
                     event: FadeEvent::FadeCompleted,
                 } => {
                     panic!("unexpected FadeCompleted while unrelated target remains")
@@ -784,7 +789,7 @@ mod tests {
     async fn pan_report_completes_when_no_active_targets_remain() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 7);
         let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
 
         state
@@ -812,7 +817,7 @@ mod tests {
         while let Ok(event) = events.try_recv() {
             match event {
                 AppEvent::Fade {
-                    generation: 0,
+                    generation: 7,
                     event:
                         FadeEvent::ChannelOverride {
                             group,
@@ -824,7 +829,7 @@ mod tests {
                     saw_override = true;
                 }
                 AppEvent::Fade {
-                    generation: 0,
+                    generation,
                     event:
                         FadeEvent::ChannelCancelled {
                             group,
@@ -832,12 +837,16 @@ mod tests {
                             parameter,
                         },
                 } => {
+                    assert_eq!(generation, 7);
                     cancelled.insert((group, channel, parameter));
                 }
                 AppEvent::Fade {
-                    generation: 0,
+                    generation,
                     event: FadeEvent::FadeCompleted,
-                } => saw_fade_completed = true,
+                } => {
+                    assert_eq!(generation, 7);
+                    saw_fade_completed = true
+                }
                 _ => {}
             }
         }
@@ -852,7 +861,7 @@ mod tests {
     async fn one_out_of_threshold_pan_report_does_not_cancel_active_pan_family_targets() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
 
         state
@@ -924,7 +933,7 @@ mod tests {
     async fn in_threshold_pan_report_resets_override_confirmation() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
 
         state
@@ -1000,7 +1009,7 @@ mod tests {
     async fn pan_report_cancels_all_pan_family_targets_for_channel() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         let mut tick_interval = Some(tokio::time::interval(std::time::Duration::from_millis(40)));
         state
             .channels
@@ -1051,7 +1060,7 @@ mod tests {
         while let Ok(event) = events.try_recv() {
             match event {
                 AppEvent::Fade {
-                    generation: 0,
+                    generation: 7,
                     event:
                         FadeEvent::ChannelOverride {
                             group,
@@ -1170,7 +1179,7 @@ mod tests {
         let lv1 = crate::lv1::handle::Lv1ActorHandle::new(tx);
         let bus = AppCommandBus::new();
         bus.set_lv1(Some(lv1)).await;
-        let engine = spawn_engine(bus.clone(), event_bus.clone());
+        let engine = spawn_engine(bus.clone(), event_bus.clone(), 0);
         bus.set_fade(Some(engine.clone())).await;
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -1275,7 +1284,7 @@ mod tests {
             .await;
         bus.set_generation(3).await;
 
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         let result = handle_recall_scene_fade(
             &bus,
             &mut state,
@@ -1324,7 +1333,7 @@ mod tests {
             }
         });
 
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         let result = handle_recall_scene_fade(
             &bus,
             &mut state,
@@ -1372,7 +1381,7 @@ mod tests {
             }
         });
 
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
             key: FadeTarget {
                 group: 0,
@@ -1428,7 +1437,7 @@ mod tests {
     async fn complete_fade_is_idempotent() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus.clone());
+        let mut state = EngineState::new(event_bus.clone(), 0);
         let mut tick_interval = None;
         let mut emitted = false;
 
@@ -1476,7 +1485,7 @@ mod tests {
             }
         });
 
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
             key: FadeTarget {
                 group: 0,
@@ -1539,7 +1548,7 @@ mod tests {
             }
         });
 
-        let mut state = EngineState::new(AppEventBus::default());
+        let mut state = EngineState::new(AppEventBus::default(), 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
             key: FadeTarget {
                 group: 0,
@@ -1595,7 +1604,7 @@ mod tests {
         bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
             .await;
 
-        let mut state = EngineState::new(event_bus);
+        let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
             key: FadeTarget {
                 group: 0,
