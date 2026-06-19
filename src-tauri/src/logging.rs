@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs;
 use tauri::Runtime;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tracing::{Event, Level, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
@@ -42,7 +42,7 @@ pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
 
 pub struct LoggingRuntime {
     pub guard: WorkerGuard,
-    pub ui_logs: mpsc::Receiver<UiLogEvent>,
+    pub ui_logs: broadcast::Sender<UiLogEvent>,
 }
 
 pub fn init_logging<R: Runtime>(
@@ -73,8 +73,8 @@ pub fn init_logging<R: Runtime>(
         .event_format(BracketedFormat)
         .with_filter(LevelFilter::DEBUG);
 
-    let (ui_tx, ui_rx) = mpsc::channel(64);
-    let ui_layer = UiLogLayer { tx: ui_tx }.with_filter(LevelFilter::INFO);
+    let (ui_tx, _ui_rx) = broadcast::channel(64);
+    let ui_layer = UiLogLayer { tx: ui_tx.clone() }.with_filter(LevelFilter::INFO);
 
     tracing_subscriber::registry()
         .with(filter)
@@ -85,7 +85,7 @@ pub fn init_logging<R: Runtime>(
 
     Ok(LoggingRuntime {
         guard,
-        ui_logs: ui_rx,
+        ui_logs: ui_tx,
     })
 }
 
@@ -277,7 +277,7 @@ impl StdoutOscMessageVisitor {
 }
 
 struct UiLogLayer {
-    tx: mpsc::Sender<UiLogEvent>,
+    tx: broadcast::Sender<UiLogEvent>,
 }
 
 impl<S> tracing_subscriber::Layer<S> for UiLogLayer
@@ -295,24 +295,8 @@ where
             event.record(&mut visitor);
             if let Some(message) = visitor.ui_message() {
                 let ui_event = UiLogEvent { severity, message };
-                match self.tx.try_send(ui_event) {
-                    Ok(()) => {}
-                    Err(mpsc::error::TrySendError::Full(ui_event)) => {
-                        tracing::warn!(
-                            target: UI_SINK_TARGET,
-                            event = "ui_log_channel_full",
-                            severity = ?ui_event.severity,
-                            "UI log channel full; dropping UI log entry"
-                        );
-                    }
-                    Err(mpsc::error::TrySendError::Closed(ui_event)) => {
-                        tracing::error!(
-                            target: UI_SINK_TARGET,
-                            event = "ui_log_channel_closed",
-                            severity = ?ui_event.severity,
-                            "UI log channel closed; dropping UI log entry"
-                        );
-                    }
+                if self.tx.send(ui_event).is_err() {
+                    // No active projector is subscribed yet; logs are best-effort UI state.
                 }
             }
         }
@@ -563,7 +547,7 @@ mod tests {
 
     #[test]
     fn ui_layer_projects_safety_warn_event() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (tx, mut rx) = broadcast::channel(1);
         let subscriber = registry().with(UiLogLayer { tx });
 
         with_default(subscriber, || {
@@ -577,12 +561,12 @@ mod tests {
         let event = rt.block_on(async { rx.recv().await.unwrap() });
         assert_eq!(event.severity, LogSeverity::Warning);
         assert_eq!(event.message, "Scene recall blocked");
-        assert!(rt.block_on(async { rx.try_recv().is_err() }));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn ui_layer_projects_second_safety_warn_event_once() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (tx, mut rx) = broadcast::channel(1);
         let subscriber = registry().with(UiLogLayer { tx });
 
         with_default(subscriber, || {
@@ -593,12 +577,12 @@ mod tests {
         let event = rt.block_on(async { rx.recv().await.unwrap() });
         assert_eq!(event.severity, LogSeverity::Warning);
         assert_eq!(event.message, "Fade aborted");
-        assert!(rt.block_on(async { rx.try_recv().is_err() }));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]
     fn ui_layer_projects_command_failure_error_event() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (tx, mut rx) = broadcast::channel(1);
         let subscriber = registry().with(UiLogLayer { tx });
 
         with_default(subscriber, || {
@@ -609,7 +593,7 @@ mod tests {
         let event = rt.block_on(async { rx.recv().await.unwrap() });
         assert_eq!(event.severity, LogSeverity::Error);
         assert_eq!(event.message, "Command failed");
-        assert!(rt.block_on(async { rx.try_recv().is_err() }));
+        assert!(rx.try_recv().is_err());
     }
 
     #[test]

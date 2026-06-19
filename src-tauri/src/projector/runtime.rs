@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Runtime};
-use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::sync::{broadcast, oneshot};
 
 use crate::app_state::ShellState;
 use crate::lifecycle::ActiveCommandBus;
@@ -20,7 +20,7 @@ pub struct ProjectorInputs<R: Runtime> {
     pub active_command_bus: ActiveCommandBus,
     pub generation: u64,
     pub events: broadcast::Receiver<AppEvent>,
-    pub logs: mpsc::Receiver<UiLogEvent>,
+    pub logs: broadcast::Receiver<UiLogEvent>,
     pub start_rx: oneshot::Receiver<()>,
 }
 
@@ -78,11 +78,14 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
                 }
                 received = logs.recv() => {
                     match received {
-                        Some(ui_log) => {
+                        Ok(ui_log) => {
                             cache.append_log(ui_log);
                             dirty = true;
                         }
-                        None => break,
+                        Err(broadcast::error::RecvError::Lagged(_count)) => {
+                            dirty = true;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
                     }
                 }
             }
@@ -153,7 +156,7 @@ mod tests {
         active_command_bus: ActiveCommandBus,
         generation: u64,
         events: broadcast::Receiver<AppEvent>,
-        logs: mpsc::Receiver<UiLogEvent>,
+        logs: broadcast::Receiver<UiLogEvent>,
     ) -> tokio::task::JoinHandle<()> {
         let (start_tx, start_rx) = oneshot::channel();
         let projector = spawn_projector(ProjectorInputs {
@@ -176,7 +179,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
         let active_command_bus = ActiveCommandBus::default();
-        let (log_tx, log_rx) = mpsc::channel(8);
+        let (log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
         handle.listen_any("app-status-changed", move |event| {
@@ -199,7 +202,6 @@ mod tests {
                 severity: LogSeverity::Warning,
                 message: "projected log".to_string(),
             })
-            .await
             .unwrap();
         tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
 
@@ -231,7 +233,7 @@ mod tests {
         let state = ShellState::new(event_bus.clone());
         state.show.set_lockout(true).await;
         let active_command_bus = ActiveCommandBus::default();
-        let (_log_tx, log_rx) = mpsc::channel(8);
+        let (_log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
         handle.listen_any("app-status-changed", move |event| {
@@ -266,7 +268,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
         let active_command_bus = ActiveCommandBus::default();
-        let (_log_tx, log_rx) = mpsc::channel(8);
+        let (_log_tx, log_rx) = broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
         handle.listen_any("app-status-changed", move |event| {

@@ -132,10 +132,8 @@ impl ProjectionCache {
             FadeEvent::FadeCompleted | FadeEvent::FadeAborted => {
                 self.fade_state = AppFadeState::Idle
             }
-            FadeEvent::ChannelCompleted { .. } => {}
-            FadeEvent::ChannelOverride { .. } | FadeEvent::ChannelCancelled { .. } => {
-                self.fade_state = AppFadeState::Blocked
-            }
+            FadeEvent::ChannelCompleted { .. } | FadeEvent::ChannelCancelled { .. } => {}
+            FadeEvent::ChannelOverride { .. } => self.fade_state = AppFadeState::Blocked,
             FadeEvent::WriteFailed { .. } => {}
         }
     }
@@ -378,6 +376,23 @@ mod tests {
         assert_eq!(
             cache.build_snapshot(empty_show()).fade_state,
             AppFadeState::Idle
+        );
+    }
+
+    #[test]
+    fn cache_keeps_fade_state_when_channel_cancelled() {
+        let mut cache = ProjectionCache::new();
+
+        cache.apply_fade_event(&FadeEvent::FadeStarted);
+        cache.apply_fade_event(&FadeEvent::ChannelCancelled {
+            group: 1,
+            channel: 1,
+            parameter: FadeParameter::FaderDb,
+        });
+
+        assert_eq!(
+            cache.build_snapshot(empty_show()).fade_state,
+            AppFadeState::Running
         );
     }
 

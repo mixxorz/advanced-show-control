@@ -933,7 +933,7 @@ async fn install_connected_runtime<R: Runtime>(
         active_command_bus: lifecycle.command_bus_holder(),
         generation,
         events,
-        logs: take_ui_log_receiver(app)?,
+        logs: ui_log_receiver(app)?,
         start_rx: projector_start_rx,
     }));
 
@@ -959,16 +959,10 @@ fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     }
 }
 
-fn take_ui_log_receiver<R: Runtime>(
+fn ui_log_receiver<R: Runtime>(
     app: &AppHandle<R>,
-) -> Result<tokio::sync::mpsc::Receiver<crate::logging::UiLogEvent>, String> {
-    let state = app.state::<UiLogReceiverState>();
-    let mut guard = state
-        .lock()
-        .map_err(|_| "Failed to access UI log receiver".to_string())?;
-    guard
-        .take()
-        .ok_or_else(|| "UI log receiver is already attached to the projector".to_string())
+) -> Result<tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>, String> {
+    Ok(app.state::<UiLogReceiverState>().subscribe())
 }
 
 async fn save_show_file_to_path(
@@ -1038,9 +1032,9 @@ mod tests {
 
     fn manage_ui_log_receiver<R: Runtime>(
         app: &tauri::App<R>,
-    ) -> tokio::sync::mpsc::Sender<crate::logging::UiLogEvent> {
-        let (tx, rx) = tokio::sync::mpsc::channel(8);
-        app.manage(UiLogReceiverState::new(Some(rx)));
+    ) -> tokio::sync::broadcast::Sender<crate::logging::UiLogEvent> {
+        let (tx, _rx) = tokio::sync::broadcast::channel(8);
+        app.manage(tx.clone());
         tx
     }
 
@@ -1050,7 +1044,7 @@ mod tests {
         active_command_bus: ActiveCommandBus,
         generation: u64,
         events: tokio::sync::broadcast::Receiver<AppEvent>,
-        logs: tokio::sync::mpsc::Receiver<crate::logging::UiLogEvent>,
+        logs: tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>,
     ) -> tokio::task::JoinHandle<()> {
         let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
@@ -1073,7 +1067,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let state = ShellState::new(event_bus.clone());
         let active_command_bus = ActiveCommandBus::default();
-        let (log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let (log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
         let received_events = received.clone();
         handle.listen_any("app-status-changed", move |event| {
@@ -1101,7 +1095,6 @@ mod tests {
                 severity: crate::app_state::LogSeverity::Info,
                 message: "runtime projector log".to_string(),
             })
-            .await
             .unwrap();
         tokio::time::sleep(
             crate::projector::PROJECTOR_INTERVAL + std::time::Duration::from_millis(60),
@@ -1543,7 +1536,7 @@ mod tests {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
         let event_bus = AppEventBus::default();
-        let (_log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let projector = spawn_started_projector(
             handle,
             state,
@@ -2042,7 +2035,7 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::default();
-        let (_log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let projector = spawn_started_projector(
             handle,
             state,
@@ -2117,7 +2110,7 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::new(4);
-        let (_log_tx, log_rx) = tokio::sync::mpsc::channel(8);
+        let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let projector = spawn_started_projector(
             handle,
             state,
@@ -2258,5 +2251,47 @@ mod tests {
         let mut handles = state.handles.lock().await;
         assert!(handles.scene_recall_fader.is_some());
         handles.abort_all().await;
+    }
+
+    #[tokio::test]
+    async fn connected_runtime_can_install_projector_after_previous_runtime_aborts() {
+        let app = mock_app();
+        let _log_tx = manage_ui_log_receiver(&app);
+        let handle = app.handle().clone();
+        let state = ShellState::default();
+        let lifecycle = AppLifecycle::default();
+
+        for _ in 0..2 {
+            let (generation, _) = state.begin_connecting().await;
+            let initial_snapshot = state
+                .begin_connection(
+                    generation,
+                    Lv1StateSnapshot {
+                        connection: ConnectionStatus::Connected,
+                        scene: None,
+                        scene_list: Vec::new(),
+                        channels: Vec::new(),
+                    },
+                )
+                .await
+                .expect("current generation should accept the initial snapshot");
+
+            install_connected_runtime(
+                &handle,
+                &state,
+                state.clone(),
+                generation,
+                initial_snapshot,
+                AppEventBus::default().subscribe(),
+                RuntimeHandles::default(),
+                &lifecycle,
+            )
+            .await
+            .expect("connected runtime should install successfully");
+
+            state
+                .clear_runtime_handles(generation, &lifecycle.command_bus_holder())
+                .await;
+        }
     }
 }

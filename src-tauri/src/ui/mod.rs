@@ -8,11 +8,11 @@ use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use crate::runtime::events::AppEventBus;
 use tauri::Manager;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 
 pub mod commands;
 
-pub type UiLogReceiverState = std::sync::Mutex<Option<mpsc::Receiver<logging::UiLogEvent>>>;
+pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     let event_bus = AppEventBus::default();
@@ -22,7 +22,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
         .setup(|app| {
             let logging_runtime = logging::init_logging(app.handle())?;
             app.manage(logging_runtime.guard);
-            app.manage(std::sync::Mutex::new(Some(logging_runtime.ui_logs)));
+            app.manage(logging_runtime.ui_logs);
             tracing::info!(event = "app_started", "Starting Advanced Show Control");
             Ok(())
         })

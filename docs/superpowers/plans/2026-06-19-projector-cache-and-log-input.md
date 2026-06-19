@@ -6,7 +6,7 @@
 
 **Architecture:** Create a focused `projector/` module that owns projection cache state, applies LV1/fade events, treats show events as stale-show notifications, owns UI log cache, and emits `app-status-changed` at the existing 10 Hz cadence. Logging keeps using `tracing`, but its UI sink sends `UiLogEvent` into the projector instead of appending logs and emitting snapshots itself. Direct command-return snapshots and command direct emits remain transitional and are explicitly deferred to phase 14/15.
 
-**Tech Stack:** Rust, Tauri, Tokio, `tokio::sync::broadcast` for `AppEventBus`, `tokio::sync::mpsc` for UI log input, existing `AppViewState`, `ShellState`, `ShowStateHandle`, and `tracing`.
+**Tech Stack:** Rust, Tauri, Tokio, `tokio::sync::broadcast` for `AppEventBus` and reusable UI log input subscriptions, existing `AppViewState`, `ShellState`, `ShowStateHandle`, and `tracing`.
 
 ## Global Constraints
 
@@ -24,6 +24,8 @@
 - Preserve frontend `AppViewState` schema.
 - Preserve Tauri command names and existing React command behavior.
 - Preserve `lv1-probe` buildability.
+
+Execution note: the final logging input implementation uses a reusable `tokio::sync::broadcast::Sender<UiLogEvent>` managed by the Tauri app so each connected-runtime projector can subscribe after disconnect/reconnect. A single `mpsc::Receiver` is intentionally not used because it is single-use and would break subsequent runtime installs.
 
 ---
 
