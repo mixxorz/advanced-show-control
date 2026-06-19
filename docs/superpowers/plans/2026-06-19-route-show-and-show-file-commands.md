@@ -1120,7 +1120,15 @@ pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ShowFile { ... }
+pub struct ShowFile {
+    pub schema_version: u32,
+    pub app_version: String,
+    pub saved_at: String,
+    pub safety: ShowFileSafety,
+    pub scene_configs: Vec<ShowFileSceneConfig>,
+    #[serde(default)]
+    pub cued_scene_id: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1128,7 +1136,15 @@ pub struct ShowFileSafety { pub lockout: bool }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ShowFileSceneConfig { ... }
+pub struct ShowFileSceneConfig {
+    pub scene_index: i32,
+    pub scene_name: String,
+    pub duration_ms: u64,
+    pub channel_configs: Vec<ShowFileChannelConfig>,
+    pub scoped_channels: Vec<ShowFileChannelRef>,
+    #[serde(default)]
+    pub scope_toggles: ShowFileSceneScopeToggles,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -1137,7 +1153,15 @@ pub struct ShowFileSceneScopeToggles { pub faders: bool, pub pan: bool }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelConfig { ... }
+pub struct ShowFileChannelConfig {
+    pub group: i32,
+    pub channel: i32,
+    pub fader_db: Option<f64>,
+    pub pan: Option<f64>,
+    pub balance: Option<f64>,
+    pub width: Option<f64>,
+    pub pan_mode: Option<crate::lv1::types::PanMode>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
