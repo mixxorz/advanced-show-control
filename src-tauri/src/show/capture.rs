@@ -79,7 +79,7 @@ impl ShowState {
                 .unwrap_or_default(),
         };
         match self
-            .scene_configs
+            .scene_configs_mut()
             .iter_mut()
             .find(|scene| scene.scene_id == scene_id)
         {
@@ -92,7 +92,7 @@ impl ShowState {
                 }
             }
             None => {
-                self.scene_configs.push(snapshot);
+                self.scene_configs_mut().push(snapshot);
                 Ok(true)
             }
         }

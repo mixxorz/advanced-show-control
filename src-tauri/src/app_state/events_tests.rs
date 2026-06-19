@@ -361,12 +361,7 @@ async fn channel_topology_projection_does_not_append_ui_log() {
 
 #[test]
 fn scene_list_reconciliation_creates_default_configs() {
-    let mut state = crate::show::state::ShowState {
-        lockout: false,
-        scene_configs: Vec::new(),
-        cued_scene_id: None,
-        ..Default::default()
-    };
+    let mut state = crate::show::state::ShowState::default();
     assert!(state.reconcile_scene_fade_configs(&[
         SceneListEntry {
             index: 1,
@@ -378,39 +373,36 @@ fn scene_list_reconciliation_creates_default_configs() {
         },
     ]));
 
-    assert_eq!(state.scene_configs.len(), 2);
-    assert_eq!(state.scene_configs[0].scene_id, "1::Intro");
-    assert_eq!(state.scene_configs[0].scene_index, 1);
-    assert_eq!(state.scene_configs[0].scene_name, "Intro");
-    assert_eq!(state.scene_configs[0].duration_ms, 0);
-    assert!(state.scene_configs[0].channel_configs.is_empty());
-    assert!(state.scene_configs[0].scoped_channels.is_empty());
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.scene_configs.len(), 2);
+    assert_eq!(snapshot.scene_configs[0].scene_id, "1::Intro");
+    assert_eq!(snapshot.scene_configs[0].scene_index, 1);
+    assert_eq!(snapshot.scene_configs[0].scene_name, "Intro");
+    assert_eq!(snapshot.scene_configs[0].duration_ms, 0);
+    assert!(snapshot.scene_configs[0].channel_configs.is_empty());
+    assert!(snapshot.scene_configs[0].scoped_channels.is_empty());
 }
 
 #[test]
 fn scene_list_reconciliation_preserves_matching_config_data() {
-    let mut state = crate::show::state::ShowState {
-        lockout: false,
-        scene_configs: vec![scene_config(
-            2,
-            "Verse",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 4,
-                fader_db: Some(-5.5),
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 4,
-            }],
-        )],
-        cued_scene_id: None,
-        ..Default::default()
-    };
+    let mut state = crate::show::state::ShowState::default();
+    state.scene_configs_mut().push(scene_config(
+        2,
+        "Verse",
+        vec![ChannelConfig {
+            group: 0,
+            channel: 4,
+            fader_db: Some(-5.5),
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }],
+        vec![ChannelRef {
+            group: 0,
+            channel: 4,
+        }],
+    ));
 
     assert!(state.reconcile_scene_fade_configs(&[
         SceneListEntry {
@@ -423,7 +415,8 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
         },
     ]));
 
-    let verse = state
+    let snapshot = state.snapshot();
+    let verse = snapshot
         .scene_configs
         .iter()
         .find(|scene| scene.scene_id == "2::Verse")
@@ -437,42 +430,39 @@ fn scene_list_reconciliation_preserves_matching_config_data() {
     assert_eq!(verse.scoped_channels.len(), 1);
     assert_eq!(verse.scoped_channels[0].group, 0);
     assert_eq!(verse.scoped_channels[0].channel, 4);
-    assert_eq!(state.scene_configs.len(), 2);
+    assert_eq!(snapshot.scene_configs.len(), 2);
 }
 
 #[test]
 fn scene_reconciliation_marks_loaded_show_dirty_when_scene_removed() {
-    let mut state = crate::show::state::ShowState {
-        lockout: false,
-        scene_configs: vec![scene_config(
-            1,
-            "Intro",
-            vec![ChannelConfig {
-                group: 0,
-                channel: 2,
-                fader_db: Some(-5.0),
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            }],
-            vec![ChannelRef {
-                group: 0,
-                channel: 2,
-            }],
-        )],
-        cued_scene_id: None,
-        ..Default::default()
-    };
+    let mut state = crate::show::state::ShowState::default();
+    state.scene_configs_mut().push(scene_config(
+        1,
+        "Intro",
+        vec![ChannelConfig {
+            group: 0,
+            channel: 2,
+            fader_db: Some(-5.0),
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }],
+        vec![ChannelRef {
+            group: 0,
+            channel: 2,
+        }],
+    ));
 
     assert!(state.reconcile_scene_fade_configs(&[SceneListEntry {
         index: 2,
         name: "Verse".to_string()
     }]));
-    assert_eq!(state.scene_configs.len(), 1);
-    assert_eq!(state.scene_configs[0].scene_id, "2::Verse");
-    assert!(state.scene_configs[0].channel_configs.is_empty());
-    assert!(state.scene_configs[0].scoped_channels.is_empty());
+    let snapshot = state.snapshot();
+    assert_eq!(snapshot.scene_configs.len(), 1);
+    assert_eq!(snapshot.scene_configs[0].scene_id, "2::Verse");
+    assert!(snapshot.scene_configs[0].channel_configs.is_empty());
+    assert!(snapshot.scene_configs[0].scoped_channels.is_empty());
 }
 
 #[tokio::test]

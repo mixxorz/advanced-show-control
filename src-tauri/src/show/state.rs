@@ -188,21 +188,29 @@ fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneLi
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
-    pub(crate) lockout: bool,
-    pub(crate) scene_configs: Vec<SceneConfig>,
-    pub(crate) cued_scene_id: Option<String>,
-    pub(crate) selected_scene_id: Option<String>,
-    pub(crate) show_file_path: Option<std::path::PathBuf>,
-    pub(crate) show_file_dirty: bool,
-    pub(crate) show_file_last_saved_at: Option<String>,
-    pub(crate) discovered_lv1_systems: Vec<DiscoveredLv1System>,
-    pub(crate) connected_lv1_identity: Option<Lv1SystemIdentity>,
-    pub(crate) pending_lv1_identity: Option<Lv1SystemIdentity>,
-    pub(crate) reconnect: ReconnectState,
-    pub(crate) last_event_at: Option<String>,
+    lockout: bool,
+    scene_configs: Vec<SceneConfig>,
+    cued_scene_id: Option<String>,
+    selected_scene_id: Option<String>,
+    show_file_path: Option<std::path::PathBuf>,
+    show_file_dirty: bool,
+    show_file_last_saved_at: Option<String>,
+    discovered_lv1_systems: Vec<DiscoveredLv1System>,
+    connected_lv1_identity: Option<Lv1SystemIdentity>,
+    pending_lv1_identity: Option<Lv1SystemIdentity>,
+    reconnect: ReconnectState,
+    last_event_at: Option<String>,
 }
 
 impl ShowState {
+    pub(crate) fn lockout(&self) -> bool {
+        self.lockout
+    }
+
+    pub(crate) fn scene_configs_mut(&mut self) -> &mut Vec<SceneConfig> {
+        &mut self.scene_configs
+    }
+
     pub fn snapshot(&self) -> ShowSnapshot {
         ShowSnapshot {
             lockout: self.lockout,

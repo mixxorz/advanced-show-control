@@ -49,7 +49,7 @@ impl ShowStateHandle {
     }
 
     pub async fn get_lockout(&self) -> bool {
-        self.state.lock().await.lockout
+        self.state.lock().await.lockout()
     }
 
     #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.
