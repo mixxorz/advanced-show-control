@@ -92,7 +92,11 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
 
 fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &crate::app_state::AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
-        eprintln!("failed to emit app-status-changed: {err}");
+        tracing::debug!(
+            event = "projector_emit_failed",
+            error = %err,
+            "failed to emit app-status-changed from projector"
+        );
     }
 }
 
@@ -242,5 +246,44 @@ mod tests {
         projector.abort();
         let snapshots = received.lock().unwrap();
         assert!(snapshots.iter().any(|snapshot| snapshot["lockout"] == true));
+    }
+
+    #[tokio::test]
+    async fn unchanged_events_are_coalesced_into_one_snapshot_per_tick() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let state = ShellState::new(event_bus.clone());
+        let active_command_bus = ActiveCommandBus::default();
+        let (_log_tx, log_rx) = mpsc::channel(8);
+        let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received_events = received.clone();
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            received_events.lock().unwrap().push(payload);
+        });
+
+        let projector = spawn_started_projector(
+            handle,
+            state,
+            active_command_bus,
+            0,
+            event_bus.subscribe(),
+            log_rx,
+        );
+
+        let event = AppEvent::Show(ShowEvent::SnapshotChanged {
+            reason: ShowSnapshotChange::Lockout,
+        });
+        event_bus.publish(event.clone());
+        event_bus.publish(event);
+
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+
+        projector.abort();
+        let snapshots = received.lock().unwrap();
+        assert_eq!(snapshots.len(), 1);
     }
 }
