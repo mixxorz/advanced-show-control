@@ -212,6 +212,17 @@ mod tests {
         }));
     }
 
+    #[test]
+    fn projector_runtime_is_the_log_projection_emit_owner() {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let logging_source = std::fs::read_to_string(manifest_dir.join("src/logging.rs")).unwrap();
+        let projector_source =
+            std::fs::read_to_string(manifest_dir.join("src/projector/runtime.rs")).unwrap();
+
+        assert!(!logging_source.contains("app.emit(\"app-status-changed\""));
+        assert!(projector_source.contains("app.emit(\"app-status-changed\""));
+    }
+
     #[tokio::test]
     async fn show_event_marks_cache_dirty_and_pulls_show_snapshot() {
         let app = mock_app();

@@ -40,7 +40,7 @@ The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcast
 
 Low-risk show/app mutations, show-file import/export mapping, and UI-requested recall validation/dispatch route through `AppCommandBus`. The `show/` module owns show-file DTOs, schema version, import/export mapping, pruning, validation against LV1 scene snapshots, and the UI-requested recall use case. The Tauri adapter still owns native dialogs and filesystem read/write plumbing, and it still returns/directly emits `AppViewState` snapshots until the projector-only and frontend command-contract phases remove that temporary behavior.
 
-Projector cache, logging projection, React command-result cleanup, `ShellState` removal, and `ActiveCommandBus` removal are still pending later phases.
+React command-result cleanup, `ShellState` removal, and `ActiveCommandBus` removal are still pending later phases. Projector-only `app-status-changed` emission is also pending: direct command emits remain transitional, but logging no longer emits `app-status-changed` directly.
 
 ## Core Ownership
 
