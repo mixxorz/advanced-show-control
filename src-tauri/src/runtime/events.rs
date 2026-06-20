@@ -2,7 +2,7 @@ use tokio::sync::broadcast;
 
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
-use crate::scene_recall::events::SceneRecallEvent;
+use crate::scene_recall::SceneRecallEvent;
 use crate::show::ShowEvent;
 
 #[derive(Debug, Clone)]
@@ -174,7 +174,7 @@ mod tests {
 
         let sent = bus.publish(AppEvent::SceneRecall {
             generation: 0,
-            event: crate::scene_recall::events::SceneRecallEvent::Skipped {
+            event: crate::scene_recall::SceneRecallEvent::Skipped {
                 scene_label: "1: Intro".to_string(),
                 reason: "test".to_string(),
             },

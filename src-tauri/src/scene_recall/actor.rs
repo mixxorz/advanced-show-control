@@ -1,4 +1,4 @@
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::{FadeCommand, FadeEngineHandle};
 use crate::lv1::{
@@ -6,6 +6,9 @@ use crate::lv1::{
 };
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use crate::scene_recall::SceneRecallEvent;
+use crate::scene_recall::commands::SceneRecallCommand;
+use crate::scene_recall::handle::SceneRecallFaderHandle;
 use crate::scene_recall::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scene_recall::state::SceneRecallState;
 
@@ -33,8 +36,9 @@ pub fn spawn_scene_recall_fader(
     lv1: Lv1ActorHandle,
     fade: FadeEngineHandle,
     event_bus: AppEventBus,
-) -> tokio::task::JoinHandle<()> {
+) -> SceneRecallFaderHandle {
     let mut events = event_bus.subscribe();
+    let (command_tx, mut command_rx) = mpsc::channel(8);
 
     tokio::spawn(async move {
         let mut recall_state = SceneRecallState::default();
@@ -57,6 +61,11 @@ pub fn spawn_scene_recall_fader(
         loop {
             if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
                 tokio::select! {
+                    command = command_rx.recv() => {
+                        match command {
+                            Some(SceneRecallCommand::Shutdown) | None => break,
+                        }
+                    }
                     event = events.recv() => {
                         match event {
                             Ok(AppEvent::Lv1 { event: Lv1Event::SceneListChanged(scene_list), .. }) => {
@@ -89,30 +98,41 @@ pub fn spawn_scene_recall_fader(
                 continue;
             }
 
-            match events.recv().await {
-                Ok(AppEvent::Lv1 {
-                    event: Lv1Event::SceneListChanged(scene_list),
-                    ..
-                }) => {
-                    recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
+            tokio::select! {
+                command = command_rx.recv() => {
+                    match command {
+                        Some(SceneRecallCommand::Shutdown) | None => break,
+                    }
                 }
-                Ok(AppEvent::Lv1 {
-                    event: Lv1Event::SceneChanged(scene),
-                    ..
-                }) => {
-                    pending_scene = Some(PendingSceneObservation::new(
-                        scene,
-                        tokio::time::Instant::now(),
-                    ));
+                event = events.recv() => {
+                    match event {
+                        Ok(AppEvent::Lv1 {
+                            event: Lv1Event::SceneListChanged(scene_list),
+                            ..
+                        }) => {
+                            recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
+                        }
+                        Ok(AppEvent::Lv1 {
+                            event: Lv1Event::SceneChanged(scene),
+                            ..
+                        }) => {
+                            pending_scene = Some(PendingSceneObservation::new(
+                                scene,
+                                tokio::time::Instant::now(),
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                            log_lagged_subscriber("scene-recall", count);
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    log_lagged_subscriber("scene-recall", count);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
         }
-    })
+    });
+
+    SceneRecallFaderHandle::new(command_tx)
 }
 
 async fn is_generation_current(expected: u64, command_bus: &AppCommandBus) -> bool {
@@ -156,7 +176,7 @@ async fn process_scene_observation(
             }
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("LV1 state is unavailable: {err}"),
                 },
@@ -179,7 +199,7 @@ async fn process_scene_observation(
             }
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("failed to fetch scene config: {err}"),
                 },
@@ -196,7 +216,7 @@ async fn process_scene_observation(
             }
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                SceneRecallEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
                     reason: format!("failed to fetch lockout: {err}"),
                 },
@@ -220,14 +240,14 @@ async fn process_scene_observation(
             tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::Ready {
+                SceneRecallEvent::Ready {
                     scene_label: scene_label.clone(),
                     target_count: fade_config.targets.len(),
                 },
             );
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::StartRequested {
+                SceneRecallEvent::StartRequested {
                     scene_label: scene_label.clone(),
                 },
             );
@@ -257,7 +277,7 @@ async fn process_scene_observation(
                 Err(err) => {
                     event_bus.publish_scene_recall(
                         generation,
-                        crate::scene_recall::events::SceneRecallEvent::Blocked {
+                        SceneRecallEvent::Blocked {
                             scene_label,
                             reason: format!("failed to start fade: {err:?}"),
                         },
@@ -271,7 +291,7 @@ async fn process_scene_observation(
             }
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::Skipped {
+                SceneRecallEvent::Skipped {
                     scene_label: scene_label(&observation.scene),
                     reason,
                 },
@@ -290,7 +310,7 @@ async fn process_scene_observation(
             );
             event_bus.publish_scene_recall(
                 generation,
-                crate::scene_recall::events::SceneRecallEvent::Blocked {
+                SceneRecallEvent::Blocked {
                     scene_label,
                     reason,
                 },
@@ -459,7 +479,7 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -489,8 +509,22 @@ mod tests {
 
         assert!(next_blocked_scene_recall_event(&mut events).await);
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scene_recall_handle_sends_shutdown_command() {
+        let event_bus = AppEventBus::default();
+        let command_bus = AppCommandBus::new();
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let handle = spawn_scene_recall_fader(1, command_bus, lv1, fade, event_bus);
+
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -546,7 +580,7 @@ mod tests {
             "StartRequested published despite stale generation"
         );
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -588,7 +622,7 @@ mod tests {
             "fade started despite generation flip before dispatch"
         );
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -639,7 +673,7 @@ mod tests {
 
         assert_eq!(fade_starts.load(Ordering::SeqCst), 1);
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -687,7 +721,7 @@ mod tests {
         assert_eq!(fade_starts.load(Ordering::SeqCst), 0);
         assert_no_scene_recall_event(&mut events).await;
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -737,7 +771,7 @@ mod tests {
         assert_eq!(fade_starts.load(Ordering::SeqCst), 0);
         assert_no_scene_recall_event(&mut events).await;
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -787,7 +821,7 @@ mod tests {
         assert_eq!(fade_starts.load(Ordering::SeqCst), 0);
         assert_no_scene_recall_event(&mut events).await;
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -838,7 +872,7 @@ mod tests {
         );
         assert_eq!(fade_starts.load(Ordering::SeqCst), 1);
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -910,7 +944,7 @@ mod tests {
         assert_eq!(fade_starts.load(Ordering::SeqCst), 1);
         assert_no_scene_recall_event(&mut events).await;
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -957,7 +991,7 @@ mod tests {
         ));
         assert_eq!(fade_starts.load(Ordering::SeqCst), 0);
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 
@@ -1006,7 +1040,7 @@ mod tests {
         ));
         assert_eq!(fade_starts.load(Ordering::SeqCst), 0);
 
-        handle.abort();
+        handle.send(SceneRecallCommand::Shutdown).await.unwrap();
         server.await.unwrap();
     }
 

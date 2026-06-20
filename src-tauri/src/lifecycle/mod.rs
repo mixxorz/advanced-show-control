@@ -11,7 +11,7 @@ use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, spawn_actor};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
-use crate::scene_recall::spawn_scene_recall_fader;
+use crate::scene_recall::{SceneRecallFaderHandle, spawn_scene_recall_fader};
 use crate::show::{
     ConnectCommandResult, ShowCommandResult, ShowStateHandle, spawn_lv1_scene_list_monitor,
 };
@@ -20,7 +20,7 @@ use crate::show::{
 pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
-    pub scene_recall_fader: Option<JoinHandle<()>>,
+    pub scene_recall_fader: Option<SceneRecallFaderHandle>,
     pub show_scene_list_monitor: Option<JoinHandle<()>>,
 }
 
@@ -34,9 +34,7 @@ impl RuntimeHandles {
     }
 
     pub fn abort_all(&mut self) {
-        if let Some(handle) = self.scene_recall_fader.take() {
-            handle.abort();
-        }
+        self.scene_recall_fader = None;
         if let Some(handle) = self.show_scene_list_monitor.take() {
             handle.abort();
         }
@@ -169,14 +167,10 @@ impl AppLifecycle {
             .publish_runtime_generation_changed(generation);
     }
 
-    async fn install_scene_recall_fader(&self, generation: u64, handle: JoinHandle<()>) {
+    async fn install_scene_recall_fader(&self, generation: u64, handle: SceneRecallFaderHandle) {
         let mut inner = self.inner.lock().await;
         if inner.generation == generation {
-            if let Some(previous) = inner.handles.scene_recall_fader.replace(handle) {
-                previous.abort();
-            }
-        } else {
-            handle.abort();
+            inner.handles.scene_recall_fader = Some(handle);
         }
     }
 

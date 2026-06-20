@@ -1,9 +1,11 @@
-pub mod actor;
-pub mod events;
-pub mod policy;
-pub mod state;
+mod actor;
+mod commands;
+mod events;
+mod handle;
+mod policy;
+mod state;
 
 pub use actor::spawn_scene_recall_fader;
+pub use commands::SceneRecallCommand;
 pub use events::SceneRecallEvent;
-pub use policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
-pub use state::SceneRecallState;
+pub use handle::SceneRecallFaderHandle;
