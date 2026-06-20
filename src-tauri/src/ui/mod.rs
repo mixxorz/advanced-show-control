@@ -30,28 +30,28 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            commands::frontend_ready,
-            commands::refresh_lv1_discovery,
-            commands::new_show_file,
-            commands::open_show_file_dialog,
-            commands::save_show_file,
-            commands::save_show_file_as_dialog,
-            commands::set_scene_duration_ms,
-            commands::select_scene_config,
-            commands::cue_scene,
-            commands::recall_scene,
-            commands::connect_lv1_system,
-            commands::attempt_reconnect_lv1,
-            commands::startup_auto_connect_lv1,
-            commands::disconnect_lv1,
-            commands::reconnect_timed_out,
-            commands::abort_all_fades,
-            commands::store_scene_config,
-            commands::set_channel_scoped,
-            commands::set_all_channels_scoped,
-            commands::set_scene_scope_faders_enabled,
-            commands::set_scene_scope_pan_enabled,
-            commands::set_lockout,
+            commands::lifecycle::frontend_ready,
+            commands::show::refresh_lv1_discovery,
+            commands::show::new_show_file,
+            commands::show::open_show_file_dialog,
+            commands::show::save_show_file,
+            commands::show::save_show_file_as_dialog,
+            commands::show::set_scene_duration_ms,
+            commands::show::select_scene_config,
+            commands::show::cue_scene,
+            commands::scene_recall::recall_scene,
+            commands::lifecycle::connect_lv1_system,
+            commands::lifecycle::attempt_reconnect_lv1,
+            commands::lifecycle::startup_auto_connect_lv1,
+            commands::lifecycle::disconnect_lv1,
+            commands::lifecycle::reconnect_timed_out,
+            commands::fade::abort_all_fades,
+            commands::show::store_scene_config,
+            commands::show::set_channel_scoped,
+            commands::show::set_all_channels_scoped,
+            commands::show::set_scene_scope_faders_enabled,
+            commands::show::set_scene_scope_pan_enabled,
+            commands::show::set_lockout,
         ])
 }
 
@@ -64,14 +64,14 @@ mod tests {
 
     #[test]
     fn command_adapter_exports_existing_command_names() {
-        let _ = super::commands::frontend_ready::<tauri::Wry>;
-        let _ = super::commands::disconnect_lv1;
-        let _ = super::commands::recall_scene;
-        let _ = super::commands::set_lockout;
+        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
+        let _ = super::commands::lifecycle::disconnect_lv1;
+        let _ = super::commands::scene_recall::recall_scene;
+        let _ = super::commands::show::set_lockout;
     }
 
     #[test]
     fn invoke_handler_includes_frontend_ready() {
-        let _ = super::commands::frontend_ready::<tauri::Wry>;
+        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
     }
 }
