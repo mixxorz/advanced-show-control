@@ -198,7 +198,6 @@ impl AppLifecycle {
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
-        initial_snapshot: crate::lv1::types::Lv1StateSnapshot,
     ) -> Result<crate::show::commands::ConnectCommandResult, String> {
         let event_bus = self.event_bus.clone();
         let command_bus = self.current_command_bus().await;
@@ -211,13 +210,16 @@ impl AppLifecycle {
         let fade =
             crate::fade::actor::spawn_engine(command_bus.clone(), event_bus.clone(), generation);
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
-        if self
-            .install_runtime_transaction(generation, handles)
-            .await
-            .is_err()
-        {
+        if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
+            let mut handles = rejection.into_handles();
+            handles.abort_all();
             return Err("generation is stale".to_string());
         }
+
+        let initial_snapshot = command_bus
+            .get_lv1_state()
+            .await
+            .map_err(|error| error.to_string())?;
 
         if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
@@ -786,6 +788,25 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(matches!(seen_rx.await, Ok(true)));
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_install_returns_abortable_handles() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let handles = RuntimeHandles::with_runtime_targets(lv1, fade);
+
+        let rejection = lifecycle
+            .install_runtime_transaction(1, handles)
+            .await
+            .expect_err("stale generation should reject the runtime install");
+
+        let mut handles = rejection.into_handles();
+        handles.abort_all();
     }
 
     #[tokio::test]
