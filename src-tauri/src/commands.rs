@@ -27,16 +27,19 @@ pub async fn get_app_status(state: State<'_, ShellState>) -> Result<AppViewState
 pub async fn refresh_lv1_discovery(
     app: AppHandle,
     state: State<'_, ShellState>,
+    lifecycle: State<'_, AppLifecycle>,
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
-    refresh_lv1_discovery_snapshot(app, (*state).clone(), timeout_ms).await
+    refresh_lv1_discovery_snapshot(app, (*state).clone(), &lifecycle, timeout_ms).await
 }
 
 async fn refresh_lv1_discovery_snapshot<R: Runtime>(
     app: AppHandle<R>,
     state: ShellState,
+    lifecycle: &AppLifecycle,
     timeout_ms: Option<u64>,
 ) -> Result<AppViewState, String> {
+    let _ = state;
     let started = std::time::Instant::now();
     let timeout = timeout_ms
         .unwrap_or(DEFAULT_DISCOVERY_TIMEOUT_MS)
@@ -61,7 +64,12 @@ async fn refresh_lv1_discovery_snapshot<R: Runtime>(
             status: crate::connection_state::DiscoveredLv1Status::Available,
         })
         .collect();
-    let snapshot = state.set_discovered_lv1_systems(systems).await;
+    let command_bus = lifecycle.current_command_bus().await;
+    command_bus
+        .set_discovered_lv1_systems(systems)
+        .await
+        .map_err(map_app_command_error)?;
+    let snapshot = state.snapshot().await;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -674,6 +682,7 @@ async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
         refresh_lv1_discovery_snapshot(
             app.clone(),
             state.clone(),
+            lifecycle,
             Some(DEFAULT_DISCOVERY_TIMEOUT_MS),
         )
         .await,
@@ -721,6 +730,7 @@ pub async fn startup_auto_connect_lv1(
         refresh_lv1_discovery_snapshot(
             app.clone(),
             (*state).clone(),
+            &lifecycle,
             Some(DEFAULT_DISCOVERY_TIMEOUT_MS),
         )
         .await,

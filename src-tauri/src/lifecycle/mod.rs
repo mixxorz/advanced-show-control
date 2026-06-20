@@ -8,10 +8,13 @@ use tokio::task::JoinHandle;
 
 use crate::fade::handle::FadeEngineHandle;
 use crate::logging::UiLogEvent;
+use crate::lv1::actor::spawn_actor;
 use crate::lv1::events::Lv1Event;
 use crate::lv1::handle::Lv1ActorHandle;
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+use crate::scene_recall::spawn_scene_recall_fader;
+use crate::show::commands::ShowCommandResult;
 use crate::show::handle::ShowStateHandle;
 
 #[derive(Default)]
@@ -50,6 +53,12 @@ impl RuntimeHandles {
 pub enum RuntimeInstallRejection {
     StaleGeneration { handles: RuntimeHandles },
     MissingRuntimeTargets { handles: RuntimeHandles },
+}
+
+#[derive(Clone, Copy)]
+pub enum ConnectFailureMode {
+    ClearConnectedIdentity,
+    PreserveConnectedIdentity,
 }
 
 impl RuntimeInstallRejection {
@@ -171,6 +180,78 @@ impl AppLifecycle {
     pub async fn abort_current_runtime(&self) {
         let generation = self.active_generation().await;
         self.clear_runtime_transaction(generation).await;
+    }
+
+    pub async fn abort_runtime_handles_without_advancing_generation(&self) {
+        let (generation, command_bus) = {
+            let mut inner = self.inner.lock().await;
+            inner.handles.abort_all();
+            (inner.generation, inner.command_bus.clone())
+        };
+        command_bus.clear_runtime_targets(generation).await;
+    }
+
+    pub async fn connect_to_identity<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        identity: crate::connection_state::Lv1SystemIdentity,
+        failure_mode: ConnectFailureMode,
+    ) -> Result<(), String> {
+        self.abort_current_runtime().await;
+        let Some(generation) = self.begin_connecting().await else {
+            return Ok(());
+        };
+
+        let event_bus = self.event_bus.clone();
+        let command_bus = self.current_command_bus().await;
+        let lv1 = spawn_actor(
+            identity.address.clone(),
+            identity.port,
+            event_bus.clone(),
+            generation,
+        );
+        let fade =
+            crate::fade::actor::spawn_engine(command_bus.clone(), event_bus.clone(), generation);
+        let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
+
+        if self
+            .install_runtime_transaction(generation, handles)
+            .await
+            .is_err()
+        {
+            return Err("generation is stale".to_string());
+        }
+
+        let initial_snapshot = lv1.get_state().await;
+        if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
+            self.clear_runtime_transaction(generation).await;
+            match failure_mode {
+                ConnectFailureMode::ClearConnectedIdentity => {
+                    let _ = command_bus.clear_connected_lv1_identity().await;
+                }
+                ConnectFailureMode::PreserveConnectedIdentity => {
+                    let _ = command_bus.set_pending_lv1_identity(None).await;
+                }
+            }
+            return Err("LV1 did not connect".to_string());
+        }
+
+        let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        let _ = app;
+        Ok(())
+    }
+
+    pub async fn disconnect_current_runtime(&self) -> Result<ShowCommandResult, String> {
+        let generation = self.active_generation().await;
+        let reason = "Disconnected by user".to_string();
+        self.abort_runtime_handles_without_advancing_generation()
+            .await;
+        self.event_bus.publish(AppEvent::Lv1 {
+            generation,
+            event: Lv1Event::Disconnected { reason },
+        });
+        self.clear_runtime_transaction(generation).await;
+        Ok(ShowCommandResult { changed: true })
     }
 
     pub async fn current_command_bus(&self) -> AppCommandBus {
@@ -426,6 +507,34 @@ mod tests {
             .unwrap();
 
         assert!(result.changed);
+    }
+
+    #[tokio::test]
+    async fn disconnect_current_runtime_publishes_active_generation_disconnect() {
+        let event_bus = AppEventBus::default();
+        let mut rx = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
+                if event_generation == generation
+        ));
+        let result = lifecycle.disconnect_current_runtime().await.unwrap();
+
+        assert!(result.changed);
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }
+                if event_generation == generation
+        ));
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
+                if event_generation == generation + 1
+        ));
     }
 
     #[tokio::test]
