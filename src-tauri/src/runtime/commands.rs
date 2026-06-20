@@ -3,6 +3,7 @@ use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::types::FadeConfig;
 use crate::lv1::commands::Lv1ParameterWrite;
@@ -92,6 +93,43 @@ impl AppCommandBus {
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
         Ok(crate::show::commands::handle_runtime_disconnected(&show, reason).await)
+    }
+
+    pub async fn set_discovered_lv1_systems(
+        &self,
+        systems: Vec<DiscoveredLv1System>,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::set_discovered_lv1_systems(&show, systems).await)
+    }
+
+    pub async fn set_pending_lv1_identity(
+        &self,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::set_pending_lv1_identity(&show, identity).await)
+    }
+
+    pub async fn establish_connected_lv1_identity(
+        &self,
+        identity: Lv1SystemIdentity,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::establish_connected_lv1_identity(&show, identity).await)
+    }
+
+    pub async fn clear_connected_lv1_identity(&self) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::clear_connected_lv1_identity(&show).await)
+    }
+
+    pub async fn set_reconnect_state(
+        &self,
+        reconnect: ReconnectState,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::set_reconnect_state(&show, reconnect).await)
     }
 
     pub async fn set_lv1(&self, lv1: Option<Lv1ActorHandle>) {

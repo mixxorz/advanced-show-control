@@ -340,6 +340,7 @@ pub fn spawn_lifecycle_event_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -397,6 +398,77 @@ mod tests {
             .unwrap();
 
         assert!(result.changed);
+    }
+
+    fn discovered_system(host: &str) -> DiscoveredLv1System {
+        DiscoveredLv1System {
+            identity: Lv1SystemIdentity {
+                uuid: None,
+                host: Some(host.to_string()),
+                address: host.to_string(),
+                port: 0,
+            },
+            latency_ms: Some(1),
+            status: DiscoveredLv1Status::Available,
+        }
+    }
+
+    #[tokio::test]
+    async fn disconnected_discovery_metadata_uses_app_lifetime_command_bus() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        let bus = lifecycle.current_command_bus().await;
+
+        let result = bus
+            .set_discovered_lv1_systems(vec![discovered_system("10.0.0.2")])
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+    }
+
+    #[tokio::test]
+    async fn show_runtime_metadata_monitor_ignores_stale_disconnect_facts() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let command_bus = AppCommandBus::new();
+        command_bus.set_show_target(show.clone()).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let monitor = spawn_show_runtime_metadata_monitor_with_notifier(
+            event_bus.subscribe(),
+            command_bus,
+            move |notification| {
+                tx.send(notification).unwrap();
+            },
+        );
+
+        event_bus.publish_runtime_generation_changed(9);
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 8,
+            event: Lv1Event::Disconnected {
+                reason: "stale disconnect".to_string(),
+            },
+        });
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(
+                ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged { generation: 9 }
+            )
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(
+                ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
+                    generation: 8,
+                    active_generation: 9,
+                }
+            )
+        ));
+
+        monitor.abort();
     }
 
     #[tokio::test]

@@ -359,6 +359,7 @@ pub async fn load_show_file_from_dto(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_state::Lv1SystemIdentity;
     use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
@@ -607,6 +608,37 @@ mod tests {
         match event {
             AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
                 assert_eq!(state.selected_scene_id, Some("1::Intro".to_string()));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn active_generation_disconnect_clears_show_owned_connection_metadata() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        establish_connected_lv1_identity(
+            &show,
+            Lv1SystemIdentity {
+                uuid: None,
+                host: Some("10.0.0.2".to_string()),
+                address: "10.0.0.2".to_string(),
+                port: 0,
+            },
+        )
+        .await;
+        drain_show_events(&mut events).await;
+
+        let result = handle_runtime_disconnected(&show, "test disconnect".to_string()).await;
+
+        assert!(result.changed);
+        let event = events.recv().await.unwrap();
+        match event {
+            AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
+                assert_eq!(reason, ShowProjectionReason::ConnectionMetadata);
+                assert!(state.connected_lv1_identity.is_none());
+                assert!(state.pending_lv1_identity.is_none());
             }
             other => panic!("unexpected event: {other:?}"),
         }
