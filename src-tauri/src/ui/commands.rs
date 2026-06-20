@@ -37,23 +37,10 @@ pub async fn refresh_lv1_discovery(
     lifecycle: State<'_, AppLifecycle>,
     timeout_ms: Option<u64>,
 ) -> Result<ShowCommandResult, String> {
-    let systems = crate::lv1::discover(crate::lv1::DiscoverOptions {
-        timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
-        ..Default::default()
-    })
-    .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?
-    .iter()
-    .filter_map(crate::connection_state::identity_from_discovery)
-    .map(|identity| crate::connection_state::DiscoveredLv1System {
-        identity,
-        latency_ms: None,
-        status: crate::connection_state::DiscoveredLv1Status::Available,
-    })
-    .collect();
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::SetDiscoveredLv1Systems {
-        systems,
+    show.send(ShowCommand::RefreshLv1Discovery {
+        timeout_ms,
         reply: Some(reply),
     })
     .await
@@ -61,7 +48,7 @@ pub async fn refresh_lv1_discovery(
     .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]

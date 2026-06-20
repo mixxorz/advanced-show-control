@@ -75,6 +75,10 @@ pub enum ShowCommand {
         systems: Vec<DiscoveredLv1System>,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
+    RefreshLv1Discovery {
+        timeout_ms: Option<u64>,
+        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
+    },
     SetPendingLv1Identity {
         identity: Option<Lv1SystemIdentity>,
         reply: Option<oneshot::Sender<ShowCommandResult>>,

@@ -472,6 +472,7 @@ impl AppLifecycle {
         self.show.clone()
     }
 
+    #[cfg(test)]
     pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
         self.inner.lock().await.handles.lv1.clone()
     }

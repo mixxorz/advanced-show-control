@@ -264,6 +264,12 @@ async fn handle_command(
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
+        ShowCommand::RefreshLv1Discovery { timeout_ms, reply } => {
+            let result = refresh_lv1_discovery(state, event_bus, timeout_ms);
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
         ShowCommand::SetPendingLv1Identity { identity, reply } => {
             let changed = state.set_pending_lv1_identity(identity);
             publish_if_changed(
@@ -375,6 +381,34 @@ async fn handle_command(
             }
         }
     }
+}
+
+fn refresh_lv1_discovery(
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    timeout_ms: Option<u64>,
+) -> Result<ShowCommandResult, String> {
+    let systems = crate::lv1::discover(crate::lv1::DiscoverOptions {
+        timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
+        ..Default::default()
+    })
+    .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?
+    .iter()
+    .filter_map(crate::connection_state::identity_from_discovery)
+    .map(|identity| crate::connection_state::DiscoveredLv1System {
+        identity,
+        latency_ms: None,
+        status: crate::connection_state::DiscoveredLv1Status::Available,
+    })
+    .collect();
+    let changed = state.set_discovered_lv1_systems(systems);
+    publish_if_changed(
+        event_bus,
+        ShowProjectionReason::ConnectionMetadata,
+        state,
+        changed,
+    );
+    Ok(ShowCommandResult { changed })
 }
 
 async fn current_lv1_snapshot(peers: &ShowActorPeers) -> Result<Lv1StateSnapshot, String> {
