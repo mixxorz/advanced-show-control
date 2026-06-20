@@ -552,7 +552,6 @@ async fn reconnect_timed_out_snapshot<R: Runtime>(
 #[tauri::command]
 pub async fn abort_all_fades(lifecycle: State<'_, AppLifecycle>) -> Result<(), String> {
     let command_bus = lifecycle.current_command_bus().await;
-    let command_bus = command_bus.ok_or_else(|| "Fade runtime is unavailable".to_string())?;
     command_bus
         .abort_all_fades()
         .await
@@ -742,7 +741,7 @@ async fn connect_to_target<R: Runtime>(
         port = identity.port,
         "Connecting to LV1"
     );
-    lifecycle.abort_current_runtime(&state).await;
+    lifecycle.abort_current_runtime().await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
         .set_pending_lv1_identity(generation, Some(identity.clone()))
@@ -929,15 +928,15 @@ async fn install_connected_runtime<R: Runtime>(
     mut runtime_handles: RuntimeHandles,
     lifecycle: &AppLifecycle,
 ) -> Result<AppViewState, String> {
-    let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
     let lifecycle_events = events.resubscribe();
     let show_events = events.resubscribe();
+    let initial_show_state = state.show.initial_projection_state().await;
     runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
         app: app.clone(),
         generation,
+        initial_show_state,
         events,
         logs: ui_log_receiver(app)?,
-        start_rx: projector_start_rx,
     }));
     runtime_handles.lifecycle_event_monitor = Some(spawn_lifecycle_event_monitor(
         generation,
@@ -961,8 +960,6 @@ async fn install_connected_runtime<R: Runtime>(
 
     // Emit the initial snapshot before any buffered bus events can be projected.
     emit_snapshot(app, &snapshot);
-    let _ = projector_start_tx.send(());
-
     Ok(snapshot)
 }
 
@@ -1051,22 +1048,37 @@ mod tests {
         tx
     }
 
+    fn initial_show_state() -> crate::show::events::ShowProjectionState {
+        crate::show::events::ShowProjectionState {
+            lockout: false,
+            scene_configs: Vec::new(),
+            cued_scene_id: None,
+            selected_scene_id: None,
+            show_file_path: None,
+            show_file_name: "Untitled Show".to_string(),
+            show_file_dirty: false,
+            show_file_last_saved_at: None,
+            discovered_lv1_systems: Vec::new(),
+            connected_lv1_identity: None,
+            pending_lv1_identity: None,
+            reconnect: Default::default(),
+            last_event_at: None,
+        }
+    }
+
     fn spawn_started_projector<R: Runtime>(
         handle: AppHandle<R>,
         generation: u64,
         events: tokio::sync::broadcast::Receiver<AppEvent>,
         logs: tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>,
     ) -> tokio::task::JoinHandle<()> {
-        let (projector_start_tx, projector_start_rx) = tokio::sync::oneshot::channel();
-        let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
+        crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
             generation,
+            initial_show_state: initial_show_state(),
             events,
             logs,
-            start_rx: projector_start_rx,
-        });
-        let _ = projector_start_tx.send(());
-        projector
+        })
     }
 
     #[tokio::test]
@@ -1087,13 +1099,9 @@ mod tests {
         let projector = crate::projector::spawn_projector(crate::projector::ProjectorInputs {
             app: handle,
             generation: 0,
+            initial_show_state: initial_show_state(),
             events: event_bus.subscribe(),
             logs: log_rx,
-            start_rx: {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                let _ = tx.send(());
-                rx
-            },
         });
 
         log_tx
@@ -1585,7 +1593,9 @@ mod tests {
             )
             .await;
         assert!(installed.is_ok());
-        assert!(lifecycle.current_command_bus().await.is_some());
+        let command_bus = lifecycle.current_command_bus().await;
+        let result = command_bus.set_lockout(true).await.unwrap();
+        assert!(result.changed);
 
         let snapshot = reconnect_timed_out_snapshot(
             handle,
@@ -1597,7 +1607,9 @@ mod tests {
         .expect("timeout command should return snapshot");
 
         assert!(!snapshot.reconnect.active);
-        assert!(lifecycle.current_command_bus().await.is_none());
+        let command_bus = lifecycle.current_command_bus().await;
+        let result = command_bus.set_lockout(false).await.unwrap();
+        assert!(result.changed);
         let handles = state.handles.lock().await;
         assert_eq!(handles.active_generation, 0);
         assert!(handles.command_bus.is_none());

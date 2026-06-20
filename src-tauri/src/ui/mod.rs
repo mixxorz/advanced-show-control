@@ -16,9 +16,11 @@ pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     let event_bus = AppEventBus::default();
+    let shell_state = ShellState::new(event_bus.clone());
+    let lifecycle = AppLifecycle::new(event_bus, shell_state.show.clone());
     tauri::Builder::default()
-        .manage(ShellState::new(event_bus.clone()))
-        .manage(AppLifecycle::default())
+        .manage(shell_state)
+        .manage(lifecycle)
         .setup(|app| {
             let logging_runtime = logging::init_logging(app.handle())?;
             app.manage(logging_runtime.guard);

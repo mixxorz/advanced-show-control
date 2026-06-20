@@ -1,11 +1,12 @@
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Runtime};
-use tokio::sync::{broadcast, oneshot};
+use tokio::sync::broadcast;
 
 use crate::logging::UiLogEvent;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
+use crate::show::events::ShowProjectionState;
 
 use super::ProjectionCache;
 
@@ -14,9 +15,9 @@ pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
 pub struct ProjectorInputs<R: Runtime> {
     pub app: AppHandle<R>,
     pub generation: u64,
+    pub initial_show_state: ShowProjectionState,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
-    pub start_rx: oneshot::Receiver<()>,
 }
 
 pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::JoinHandle<()> {
@@ -24,14 +25,10 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         let ProjectorInputs {
             app,
             generation,
+            initial_show_state,
             mut events,
             mut logs,
-            start_rx,
         } = inputs;
-
-        if start_rx.await.is_err() {
-            return;
-        }
 
         tracing::debug!(
             event = "projector_started",
@@ -41,6 +38,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
 
         let mut cache = ProjectionCache::new();
         cache.set_active_generation(generation);
+        cache.apply_show_state(initial_show_state);
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
@@ -130,16 +128,27 @@ mod tests {
         events: broadcast::Receiver<AppEvent>,
         logs: broadcast::Receiver<UiLogEvent>,
     ) -> tokio::task::JoinHandle<()> {
-        let (start_tx, start_rx) = oneshot::channel();
-        let projector = spawn_projector(ProjectorInputs {
+        spawn_projector(ProjectorInputs {
             app: handle,
             generation,
+            initial_show_state: ShowProjectionState {
+                lockout: false,
+                scene_configs: Vec::new(),
+                cued_scene_id: None,
+                selected_scene_id: None,
+                show_file_path: None,
+                show_file_name: "Untitled Show".to_string(),
+                show_file_dirty: false,
+                show_file_last_saved_at: None,
+                discovered_lv1_systems: Vec::new(),
+                connected_lv1_identity: None,
+                pending_lv1_identity: None,
+                reconnect: Default::default(),
+                last_event_at: None,
+            },
             events,
             logs,
-            start_rx,
-        });
-        let _ = start_tx.send(());
-        projector
+        })
     }
 
     #[tokio::test]

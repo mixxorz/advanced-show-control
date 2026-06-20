@@ -53,6 +53,56 @@ impl AppCommandBus {
         }
     }
 
+    pub fn set_show_target(&self, show: ShowStateHandle) {
+        if let Ok(mut targets) = self.targets.try_lock() {
+            targets.show = Some(show);
+        }
+    }
+
+    pub(crate) fn set_runtime_targets(
+        &self,
+        generation: u64,
+        lv1: Lv1ActorHandle,
+        fade: FadeEngineHandle,
+    ) {
+        if let Ok(mut targets) = self.targets.try_lock() {
+            targets.generation = generation;
+            targets.lv1 = Some(lv1);
+            targets.fade = Some(fade);
+        }
+    }
+
+    pub(crate) fn clear_runtime_targets(&self, generation: u64) {
+        if let Ok(mut targets) = self.targets.try_lock()
+            && targets.generation == generation
+        {
+            targets.lv1 = None;
+            targets.fade = None;
+        }
+    }
+
+    pub async fn handle_runtime_disconnected(
+        &self,
+        reason: String,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::handle_runtime_disconnected(&show, reason).await)
+    }
+
+    // Transitional compatibility for pre-cutover shell paths.
+    pub async fn set(&self, command_bus: Option<AppCommandBus>) {
+        let Some(command_bus) = command_bus else {
+            self.clear_targets().await;
+            return;
+        };
+        let replacement = command_bus.targets.lock().await.clone();
+        *self.targets.lock().await = replacement;
+    }
+
+    pub async fn current(&self) -> Option<AppCommandBus> {
+        Some(self.clone())
+    }
+
     pub async fn set_lv1(&self, lv1: Option<Lv1ActorHandle>) {
         self.targets.lock().await.lv1 = lv1;
     }
