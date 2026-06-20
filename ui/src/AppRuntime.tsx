@@ -158,7 +158,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [showConnection, applySnapshot, services]);
+  }, [showConnection, services]);
 
   // During backend-managed reconnect, keep retrying briefly before handing the
   // engineer back to the connection modal.
@@ -204,12 +204,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       window.clearInterval(interval);
       window.clearTimeout(timer);
     };
-  }, [
-    appState.reconnect.active,
-    appState.reconnect.attempt,
-    applySnapshot,
-    services,
-  ]);
+  }, [appState.reconnect.active, appState.reconnect.attempt, services]);
 
   const commands: AppCommands = {
     abortAll: () => {

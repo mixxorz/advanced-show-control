@@ -1,11 +1,14 @@
 ## Task 8 Report
 
 - Working directory: `/Users/mixxorz/Projects/lv1-scene-fade-utility/.worktrees/projector-cache-log-input`
-- Initial status: modified `ui/src/App.tsx`, `ui/src/AppRuntime.tsx`, `ui/src/commands.ts`, `ui/src/AppRuntime.test.tsx`
-- Summary: React runtime now listens for `app-status-changed` before calling `frontend_ready`, ignores command return values as app state, and uses the listener stream for state updates.
+- Initial status: modified `ui/src/App.tsx`, `ui/src/AppRuntime.test.tsx`, `ui/src/AppRuntime.tsx`, `ui/src/commands.ts`
+- Summary: switched React startup/state updates to `app-status-changed` only, registered the listener before `frontend_ready`, removed command-return state application, and normalized command service return types to ignored results.
 - Tests:
-  - `npm --prefix ui run test -- AppRuntime` -> pass
-  - `npm --prefix ui run typecheck` -> pass
-- Commits: pending
-- Self-review: no remaining AppViewState command-return usage in the touched UI boundary; listener cleanup is retained; command wrappers are thin.
-- Concerns: legacy runtime tests were trimmed to match the listener-only startup contract.
+  - `npm --prefix ui run test -- AppRuntime` -> passed (11 tests)
+  - `npm run format:check` -> passed
+  - `npm run lint` -> passed
+  - `npm run typecheck` -> passed
+  - `npm run test` -> passed (29 tests)
+- Commit: pending
+- Self-review: listener registration now precedes frontend readiness, command results are ignored, and runtime state changes only from the event listener path.
+- Concerns: none beyond the usual dependency on backend `app-status-changed` delivery order.

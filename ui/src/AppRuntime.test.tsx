@@ -3,10 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
-import {
-  connectedAppState,
-  discoveredSystemsAppState,
-} from "./storybook/mockAppState";
+import { connectedAppState } from "./storybook/mockAppState";
 import { createDeferred } from "./test/deferred";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 
@@ -61,13 +58,21 @@ describe("AppRuntime connection lifecycle", () => {
   });
 
   it("closes the modal after successful startup auto-connect", async () => {
+    let listener: ((snapshot: AppViewState) => void) | null = null;
     render(
       <AppRuntime
         services={makeServices({
-          startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+          listenForAppStatus: vi.fn(async (next) => {
+            listener = next;
+            return () => {};
+          }),
         })}
       />,
     );
+
+    await act(async () => {
+      listener?.(connectedAppState);
+    });
 
     await waitFor(() => {
       expect(
@@ -151,10 +156,8 @@ describe("AppRuntime connection lifecycle", () => {
   });
 
   it("keeps the modal closed when a stale startup snapshot resolves after a newer connected status", async () => {
-    const startup = createDeferred<AppViewState>();
     let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
     const services = makeServices({
-      startupAutoConnectLv1: vi.fn(() => startup.promise),
       listenForAppStatus: vi.fn(async (listener) => {
         appStatusListener = listener;
         return () => {};
@@ -176,12 +179,6 @@ describe("AppRuntime connection lifecycle", () => {
         screen.queryByRole("heading", { name: "Connect to LV1" }),
       ).not.toBeInTheDocument();
     });
-
-    await act(async () => {
-      startup.resolve(discoveredSystemsAppState);
-      await startup.promise;
-    });
-
     expect(
       screen.queryByRole("heading", { name: "Connect to LV1" }),
     ).not.toBeInTheDocument();
@@ -191,17 +188,7 @@ describe("AppRuntime connection lifecycle", () => {
 
   it("keeps the modal open when the engineer opens it while connected", async () => {
     const user = userEvent.setup();
-    render(
-      <AppRuntime
-        services={makeServices({
-          startupAutoConnectLv1: vi.fn(async () => undefined),
-        })}
-      />,
-    );
-
-    await act(async () => {
-      // makeServices emits connected by default; override startup-only here.
-    });
+    render(<AppRuntime services={makeServices()} />);
 
     await waitFor(() => {
       expect(
@@ -272,10 +259,6 @@ describe("AppRuntime connection lifecycle", () => {
     const scene = connectedAppState.sceneConfigs[0];
     render(<AppRuntime services={services} />);
 
-    await act(async () => {
-      // makeServices emits connected by default.
-    });
-
     await waitFor(() => {
       expect(
         screen.queryByRole("heading", { name: "Connect to LV1" }),
@@ -300,7 +283,7 @@ describe("AppRuntime connection lifecycle", () => {
             calls.push("listen");
             return () => {};
           }),
-          startupAutoConnectLv1: vi.fn(async () => disconnectedAppViewState),
+          startupAutoConnectLv1: vi.fn(async () => undefined),
           frontendReady: vi.fn(async () => {
             calls.push("ready");
           }),
@@ -324,7 +307,6 @@ describe("AppRuntime connection lifecycle", () => {
         listener = next;
         return () => {};
       }),
-      startupAutoConnectLv1: vi.fn(async () => disconnectedAppViewState),
       frontendReady: vi.fn(async () => undefined),
       newShowFile: vi.fn(async () => sentinel),
     });
