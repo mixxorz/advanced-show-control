@@ -16,7 +16,7 @@ use crate::show::commands::{
 };
 use crate::show::handle::ShowStateHandle;
 use crate::show::show_file::ShowFile;
-use crate::show::types::{SceneConfig, ShowSnapshot};
+use crate::show::types::{SceneConfig, ShowDocument};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AppCommandError {
@@ -184,7 +184,7 @@ impl AppCommandBus {
         targets.generation += 1;
     }
 
-    pub async fn get_show_snapshot(&self) -> Result<ShowSnapshot, AppCommandError> {
+    pub async fn get_show_document(&self) -> Result<ShowDocument, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
             Some(show) => Ok(show.get_snapshot().await),
@@ -386,9 +386,9 @@ impl AppCommandBus {
             ),
             other => other,
         })?;
-        let show_snapshot = show.get_snapshot().await;
+        let show_document = show.get_snapshot().await;
         let result =
-            crate::show::commands::validate_recall_scene_request(&show_snapshot, &lv1, &scene_id)
+            crate::show::commands::validate_recall_scene_request(&show_document, &lv1, &scene_id)
                 .map_err(AppCommandError::CommandFailed)?;
 
         self.recall_scene(result.lv1_scene_index).await?;
@@ -599,7 +599,7 @@ mod tests {
         SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileSafety, ShowFileSceneConfig,
         ShowFileSceneScopeToggles,
     };
-    use crate::show::types::{ChannelConfig, SceneConfig, SceneScopeToggles, ShowSnapshot};
+    use crate::show::types::{ChannelConfig, SceneConfig, SceneScopeToggles, ShowDocument};
 
     fn scene_config() -> SceneConfig {
         SceneConfig {
@@ -635,7 +635,7 @@ mod tests {
         }
     }
 
-    async fn bus_with_show_snapshot(snapshot: ShowSnapshot) -> (AppCommandBus, AppEventBus) {
+    async fn bus_with_show_document(snapshot: ShowDocument) -> (AppCommandBus, AppEventBus) {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
         show.replace_snapshot(snapshot).await;
@@ -855,7 +855,7 @@ mod tests {
     async fn missing_show_returns_show_unavailable() {
         let bus = AppCommandBus::new();
 
-        let err = bus.get_show_snapshot().await.unwrap_err();
+        let err = bus.get_show_document().await.unwrap_err();
 
         assert_eq!(err, AppCommandError::ShowUnavailable);
     }
@@ -867,7 +867,7 @@ mod tests {
         bus.set_show(Some(ShowStateHandle::new_empty(event_bus.clone())))
             .await;
 
-        let snapshot = bus.get_show_snapshot().await.unwrap();
+        let snapshot = bus.get_show_document().await.unwrap();
 
         assert!(!snapshot.lockout);
         assert!(snapshot.scene_configs.is_empty());
@@ -875,13 +875,13 @@ mod tests {
 
     #[tokio::test]
     async fn set_lockout_routes_to_show_state() {
-        let (bus, event_bus) = bus_with_show_snapshot(ShowSnapshot::empty()).await;
+        let (bus, event_bus) = bus_with_show_document(ShowDocument::empty()).await;
         let mut events = event_bus.subscribe();
 
         let result = bus.set_lockout(true).await.unwrap();
 
         assert!(result.changed);
-        assert!(bus.get_show_snapshot().await.unwrap().lockout);
+        assert!(bus.get_show_document().await.unwrap().lockout);
         assert!(matches!(
             events.recv().await.unwrap(),
             crate::runtime::events::AppEvent::Show(_)
@@ -890,12 +890,12 @@ mod tests {
 
     #[tokio::test]
     async fn no_op_show_command_through_bus_does_not_publish_show_event() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             lockout: true,
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, event_bus) = bus_with_show_document(snapshot).await;
         let mut events = event_bus.subscribe();
 
         while events.try_recv().is_ok() {}
@@ -908,11 +908,11 @@ mod tests {
 
     #[tokio::test]
     async fn set_scene_duration_routes_to_show_state() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let result = bus
             .set_scene_duration_ms("1::Intro".to_string(), 2_500)
@@ -930,11 +930,11 @@ mod tests {
 
     #[tokio::test]
     async fn scope_edit_routes_to_show_state() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let result = bus
             .set_channel_scoped("1::Intro".to_string(), 0, 1, true)
@@ -954,11 +954,11 @@ mod tests {
 
     #[tokio::test]
     async fn all_channels_scope_routes_to_show_state() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let result = bus
             .set_all_channels_scoped("1::Intro".to_string(), true)
@@ -976,11 +976,11 @@ mod tests {
 
     #[tokio::test]
     async fn scene_scope_toggles_route_to_show_state() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let faders = bus
             .set_scene_scope_faders_enabled("1::Intro".to_string(), false)
@@ -1004,29 +1004,29 @@ mod tests {
 
     #[tokio::test]
     async fn cue_scene_routes_to_show_state_and_returns_scene() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let result = bus.cue_scene("1::Intro".to_string()).await.unwrap();
 
         assert!(result.changed);
         assert_eq!(result.scene.scene_id, "1::Intro");
         assert_eq!(
-            bus.get_show_snapshot().await.unwrap().cued_scene_id,
+            bus.get_show_document().await.unwrap().cued_scene_id,
             Some("1::Intro".to_string())
         );
     }
 
     #[tokio::test]
     async fn select_scene_config_validates_through_show_state() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let result = bus
             .select_scene_config("1::Intro".to_string())
@@ -1038,11 +1038,11 @@ mod tests {
 
     #[tokio::test]
     async fn store_scene_config_routes_to_show_state_with_lv1_channels() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let result = bus
             .store_scene_config("1::Intro".to_string(), vec![channel_info()])
@@ -1163,7 +1163,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: true,
             scene_configs: vec![scene_config()],
             cued_scene_id: Some("1:Intro".to_string()),
@@ -1183,18 +1183,18 @@ mod tests {
         let result = bus.new_show_file(Some(lv1)).await.unwrap();
 
         assert_eq!(result.selected_scene_id, Some("2::Verse".to_string()));
-        let snapshot = bus.get_show_snapshot().await.unwrap();
+        let snapshot = bus.get_show_document().await.unwrap();
         assert!(!snapshot.lockout);
         assert_eq!(snapshot.scene_configs[0].scene_id, "2::Verse");
     }
 
     #[tokio::test]
     async fn export_show_file_snapshot_routes_through_show_state() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             scene_configs: vec![scene_config()],
-            ..ShowSnapshot::empty()
+            ..ShowDocument::empty()
         };
-        let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
 
         let file = bus
             .export_show_file_snapshot("saved".to_string())
@@ -1243,7 +1243,7 @@ mod tests {
 
         assert_eq!(result.selected_scene_id, Some("1::Intro".to_string()));
         assert!(!result.report.removed_anything());
-        assert!(bus.get_show_snapshot().await.unwrap().lockout);
+        assert!(bus.get_show_document().await.unwrap().lockout);
         assert_eq!(result.saved_at, "saved");
     }
 
@@ -1285,7 +1285,7 @@ mod tests {
 
         assert_eq!(result.selected_scene_id, Some("1::Intro".to_string()));
         assert!(!result.report.removed_anything());
-        assert!(bus.get_show_snapshot().await.unwrap().lockout);
+        assert!(bus.get_show_document().await.unwrap().lockout);
         assert_eq!(result.saved_at, "saved");
     }
 
@@ -1342,7 +1342,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Verse".to_string(),
@@ -1401,7 +1401,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: true,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Verse".to_string(),
@@ -1462,7 +1462,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Verse".to_string(),
@@ -1523,7 +1523,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Verse".to_string(),

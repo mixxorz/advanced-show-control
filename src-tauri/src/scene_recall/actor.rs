@@ -311,7 +311,7 @@ mod tests {
     use crate::lv1::types::{Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scene_recall::events::SceneRecallEvent;
     use crate::show::types::{
-        ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowSnapshot,
+        ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument,
     };
     use std::sync::{
         Arc,
@@ -1200,7 +1200,7 @@ mod tests {
         handle: &crate::show::handle::ShowStateHandle,
         duration_ms: u64,
     ) {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Intro".to_string(),

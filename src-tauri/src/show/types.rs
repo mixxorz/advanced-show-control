@@ -50,13 +50,13 @@ pub struct SceneConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ShowSnapshot {
+pub struct ShowDocument {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
     pub cued_scene_id: Option<String>,
 }
 
-impl ShowSnapshot {
+impl ShowDocument {
     pub fn empty() -> Self {
         Self {
             lockout: false,
@@ -191,8 +191,8 @@ mod tests {
     }
 
     #[test]
-    fn show_snapshot_serializes_cued_scene_id_for_frontend_camel_case() {
-        let snapshot = ShowSnapshot {
+    fn show_document_serializes_cued_scene_id_for_frontend_camel_case() {
+        let snapshot = ShowDocument {
             lockout: false,
             scene_configs: Vec::new(),
             cued_scene_id: Some("1::Verse".to_string()),
@@ -204,8 +204,8 @@ mod tests {
     }
 
     #[test]
-    fn empty_show_snapshot_has_no_cued_scene() {
-        let snapshot = ShowSnapshot::empty();
+    fn empty_show_document_has_no_cued_scene() {
+        let snapshot = ShowDocument::empty();
 
         assert_eq!(snapshot.cued_scene_id, None);
     }

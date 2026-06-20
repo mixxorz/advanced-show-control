@@ -7,7 +7,7 @@ use crate::runtime::events::{AppEvent, AppEventBus};
 
 use super::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
 use super::state::ShowState;
-use super::types::{SceneConfig, ShowSnapshot};
+use super::types::{SceneConfig, ShowDocument};
 
 #[derive(Clone)]
 pub struct ShowStateHandle {
@@ -54,7 +54,7 @@ impl ShowStateHandle {
         self.query(|state| state.projection_state()).await
     }
 
-    pub async fn get_snapshot(&self) -> ShowSnapshot {
+    pub async fn get_snapshot(&self) -> ShowDocument {
         self.query(|state| state.snapshot()).await
     }
 
@@ -205,7 +205,7 @@ impl ShowStateHandle {
         self.reconcile_scene_list(scenes).await
     }
 
-    pub async fn replace_snapshot(&self, snapshot: ShowSnapshot) {
+    pub async fn replace_snapshot(&self, snapshot: ShowDocument) {
         let mut state = self.state.lock().await;
         if state.snapshot() == snapshot {
             return;
@@ -217,7 +217,7 @@ impl ShowStateHandle {
 
     pub async fn clear(&self) {
         let mut state = self.state.lock().await;
-        if state.snapshot() == ShowSnapshot::empty() {
+        if state.snapshot() == ShowDocument::empty() {
             return;
         }
 
@@ -255,7 +255,7 @@ mod tests {
     use crate::lv1::types::SceneListEntry;
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
-    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
+    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
 
     fn scene_config() -> SceneConfig {
         SceneConfig {
@@ -332,7 +332,7 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
 
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: true,
             scene_configs: vec![scene_config()],
             cued_scene_id: None,
@@ -370,7 +370,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut show_events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Verse".to_string(),

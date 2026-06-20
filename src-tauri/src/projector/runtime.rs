@@ -50,7 +50,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
                 _ = interval.tick() => {
                     if dirty {
                         let snapshot = cache.build_snapshot();
-                        emit_snapshot(&app, &snapshot);
+                        emit_app_status(&app, &snapshot);
                         dirty = false;
                     }
                 }
@@ -85,7 +85,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
     })
 }
 
-fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
+fn emit_app_status<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         tracing::debug!(
             event = "projector_emit_failed",

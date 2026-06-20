@@ -144,7 +144,7 @@ pub async fn select_scene_config(
 }
 
 pub fn validate_recall_scene_request(
-    show: &super::types::ShowSnapshot,
+    show: &super::types::ShowDocument,
     lv1: &Lv1StateSnapshot,
     scene_id: &str,
 ) -> Result<RecallSceneResult, String> {
@@ -376,7 +376,7 @@ mod tests {
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::handle::ShowStateHandle;
     use crate::show::show_file::{ShowFile, ShowFileSafety, ShowFileSceneConfig};
-    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
+    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
 
     fn recall_lv1(connection: ConnectionStatus, name: &str) -> Lv1StateSnapshot {
         Lv1StateSnapshot {
@@ -416,8 +416,8 @@ mod tests {
         while events.try_recv().is_ok() {}
     }
 
-    fn recall_show(lockout: bool) -> ShowSnapshot {
-        ShowSnapshot {
+    fn recall_show(lockout: bool) -> ShowDocument {
+        ShowDocument {
             lockout,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Verse".to_string(),

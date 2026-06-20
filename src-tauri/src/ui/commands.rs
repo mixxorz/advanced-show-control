@@ -161,7 +161,7 @@ async fn choose_save_show_file_path() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use crate::runtime::events::AppEventBus;
-    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
+    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
 
     fn temp_show_file_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -178,7 +178,7 @@ mod tests {
     async fn save_show_file_uses_existing_show_file_path() {
         let event_bus = AppEventBus::default();
         let show = crate::show::handle::ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowSnapshot {
+        show.replace_snapshot(ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
                 scene_id: "1::Intro".to_string(),

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::lv1::types::{Lv1StateSnapshot, PanMode};
 use crate::show::types::{
-    ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowSnapshot, scene_id,
+    ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument, scene_id,
 };
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
@@ -87,12 +87,12 @@ impl LoadValidationReport {
 }
 
 pub struct ImportedShowFile {
-    pub snapshot: ShowSnapshot,
+    pub snapshot: ShowDocument,
     pub selected_scene_id: Option<String>,
     pub report: LoadValidationReport,
 }
 
-pub fn export_show_file(snapshot: ShowSnapshot, saved_at: String) -> ShowFile {
+pub fn export_show_file(snapshot: ShowDocument, saved_at: String) -> ShowFile {
     ShowFile {
         schema_version: SHOW_FILE_SCHEMA_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -123,7 +123,7 @@ pub fn import_show_file(
         .scene_configs
         .first()
         .map(|config| scene_id(config.scene_index, &config.scene_name));
-    let snapshot = ShowSnapshot {
+    let snapshot = ShowDocument {
         lockout: file.safety.lockout,
         scene_configs: file
             .scene_configs
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn export_show_file_contains_current_configs() {
-        let snapshot = ShowSnapshot {
+        let snapshot = ShowDocument {
             lockout: true,
             cued_scene_id: Some("1:Intro".to_string()),
             scene_configs: vec![SceneConfig {

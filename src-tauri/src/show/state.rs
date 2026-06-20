@@ -4,7 +4,7 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 use crate::lv1::types::SceneListEntry;
 use crate::show::show_file::{ShowFile, export_show_file};
 
-use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot, scene_id};
+use super::types::{SceneConfig, SceneScopeToggles, ShowDocument, scene_id};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SceneEntry {
@@ -331,8 +331,8 @@ impl ShowState {
         &mut self.scene_configs
     }
 
-    pub fn snapshot(&self) -> ShowSnapshot {
-        ShowSnapshot {
+    pub fn snapshot(&self) -> ShowDocument {
+        ShowDocument {
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
             cued_scene_id: self.cued_scene_id.clone(),
@@ -472,7 +472,7 @@ impl ShowState {
         changed
     }
 
-    pub fn replace_snapshot(&mut self, snapshot: ShowSnapshot) {
+    pub fn replace_snapshot(&mut self, snapshot: ShowDocument) {
         self.lockout = snapshot.lockout;
         self.scene_configs = snapshot.scene_configs;
         self.cued_scene_id = snapshot.cued_scene_id;
