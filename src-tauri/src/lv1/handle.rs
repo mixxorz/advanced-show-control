@@ -41,7 +41,7 @@ mod tests {
                         group: 1,
                         channel: 2,
                         value: -0.5,
-                        reply,
+                        reply: Some(reply),
                     })
                     .await
             }
@@ -54,7 +54,7 @@ mod tests {
         }) = rx.recv().await
         {
             assert_eq!((group, channel, value), (1, 2, -0.5));
-            let _ = reply.send(Ok(()));
+            let _ = reply.unwrap().send(Ok(()));
         } else {
             panic!("expected SetPan command");
         }
@@ -70,7 +70,7 @@ mod tests {
                         group: 3,
                         channel: 4,
                         value: 0.25,
-                        reply,
+                        reply: Some(reply),
                     })
                     .await
             }
@@ -83,7 +83,7 @@ mod tests {
         }) = rx.recv().await
         {
             assert_eq!((group, channel, value), (3, 4, 0.25));
-            let _ = reply.send(Ok(()));
+            let _ = reply.unwrap().send(Ok(()));
         } else {
             panic!("expected SetBalance command");
         }
@@ -99,7 +99,7 @@ mod tests {
                         group: 5,
                         channel: 6,
                         value: 0.75,
-                        reply,
+                        reply: Some(reply),
                     })
                     .await
             }
@@ -112,7 +112,7 @@ mod tests {
         }) = rx.recv().await
         {
             assert_eq!((group, channel, value), (5, 6, 0.75));
-            let _ = reply.send(Ok(()));
+            let _ = reply.unwrap().send(Ok(()));
         } else {
             panic!("expected SetWidth command");
         }
@@ -153,19 +153,42 @@ mod tests {
             handle
                 .send(Lv1Command::RecallScene {
                     scene_index: 4,
-                    reply,
+                    reply: Some(reply),
                 })
                 .await
         });
 
         if let Some(Lv1Command::RecallScene { scene_index, reply }) = rx.recv().await {
             assert_eq!(scene_index, 4);
-            reply.send(Ok(())).unwrap();
+            reply.unwrap().send(Ok(())).unwrap();
         } else {
             panic!("expected RecallScene command");
         }
 
         assert!(recall.await.unwrap().is_ok());
         assert_eq!(recall_rx.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn handle_sends_recall_scene_without_reply() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let handle = Lv1ActorHandle::new(tx);
+
+        assert_eq!(
+            handle
+                .send(Lv1Command::RecallScene {
+                    scene_index: 4,
+                    reply: None,
+                })
+                .await,
+            Ok(())
+        );
+
+        if let Some(Lv1Command::RecallScene { scene_index, reply }) = rx.recv().await {
+            assert_eq!(scene_index, 4);
+            assert!(reply.is_none());
+        } else {
+            panic!("expected RecallScene command");
+        }
     }
 }

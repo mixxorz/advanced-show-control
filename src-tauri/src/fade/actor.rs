@@ -71,10 +71,14 @@ async fn run_engine(
                                     tick_interval = None;
                                     complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
                                 }
-                                let _ = reply.send(Ok(()));
+                                if let Some(reply) = reply {
+                                    let _ = reply.send(Ok(()));
+                                }
                             }
                             Err(err) => {
-                                let _ = reply.send(Err(err));
+                                if let Some(reply) = reply {
+                                    let _ = reply.send(Err(err));
+                                }
                             }
                         }
                     }
@@ -82,7 +86,9 @@ async fn run_engine(
                         state.cancel_all_in_place();
                         tick_interval = None;
                         state.fan_out(FadeEvent::FadeAborted);
-                        let _ = reply.send(Ok(()));
+                        if let Some(reply) = reply {
+                            let _ = reply.send(Ok(()));
+                        }
                     }
                 }
             }
@@ -549,6 +555,7 @@ mod tests {
         ConnectionStatus, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1StateSnapshot,
         Lv1WriteParameter, test_actor_handle,
     };
+    use crate::runtime::commands::AppCommandError;
     use crate::runtime::events::AppEventBus;
 
     fn scene(index: i32, name: &str) -> FadeSceneIdentity {
@@ -602,8 +609,23 @@ mod tests {
         let lv1 = test_actor_handle(tx);
         let bus = AppCommandBus::new();
         let engine = spawn_engine(bus.clone(), lv1, event_bus.clone(), 0);
-        bus.set_fade(Some(engine.clone())).await;
         (event_bus, engine, rx)
+    }
+
+    async fn start_fade(
+        engine: &FadeEngineHandle,
+        config: FadeConfig,
+    ) -> Result<(), AppCommandError> {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        engine
+            .send(FadeCommand::RecallSceneFade {
+                config,
+                expected_generation: None,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| AppCommandError::FadeUnavailable)?;
+        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
     }
 
     async fn assert_pan_family_aux_event_does_not_override(parameter: FadeParameter) {
@@ -630,8 +652,9 @@ mod tests {
             }
         });
 
-        engine
-            .start_fade(fade_config(
+        start_fade(
+            &engine,
+            fade_config(
                 scene(1, "Intro"),
                 vec![
                     FadeTarget {
@@ -654,9 +677,10 @@ mod tests {
                     },
                 ],
                 1000,
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
 
         // Drain the initial fade setup writes and any immediate events before the aux report.
         while write_rx.try_recv().is_ok() {}
@@ -1142,8 +1166,9 @@ mod tests {
             }
         });
 
-        engine
-            .start_fade(fade_config(
+        start_fade(
+            &engine,
+            fade_config(
                 scene(1, "Intro"),
                 vec![
                     FadeTarget {
@@ -1160,9 +1185,10 @@ mod tests {
                     },
                 ],
                 120,
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
 
         let writes = tokio::time::timeout(std::time::Duration::from_secs(2), result_rx)
             .await
@@ -1197,7 +1223,6 @@ mod tests {
         let lv1 = test_actor_handle(tx);
         let bus = AppCommandBus::new();
         let engine = spawn_engine(bus.clone(), lv1, event_bus.clone(), 0);
-        bus.set_fade(Some(engine.clone())).await;
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 
@@ -1222,8 +1247,9 @@ mod tests {
             }
         });
 
-        engine
-            .start_fade(fade_config(
+        start_fade(
+            &engine,
+            fade_config(
                 scene(1, "Intro"),
                 vec![
                     FadeTarget {
@@ -1252,9 +1278,10 @@ mod tests {
                     },
                 ],
                 0,
-            ))
-            .await
-            .unwrap();
+            ),
+        )
+        .await
+        .unwrap();
 
         let writes = tokio::time::timeout(std::time::Duration::from_secs(1), result_rx)
             .await

@@ -1,5 +1,5 @@
 use advanced_show_control::fade::{
-    FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget, spawn_engine,
+    FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget, spawn_engine,
 };
 use advanced_show_control::lv1::{Lv1Event, SceneState, encode_frame, spawn_actor};
 use advanced_show_control::osc::OscArg;
@@ -68,7 +68,6 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
     let fade = spawn_engine(command_bus.clone(), lv1, event_bus, 0);
-    command_bus.set_fade(Some(fade.clone())).await;
 
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
@@ -88,23 +87,30 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     .await
     .expect("actor did not process /Channels within timeout");
 
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        command_bus.start_fade(FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        fade.send(FadeCommand::RecallSceneFade {
+            config: FadeConfig {
+                scene: FadeSceneIdentity {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
+                targets: vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                duration_ms: 500,
+                curve: FadeCurve::Linear,
             },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -10.0,
-            }],
-            duration_ms: 500,
-            curve: FadeCurve::Linear,
-        }),
-    )
+            expected_generation: None,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        rx.await.unwrap()
+    })
     .await
     .expect("start_fade timed out")
     .unwrap();

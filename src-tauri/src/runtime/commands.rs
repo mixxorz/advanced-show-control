@@ -4,7 +4,6 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::fade::{FadeConfig, FadeEngineHandle};
 use crate::lv1::{ChannelInfo, Lv1StateSnapshot};
 use crate::show::{
     CueSceneResult, LoadShowFileResult, NewShowFileResult, SceneConfig, SelectedSceneResult,
@@ -29,7 +28,6 @@ pub enum AppCommandError {
 
 #[derive(Clone, Default)]
 struct AppCommandTargets {
-    fade: Option<FadeEngineHandle>,
     show: Option<ShowStateHandle>,
     generation: u64,
 }
@@ -59,17 +57,13 @@ impl AppCommandBus {
         self.targets.lock().await.show = Some(show);
     }
 
-    pub(crate) async fn set_runtime_targets(&self, generation: u64, fade: FadeEngineHandle) {
+    pub(crate) async fn set_runtime_targets(&self, generation: u64) {
         let mut targets = self.targets.lock().await;
         targets.generation = generation;
-        targets.fade = Some(fade);
     }
 
     pub(crate) async fn clear_runtime_targets(&self, generation: u64) {
-        let mut targets = self.targets.lock().await;
-        if targets.generation == generation {
-            targets.fade = None;
-        }
+        let _ = generation;
     }
 
     pub async fn handle_runtime_disconnected(
@@ -117,10 +111,6 @@ impl AppCommandBus {
         Ok(crate::show::set_reconnect_state(&show, reconnect).await)
     }
 
-    pub async fn set_fade(&self, fade: Option<FadeEngineHandle>) {
-        self.targets.lock().await.fade = fade;
-    }
-
     pub async fn set_show(&self, show: Option<ShowStateHandle>) {
         self.targets.lock().await.show = show;
     }
@@ -133,33 +123,8 @@ impl AppCommandBus {
         self.targets.lock().await.generation
     }
 
-    pub async fn start_fade_if_generation(
-        &self,
-        expected: u64,
-        config: FadeConfig,
-    ) -> Result<(), AppCommandError> {
-        let targets = self.targets.lock().await;
-        if targets.generation != expected {
-            let result = Err(AppCommandError::StaleGeneration);
-            log_failure("start_fade_if_generation", &result);
-            return result;
-        }
-        let fade = targets.fade.clone().ok_or(AppCommandError::FadeUnavailable);
-        drop(targets);
-        let result = match fade {
-            Ok(fade) => fade
-                .start_fade_if_generation(expected, config)
-                .await
-                .map_err(|_| AppCommandError::FadeUnavailable),
-            Err(error) => Err(error),
-        };
-        log_failure("start_fade_if_generation", &result);
-        result
-    }
-
     pub async fn clear_targets(&self) {
         let mut targets = self.targets.lock().await;
-        targets.fade = None;
         targets.show = None;
         targets.generation += 1;
     }
@@ -354,30 +319,6 @@ impl AppCommandBus {
     ) -> Result<LoadShowFileResult, AppCommandError> {
         self.load_show_file_from_path(path, file, lv1).await
     }
-
-    /// Starts a fade without any generation check.
-    ///
-    /// Scene recall automation must prefer `start_fade_if_generation` so stale recall tasks
-    /// cannot dispatch after disconnect/reconnect.
-    pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
-        let fade = self.targets.lock().await.fade.clone();
-        let result = match fade {
-            Some(fade) => fade.start_fade(config).await,
-            None => Err(AppCommandError::FadeUnavailable),
-        };
-        log_failure("start_fade", &result);
-        result
-    }
-
-    pub async fn abort_all_fades(&self) -> Result<(), AppCommandError> {
-        let fade = self.targets.lock().await.fade.clone();
-        let result = match fade {
-            Some(fade) => fade.abort_all().await,
-            None => Err(AppCommandError::FadeUnavailable),
-        };
-        log_failure("abort_all_fades", &result);
-        result
-    }
 }
 
 impl Default for AppCommandBus {
@@ -386,23 +327,9 @@ impl Default for AppCommandBus {
     }
 }
 
-fn log_failure(command: &str, result: &Result<(), AppCommandError>) {
-    if let Err(error) = result {
-        tracing::error!(
-            event = "command_failed",
-            command,
-            error = %error,
-            "Command failed: {command}: {error}"
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fade::{
-        FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget,
-    };
     use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::AppEventBus;
     use crate::show::{
@@ -470,172 +397,6 @@ mod tests {
 
         update.await.unwrap();
         assert!(bus.targets.lock().await.show.is_some());
-    }
-
-    #[tokio::test]
-    async fn runtime_targets_clear_after_mutex_contention_releases() {
-        let bus = AppCommandBus::new();
-        let guard = bus.targets.lock().await;
-        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
-        let update_bus = bus.clone();
-
-        let update = tokio::spawn(async move {
-            update_bus.set_runtime_targets(7, fade).await;
-        });
-
-        tokio::task::yield_now().await;
-        assert!(!update.is_finished());
-        drop(guard);
-
-        update.await.unwrap();
-        assert_eq!(bus.targets.lock().await.generation, 7);
-
-        let guard = bus.targets.lock().await;
-        let clear_bus = bus.clone();
-        let clear = tokio::spawn(async move {
-            clear_bus.clear_runtime_targets(7).await;
-        });
-
-        tokio::task::yield_now().await;
-        assert!(!clear.is_finished());
-        drop(guard);
-
-        clear.await.unwrap();
-        let targets = bus.targets.lock().await;
-        assert!(targets.fade.is_none());
-    }
-
-    #[tokio::test]
-    async fn missing_fade_returns_fade_unavailable_without_event_bus_log() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new();
-        let config = FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 1,
-                parameter: FadeParameter::FaderDb,
-                target: -12.0,
-            }],
-            duration_ms: 1_000,
-            curve: FadeCurve::Linear,
-        };
-
-        let err = bus.start_fade(config).await.unwrap_err();
-
-        assert_eq!(err, AppCommandError::FadeUnavailable);
-
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn stale_generation_rejects_before_sending_fade_command() {
-        let bus = AppCommandBus::new();
-        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
-        bus.set_generation(2).await;
-
-        let config = FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 1,
-                parameter: FadeParameter::FaderDb,
-                target: -12.0,
-            }],
-            duration_ms: 1_000,
-            curve: FadeCurve::Linear,
-        };
-
-        let err = bus.start_fade_if_generation(1, config).await.unwrap_err();
-
-        assert_eq!(err, AppCommandError::StaleGeneration);
-        assert!(fade_rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn start_fade_if_generation_sends_expected_generation_to_fade_engine() {
-        let bus = AppCommandBus::new();
-        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_fade(Some(FadeEngineHandle::new(fade_tx))).await;
-        bus.set_generation(2).await;
-
-        let config = FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 1,
-                parameter: FadeParameter::FaderDb,
-                target: -12.0,
-            }],
-            duration_ms: 1_000,
-            curve: FadeCurve::Linear,
-        };
-
-        tokio::spawn(async move {
-            if let Some(FadeCommand::RecallSceneFade {
-                expected_generation,
-                reply,
-                ..
-            }) = fade_rx.recv().await
-            {
-                assert_eq!(expected_generation, Some(2));
-                let _ = reply.send(Ok(()));
-            }
-        });
-
-        assert_eq!(bus.start_fade_if_generation(2, config).await, Ok(()));
-    }
-
-    #[tokio::test]
-    async fn clearing_targets_invalidates_cloned_bus_handles() {
-        let bus = AppCommandBus::new();
-        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
-
-        tokio::spawn(async move {
-            if let Some(FadeCommand::RecallSceneFade { reply, .. }) = fade_rx.recv().await {
-                let _ = reply.send(Ok(()));
-            }
-        });
-
-        bus.set_fade(Some(fade)).await;
-        let cloned_bus = bus.clone();
-
-        let config = FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 1,
-                parameter: FadeParameter::FaderDb,
-                target: -12.0,
-            }],
-            duration_ms: 1_000,
-            curve: FadeCurve::Linear,
-        };
-
-        assert_eq!(cloned_bus.start_fade(config.clone()).await, Ok(()));
-
-        bus.clear_targets().await;
-
-        assert_eq!(
-            cloned_bus.start_fade(config).await,
-            Err(AppCommandError::FadeUnavailable)
-        );
     }
 
     #[tokio::test]

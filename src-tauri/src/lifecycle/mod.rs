@@ -140,15 +140,11 @@ impl AppLifecycle {
             return Err(RuntimeInstallRejection::StaleGeneration { handles });
         }
 
-        let fade = match handles.fade.clone() {
-            Some(fade) if handles.lv1.is_some() => fade,
-            _ => return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles }),
-        };
+        if handles.lv1.is_none() || handles.fade.is_none() {
+            return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles });
+        }
 
-        inner
-            .command_bus
-            .set_runtime_targets(generation, fade)
-            .await;
+        inner.command_bus.set_runtime_targets(generation).await;
         let mut handles = handles;
         handles.show_scene_list_monitor = Some(spawn_lv1_scene_list_monitor(
             self.show.clone(),
@@ -253,7 +249,8 @@ impl AppLifecycle {
         log_lv1_connected(&identity);
         let _ = lv1;
         let _ = fade;
-        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, lv1, event_bus);
+        let scene_recall_fader =
+            spawn_scene_recall_fader(generation, command_bus, lv1, fade, event_bus);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         let _ = app;
@@ -308,7 +305,8 @@ impl AppLifecycle {
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(command_bus.clone());
         }
-        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, lv1, event_bus);
+        let scene_recall_fader =
+            spawn_scene_recall_fader(generation, command_bus, lv1, fade, event_bus);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         let _ = app;
@@ -379,6 +377,10 @@ impl AppLifecycle {
 
     pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
         self.inner.lock().await.handles.lv1.clone()
+    }
+
+    pub async fn current_fade(&self) -> Option<FadeEngineHandle> {
+        self.inner.lock().await.handles.fade.clone()
     }
 
     pub(crate) async fn connected_lv1_identity(

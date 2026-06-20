@@ -8,9 +8,9 @@ pub enum FadeCommand {
     RecallSceneFade {
         config: FadeConfig,
         expected_generation: Option<u64>,
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
+        reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
     },
     AbortAll {
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
+        reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
     },
 }

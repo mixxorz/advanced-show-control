@@ -1,8 +1,6 @@
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
 use crate::fade::commands::FadeCommand;
-use crate::fade::types::FadeConfig;
-use crate::runtime::commands::AppCommandError;
 
 #[derive(Clone)]
 pub struct FadeEngineHandle {
@@ -14,42 +12,34 @@ impl FadeEngineHandle {
         Self { tx }
     }
 
-    pub async fn start_fade(&self, config: FadeConfig) -> Result<(), AppCommandError> {
-        self.start_fade_with_generation(None, config).await
-    }
-
-    pub async fn start_fade_if_generation(
+    pub async fn send(
         &self,
-        expected_generation: u64,
-        config: FadeConfig,
-    ) -> Result<(), AppCommandError> {
-        self.start_fade_with_generation(Some(expected_generation), config)
-            .await
+        command: FadeCommand,
+    ) -> Result<(), mpsc::error::SendError<FadeCommand>> {
+        self.tx.send(command).await
     }
+}
 
-    async fn start_fade_with_generation(
-        &self,
-        expected_generation: Option<u64>,
-        config: FadeConfig,
-    ) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(FadeCommand::RecallSceneFade {
-                config,
-                expected_generation,
-                reply,
-            })
-            .await
-            .map_err(|_| AppCommandError::FadeUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    pub async fn abort_all(&self) -> Result<(), AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(FadeCommand::AbortAll { reply })
-            .await
-            .map_err(|_| AppCommandError::FadeUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+    #[tokio::test]
+    async fn handle_sends_abort_without_reply() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let handle = FadeEngineHandle::new(tx);
+
+        assert!(
+            handle
+                .send(FadeCommand::AbortAll { reply: None })
+                .await
+                .is_ok()
+        );
+
+        if let Some(FadeCommand::AbortAll { reply }) = rx.recv().await {
+            assert!(reply.is_none());
+        } else {
+            panic!("expected AbortAll command");
+        }
     }
 }

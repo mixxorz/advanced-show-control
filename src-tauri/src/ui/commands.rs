@@ -1,6 +1,7 @@
 //! Tauri command adapter exports.
 
 use crate::connection_state::Lv1SystemIdentity;
+use crate::fade::FadeCommand;
 use crate::lifecycle::AppLifecycle;
 use crate::lv1::{Lv1ActorError, Lv1Command};
 use crate::runtime::commands::AppCommandError;
@@ -365,7 +366,7 @@ pub async fn recall_scene(
     let (reply, rx) = oneshot::channel();
     lv1.send(Lv1Command::RecallScene {
         scene_index: result.lv1_scene_index,
-        reply,
+        reply: Some(reply),
     })
     .await
     .map_err(|error| match error {
@@ -433,11 +434,19 @@ pub async fn reconnect_timed_out(
 
 #[tauri::command]
 pub async fn abort_all_fades(lifecycle: State<'_, AppLifecycle>) -> Result<(), String> {
-    lifecycle
-        .current_command_bus()
+    let fade = lifecycle
+        .current_fade()
         .await
-        .abort_all_fades()
+        .ok_or(AppCommandError::FadeUnavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    fade.send(FadeCommand::AbortAll { reply: Some(reply) })
         .await
+        .map_err(|_| AppCommandError::FadeUnavailable)
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
         .map_err(map_app_command_error)?;
     Ok(())
 }

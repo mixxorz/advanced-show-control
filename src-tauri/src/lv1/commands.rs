@@ -12,38 +12,38 @@ pub enum Lv1Command {
         group: i32,
         channel: i32,
         gain_db: f64,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
     SetPan {
         group: i32,
         channel: i32,
         value: f64,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
     SetBalance {
         group: i32,
         channel: i32,
         value: f64,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
     SetWidth {
         group: i32,
         channel: i32,
         value: f64,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
     SetMute {
         group: i32,
         channel: i32,
         muted: bool,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
     RecallScene {
         scene_index: i32,
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
     Flush {
-        reply: oneshot::Sender<Result<(), Lv1ActorError>>,
+        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
     },
 }
 

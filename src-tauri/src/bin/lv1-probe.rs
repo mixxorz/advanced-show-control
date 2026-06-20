@@ -1,6 +1,6 @@
 use advanced_show_control::fade::{
-    FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter, FadeSceneIdentity,
-    FadeTarget, spawn_engine,
+    FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
+    FadeSceneIdentity, FadeTarget, spawn_engine,
 };
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
@@ -705,7 +705,6 @@ async fn run_fade_test(
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
     let engine = spawn_engine(command_bus.clone(), lv1.clone(), event_bus.clone(), 0);
-    command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = event_bus.subscribe();
 
     // Wait for LV1 connection
@@ -754,22 +753,28 @@ async fn run_fade_test(
         ),
     }
 
-    let _ = engine
-        .start_fade(FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
+    let (reply, rx) = oneshot::channel();
+    engine
+        .send(FadeCommand::RecallSceneFade {
+            config: FadeConfig {
+                scene: FadeSceneIdentity {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
+                targets: vec![FadeTarget {
+                    group,
+                    channel,
+                    parameter: FadeParameter::FaderDb,
+                    target: target_db,
+                }],
+                duration_ms,
+                curve: fade_curve,
             },
-            targets: vec![FadeTarget {
-                group,
-                channel,
-                parameter: FadeParameter::FaderDb,
-                target: target_db,
-            }],
-            duration_ms,
-            curve: fade_curve,
+            expected_generation: None,
+            reply: Some(reply),
         })
-        .await;
+        .await?;
+    let _ = rx.await?;
 
     loop {
         match fade_events.recv().await {
@@ -987,7 +992,6 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
     let engine = spawn_engine(command_bus.clone(), lv1.clone(), event_bus.clone(), 0);
-    command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = event_bus.subscribe();
 
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -1060,7 +1064,14 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
                             "reason": reason,
                         }),
                     )?;
-                    let _ = engine.abort_all().await;
+                    let (reply, rx) = oneshot::channel();
+                    if engine
+                        .send(FadeCommand::AbortAll { reply: Some(reply) })
+                        .await
+                        .is_ok()
+                    {
+                        let _ = rx.await;
+                    }
                     tokio::time::sleep(Duration::from_millis(50)).await;
                     drain_pending_smoke_events(&mut fade_events);
                     failed_reason = Some(reason);
@@ -1144,7 +1155,15 @@ async fn run_pan_family_smoke_step(
         }),
     )?;
 
-    engine.start_fade(config).await?;
+    let (reply, rx) = oneshot::channel();
+    engine
+        .send(FadeCommand::RecallSceneFade {
+            config,
+            expected_generation: None,
+            reply: Some(reply),
+        })
+        .await?;
+    rx.await??;
 
     loop {
         match fade_events.recv().await {
@@ -1474,7 +1493,7 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
                 group: ch.group,
                 channel: ch.channel,
                 gain_db: ch.gain_db,
-                reply,
+                reply: Some(reply),
             })
             .await
         {
@@ -1492,7 +1511,7 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
         }
     }
     let (reply, rx) = oneshot::channel();
-    if let Err(err) = lv1.send(Lv1Command::Flush { reply }).await {
+    if let Err(err) = lv1.send(Lv1Command::Flush { reply: Some(reply) }).await {
         failures.push(format!("gain flush failed ({err})"));
     }
     if let Ok(result) = rx.await
@@ -1508,7 +1527,7 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
                 group: ch.group,
                 channel: ch.channel,
                 muted: ch.muted,
-                reply,
+                reply: Some(reply),
             })
             .await
         {
@@ -1526,7 +1545,7 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
         }
     }
     let (reply, rx) = oneshot::channel();
-    if let Err(err) = lv1.send(Lv1Command::Flush { reply }).await {
+    if let Err(err) = lv1.send(Lv1Command::Flush { reply: Some(reply) }).await {
         failures.push(format!("mute flush failed ({err})"));
     }
     if let Ok(result) = rx.await
@@ -1588,13 +1607,13 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
             group: ch.group,
             channel: ch.channel,
             muted: true,
-            reply,
+            reply: Some(reply),
         })
         .await?;
         rx.await??;
     }
     let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::Flush { reply }).await?;
+    lv1.send(Lv1Command::Flush { reply: Some(reply) }).await?;
     rx.await??;
     println!("[vegas] muted captured faders; press Ctrl-C to stop and restore");
 
@@ -1615,7 +1634,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
                         group: ch.group,
                         channel: ch.channel,
                         gain_db: gain_db_at(ch.group, ch.channel, tick),
-                        reply,
+                        reply: Some(reply),
                     }).await {
                         Ok(()) => match rx.await {
                             Ok(result) => result.map_err(|err| err.into()),

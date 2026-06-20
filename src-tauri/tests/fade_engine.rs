@@ -1,6 +1,6 @@
 use advanced_show_control::fade::{
-    FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter, FadeSceneIdentity,
-    FadeTarget, FadeTargetKey, spawn_engine,
+    FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
+    FadeSceneIdentity, FadeTarget, FadeTargetKey, spawn_engine,
 };
 use advanced_show_control::lv1::{
     Lv1ActorHandle, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame, spawn_actor,
@@ -183,8 +183,33 @@ async fn spawn_runtime_for_test(
 ) -> (AppCommandBus, FadeEngineHandle) {
     let bus = AppCommandBus::new();
     let engine = spawn_engine(bus.clone(), lv1, event_bus, 0);
-    bus.set_fade(Some(engine.clone())).await;
     (bus, engine)
+}
+
+async fn start_fade(engine: &FadeEngineHandle, config: FadeConfig) -> Result<(), String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine
+        .send(FadeCommand::RecallSceneFade {
+            config,
+            expected_generation: None,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| "fade command channel closed".to_string())?;
+    rx.await
+        .map_err(|_| "fade reply channel closed".to_string())?
+        .map_err(|err| err.to_string())
+}
+
+async fn abort_all(engine: &FadeEngineHandle) -> Result<(), String> {
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    engine
+        .send(FadeCommand::AbortAll { reply: Some(reply) })
+        .await
+        .map_err(|_| "fade command channel closed".to_string())?;
+    rx.await
+        .map_err(|_| "fade reply channel closed".to_string())?
+        .map_err(|err| err.to_string())
 }
 
 #[tokio::test]
@@ -240,8 +265,9 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
-        .start_fade(fade_config(
+    start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -250,9 +276,10 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
                 target: -12.5,
             }],
             0,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     let first_gain = tokio::task::spawn_blocking(move || {
         gain_rx
@@ -329,8 +356,9 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
-        .start_fade(fade_config(
+    start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -339,9 +367,10 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
                 target: -12.0,
             }],
             100,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     let result = tokio::task::spawn_blocking(move || {
@@ -392,13 +421,13 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
     let engine = spawn_engine(command_bus.clone(), lv1, event_bus.clone(), 0);
-    command_bus.set_fade(Some(engine.clone())).await;
     let mut app_events = event_bus.subscribe();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
-        .start_fade(fade_config(
+    start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -407,9 +436,10 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
                 target: -12.0,
             }],
             0,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     let completed = tokio::time::timeout(std::time::Duration::from_millis(150), async {
         loop {
@@ -492,8 +522,9 @@ async fn zero_duration_pan_family_targets_send_exact_final_values() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    engine
-        .start_fade(fade_config(
+    start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![
                 FadeTarget {
@@ -516,9 +547,10 @@ async fn zero_duration_pan_family_targets_send_exact_final_values() {
                 },
             ],
             0,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     let mut sent = Vec::new();
     for _ in 0..3 {
@@ -580,8 +612,9 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![
                 FadeTarget {
@@ -598,8 +631,9 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                 },
             ],
             10_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -721,8 +755,9 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
     })
     .await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![
                 FadeTarget {
@@ -739,8 +774,9 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
                 },
             ],
             10_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -814,8 +850,9 @@ async fn same_scene_non_fader_targets_do_not_finish_active_fader_fade() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     let intro = scene(1, "Intro");
-    engine
-        .start_fade(fade_config(
+    start_fade(
+        &engine,
+        fade_config(
             intro.clone(),
             vec![FadeTarget {
                 group: 0,
@@ -824,9 +861,10 @@ async fn same_scene_non_fader_targets_do_not_finish_active_fader_fade() {
                 target: -12.0,
             }],
             1_000,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -835,8 +873,9 @@ async fn same_scene_non_fader_targets_do_not_finish_active_fader_fade() {
     )
     .await;
 
-    engine
-        .start_fade(fade_config(
+    start_fade(
+        &engine,
+        fade_config(
             intro,
             vec![FadeTarget {
                 group: 0,
@@ -845,9 +884,10 @@ async fn same_scene_non_fader_targets_do_not_finish_active_fader_fade() {
                 target: -12.0,
             }],
             0,
-        ))
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
 
     no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(250)).await;
 }
@@ -875,8 +915,9 @@ async fn engine_emits_fade_started_and_completed() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
@@ -889,8 +930,9 @@ async fn engine_emits_fade_started_and_completed() {
             }],
             duration_ms: 500,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -928,8 +970,9 @@ async fn engine_abort_all_stops_fade() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
@@ -942,8 +985,9 @@ async fn engine_abort_all_stops_fade() {
             }],
             duration_ms: 10_000,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -952,7 +996,7 @@ async fn engine_abort_all_stops_fade() {
     )
     .await;
 
-    let _ = engine.abort_all().await;
+    let _ = abort_all(&engine).await;
 
     wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(2), |e| {
         matches!(e, FadeEvent::FadeAborted)
@@ -995,8 +1039,9 @@ async fn engine_detects_manual_override() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
@@ -1009,8 +1054,9 @@ async fn engine_detects_manual_override() {
             }],
             duration_ms: 10_000,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1048,8 +1094,9 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
@@ -1062,8 +1109,9 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
             }],
             duration_ms: 30_000,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1072,8 +1120,9 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
     )
     .await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 2,
                 name: "Verse".to_string(),
@@ -1086,8 +1135,9 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
             }],
             duration_ms: 500,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1125,8 +1175,9 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -1135,8 +1186,9 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
                 target: -30.0,
             }],
             30_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1145,8 +1197,9 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
     )
     .await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(2, "Verse"),
             vec![FadeTarget {
                 group: 0,
@@ -1155,8 +1208,9 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
                 target: -10.0,
             }],
             500,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1203,8 +1257,9 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -1213,8 +1268,9 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
                 target: -30.0,
             }],
             30_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1223,8 +1279,9 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
     )
     .await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(2, "Verse"),
             vec![FadeTarget {
                 group: 0,
@@ -1233,8 +1290,9 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
                 target: -10.0,
             }],
             30_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1243,8 +1301,9 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
     )
     .await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -1253,8 +1312,9 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
                 target: -30.0,
             }],
             30_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     no_global_fade_completed_for(&mut app_events, std::time::Duration::from_millis(500)).await;
 }
@@ -1314,8 +1374,9 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(1, "Intro"),
             vec![FadeTarget {
                 group: 0,
@@ -1324,8 +1385,9 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
                 target: -30.0,
             }],
             1_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1337,8 +1399,9 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     while gain_rx.try_recv().is_ok() {}
 
-    let _ = engine
-        .start_fade(fade_config(
+    let _ = start_fade(
+        &engine,
+        fade_config(
             scene(2, "Verse"),
             vec![FadeTarget {
                 group: 0,
@@ -1347,8 +1410,9 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
                 target: -10.0,
             }],
             1_000,
-        ))
-        .await;
+        ),
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1400,8 +1464,9 @@ async fn disconnect_aborts_active_fade() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
@@ -1414,8 +1479,9 @@ async fn disconnect_aborts_active_fade() {
             }],
             duration_ms: 10_000,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,
@@ -1490,8 +1556,9 @@ async fn override_of_last_target_emits_terminal_event() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    let _ = engine
-        .start_fade(FadeConfig {
+    let _ = start_fade(
+        &engine,
+        FadeConfig {
             scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
@@ -1504,8 +1571,9 @@ async fn override_of_last_target_emits_terminal_event() {
             }],
             duration_ms: 10_000,
             curve: FadeCurve::Linear,
-        })
-        .await;
+        },
+    )
+    .await;
 
     wait_for_app_fade_event(
         &mut app_events,

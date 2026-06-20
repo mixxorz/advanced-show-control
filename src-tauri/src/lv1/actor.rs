@@ -141,25 +141,39 @@ fn drain_disconnected_command(
             // Fire-and-forget while disconnected; callers expect possible loss
         }
         Lv1Command::SetGain { reply, .. } => {
-            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            }
         }
         Lv1Command::SetPan { reply, .. } => {
-            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            }
         }
         Lv1Command::SetBalance { reply, .. } => {
-            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            }
         }
         Lv1Command::SetWidth { reply, .. } => {
-            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            }
         }
         Lv1Command::SetMute { reply, .. } => {
-            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            }
         }
         Lv1Command::RecallScene { reply, .. } => {
-            let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            if let Some(reply) = reply {
+                let _ = reply.send(Err(Lv1ActorError::NotConnected));
+            }
         }
         Lv1Command::Flush { reply } => {
-            let _ = reply.send(flush_reply.clone());
+            if let Some(reply) = reply {
+                let _ = reply.send(flush_reply.clone());
+            }
         }
     }
 }
@@ -372,7 +386,9 @@ async fn run_connected(
                         });
 
                         let failed = result.is_err();
-                        let _ = reply.send(result);
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
                         if failed {
                             return DisconnectReason::TcpError(
                                 "SetGain send failed (encode or writer queue)".to_string(),
@@ -395,7 +411,9 @@ async fn run_connected(
                         });
 
                         let failed = result.is_err();
-                        let _ = reply.send(result);
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
                         if failed {
                             return DisconnectReason::TcpError(
                                 "SetPan send failed (encode or writer queue)".to_string(),
@@ -418,7 +436,9 @@ async fn run_connected(
                         });
 
                         let failed = result.is_err();
-                        let _ = reply.send(result);
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
                         if failed {
                             return DisconnectReason::TcpError(
                                 "SetBalance send failed (encode or writer queue)".to_string(),
@@ -441,7 +461,9 @@ async fn run_connected(
                         });
 
                         let failed = result.is_err();
-                        let _ = reply.send(result);
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
                         if failed {
                             return DisconnectReason::TcpError(
                                 "SetWidth send failed (encode or writer queue)".to_string(),
@@ -464,7 +486,9 @@ async fn run_connected(
                         });
 
                         let failed = result.is_err();
-                        let _ = reply.send(result);
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
                         if failed {
                             return DisconnectReason::TcpError(
                                 "SetMute send failed (encode or writer queue)".to_string(),
@@ -483,7 +507,9 @@ async fn run_connected(
                         });
 
                         let failed = result.is_err();
-                        let _ = reply.send(result);
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
                         if failed {
                             return DisconnectReason::TcpError(
                                 "RecallScene send failed (encode or writer queue)".to_string(),
@@ -491,7 +517,9 @@ async fn run_connected(
                         }
                     }
                     Some(Lv1Command::Flush { reply }) => {
-                        if let Err(reply) = enqueue_writer_flush(&writer_tx, reply) {
+                        if let Some(reply) = reply
+                            && let Err(reply) = enqueue_writer_flush(&writer_tx, reply)
+                        {
                             let _ = reply.send(Err(Lv1ActorError::CommandSendFailed));
                             return DisconnectReason::TcpError(
                                 "flush enqueue failed (writer queue full or gone)".to_string(),
@@ -529,7 +557,10 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(1);
         let mut state = ActorState::new(AppEventBus::default(), 0);
         let (reply_tx, reply_rx) = oneshot::channel();
-        tx.try_send(Lv1Command::Flush { reply: reply_tx }).unwrap();
+        tx.try_send(Lv1Command::Flush {
+            reply: Some(reply_tx),
+        })
+        .unwrap();
         drop(tx);
 
         let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
@@ -546,7 +577,7 @@ mod tests {
         drain_disconnected_command(
             Lv1Command::RecallScene {
                 scene_index: 4,
-                reply,
+                reply: Some(reply),
             },
             &state,
             Err(Lv1ActorError::NotConnected),

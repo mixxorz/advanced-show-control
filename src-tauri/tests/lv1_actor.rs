@@ -248,7 +248,7 @@ async fn actor_handles_set_gain_command() {
                 group: 0,
                 channel: 0,
                 gain_db: -20.0,
-                reply,
+                reply: Some(reply),
             })
             .await
             .is_ok()
@@ -304,7 +304,7 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
                 group: 0,
                 channel: 1,
                 gain_db: -12.5,
-                reply,
+                reply: Some(reply),
             })
             .await
             .is_ok()
@@ -374,7 +374,7 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
                 group: 0,
                 channel: 1,
                 muted: true,
-                reply,
+                reply: Some(reply),
             })
             .await
             .is_ok()
@@ -470,7 +470,7 @@ async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
                 group: 0,
                 channel: 1,
                 muted: true,
-                reply,
+                reply: Some(reply),
             })
             .await?;
         rx.await.unwrap()
@@ -523,7 +523,7 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
             group: 0,
             channel: 1,
             muted: true,
-            reply,
+            reply: Some(reply),
         })
         .await;
     if send_result.is_ok() {
@@ -578,14 +578,19 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
                 group: 0,
                 channel: 1,
                 muted: true,
-                reply,
+                reply: Some(reply),
             })
             .await
             .is_ok()
     );
     assert!(rx.await.unwrap().is_ok());
     let (reply, rx) = oneshot::channel();
-    assert!(handle.send(Lv1Command::Flush { reply }).await.is_ok());
+    assert!(
+        handle
+            .send(Lv1Command::Flush { reply: Some(reply) })
+            .await
+            .is_ok()
+    );
     assert!(rx.await.unwrap().is_ok());
 
     loop {
@@ -645,14 +650,19 @@ async fn actor_flush_waits_for_prior_set_gain_command() {
                 group: 0,
                 channel: 1,
                 gain_db: -9.5,
-                reply,
+                reply: Some(reply),
             })
             .await
             .is_ok()
     );
     assert!(rx.await.unwrap().is_ok());
     let (reply, rx) = oneshot::channel();
-    assert!(handle.send(Lv1Command::Flush { reply }).await.is_ok());
+    assert!(
+        handle
+            .send(Lv1Command::Flush { reply: Some(reply) })
+            .await
+            .is_ok()
+    );
     assert!(rx.await.unwrap().is_ok());
 
     loop {

@@ -1,5 +1,6 @@
 use tokio::sync::oneshot;
 
+use crate::fade::{FadeCommand, FadeEngineHandle};
 use crate::lv1::{
     ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot, SceneState,
 };
@@ -30,6 +31,7 @@ pub fn spawn_scene_recall_fader(
     generation: u64,
     command_bus: AppCommandBus,
     lv1: Lv1ActorHandle,
+    fade: FadeEngineHandle,
     event_bus: AppEventBus,
 ) -> tokio::task::JoinHandle<()> {
     let mut events = event_bus.subscribe();
@@ -76,6 +78,7 @@ pub fn spawn_scene_recall_fader(
                             generation,
                             &command_bus,
                             &lv1,
+                            &fade,
                             &event_bus,
                                 &mut recall_state,
                                 observation,
@@ -120,6 +123,7 @@ async fn process_scene_observation(
     generation: u64,
     command_bus: &AppCommandBus,
     lv1: &Lv1ActorHandle,
+    fade: &FadeEngineHandle,
     event_bus: &AppEventBus,
     recall_state: &mut SceneRecallState,
     observation: PendingSceneObservation,
@@ -227,12 +231,29 @@ async fn process_scene_observation(
                     scene_label: scene_label.clone(),
                 },
             );
-            match command_bus
-                .start_fade_if_generation(generation, fade_config)
-                .await
-            {
-                Ok(()) => (),
-                Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
+            let (reply, rx) = oneshot::channel();
+            let result = if !is_generation_current(generation, command_bus).await {
+                Err(crate::runtime::commands::AppCommandError::StaleGeneration)
+            } else {
+                match fade
+                    .send(FadeCommand::RecallSceneFade {
+                        config: fade_config,
+                        expected_generation: Some(generation),
+                        reply: Some(reply),
+                    })
+                    .await
+                {
+                    Ok(()) => match rx.await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            Err(crate::runtime::commands::AppCommandError::ReplyChannelClosed)
+                        }
+                    },
+                    Err(_) => Err(crate::runtime::commands::AppCommandError::FadeUnavailable),
+                }
+            };
+            match result {
+                Ok(()) | Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
                 Err(err) => {
                     event_bus.publish_scene_recall(
                         generation,
@@ -422,8 +443,9 @@ mod tests {
         let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
         drop(lv1_rx);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         arm_recall_state(&event_bus).await;
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
@@ -448,16 +470,22 @@ mod tests {
         command_bus.set_generation(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade_tx, fade_rx) = tokio::sync::mpsc::channel(1);
+        drop(fade_rx);
+        let fade = FadeEngineHandle::new(fade_tx);
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
             event: Lv1Event::SceneChanged(intro_scene()),
         });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
 
         assert!(next_blocked_scene_recall_event(&mut events).await);
 
@@ -474,11 +502,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
@@ -534,11 +561,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
@@ -574,11 +600,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         event_bus.publish(AppEvent::Lv1 {
@@ -627,11 +652,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
 
         event_bus.publish(AppEvent::Lv1 {
@@ -676,11 +700,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
 
         event_bus.publish(AppEvent::Lv1 {
@@ -727,11 +750,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
 
         event_bus.publish(AppEvent::Lv1 {
@@ -777,11 +799,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
@@ -830,11 +851,10 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
@@ -904,11 +924,10 @@ mod tests {
         let (lv1, release_lv1, server) =
             spawn_fake_lv1_with_mismatched_scene(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
@@ -964,14 +983,13 @@ mod tests {
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show_with_duration(&show, 0).await;
         let _ = crate::show::set_scene_scope_faders_enabled(&show, "1::Intro".to_string(), false)
             .await
             .unwrap();
 
-        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, event_bus.clone());
+        let handle = spawn_scene_recall_fader(1, command_bus.clone(), lv1, fade, event_bus.clone());
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
@@ -1089,25 +1107,25 @@ mod tests {
                     }
                     crate::lv1::Lv1Command::WriteBatch(_) => {}
                     crate::lv1::Lv1Command::SetGain { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetPan { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetBalance { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetWidth { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetMute { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::RecallScene { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::Flush { reply } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                 }
             }
@@ -1152,25 +1170,25 @@ mod tests {
                     }
                     crate::lv1::Lv1Command::WriteBatch(_) => {}
                     crate::lv1::Lv1Command::SetGain { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetPan { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetBalance { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetWidth { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::SetMute { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::RecallScene { reply, .. } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::Flush { reply } => {
-                        let _ = reply.send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(()));
                     }
                 }
             }
@@ -1228,7 +1246,7 @@ mod tests {
                 if let FadeCommand::RecallSceneFade { config, reply, .. } = command {
                     let _ = seen_tx.send(config.clone()).await;
                     starts_clone.fetch_add(1, Ordering::SeqCst);
-                    let _ = reply.send(Ok(()));
+                    let _ = reply.unwrap().send(Ok(()));
                 }
             }
         });
