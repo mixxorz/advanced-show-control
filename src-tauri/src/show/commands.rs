@@ -3,44 +3,46 @@
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use crate::show::show_file::{LoadValidationReport, ShowFile, export_show_file, import_show_file};
+use serde::{Deserialize, Serialize};
 
 use super::handle::ShowStateHandle;
 use super::types::SceneConfig;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShowCommandResult {
     pub changed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectCommandResult {
     pub changed: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CueSceneResult {
     pub changed: bool,
     pub scene: SceneConfig,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SelectedSceneResult {
     pub scene: SceneConfig,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewShowFileResult {
     pub selected_scene_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadShowFileResult {
     pub selected_scene_id: Option<String>,
     pub saved_at: String,
+    #[serde(skip)]
     pub report: LoadValidationReport,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecallSceneResult {
     pub scene: SceneConfig,
     pub lv1_scene_index: i32,

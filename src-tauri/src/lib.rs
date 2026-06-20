@@ -1,5 +1,4 @@
 pub mod app_state;
-pub mod commands;
 pub mod connection_preferences;
 pub mod connection_state;
 pub mod diagnostics;
