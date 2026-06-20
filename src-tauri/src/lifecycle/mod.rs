@@ -212,6 +212,58 @@ impl AppLifecycle {
         );
         let fade =
             crate::fade::actor::spawn_engine(command_bus.clone(), event_bus.clone(), generation);
+        self.finish_connect_transaction(
+            app,
+            identity,
+            failure_mode,
+            generation,
+            command_bus,
+            event_bus,
+            lv1,
+            fade,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_connect_transaction<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        identity: crate::connection_state::Lv1SystemIdentity,
+        failure_mode: ConnectFailureMode,
+        generation: u64,
+        command_bus: AppCommandBus,
+        event_bus: AppEventBus,
+        lv1: crate::lv1::handle::Lv1ActorHandle,
+        fade: crate::fade::handle::FadeEngineHandle,
+    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+        self.finish_connect_transaction_inner(
+            app,
+            identity,
+            failure_mode,
+            generation,
+            command_bus,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_connect_transaction_inner<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        identity: crate::connection_state::Lv1SystemIdentity,
+        failure_mode: ConnectFailureMode,
+        generation: u64,
+        command_bus: AppCommandBus,
+        event_bus: AppEventBus,
+        lv1: crate::lv1::handle::Lv1ActorHandle,
+        fade: crate::fade::handle::FadeEngineHandle,
+        before_scene_recall_start: Option<Box<dyn FnOnce(AppCommandBus) + Send>>,
+    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
 
         if self
@@ -222,7 +274,12 @@ impl AppLifecycle {
             return Err("generation is stale".to_string());
         }
 
-        let initial_snapshot = lv1.get_state().await;
+        let initial_snapshot = self
+            .current_command_bus()
+            .await
+            .get_lv1_state()
+            .await
+            .map_err(|error| error.to_string())?;
         if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
             let _ = self
@@ -236,6 +293,9 @@ impl AppLifecycle {
             .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
             .await
             .map_err(|error| error.to_string())?;
+        if let Some(before_scene_recall_start) = before_scene_recall_start {
+            before_scene_recall_start(command_bus.clone());
+        }
         let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
         let _ = app;
         Ok(connect_result)
@@ -461,8 +521,43 @@ mod tests {
     use super::*;
     use crate::connection_state::ReconnectState;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
+    use crate::fade::handle::FadeEngineHandle;
+    use crate::lv1::commands::Lv1Command;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
-    use tokio::sync::mpsc;
+    use tauri::test::mock_app;
+    use tokio::sync::{mpsc, oneshot};
+
+    fn fake_lv1_handle(
+        snapshot: crate::lv1::types::Lv1StateSnapshot,
+    ) -> crate::lv1::handle::Lv1ActorHandle {
+        let (tx, mut rx) = mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(snapshot.clone());
+                }
+            }
+        });
+        crate::lv1::handle::Lv1ActorHandle::new(tx)
+    }
+
+    fn connected_snapshot() -> crate::lv1::types::Lv1StateSnapshot {
+        crate::lv1::types::Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![],
+            channels: vec![],
+        }
+    }
+
+    fn disconnected_snapshot() -> crate::lv1::types::Lv1StateSnapshot {
+        crate::lv1::types::Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Disconnected,
+            scene: None,
+            scene_list: vec![],
+            channels: vec![],
+        }
+    }
 
     #[tokio::test]
     async fn lifecycle_allocates_monotonic_generations() {
@@ -622,6 +717,86 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn connect_failure_clears_runtime_targets_after_failed_initial_lv1_state() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let command_bus = lifecycle.current_command_bus().await;
+        let lv1 = fake_lv1_handle(disconnected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity,
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                command_bus,
+                lifecycle.event_bus.clone(),
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(matches!(result, Err(message) if message == "LV1 did not connect"));
+        assert!(matches!(
+            lifecycle.current_command_bus().await.get_lv1_state().await,
+            Err(crate::runtime::commands::AppCommandError::Lv1Unavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn connect_installs_runtime_targets_before_scene_recall_startup() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let command_bus = lifecycle.current_command_bus().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+        let (seen_tx, seen_rx) = oneshot::channel();
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity,
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                command_bus,
+                event_bus,
+                lv1,
+                fade,
+                Some(Box::new(move |bus: AppCommandBus| {
+                    let seen_tx = seen_tx;
+                    tokio::spawn(async move {
+                        let ok = matches!(bus.get_lv1_state().await, Ok(snapshot) if snapshot.connection == crate::lv1::types::ConnectionStatus::Connected);
+                        let _ = seen_tx.send(ok);
+                    });
+                })),
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(matches!(seen_rx.await, Ok(true)));
     }
 
     #[tokio::test]
