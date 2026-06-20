@@ -16,7 +16,7 @@ use super::tcp::{
     read_next_async,
 };
 use super::types::ConnectionStatus;
-use crate::osc::OscArg;
+use crate::lv1::osc::OscArg;
 use crate::runtime::events::AppEventBus;
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);

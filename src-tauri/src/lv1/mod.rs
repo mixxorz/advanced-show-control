@@ -3,6 +3,7 @@ mod commands;
 mod discovery;
 mod events;
 mod handle;
+pub mod osc;
 mod parsers;
 pub mod probe;
 mod state;

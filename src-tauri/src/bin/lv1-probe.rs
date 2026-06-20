@@ -2,12 +2,12 @@ use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
     FadeSceneIdentity, FadeTarget, build_engine,
 };
+use advanced_show_control::lv1::osc::OscArg;
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
     ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1TcpClient, build_actor,
     decode_frame_payload, discover, pong_for_ping, resolve_target,
 };
-use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -1997,15 +1997,15 @@ mod tests {
             let (mut stream, _) = listener.accept().unwrap();
             std::thread::sleep(Duration::from_millis(150));
 
-            let mut args = vec![advanced_show_control::osc::OscArg::Int(1)];
-            args.push(advanced_show_control::osc::OscArg::String(
+            let mut args = vec![advanced_show_control::lv1::osc::OscArg::Int(1)];
+            args.push(advanced_show_control::lv1::osc::OscArg::String(
                 "Channel 1".to_string(),
             ));
-            args.push(advanced_show_control::osc::OscArg::Int(0));
-            args.push(advanced_show_control::osc::OscArg::Int(0));
-            args.push(advanced_show_control::osc::OscArg::Double(-9.1));
+            args.push(advanced_show_control::lv1::osc::OscArg::Int(0));
+            args.push(advanced_show_control::lv1::osc::OscArg::Int(0));
+            args.push(advanced_show_control::lv1::osc::OscArg::Double(-9.1));
             for _ in 0..15 {
-                args.push(advanced_show_control::osc::OscArg::Int(0));
+                args.push(advanced_show_control::lv1::osc::OscArg::Int(0));
             }
 
             let frame = advanced_show_control::lv1::encode_frame("/Channels", &args).unwrap();
@@ -2057,26 +2057,26 @@ mod tests {
         let server = tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let channels = vec![
-                advanced_show_control::osc::OscArg::Int(1),
-                advanced_show_control::osc::OscArg::String("Channel 1".to_string()),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Double(-9.1),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(1),
+                advanced_show_control::lv1::osc::OscArg::String("Channel 1".to_string()),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Double(-9.1),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
             ];
             let frame = advanced_show_control::lv1::encode_frame("/Channels", &channels).unwrap();
             stream.write_all(&frame).unwrap();
@@ -2084,9 +2084,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
 
             let mute_on = vec![
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Bool(true),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Bool(true),
             ];
             let frame =
                 advanced_show_control::lv1::encode_frame("/Notify/Track/Out/Mute", &mute_on)
@@ -2096,9 +2096,8 @@ mod tests {
             std::thread::sleep(Duration::from_millis(80));
 
             let mute_off = vec![
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Int(0),
-                advanced_show_control::osc::OscArg::Bool(false),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Bool(false),
             ];
             let frame =
                 advanced_show_control::lv1::encode_frame("/Notify/Track/Out/Mute", &mute_off)

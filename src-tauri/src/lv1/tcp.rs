@@ -1,7 +1,7 @@
 //! Waves LV1 OSC-over-TCP framing and client behavior.
 
 use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
-use crate::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
+use crate::lv1::osc::{OscArg, OscError, OscMessage, decode_packet, encode_message};
 
 type TcpResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -338,7 +338,8 @@ mod tests {
     fn decode_frame_payload_logs_osc_rx_at_frame_boundary() {
         let frame = Lv1Frame {
             header: DEFAULT_HEADER,
-            payload: crate::osc::encode_message("/CurrentScene", &[OscArg::Int64(123)]).unwrap(),
+            payload: crate::lv1::osc::encode_message("/CurrentScene", &[OscArg::Int64(123)])
+                .unwrap(),
         };
 
         let logs = capture_osc_logs(|| {
@@ -361,7 +362,7 @@ mod tests {
         for address in ["/ping", "/pong", "/Notify/TempoBlink"] {
             let frame = Lv1Frame {
                 header: DEFAULT_HEADER,
-                payload: crate::osc::encode_message(address, &[OscArg::Int64(123)]).unwrap(),
+                payload: crate::lv1::osc::encode_message(address, &[OscArg::Int64(123)]).unwrap(),
             };
 
             let logs = capture_osc_logs(|| {

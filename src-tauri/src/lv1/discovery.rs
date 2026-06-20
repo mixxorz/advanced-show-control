@@ -1,6 +1,6 @@
 //! Waves LV1 custom /zDNS discovery.
 
-use crate::osc::{OscArg, OscError, decode_packet};
+use crate::lv1::osc::{OscArg, OscError, decode_packet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::str::FromStr;
 
@@ -239,7 +239,7 @@ pub fn parse_zdns_packet(bytes: &[u8], source: &str) -> Result<DiscoveryEntry, D
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::osc::encode_message;
+    use crate::lv1::osc::encode_message;
 
     #[test]
     fn parses_zdns_packet_and_ranks_ipv4_addresses() {

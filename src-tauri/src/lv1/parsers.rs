@@ -1,4 +1,4 @@
-use crate::osc::OscArg;
+use crate::lv1::osc::OscArg;
 
 use super::types::{ChannelInfo, SceneListEntry};
 

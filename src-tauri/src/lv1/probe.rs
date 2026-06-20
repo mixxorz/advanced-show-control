@@ -1,6 +1,6 @@
 //! Phase 1 probe logging and message classification.
 
-use crate::osc::{OscArg, OscMessage};
+use crate::lv1::osc::{OscArg, OscMessage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum MessageKind {

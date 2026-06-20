@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use crate::osc::OscArg;
+use crate::lv1::osc::OscArg;
 use crate::runtime::events::AppEventBus;
 
 use super::events::Lv1Event;
@@ -173,7 +173,7 @@ impl ActorState {
     }
 }
 
-pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessage) {
+pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscMessage) {
     if is_diagnostic_address(&msg.address) {
         state.diagnose(format!(
             "received {} args_count={}",
@@ -193,7 +193,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
             }
         },
         "/Notify/CurSceneIndex" => {
-            if let Some(crate::osc::OscArg::Int(index)) = msg.args.first()
+            if let Some(crate::lv1::osc::OscArg::Int(index)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_index(*index)
             {
                 state.scene = Some(scene.clone());
@@ -201,7 +201,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
             }
         }
         "/Notify/Scene/Name" => {
-            if let Some(crate::osc::OscArg::String(name)) = msg.args.first()
+            if let Some(crate::lv1::osc::OscArg::String(name)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_name(name.clone())
             {
                 state.scene = Some(scene.clone());
@@ -220,9 +220,9 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         },
         "/Notify/Track/Out/Gain" => {
             if let (
-                Some(crate::osc::OscArg::Int(group)),
-                Some(crate::osc::OscArg::Int(channel)),
-                Some(crate::osc::OscArg::Double(gain_db)),
+                Some(crate::lv1::osc::OscArg::Int(group)),
+                Some(crate::lv1::osc::OscArg::Int(channel)),
+                Some(crate::lv1::osc::OscArg::Double(gain_db)),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
             {
                 apply_fader_update(&mut state.channels, *group, *channel, *gain_db);
@@ -235,8 +235,8 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/Track/Out/Mute" => {
             if let (
-                Some(crate::osc::OscArg::Int(group)),
-                Some(crate::osc::OscArg::Int(channel)),
+                Some(crate::lv1::osc::OscArg::Int(group)),
+                Some(crate::lv1::osc::OscArg::Int(channel)),
                 Some(mute_arg),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
                 && let Some(muted) = osc_arg_to_bool(mute_arg)
@@ -251,9 +251,9 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/Track/Pan" => {
             if let (
-                Some(crate::osc::OscArg::Int(group)),
-                Some(crate::osc::OscArg::Int(channel)),
-                Some(crate::osc::OscArg::Double(pan)),
+                Some(crate::lv1::osc::OscArg::Int(group)),
+                Some(crate::lv1::osc::OscArg::Int(channel)),
+                Some(crate::lv1::osc::OscArg::Double(pan)),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
                 && apply_pan_update(&mut state.channels, *group, *channel, *pan)
             {
@@ -266,9 +266,9 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/Balance" => {
             if let (
-                Some(crate::osc::OscArg::Int(group)),
-                Some(crate::osc::OscArg::Int(channel)),
-                Some(crate::osc::OscArg::Double(balance)),
+                Some(crate::lv1::osc::OscArg::Int(group)),
+                Some(crate::lv1::osc::OscArg::Int(channel)),
+                Some(crate::lv1::osc::OscArg::Double(balance)),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
                 && apply_balance_update(&mut state.channels, *group, *channel, *balance)
             {
@@ -281,10 +281,10 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::osc::OscMessag
         }
         "/Notify/PanArcWidth" => {
             if let (
-                Some(crate::osc::OscArg::Int(group)),
-                Some(crate::osc::OscArg::Int(channel)),
-                Some(crate::osc::OscArg::Double(width)),
-                Some(crate::osc::OscArg::Int(active)),
+                Some(crate::lv1::osc::OscArg::Int(group)),
+                Some(crate::lv1::osc::OscArg::Int(channel)),
+                Some(crate::lv1::osc::OscArg::Double(width)),
+                Some(crate::lv1::osc::OscArg::Int(active)),
             ) = (
                 msg.args.first(),
                 msg.args.get(1),
@@ -324,16 +324,16 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/CurSceneIndex".to_string(),
-                args: vec![crate::osc::OscArg::Int(3)],
+                args: vec![crate::lv1::osc::OscArg::Int(3)],
             },
         );
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/Scene/Name".to_string(),
-                args: vec![crate::osc::OscArg::String("Bridge".to_string())],
+                args: vec![crate::lv1::osc::OscArg::String("Bridge".to_string())],
             },
         );
 
@@ -368,9 +368,9 @@ mod tests {
         // Declares one channel record but carries none.
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Channels".to_string(),
-                args: vec![crate::osc::OscArg::Int(1)],
+                args: vec![crate::lv1::osc::OscArg::Int(1)],
             },
         );
 
@@ -412,12 +412,12 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/Balance".to_string(),
                 args: vec![
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Double(0.75),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Double(0.75),
                 ],
             },
         );
@@ -432,12 +432,12 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/SceneList".to_string(),
                 args: vec![
-                    crate::osc::OscArg::Int(1),
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::String("Intro".to_string()),
+                    crate::lv1::osc::OscArg::Int(1),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::String("Intro".to_string()),
                 ],
             },
         );
@@ -463,12 +463,12 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/Track/Pan".to_string(),
                 args: vec![
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Double(-15.0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Double(-15.0),
                 ],
             },
         );
@@ -494,12 +494,12 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/Balance".to_string(),
                 args: vec![
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Double(0.25),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Double(0.25),
                 ],
             },
         );
@@ -525,13 +525,13 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/PanArcWidth".to_string(),
                 args: vec![
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Double(0.6),
-                    crate::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Double(0.6),
+                    crate::lv1::osc::OscArg::Int(0),
                 ],
             },
         );
@@ -557,13 +557,13 @@ mod tests {
 
         handle_message(
             &mut state,
-            &crate::osc::OscMessage {
+            &crate::lv1::osc::OscMessage {
                 address: "/Notify/PanArcWidth".to_string(),
                 args: vec![
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Int(0),
-                    crate::osc::OscArg::Double(1.2),
-                    crate::osc::OscArg::Int(1),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Double(1.2),
+                    crate::lv1::osc::OscArg::Int(1),
                 ],
             },
         );

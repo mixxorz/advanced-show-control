@@ -5,7 +5,6 @@ pub mod fade;
 pub mod lifecycle;
 pub mod logging;
 pub mod lv1;
-pub mod osc;
 pub mod projector;
 pub mod runtime;
 pub mod scenes;
