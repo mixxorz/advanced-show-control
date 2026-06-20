@@ -178,24 +178,27 @@ mod tests {
     async fn save_show_file_uses_existing_show_file_path() {
         let event_bus = AppEventBus::default();
         let show = crate::show::handle::ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowDocument {
-            lockout: false,
-            scene_configs: vec![SceneConfig {
-                scene_id: "1::Intro".to_string(),
-                scene_index: 1,
-                scene_name: "Intro".to_string(),
-                duration_ms: 1000,
-                channel_configs: Vec::new(),
-                scoped_channels: Vec::new(),
-                scope_toggles: SceneScopeToggles::default(),
-            }],
-            cued_scene_id: None,
-        })
+        crate::show::commands::replace_show_document_for_test(
+            &show,
+            ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Intro".to_string(),
+                    scene_index: 1,
+                    scene_name: "Intro".to_string(),
+                    duration_ms: 1000,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                }],
+                cued_scene_id: None,
+            },
+        )
         .await;
         let lifecycle = AppLifecycle::new(AppEventBus::default(), show.clone());
         let path = temp_show_file_path("save-existing");
         let initial_file = crate::show::show_file::export_show_file(
-            show.get_snapshot().await,
+            crate::show::commands::get_show_document(&show).await,
             "saved".to_string(),
         );
         write_show_file(&path, &initial_file, &backup_folder())

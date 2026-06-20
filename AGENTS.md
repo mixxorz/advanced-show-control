@@ -34,8 +34,8 @@ Current architecture is actor-oriented:
 - `FadeEngine` owns active fade timing and fader writes.
 - `ShowState` owns show data and show-file state.
 - `SceneRecallFader` owns scene recall policy and starts validated scene fades.
-- `ShellState` is the current Tauri-side projection state holder during the transition.
-- `AppLifecycle` is the Tauri-side runtime lifecycle seam and current command-bus holder.
+- The projector owns the Tauri-side `AppViewState` projection and emits `app-status-changed`.
+- `AppLifecycle` is the Tauri-side runtime lifecycle seam and app-lifetime command-bus holder.
 - `AppEventBus` broadcasts facts/events.
 - `AppCommandBus` routes acknowledged commands to the current LV1 and fade targets.
 

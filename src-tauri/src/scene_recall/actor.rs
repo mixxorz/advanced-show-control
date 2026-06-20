@@ -967,10 +967,13 @@ mod tests {
         command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show_with_duration(&show, 0).await;
-        let _ = show
-            .set_scene_scope_faders_enabled("1::Intro".to_string(), false)
-            .await
-            .unwrap();
+        let _ = crate::show::commands::set_scene_scope_faders_enabled(
+            &show,
+            "1::Intro".to_string(),
+            false,
+        )
+        .await
+        .unwrap();
 
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
@@ -1224,7 +1227,7 @@ mod tests {
             }],
             cued_scene_id: None,
         };
-        handle.replace_snapshot(snapshot).await;
+        crate::show::commands::replace_show_document_for_test(handle, snapshot).await;
     }
 
     fn fake_fade_handle() -> (

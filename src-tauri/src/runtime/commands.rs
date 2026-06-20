@@ -187,7 +187,7 @@ impl AppCommandBus {
     pub async fn get_show_document(&self) -> Result<ShowDocument, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.get_snapshot().await),
+            Some(show) => Ok(crate::show::commands::get_show_document(&show).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -197,7 +197,7 @@ impl AppCommandBus {
     ) -> Result<Option<std::path::PathBuf>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.current_show_file_path().await),
+            Some(show) => Ok(crate::show::commands::current_show_file_path(&show).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -208,7 +208,7 @@ impl AppCommandBus {
     ) -> Result<Option<SceneConfig>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.get_scene_config(scene_id).await),
+            Some(show) => Ok(crate::show::commands::get_scene_config(&show, scene_id).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -216,7 +216,7 @@ impl AppCommandBus {
     pub async fn get_lockout(&self) -> Result<bool, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(show.get_lockout().await),
+            Some(show) => Ok(crate::show::commands::get_lockout(&show).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -386,7 +386,7 @@ impl AppCommandBus {
             ),
             other => other,
         })?;
-        let show_document = show.get_snapshot().await;
+        let show_document = crate::show::commands::get_show_document(&show).await;
         let result =
             crate::show::commands::validate_recall_scene_request(&show_document, &lv1, &scene_id)
                 .map_err(AppCommandError::CommandFailed)?;
@@ -638,7 +638,7 @@ mod tests {
     async fn bus_with_show_document(snapshot: ShowDocument) -> (AppCommandBus, AppEventBus) {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        show.replace_snapshot(snapshot).await;
+        crate::show::commands::replace_show_document_for_test(&show, snapshot).await;
         let bus = AppCommandBus::new();
         bus.set_show(Some(show)).await;
         (bus, event_bus)
@@ -1163,11 +1163,14 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowDocument {
-            lockout: true,
-            scene_configs: vec![scene_config()],
-            cued_scene_id: Some("1:Intro".to_string()),
-        })
+        crate::show::commands::replace_show_document_for_test(
+            &show,
+            ShowDocument {
+                lockout: true,
+                scene_configs: vec![scene_config()],
+                cued_scene_id: Some("1:Intro".to_string()),
+            },
+        )
         .await;
         bus.set_show(Some(show)).await;
         let lv1 = Lv1StateSnapshot {
@@ -1342,19 +1345,22 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowDocument {
-            lockout: false,
-            scene_configs: vec![SceneConfig {
-                scene_id: "1::Verse".to_string(),
-                scene_index: 1,
-                scene_name: "Verse".to_string(),
-                duration_ms: 0,
-                channel_configs: Vec::new(),
-                scoped_channels: Vec::new(),
-                scope_toggles: Default::default(),
-            }],
-            cued_scene_id: Some("1::Verse".to_string()),
-        })
+        crate::show::commands::replace_show_document_for_test(
+            &show,
+            ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: Some("1::Verse".to_string()),
+            },
+        )
         .await;
         bus.set_show(Some(show)).await;
 
@@ -1401,19 +1407,22 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowDocument {
-            lockout: true,
-            scene_configs: vec![SceneConfig {
-                scene_id: "1::Verse".to_string(),
-                scene_index: 1,
-                scene_name: "Verse".to_string(),
-                duration_ms: 0,
-                channel_configs: Vec::new(),
-                scoped_channels: Vec::new(),
-                scope_toggles: Default::default(),
-            }],
-            cued_scene_id: Some("1::Verse".to_string()),
-        })
+        crate::show::commands::replace_show_document_for_test(
+            &show,
+            ShowDocument {
+                lockout: true,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: Some("1::Verse".to_string()),
+            },
+        )
         .await;
         bus.set_show(Some(show)).await;
 
@@ -1462,19 +1471,22 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowDocument {
-            lockout: false,
-            scene_configs: vec![SceneConfig {
-                scene_id: "1::Verse".to_string(),
-                scene_index: 1,
-                scene_name: "Verse".to_string(),
-                duration_ms: 0,
-                channel_configs: Vec::new(),
-                scoped_channels: Vec::new(),
-                scope_toggles: Default::default(),
-            }],
-            cued_scene_id: Some("1::Verse".to_string()),
-        })
+        crate::show::commands::replace_show_document_for_test(
+            &show,
+            ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: Some("1::Verse".to_string()),
+            },
+        )
         .await;
         bus.set_show(Some(show)).await;
 
@@ -1523,19 +1535,22 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        show.replace_snapshot(ShowDocument {
-            lockout: false,
-            scene_configs: vec![SceneConfig {
-                scene_id: "1::Verse".to_string(),
-                scene_index: 1,
-                scene_name: "Verse".to_string(),
-                duration_ms: 0,
-                channel_configs: Vec::new(),
-                scoped_channels: Vec::new(),
-                scope_toggles: Default::default(),
-            }],
-            cued_scene_id: Some("1::Verse".to_string()),
-        })
+        crate::show::commands::replace_show_document_for_test(
+            &show,
+            ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: Default::default(),
+                }],
+                cued_scene_id: Some("1::Verse".to_string()),
+            },
+        )
         .await;
         bus.set_show(Some(show)).await;
 

@@ -31,7 +31,7 @@ impl ShowStateHandle {
             }));
     }
 
-    pub(crate) async fn mutate_for_command<R, E>(
+    pub(super) async fn mutate_for_command<R, E>(
         &self,
         reason: ShowProjectionReason,
         apply: impl FnOnce(&mut ShowState) -> Result<(bool, R), E>,
@@ -44,7 +44,7 @@ impl ShowStateHandle {
         Ok(result)
     }
 
-    pub(crate) async fn query<R>(&self, read: impl FnOnce(&ShowState) -> R) -> R {
+    pub(super) async fn query<R>(&self, read: impl FnOnce(&ShowState) -> R) -> R {
         let state = self.state.lock().await;
         read(&state)
     }
@@ -54,15 +54,15 @@ impl ShowStateHandle {
         self.query(|state| state.projection_state()).await
     }
 
-    pub async fn get_snapshot(&self) -> ShowDocument {
+    pub(super) async fn get_snapshot(&self) -> ShowDocument {
         self.query(|state| state.snapshot()).await
     }
 
-    pub async fn get_scene_config(&self, scene_id: String) -> Option<SceneConfig> {
+    pub(super) async fn get_scene_config(&self, scene_id: String) -> Option<SceneConfig> {
         self.query(|state| state.get_scene_config(&scene_id)).await
     }
 
-    pub async fn cue_scene(&self, scene_id: String) -> Result<bool, String> {
+    pub(super) async fn cue_scene(&self, scene_id: String) -> Result<bool, String> {
         let mut state = self.state.lock().await;
         let changed = state.cue_scene(&scene_id)?;
         if changed {
@@ -71,19 +71,12 @@ impl ShowStateHandle {
         Ok(changed)
     }
 
-    pub async fn get_lockout(&self) -> bool {
+    pub(super) async fn get_lockout(&self) -> bool {
         self.query(|state| state.lockout()).await
     }
 
-    pub async fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
+    pub(super) async fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
         self.query(|state| state.current_show_file_path()).await
-    }
-
-    pub async fn export_show_file_snapshot(
-        &self,
-        saved_at: String,
-    ) -> crate::show::show_file::ShowFile {
-        self.query(|state| state.export_show_file(saved_at)).await
     }
 
     #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.
@@ -92,7 +85,7 @@ impl ShowStateHandle {
         state.projection_state()
     }
 
-    pub(crate) async fn command_set_lockout(&self, enabled: bool) -> bool {
+    async fn command_set_lockout(&self, enabled: bool) -> bool {
         let mut state = self.state.lock().await;
         let changed = state.set_lockout(enabled);
         if changed {
@@ -101,23 +94,11 @@ impl ShowStateHandle {
         changed
     }
 
-    pub async fn set_lockout(&self, enabled: bool) -> bool {
+    pub(super) async fn set_lockout(&self, enabled: bool) -> bool {
         self.command_set_lockout(enabled).await
     }
 
-    pub async fn set_scene_duration(
-        &self,
-        scene_id: String,
-        duration_ms: u64,
-    ) -> Result<bool, String> {
-        self.mutate_for_command(ShowProjectionReason::ShowState, move |state| {
-            let changed = state.set_scene_duration_ms(&scene_id, duration_ms)?;
-            Ok((changed, changed))
-        })
-        .await
-    }
-
-    pub async fn set_scene_scope_faders_enabled(
+    pub(super) async fn set_scene_scope_faders_enabled(
         &self,
         scene_id: String,
         enabled: bool,
@@ -130,7 +111,7 @@ impl ShowStateHandle {
         Ok(changed)
     }
 
-    pub async fn set_scene_scope_pan_enabled(
+    pub(super) async fn set_scene_scope_pan_enabled(
         &self,
         scene_id: String,
         enabled: bool,
@@ -143,7 +124,7 @@ impl ShowStateHandle {
         Ok(changed)
     }
 
-    pub async fn set_channel_scoped(
+    pub(super) async fn set_channel_scoped(
         &self,
         scene_id: String,
         group: i32,
@@ -158,7 +139,7 @@ impl ShowStateHandle {
         Ok(changed)
     }
 
-    pub async fn set_all_channels_scoped(
+    pub(super) async fn set_all_channels_scoped(
         &self,
         scene_id: String,
         scoped: bool,
@@ -171,7 +152,7 @@ impl ShowStateHandle {
         Ok(changed)
     }
 
-    pub async fn store_scene_config(
+    pub(super) async fn store_scene_config(
         &self,
         scene_id: String,
         channels: Vec<ChannelInfo>,
@@ -184,7 +165,7 @@ impl ShowStateHandle {
         Ok(changed)
     }
 
-    pub async fn reconcile_scene_list(&self, scenes: Vec<SceneListEntry>) -> bool {
+    pub(super) async fn reconcile_scene_list(&self, scenes: Vec<SceneListEntry>) -> bool {
         let mut state = self.state.lock().await;
         let changed = state.reconcile_scene_fade_configs(&scenes);
         if changed {
@@ -205,7 +186,8 @@ impl ShowStateHandle {
         self.reconcile_scene_list(scenes).await
     }
 
-    pub async fn replace_snapshot(&self, snapshot: ShowDocument) {
+    #[cfg(test)]
+    pub(super) async fn replace_snapshot(&self, snapshot: ShowDocument) {
         let mut state = self.state.lock().await;
         if state.snapshot() == snapshot {
             return;
@@ -215,7 +197,8 @@ impl ShowStateHandle {
         self.publish_state_changed(ShowProjectionReason::ShowState, &state);
     }
 
-    pub async fn clear(&self) {
+    #[cfg(test)]
+    pub(super) async fn clear(&self) {
         let mut state = self.state.lock().await;
         if state.snapshot() == ShowDocument::empty() {
             return;

@@ -6,7 +6,7 @@ use crate::show::show_file::{LoadValidationReport, ShowFile, import_show_file};
 use serde::{Deserialize, Serialize};
 
 use super::handle::ShowStateHandle;
-use super::types::SceneConfig;
+use super::types::{SceneConfig, ShowDocument};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShowCommandResult {
@@ -52,6 +52,27 @@ pub async fn set_lockout(show: &ShowStateHandle, enabled: bool) -> ShowCommandRe
     ShowCommandResult {
         changed: show.set_lockout(enabled).await,
     }
+}
+
+pub async fn get_show_document(show: &ShowStateHandle) -> ShowDocument {
+    show.get_snapshot().await
+}
+
+pub async fn current_show_file_path(show: &ShowStateHandle) -> Option<std::path::PathBuf> {
+    show.current_show_file_path().await
+}
+
+pub async fn get_lockout(show: &ShowStateHandle) -> bool {
+    show.get_lockout().await
+}
+
+pub async fn get_scene_config(show: &ShowStateHandle, scene_id: String) -> Option<SceneConfig> {
+    show.get_scene_config(scene_id).await
+}
+
+#[cfg(test)]
+pub(crate) async fn replace_show_document_for_test(show: &ShowStateHandle, document: ShowDocument) {
+    show.replace_snapshot(document).await;
 }
 
 pub async fn set_scene_duration_ms(
@@ -546,9 +567,7 @@ mod tests {
             .unwrap();
         drain_show_events(&mut events).await;
 
-        let _file = show
-            .export_show_file_snapshot("2026-01-01T00:00:00.000Z".to_string())
-            .await;
+        let _file = export_show_file_for_save(&show, "2026-01-01T00:00:00.000Z".to_string()).await;
 
         assert!(events.try_recv().is_err());
         let state = show.projection_state_for_test().await;
