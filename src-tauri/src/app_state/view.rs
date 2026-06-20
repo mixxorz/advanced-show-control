@@ -3,8 +3,6 @@ use serde::Serialize;
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
 pub use crate::show::types::SceneConfig;
-#[cfg(test)]
-pub use crate::show::types::{ChannelConfig, ChannelRef, ShowSnapshot};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

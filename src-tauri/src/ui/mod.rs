@@ -3,10 +3,10 @@
 //! This module will contain command registration and frontend serialization
 //! boundaries. Business logic should route through `crate::runtime::commands::AppCommandBus`.
 
-use crate::app_state::ShellState;
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use crate::runtime::events::AppEventBus;
+use crate::show::handle::ShowStateHandle;
 use tauri::Manager;
 use tokio::sync::broadcast;
 
@@ -16,10 +16,10 @@ pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     let event_bus = AppEventBus::default();
-    let shell_state = ShellState::new(event_bus.clone());
-    let lifecycle = AppLifecycle::new(event_bus, shell_state.show.clone());
+    let show = ShowStateHandle::new_empty(event_bus.clone());
+    let lifecycle = AppLifecycle::new(event_bus, show.clone());
     tauri::Builder::default()
-        .manage(shell_state)
+        .manage(show)
         .manage(lifecycle)
         .setup(|app| {
             let logging_runtime = logging::init_logging(app.handle())?;

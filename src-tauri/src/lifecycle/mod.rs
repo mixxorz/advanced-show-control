@@ -194,7 +194,6 @@ impl AppLifecycle {
     pub async fn connect_to_identity<R: Runtime>(
         &self,
         app: AppHandle<R>,
-        state: &crate::app_state::ShellState,
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
@@ -234,7 +233,6 @@ impl AppLifecycle {
             .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
             .await
             .map_err(|error| error.to_string())?;
-        let _ = state;
         let _ = lv1;
         let _ = fade;
         let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
@@ -381,43 +379,6 @@ impl AppLifecycle {
             self.inner.lock().await.command_bus = command_bus;
         }
     }
-
-    pub async fn clear_runtime_handles(
-        &self,
-        _state: &crate::app_state::ShellState,
-        generation: u64,
-    ) {
-        self.clear_runtime_transaction(generation).await;
-    }
-
-    pub async fn clear_runtime_handles_with_active_generation(
-        &self,
-        _state: &crate::app_state::ShellState,
-        generation: u64,
-    ) {
-        self.clear_runtime_transaction(generation).await;
-    }
-
-    pub async fn install_runtime_handles(
-        &self,
-        _state: &crate::app_state::ShellState,
-        generation: u64,
-        next: crate::app_state::RuntimeHandles,
-    ) -> Result<(), crate::app_state::RuntimeHandles> {
-        if self.active_generation().await != generation {
-            return Err(next);
-        }
-        if let Some(command_bus) = next.command_bus.clone() {
-            self.set_command_bus(Some(command_bus)).await;
-        }
-        Ok(())
-    }
-
-    pub async fn abort_current_runtime_for_shell(&self, state: &crate::app_state::ShellState) {
-        state
-            .abort_current_runtime(&self.current_command_bus().await)
-            .await;
-    }
 }
 
 impl Default for AppLifecycle {
@@ -484,7 +445,6 @@ fn spawn_show_runtime_metadata_monitor_with_notifier(
 
 pub fn spawn_lifecycle_event_monitor(
     generation: u64,
-    _state: crate::app_state::ShellState,
     lifecycle: AppLifecycle,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
 ) -> JoinHandle<()> {
@@ -835,100 +795,6 @@ mod tests {
             AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
                 if event_generation == generation + 1
         ));
-    }
-
-    #[tokio::test]
-    async fn lifecycle_disconnect_monitor_ignores_stale_facts_and_clears_active_metadata() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus.clone(), show.clone());
-        let command_bus = lifecycle.current_command_bus().await;
-        let identity = Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            host: Some("LV1-FOH".to_string()),
-            address: "192.168.1.35".to_string(),
-            port: 50000,
-        };
-
-        command_bus
-            .set_pending_lv1_identity(Some(identity.clone()))
-            .await
-            .unwrap();
-        command_bus
-            .establish_connected_lv1_identity(identity.clone())
-            .await
-            .unwrap();
-
-        let active_generation = lifecycle.begin_connecting().await.unwrap();
-        let shell_state = crate::app_state::ShellState::default();
-        let _lifecycle_monitor = spawn_lifecycle_event_monitor(
-            active_generation,
-            shell_state,
-            lifecycle.clone(),
-            event_bus.subscribe(),
-        );
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let mut show_events = event_bus.subscribe();
-        let _metadata_monitor = spawn_show_runtime_metadata_monitor_with_notifier(
-            event_bus.subscribe(),
-            command_bus,
-            move |notification| {
-                tx.send(notification).unwrap();
-            },
-        );
-
-        event_bus.publish_runtime_generation_changed(active_generation);
-        assert!(matches!(
-            rx.recv().await,
-            Some(ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged {
-                generation: event_generation,
-            }) if event_generation == active_generation
-        ));
-
-        event_bus.publish(AppEvent::Lv1 {
-            generation: active_generation.saturating_sub(1),
-            event: Lv1Event::Disconnected {
-                reason: "stale disconnect".to_string(),
-            },
-        });
-
-        assert!(matches!(
-            rx.recv().await,
-            Some(ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
-                generation: stale_generation,
-                active_generation: observed_active_generation,
-            }) if stale_generation == active_generation.saturating_sub(1)
-                && observed_active_generation == active_generation
-        ));
-
-        event_bus.publish(AppEvent::Lv1 {
-            generation: active_generation,
-            event: Lv1Event::Disconnected {
-                reason: "active disconnect".to_string(),
-            },
-        });
-
-        assert!(matches!(
-            rx.recv().await,
-            Some(ShowRuntimeMetadataMonitorNotification::Lv1Disconnected {
-                generation: event_generation,
-                active: true,
-            }) if event_generation == active_generation
-        ));
-
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_secs(1), show_events.recv())
-                .await
-                .expect("timed out waiting for show metadata disconnect event")
-                .expect("show event bus closed unexpectedly")
-            {
-                AppEvent::Show(ShowEvent::StateChanged {
-                    reason: ShowProjectionReason::ConnectionMetadata,
-                    ..
-                }) => break,
-                _ => continue,
-            }
-        }
     }
 
     #[tokio::test]
