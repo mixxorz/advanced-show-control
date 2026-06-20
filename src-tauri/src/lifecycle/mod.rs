@@ -75,7 +75,7 @@ struct LifecycleInner {
     frontend_ready: bool,
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
-    _show_runtime_metadata_monitor: Option<JoinHandle<()>>,
+    show_runtime_metadata_monitor: Option<JoinHandle<()>>,
     command_bus: AppCommandBus,
 }
 
@@ -104,10 +104,6 @@ pub struct AppLifecycle {
 impl AppLifecycle {
     pub fn new(event_bus: AppEventBus, show: ShowStateHandle) -> Self {
         let command_bus = AppCommandBus::new_with_show(show.clone());
-        let show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
-            event_bus.subscribe(),
-            command_bus.clone(),
-        ));
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
@@ -116,7 +112,7 @@ impl AppLifecycle {
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
                 projector: None,
-                _show_runtime_metadata_monitor: show_runtime_metadata_monitor,
+                show_runtime_metadata_monitor: None,
                 command_bus,
             })),
             event_bus,
@@ -362,6 +358,12 @@ impl AppLifecycle {
         }
         inner.frontend_ready = true;
         let generation = inner.generation;
+        if inner.show_runtime_metadata_monitor.is_none() {
+            inner.show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
+                self.event_bus.subscribe(),
+                inner.command_bus.clone(),
+            ));
+        }
         inner.projector = Some(crate::projector::spawn_projector(
             crate::projector::ProjectorInputs {
                 app,
@@ -565,6 +567,14 @@ mod tests {
             .unwrap();
 
         assert!(result.changed);
+    }
+
+    #[test]
+    fn app_lifecycle_constructs_without_tokio_runtime() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+
+        let _lifecycle = AppLifecycle::new(event_bus, show);
     }
 
     fn discovered_system(host: &str) -> DiscoveredLv1System {
