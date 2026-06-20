@@ -1,181 +1,426 @@
-# Backend Architecture
+# Backend Architecture Description
 
-## Overview
+## 1.0 Purpose
 
-The runtime is split into eight boundary pieces:
+This document defines the backend architecture for the Advanced Show Control application. The document identifies the runtime components, ownership boundaries, actor interfaces, event distribution model, lifecycle model, projection model, file organization conventions, and safety requirements.
 
-- `Lv1Actor`
-- `FadeEngine`
-- `ShowState`
-- `SceneRecallFader`
-- `Tauri UI Adapter`
-- `AppLifecycle`
-- `AppEventBus`
-- `AppCommandBus`
+The backend controls live mixer parameters. Therefore, this architecture treats state ownership, command routing, generation validation, lockout enforcement, and scene identity validation as safety-critical design constraints.
 
-The rule is simple: no module reaches into another module's state directly. Modules publish facts on `AppEventBus` and send requests through `AppCommandBus`.
+## 2.0 Scope
 
-The runtime facts bus and logging pipeline are separate. `AppEventBus` broadcasts runtime facts used for state projection and policy decisions. Logging uses `tracing`; Tauri installs the desktop sinks for diagnostic files, stdout, and frontend log state.
+This document applies to the Rust backend located under `src-tauri/src/` in the `advanced-show-control` crate. It also defines the backend-to-frontend boundary used by the React and TypeScript user interface located under `ui/`.
 
-## Bus Contracts
+This document does not define LV1 protocol semantics, user interface design requirements, show-file schema details, or mixer operating procedures except where those subjects affect backend architecture.
 
-- `AppEventBus = facts`
-- `AppCommandBus = commands and queries`
+## 3.0 System Overview
 
-`AppEventBus` carries broadcast facts only. It currently carries LV1, fade, scene-recall, and show/app facts.
+The backend is an actor-oriented Rust and Tauri runtime. Each core domain owns its state within a module boundary. Other domains request work by sending explicit mailbox commands to the actor that owns the affected state or behavior.
 
-`AppEventBus` must not carry log-only events. If something is only a diagnostic or user-facing log, emit a `tracing` event instead.
+The backend distributes state facts through `AppEventBus`. The backend sends command requests directly to the owning actor handle.
 
-- Non-blocking publish.
-- Independent subscribers.
-- No replay.
-- Missed events are tolerated and surfaced as lag, not hidden state coupling.
+LV1 is the authoritative source for live console state. The application stores and executes application-managed scene fade behavior as an overlay on top of LV1 scene workflows.
 
-`AppCommandBus` carries acknowledged requests only.
+The runtime consists of the following primary components:
 
-- Commands and queries are routed to the current live target.
-- Requests are not broadcast.
-- If the target is unavailable, the caller gets a clear failure.
-`AppCommandBus` does not own or receive `AppEventBus`; modules that publish facts own their event-bus reference directly.
+| Component   | Responsibility                                                                                                                            |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `lv1`       | Maintains the LV1 TCP connection and raw LV1 state mirror.                                                                                |
+| `fade`      | Executes active fade timing, overlap behavior, and LV1 parameter writes.                                                                  |
+| `scenes`    | Performs scene recall automation and recall policy enforcement.                                                                           |
+| `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, and application-managed scene configuration state. |
+| `lifecycle` | Constructs the connected runtime, wires actor peers, installs handles, tears down runtime state, and owns generation changes.             |
+| `projector` | Maintains the backend-to-frontend projection cache and emits `app-status-changed`.                                                        |
+| `ui`        | Performs Tauri setup and provides thin frontend command adapters.                                                                         |
+| `runtime`   | Provides shared runtime events, error types, event bus primitives, and generation guards.                                                 |
 
-Low-risk show/app mutations, show-file import/export mapping, UI-requested recall validation/dispatch, projector-cache runtime projection, and projector-owned UI log input route through their target module boundaries. The projector is the only backend emitter for `app-status-changed`, and the Tauri command layer no longer returns or emits `AppViewState` snapshots.
+## 4.0 Architectural Requirements
 
-React listens only to `app-status-changed`. There is no direct status emission from logging or Tauri command adapters.
+The backend architecture shall satisfy the requirements in this section.
 
-## Core Ownership
+### 4.1 State Ownership
 
-- `Lv1Actor` owns the LV1 TCP connection lifecycle and mirrored LV1 state. During a connected session, a scoped writer task owns the TCP write half and reports write failures back to the actor.
-- `FadeEngine` owns fade timing, overlap behavior, and LV1 fader writes.
-- `ShowState` owns show data only: scene configs, one shared scoped channel list, `FADERS` and `PAN` scene toggles, stored target values, show-file persistence, and show/app snapshot-change fact publication. It is app-lifetime state behind a cloneable mutex-backed handle, not a spawned Tokio actor.
-- `SceneRecallFader` owns scene recall policy and decision-making.
-- `Tauri UI Adapter` owns Tauri setup, command registration, dialogs, and frontend serialization boundaries.
-- `AppLifecycle` owns the current runtime command-bus holder seam and delegates generation-sensitive runtime handle installation/cleanup to the backend runtime lifecycle.
+1. Each module shall own the state for its domain.
+2. A module shall not mutate state owned by another module.
+3. A module shall expose only its intentional public interface through `mod.rs`.
+4. Submodules shall remain private unless an external interface is required.
+5. External modules shall import public items from the owner module root, not from private submodules.
 
-There is no `ShellState`; frontend projection is owned by the projector and UI listener flow.
+### 4.2 Actor Boundary
 
-## Event Flow
+1. Each actor module shall receive work through an explicit mailbox command enum.
+2. Each actor handle shall be a cloneable mailbox sender.
+3. Actor handles shall not hide domain operations behind convenience methods.
+4. Call sites shall construct command enum variants explicitly.
+5. A command caller shall include a `oneshot` reply channel when the caller requires a result.
+6. Business logic shall reside in the owning actor or owning module.
+7. Business logic shall not reside in Tauri command adapters or actor handles.
 
-`LV1 TCP -> Lv1Actor -> AppEventBus -> projector / Tauri UI listener`
+### 4.3 Event Distribution
 
-```text
-┌─────────┐     ┌──────────┐     ┌─────────────┐
-│ LV1 TCP │ ──▶ │ Lv1Actor │ ──▶ │ AppEventBus │
-└─────────┘     └──────────┘     └──────┬──────┘
-                                        │
-                    ┌───────────────────┼────────────────────┐
-                    │                   │                    │
-                    ▼                   ▼                    ▼
-          ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
-            │ FadeEngine    │   │ SceneRecallFader │   │ projector + UI │
-           └─────┬─────────┘   └────────┬─────────┘   └──────┬────────┘
-                 │                      │                    │
-                 ▼                      ▼                    ▼
-           ┌────────────┐       ┌──────────────────┐   ┌────────────────┐
-            │ LV1 writes │       │ recall policy    │   │ projection     │
-            │ / overlap  │       │ / decisions      │   │ + show state   │
-           └────────────┘       └──────────────────┘   └────────────────┘
-```
+1. The backend shall publish runtime facts through `AppEventBus`.
+2. The backend shall send command requests to the actor that owns the requested behavior.
+3. The backend shall not use broadcast events as requests.
+4. Log-only diagnostics shall use `tracing`, not `AppEventBus`.
+5. Consumers shall ignore generation-bearing events that do not match the active runtime generation.
 
-`Lv1Actor` translates incoming LV1 traffic into facts. Subscribers consume those facts independently. `SceneRecallFader` must not depend on frontend projection ordering; it reads fresh LV1 state and app show state through `AppCommandBus` before it decides whether a recall should start, skip, or continue. Scene recall fade dispatch is generation-checked at the command-bus boundary. Recall tasks may read state over several awaits, but the final fade start must compare the expected generation while cloning the current fade target so a stale recall cannot land on a newer connection.
+### 4.4 Frontend Projection
 
-## Logging Flow
+1. The frontend shall receive backend application state only through projector-owned `app-status-changed` events.
+2. Tauri command adapters shall not emit `app-status-changed`.
+3. Tauri command adapters shall not construct partial `AppViewState` snapshots.
+4. The projector shall be the only backend component that owns frontend state projection.
 
-```text
-Core + Tauri tracing events
-  -> Tauri tracing subscriber
-    -> DEBUG+ JSONL diagnostic file
-    -> DEBUG+ stdout
-    -> INFO+ frontend app state
-```
+## 5.0 Actor Model
 
-## Command Flow
+An actor module normally defines four interface concepts:
 
-`Tauri UI Adapter / AppLifecycle / FadeEngine / SceneRecallFader -> AppCommandBus -> current LV1 / fade targets`
+1. A command enum, such as `Lv1Command`, `FadeCommand`, `ScenesCommand`, or `ShowCommand`.
+2. A handle, such as `Lv1ActorHandle`, `FadeEngineHandle`, `ScenesHandle`, or `ShowStateHandle`.
+3. A task object, such as `Lv1ActorTask`, `FadeEngineTask`, `ScenesTask`, or `ShowActorTask`.
+4. A peer-wiring object, when the actor requires direct access to other actors after construction.
+
+The actor handle owns a Tokio sender. The handle shall remain dumb. It shall not provide domain-specific helpers that hide mailbox command construction.
+
+The actor task owns the event loop and the state mutation path. The task receives commands, validates requests, updates owned state, publishes facts, and sends command replies.
+
+## 6.0 Mailbox Command Model
+
+Mailbox commands are acknowledged requests to one owning actor. A command variant may include a `oneshot::Sender` when the caller requires a response.
+
+The standard command sequence is:
 
 ```text
-┌──────────────────┐   ┌────────────────┐   ┌────────────┐   ┌──────────────────┐
-│ Tauri UI Adapter │   │ AppLifecycle   │   │ FadeEngine │   │ SceneRecallFader │
-└────────┬─────────┘   └──────┬─────────┘   └─────┬──────┘   └────────┬─────────┘
-         │                    │                   │                    │
-         └────────────────────┼───────────────────┼────────────────────┘
-                              │
-                              ▼
-                      ┌───────────────┐
-                      │ AppCommandBus │
-                      └───────┬───────┘
-                              │
-                 ┌────────────┴────────────┐
-                 │                         │
-                 ▼                         ▼
-            ┌──────────┐            ┌──────────────┐
-            │ Lv1Actor │            │ FadeEngine   │
-            └──────────┘            └──────────────┘
+caller
+  -> construct command enum variant
+  -> attach oneshot reply channel, when required
+  -> send command through actor handle mailbox
+  -> actor validates request
+  -> actor performs work
+  -> actor updates owned state, when required
+  -> actor publishes facts, when state changes
+  -> actor sends reply, when required
 ```
 
-`FadeEngine` owns overlap behavior. Different scenes can overlap on unrelated faders. A new recall takes over only overlapping faders. There is no `finish_now` command; same-scene behavior is not a separate command path and is handled inside `FadeEngine` ownership and overlap rules when a valid scene recall fade starts.
+Mailbox commands shall not be broadcast.
 
-Low-risk show/app mutations, show-file import/export mapping, UI-requested recall validation/dispatch, and projector-cache runtime projection route through their target module boundaries. The Tauri command layer no longer returns or emits `AppViewState` snapshots.
+A caller that requires LV1 state, fade state, show state, or scene recall behavior shall send a command to the actor that owns the required state or behavior.
 
-`app-status-changed` emission is owned only by the projector runtime. Logging publishes `UiLogEvent` entries for the projector cache, but it does not emit app-status snapshots.
+Command failures that cross the user interface boundary shall map through `runtime::errors::AppCommandError`. Tauri commands shall return frontend-safe string errors.
 
-`FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation. Pan-family manual override is driven only by pan movement. A pan override cancels pan, balance, and width for that channel together. Balance and width reports do not trigger override cancellation. Fader fades are not cancelled by pan-family override.
+## 7.0 Application Event Bus
 
-High-rate fade writes use `write_batch`. The command bus reports an unavailable LV1 target when no actor is installed. Once a batch reaches an LV1 actor, the actor may still drop queued writes during disconnect cleanup; this is intentional for the 25 Hz fade stream and must be surfaced through diagnostics rather than retried blindly.
+`AppEventBus` is a Tokio broadcast bus for runtime facts. It carries `AppEvent` values from `runtime::events`.
 
-## Scene Recall Ownership
+`AppEvent` includes the following event families:
 
-`SceneRecallFader` owns recall policy.
+```rust
+Runtime(RuntimeLifecycleEvent)
+Lv1 { generation, event }
+Fade { generation, event }
+Scenes { generation, event }
+Show(ShowEvent)
+```
 
-- It listens for LV1 scene recall facts.
-- It asks for a fresh LV1 snapshot before deciding.
-- It validates exact scene identity, lockout state, connection state, stored scene config, scoped targets, stored fader values, and live topology.
-- It skips scenes whose fader scope toggle is disabled and starts validated fader moves even when duration is 0.
-- It starts validated fades through the command bus.
-- It does not reach into `ShowState` internals.
+`AppEventBus` shall satisfy the following rules:
 
-`ShowState` owns show data only.
+1. Events shall represent facts, not requests.
+2. Event publication shall be non-blocking.
+3. Subscribers shall operate independently.
+4. The event bus shall not provide replay.
+5. The event bus shall not provide durable event storage.
+6. A lagged subscriber shall log lag and continue from the newest available event.
+7. A consumer shall ignore generation-bearing events when the event generation does not match the active runtime generation.
 
-- It stores and projects the app's show configuration.
-- It keeps one shared scoped channel list that both `FADERS` and `PAN` toggles reference.
-- It does not decide recall policy.
-- It does not own validation rules for scene recall.
+## 8.0 Direct Peer Wiring
 
-`FadeEngine` owns overlap behavior.
+Actors that must call other actors receive peer handles through peer-wiring structures before actor tasks are spawned.
 
-- It starts fades from live values.
-- It fades pan, balance, and width with direct linear interpolation.
-- It overlaps on unrelated faders.
-- It takes over only overlapping channels for a new recall.
-- It does not expose a finish-now command.
+Peer installation is runtime construction work. It is not a mailbox command.
 
-`Lv1Actor` mirrors `/Notify/Track/Pan`, `/Notify/Balance`, and `/Notify/PanArcWidth`, and it sends the matching `/Set/Track/Pan*` commands for pan-family writes.
+`lifecycle` performs peer installation while it owns the unspawned actor tasks.
 
-## Runtime Lifecycle
+The following peer relationships are defined:
 
-- App startup constructs `ShowState` without spawning Tokio work.
-- `connect` installs the current command targets and starts the LV1 actor, fade, recall, and projector tasks.
-- `disconnect` and reconnect clear command targets and abort old runtime tasks.
-- Generation guards prevent stale events, snapshots, or handles from mutating current state.
+| Actor    | Peer Handles Received                                                             | Purpose                                                                                                         |
+| -------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `fade`   | `Lv1ActorHandle` through `FadeEnginePeers`                                        | Allows active fades to write parameters to LV1.                                                                 |
+| `scenes` | `ShowStateHandle`, `Lv1ActorHandle`, and `FadeEngineHandle` through `ScenesPeers` | Allows recall automation to validate show state, validate LV1 state, send LV1 recall commands, and start fades. |
+| `show`   | `Lv1ActorHandle` through `ShowActorPeers`                                         | Allows show-owned workflows to obtain fresh LV1 state.                                                          |
 
-The projector only applies events for the active generation, and stale runtime handles are rejected instead of being installed. `SceneRecallFader` also checks the active generation before validation, before logging automation status, and immediately before dispatching a fade start so a stale recall task cannot send after disconnect or reconnect.
+## 9.0 Runtime Lifecycle and Generations
 
-## File Structure
+`AppLifecycle` owns connected-runtime setup and teardown.
 
-Rust modules live under `src-tauri/src/` in the `advanced-show-control` package. Tauri-specific adapter code and core app modules are separated by module boundaries, not crate boundaries.
+The connected-runtime startup sequence is:
 
-The Tauri UI adapter and lifecycle seams live under `src-tauri/src/`:
+```text
+begin connecting
+  -> increment active generation
+  -> publish active generation changed
+  -> build LV1 actor
+  -> build fade engine
+  -> build scenes actor
+  -> wire actor peers
+  -> install runtime handles, if generation is still current
+  -> spawn actor tasks
+  -> spawn projector, when frontend is ready
+```
 
-- `src-tauri/src/ui/` for Tauri setup and frontend command adapter exports.
-- `src-tauri/src/lifecycle/` for app runtime lifecycle ownership seams.
-- `src-tauri/src/commands.rs` for existing command implementations during the transition.
-- `src-tauri/src/app_state/` for projections, logs, show-file mapping, and view models.
-- `src-tauri/src/connection_state.rs` and `src-tauri/src/connection_preferences.rs` for shell-facing connection state.
+The generation model prevents stale asynchronous work from affecting a newer connection. Disconnect and reconnect operations advance the active generation.
 
-Low-risk show/app mutations, show-file import/export mapping, and UI-requested recall validation/dispatch are routed through `AppCommandBus`. Projector cache and logging projection are owned by the projector and logging modules, and the Tauri command layer no longer returns `AppViewState` snapshots.
+Actors and projector consumers compare event generations against the active generation before they mutate current state or emit user-interface-visible state.
 
-## Non-Goals
+`RuntimeGeneration` is the shared asynchronous guard used by generation-sensitive tasks before they dispatch safety-critical work.
 
-- No durable event store.
-- No replay.
-- No distributed bus.
-- No plugin runtime.
+## 10.0 Tauri Command Adapters
+
+Tauri commands reside under `src-tauri/src/ui/commands/`.
+
+Tauri command modules are adapters. They are not business logic modules.
+
+A Tauri command adapter shall perform the following functions:
+
+1. Deserialize frontend arguments.
+2. Obtain the required actor handle or lifecycle handle from Tauri state.
+3. Construct the explicit command enum variant.
+4. Create a `oneshot` reply channel when a reply is required.
+5. Send the command through the actor mailbox.
+6. Await the actor reply.
+7. Map the reply into a frontend-safe result.
+
+A Tauri command adapter shall not perform the following functions:
+
+1. Mutate domain state directly.
+2. Validate business rules that belong to an actor.
+3. Emit `app-status-changed`.
+4. Construct partial `AppViewState` snapshots.
+
+The projector is the sole backend owner of `app-status-changed`.
+
+## 11.0 Projector Cache and Frontend Emission
+
+The projector converts backend facts into `AppViewState` for the React frontend. It subscribes to `AppEventBus` and to user-interface log events. It maintains a `ProjectionCache` and emits `app-status-changed` through Tauri.
+
+The projector interval is defined as:
+
+```rust
+PROJECTOR_INTERVAL = 100 ms
+```
+
+This interval caps user-interface projection at 10 hertz.
+
+Incoming facts mark the projection cache dirty. On each interval tick, the projector emits a new `AppViewState` only when the cache is dirty. After emission, the projector clears the dirty flag.
+
+The projection cache applies facts incrementally as follows:
+
+| Fact Source               | Projection Effect                                                                                                                   |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| LV1 facts                 | Update connection status, current scene, scene list, channels, faders, mutes, and pan-family values.                                |
+| Fade facts                | Update frontend fade state.                                                                                                         |
+| Show projection facts     | Update show-file state, discovery metadata, connection metadata, lockout state, and application-managed scene configuration fields. |
+| User-interface log events | Append bounded frontend log entries.                                                                                                |
+| Runtime generation facts  | Update the active generation used for event filtering.                                                                              |
+
+The frontend shall listen only to `app-status-changed`. The frontend shall not subscribe directly to actor events or backend logs.
+
+## 12.0 Module Responsibilities
+
+### 12.1 `lv1`
+
+The `lv1` module owns the LV1 TCP connection lifecycle and the raw LV1 mirror.
+
+The module owns the following responsibilities:
+
+1. TCP connect, read, and write behavior.
+2. OSC frame encoding and decoding.
+3. Raw channel topology.
+4. Live parameter values.
+5. Raw current scene state.
+6. Raw LV1 scene list state.
+7. LV1 write commands.
+8. LV1 discovery helpers.
+
+The module publishes `Lv1Event` facts and accepts `Lv1Command` requests.
+
+### 12.2 `fade`
+
+The `fade` module owns active fade execution.
+
+The module owns the following responsibilities:
+
+1. Fade timing.
+2. Fade tick scheduling.
+3. Fade target interpolation.
+4. Fader-law conversion for fader targets.
+5. Linear interpolation for pan-family targets.
+6. Overlap behavior.
+7. Same-scene behavior.
+8. Manual override cancellation.
+9. Fade abort behavior.
+10. Disconnect safety behavior.
+
+The module publishes `FadeEvent` facts and accepts `FadeCommand` requests.
+
+### 12.3 `scenes`
+
+The `scenes` module owns scene recall automation.
+
+The module owns the following responsibilities:
+
+1. Recall policy decisions.
+2. Recall-trigger handling from LV1 scene facts.
+3. Recall request validation using fresh LV1 state and show state.
+4. Dispatch of validated LV1 recall commands through wired peers.
+5. Dispatch of validated fade-start commands through wired peers.
+6. Recall status facts for skipped, blocked, and started recall outcomes.
+
+The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
+
+### 12.4 `show`
+
+The `show` module owns show-level application state and persistence.
+
+The module owns the following responsibilities:
+
+1. Show document state.
+2. Application-managed scene configuration data.
+3. Selected scene state.
+4. Cued scene state.
+5. Scene scope toggles.
+6. Scoped channel configuration.
+7. Scene capture from current LV1 state.
+8. Show-file import and export.
+9. Show-file path metadata.
+10. Show-file dirty state.
+11. Show-file save timestamps.
+12. Lockout state.
+13. LV1 discovery metadata projected to the user interface.
+14. LV1 connection metadata projected to the user interface.
+
+The module publishes `ShowEvent` facts and accepts `ShowCommand` requests.
+
+### 12.5 `lifecycle`
+
+The `lifecycle` module owns runtime lifetime.
+
+The module owns the following responsibilities:
+
+1. Active generation tracking.
+2. Connection startup transactions.
+3. Teardown transactions.
+4. Actor construction.
+5. Actor peer wiring.
+6. Runtime handle installation.
+7. Runtime handle cleanup.
+8. Reconnect state changes that cross actor boundaries.
+
+### 12.6 `projector`
+
+The `projector` module owns frontend state projection.
+
+The module owns the following responsibilities:
+
+1. `ProjectionCache`.
+2. `AppViewState` construction.
+3. `app-status-changed` emission.
+4. 10 hertz dirty-cache throttling.
+5. User-interface log cache entries.
+
+### 12.7 `ui`
+
+The `ui` module owns Tauri setup and frontend command boundaries.
+
+The module owns the following responsibilities:
+
+1. Tauri command registration.
+2. Dialog integration.
+3. Frontend serialization boundaries.
+4. Thin command adapter modules.
+
+### 12.8 `runtime`
+
+The `runtime` module owns shared runtime primitives.
+
+The module owns the following responsibilities:
+
+1. `AppEventBus`.
+2. `AppEvent`.
+3. Runtime lifecycle events.
+4. Runtime generation guard state.
+5. User-interface-facing command error types.
+
+## 13.0 Module File Conventions
+
+Actor and domain modules shall use consistent file names.
+
+| File                | Required Content                                                                                                |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `mod.rs`            | Declares private submodules and re-exports only the intentional public facade.                                  |
+| `actor.rs`          | Defines actor construction, task type, runtime loop, command handling, and peer dependency use.                 |
+| `commands.rs`       | Defines the mailbox command enum and command-specific reply or result data transfer objects.                    |
+| `handle.rs`         | Defines the dumb cloneable mailbox sender. This file shall not contain hidden business methods.                 |
+| `events.rs`         | Defines facts published on `AppEventBus`.                                                                       |
+| `state.rs`          | Defines actor-owned state and pure state-change functions.                                                      |
+| `types.rs`          | Defines domain types that are not commands, events, or actor state.                                             |
+| `policy.rs`         | Defines named decision logic for modules that contain non-trivial policy rules.                                 |
+| Narrow helper files | Define focused subdomains owned by the module, such as `capture.rs`, `show_file.rs`, `tcp.rs`, or `parsers.rs`. |
+
+The backend shall observe the following boundary conventions:
+
+1. Submodules shall remain private unless a concrete external need exists.
+2. Other modules shall import from the owner module root.
+3. Other modules shall not import from private submodules.
+4. Test-only constructors and raw internals should be protected with `#[cfg(test)]` when practical.
+5. Re-export bridges shall not weaken module boundaries.
+6. Domain logic shall not be placed in `ui/commands/*`.
+7. Convenience helpers shall not hide the command enum and reply channel pattern.
+
+## 14.0 Safety Requirements
+
+The application controls live mixer faders. The backend shall implement the following safety requirements.
+
+1. The backend shall not send fader commands when LV1 state is unavailable.
+2. The backend shall not send fader commands when LV1 is disconnected.
+3. The backend shall not send fader commands when LV1 state is stale.
+4. The backend shall not send fader commands when LV1 state is unsafe.
+5. The backend shall not bypass generation guards.
+6. The backend shall not bypass lockout checks.
+7. The backend shall not bypass exact scene identity validation.
+8. Scene recall automation shall validate the recall request before it aborts an existing fade.
+9. A blocked recall shall not abort an existing fade.
+10. A skipped recall shall not abort an existing fade.
+11. A disabled recall shall not abort an existing fade.
+12. Recall automation shall use fresh LV1 state when event subscriber ordering could otherwise produce stale decisions.
+13. The backend shall make safety blocks visible through logs, facts, or projected user-interface state.
+14. The backend shall preserve manual override behavior.
+15. The backend shall preserve fade abort behavior.
+16. The backend shall preserve overlap behavior.
+17. The backend shall preserve same-scene behavior.
+18. The backend shall preserve disconnect behavior.
+
+## 15.0 Backend File Structure
+
+Rust backend code resides under `src-tauri/src/` in the `advanced-show-control` crate.
+
+Important directories are defined as follows:
+
+| Directory                  | Contents                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `src-tauri/src/lv1/`       | LV1 protocol, TCP actor, discovery, mirror state, and LV1 commands.                                                             |
+| `src-tauri/src/fade/`      | Fade engine actor, fade state, interpolation, fader law, and fade events.                                                       |
+| `src-tauri/src/scenes/`    | Scene recall actor, recall commands, recall events, and recall policy.                                                          |
+| `src-tauri/src/show/`      | Show actor, show document state, scene configuration state, show-file input/output, discovery state, and show projection facts. |
+| `src-tauri/src/lifecycle/` | Runtime connection lifecycle and actor graph wiring.                                                                            |
+| `src-tauri/src/projector/` | Projection cache, application view model, and 10 hertz frontend emission loop.                                                  |
+| `src-tauri/src/ui/`        | Tauri setup and command adapters.                                                                                               |
+| `src-tauri/src/runtime/`   | Event bus, runtime errors, and generation guards.                                                                               |
+| `ui/`                      | React and TypeScript frontend.                                                                                                  |
+
+## 16.0 Explicit Non-Goals
+
+The backend architecture does not provide the following capabilities:
+
+1. Durable event storage.
+2. Event replay.
+3. A distributed event bus.
+4. Frontend-owned backend state projection.
