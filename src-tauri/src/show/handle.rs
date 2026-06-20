@@ -49,6 +49,11 @@ impl ShowStateHandle {
         read(&state)
     }
 
+    #[cfg(test)]
+    pub(crate) async fn projection_state_for_test(&self) -> ShowProjectionState {
+        self.query(|state| state.projection_state()).await
+    }
+
     pub async fn get_snapshot(&self) -> ShowSnapshot {
         self.query(|state| state.snapshot()).await
     }
@@ -72,6 +77,13 @@ impl ShowStateHandle {
 
     pub async fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
         self.query(|state| state.current_show_file_path()).await
+    }
+
+    pub async fn export_show_file_snapshot(
+        &self,
+        saved_at: String,
+    ) -> crate::show::show_file::ShowFile {
+        self.query(|state| state.export_show_file(saved_at)).await
     }
 
     #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.

@@ -2,6 +2,7 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::lv1::types::SceneListEntry;
+use crate::show::show_file::{ShowFile, export_show_file};
 
 use super::types::{SceneConfig, SceneScopeToggles, ShowSnapshot, scene_id};
 
@@ -319,6 +320,11 @@ impl ShowState {
 
     pub(crate) fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
         self.show_file_path.clone()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn export_show_file(&self, saved_at: String) -> ShowFile {
+        export_show_file(self.snapshot(), saved_at)
     }
 
     pub(crate) fn scene_configs_mut(&mut self) -> &mut Vec<SceneConfig> {

@@ -330,12 +330,19 @@ impl AppCommandBus {
             .map_err(AppCommandError::CommandFailed)
     }
 
-    pub async fn export_show_file_for_save(
+    pub async fn export_show_file_snapshot(
         &self,
         saved_at: String,
     ) -> Result<ShowFile, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::export_show_file_for_save(&show, saved_at).await)
+        Ok(crate::show::commands::export_show_file_snapshot(&show, saved_at).await)
+    }
+
+    pub async fn export_show_file_for_save(
+        &self,
+        saved_at: String,
+    ) -> Result<ShowFile, AppCommandError> {
+        self.export_show_file_snapshot(saved_at).await
     }
 
     pub async fn mark_show_file_saved(
@@ -347,7 +354,7 @@ impl AppCommandBus {
         Ok(crate::show::commands::mark_show_file_saved(&show, path, saved_at).await)
     }
 
-    pub async fn load_show_file_from_dto(
+    pub async fn load_show_file_from_path(
         &self,
         path: std::path::PathBuf,
         file: ShowFile,
@@ -357,6 +364,15 @@ impl AppCommandBus {
         crate::show::commands::load_show_file_from_dto(&show, path, file, Some(lv1))
             .await
             .map_err(AppCommandError::CommandFailed)
+    }
+
+    pub async fn load_show_file_from_dto(
+        &self,
+        path: std::path::PathBuf,
+        file: ShowFile,
+        lv1: Lv1StateSnapshot,
+    ) -> Result<LoadShowFileResult, AppCommandError> {
+        self.load_show_file_from_path(path, file, lv1).await
     }
 
     pub async fn recall_scene_by_id(
@@ -1173,7 +1189,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn export_show_file_for_save_routes_through_show_state() {
+    async fn export_show_file_snapshot_routes_through_show_state() {
         let snapshot = ShowSnapshot {
             scene_configs: vec![scene_config()],
             ..ShowSnapshot::empty()
@@ -1181,7 +1197,7 @@ mod tests {
         let (bus, _event_bus) = bus_with_show_snapshot(snapshot).await;
 
         let file = bus
-            .export_show_file_for_save("saved".to_string())
+            .export_show_file_snapshot("saved".to_string())
             .await
             .unwrap();
 
@@ -1222,6 +1238,48 @@ mod tests {
 
         let result = bus
             .load_show_file_from_dto(std::path::PathBuf::from("/tmp/test.lv1show"), file, lv1)
+            .await
+            .unwrap();
+
+        assert_eq!(result.selected_scene_id, Some("1::Intro".to_string()));
+        assert!(!result.report.removed_anything());
+        assert!(bus.get_show_snapshot().await.unwrap().lockout);
+        assert_eq!(result.saved_at, "saved");
+    }
+
+    #[tokio::test]
+    async fn load_show_file_from_path_routes_through_show_state() {
+        let bus = AppCommandBus::new();
+        let event_bus = AppEventBus::default();
+        bus.set_show(Some(ShowStateHandle::new_empty(event_bus)))
+            .await;
+        let lv1 = Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![crate::lv1::types::SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+        let file = ShowFile {
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
+            app_version: "0.1.0".to_string(),
+            saved_at: "saved".to_string(),
+            safety: ShowFileSafety { lockout: true },
+            cued_scene_id: None,
+            scene_configs: vec![ShowFileSceneConfig {
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 1_000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
+            }],
+        };
+
+        let result = bus
+            .load_show_file_from_path(std::path::PathBuf::from("/tmp/test.lv1show"), file, lv1)
             .await
             .unwrap();
 

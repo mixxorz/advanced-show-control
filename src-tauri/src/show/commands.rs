@@ -2,7 +2,7 @@
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
-use crate::show::show_file::{LoadValidationReport, ShowFile, export_show_file, import_show_file};
+use crate::show::show_file::{LoadValidationReport, ShowFile, import_show_file};
 use serde::{Deserialize, Serialize};
 
 use super::handle::ShowStateHandle;
@@ -322,7 +322,11 @@ pub async fn handle_runtime_disconnected(
 }
 
 pub async fn export_show_file_for_save(show: &ShowStateHandle, saved_at: String) -> ShowFile {
-    export_show_file(show.get_snapshot().await, saved_at)
+    export_show_file_snapshot(show, saved_at).await
+}
+
+pub async fn export_show_file_snapshot(show: &ShowStateHandle, saved_at: String) -> ShowFile {
+    show.query(|state| state.export_show_file(saved_at)).await
 }
 
 pub async fn load_show_file_from_dto(
@@ -522,6 +526,68 @@ mod tests {
         let event = events.recv().await.unwrap();
         match event {
             AppEvent::Show(ShowEvent::StateChanged { state, .. }) => assert!(state.show_file_dirty),
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn export_for_save_does_not_mark_show_clean() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+        new_show_file(
+            &show,
+            Some(recall_lv1(ConnectionStatus::Connected, "Intro")),
+        )
+        .await
+        .unwrap();
+        set_scene_duration_ms(&show, "1::Intro".to_string(), 1500)
+            .await
+            .unwrap();
+        drain_show_events(&mut events).await;
+
+        let _file = show
+            .export_show_file_snapshot("2026-01-01T00:00:00.000Z".to_string())
+            .await;
+
+        assert!(events.try_recv().is_err());
+        let state = show.projection_state_for_test().await;
+        assert!(state.show_file_dirty);
+    }
+
+    #[tokio::test]
+    async fn mark_show_file_saved_marks_clean_after_io_step() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+        new_show_file(
+            &show,
+            Some(recall_lv1(ConnectionStatus::Connected, "Intro")),
+        )
+        .await
+        .unwrap();
+        set_scene_duration_ms(&show, "1::Intro".to_string(), 1500)
+            .await
+            .unwrap();
+        drain_show_events(&mut events).await;
+
+        mark_show_file_saved(
+            &show,
+            std::path::PathBuf::from("/tmp/test.lv1show"),
+            "2026-01-01T00:00:00.000Z".to_string(),
+        )
+        .await;
+
+        let event = events.recv().await.unwrap();
+        match event {
+            AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
+                assert_eq!(reason, ShowProjectionReason::FileMetadata);
+                assert!(!state.show_file_dirty);
+                assert_eq!(
+                    state.show_file_path,
+                    Some(std::path::PathBuf::from("/tmp/test.lv1show"))
+                );
+            }
             other => panic!("unexpected event: {other:?}"),
         }
     }

@@ -76,7 +76,7 @@ pub async fn open_show_file_dialog(
         .await
         .map_err(map_app_command_error)?;
     command_bus
-        .load_show_file_from_dto(path, file, lv1)
+        .load_show_file_from_path(path, file, lv1)
         .await
         .map_err(map_app_command_error)
 }
@@ -117,11 +117,16 @@ async fn save_show_file_to_path(
     path: PathBuf,
 ) -> Result<ShowCommandResult, String> {
     let command_bus = lifecycle.current_command_bus().await;
+    let saved_at = crate::time::current_timestamp_millis();
     let file = command_bus
-        .export_show_file_for_save(String::new())
+        .export_show_file_snapshot(saved_at.clone())
         .await
         .map_err(map_app_command_error)?;
     write_show_file(&path, &file, &backup_folder())?;
+    command_bus
+        .mark_show_file_saved(path, saved_at)
+        .await
+        .map_err(map_app_command_error)?;
     Ok(ShowCommandResult { changed: true })
 }
 
