@@ -1,4 +1,7 @@
-use advanced_show_control::fade::types::FadeParameter;
+use advanced_show_control::fade::{
+    FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter, FadeSceneIdentity,
+    FadeTarget, spawn_engine,
+};
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
     ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Event, Lv1TcpClient, decode_frame_payload,
@@ -687,10 +690,6 @@ async fn run_fade_test(
     duration_ms: u64,
     curve: CurveArg,
 ) -> AppResult<()> {
-    use advanced_show_control::fade::actor::spawn_engine;
-    use advanced_show_control::fade::curve::FadeCurve;
-    use advanced_show_control::fade::events::FadeEvent;
-    use advanced_show_control::fade::types::{FadeConfig, FadeTarget};
     use advanced_show_control::runtime::commands::AppCommandBus;
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
@@ -755,7 +754,7 @@ async fn run_fade_test(
 
     let _ = engine
         .start_fade(FadeConfig {
-            scene: advanced_show_control::fade::types::FadeSceneIdentity {
+            scene: FadeSceneIdentity {
                 index: 1,
                 name: "Intro".to_string(),
             },
@@ -915,14 +914,7 @@ fn pan_family_smoke_steps() -> Vec<PanFamilySmokeStep> {
     steps
 }
 
-fn pan_family_smoke_config(
-    group: i32,
-    channel: i32,
-    step: &PanFamilySmokeStep,
-) -> advanced_show_control::fade::types::FadeConfig {
-    use advanced_show_control::fade::curve::FadeCurve;
-    use advanced_show_control::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
-
+fn pan_family_smoke_config(group: i32, channel: i32, step: &PanFamilySmokeStep) -> FadeConfig {
     FadeConfig {
         scene: FadeSceneIdentity {
             index: (step.loop_index as i32),
@@ -957,7 +949,6 @@ fn pan_family_smoke_config(
 }
 
 async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<()> {
-    use advanced_show_control::fade::actor::spawn_engine;
     use advanced_show_control::runtime::commands::AppCommandBus;
 
     let PanFamilySmokeOptions {
@@ -1114,15 +1105,13 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
 }
 
 async fn run_pan_family_smoke_step(
-    engine: &advanced_show_control::fade::handle::FadeEngineHandle,
+    engine: &FadeEngineHandle,
     fade_events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     log_path: &std::path::Path,
-    config: advanced_show_control::fade::types::FadeConfig,
+    config: FadeConfig,
     step: &PanFamilySmokeStep,
     label: &str,
 ) -> AppResult<()> {
-    use advanced_show_control::fade::events::FadeEvent;
-
     drain_pending_smoke_events(fade_events);
 
     let targets: Vec<_> = config

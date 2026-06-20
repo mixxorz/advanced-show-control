@@ -1,5 +1,4 @@
-use crate::fade::curve::FadeCurve;
-use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
+use crate::fade::{FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget};
 use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, PanMode, SceneState};
 use crate::show::types::SceneConfig;
 

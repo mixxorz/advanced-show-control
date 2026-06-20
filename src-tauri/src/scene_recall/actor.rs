@@ -302,10 +302,10 @@ async fn fresh_lv1_snapshot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fade::commands::FadeCommand;
-    use crate::fade::curve::FadeCurve;
-    use crate::fade::handle::FadeEngineHandle;
-    use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
+    use crate::fade::{
+        FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeParameter, FadeSceneIdentity,
+        FadeTarget,
+    };
     use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scene_recall::events::SceneRecallEvent;
     use crate::show::types::{

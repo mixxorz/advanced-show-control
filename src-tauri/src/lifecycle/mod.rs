@@ -6,7 +6,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 
-use crate::fade::handle::FadeEngineHandle;
+use crate::fade::{FadeEngineHandle, spawn_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Event, spawn_actor};
 use crate::runtime::commands::AppCommandBus;
@@ -214,8 +214,7 @@ impl AppLifecycle {
             event_bus.clone(),
             generation,
         );
-        let fade =
-            crate::fade::actor::spawn_engine(command_bus.clone(), event_bus.clone(), generation);
+        let fade = spawn_engine(command_bus.clone(), event_bus.clone(), generation);
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
             let mut handles = rejection.into_handles();
@@ -262,7 +261,7 @@ impl AppLifecycle {
         command_bus: AppCommandBus,
         event_bus: AppEventBus,
         lv1: crate::lv1::Lv1ActorHandle,
-        fade: crate::fade::handle::FadeEngineHandle,
+        fade: crate::fade::FadeEngineHandle,
         before_scene_recall_start: Option<Box<dyn FnOnce(AppCommandBus) + Send>>,
     ) -> Result<crate::show::commands::ConnectCommandResult, String> {
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
@@ -599,7 +598,7 @@ mod tests {
     use super::*;
     use crate::connection_state::ReconnectState;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
-    use crate::fade::handle::FadeEngineHandle;
+    use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use std::sync::{Arc, Mutex as StdMutex};

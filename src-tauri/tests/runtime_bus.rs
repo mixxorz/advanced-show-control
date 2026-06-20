@@ -1,7 +1,5 @@
-use advanced_show_control::fade::actor::spawn_engine;
-use advanced_show_control::fade::curve::FadeCurve;
-use advanced_show_control::fade::types::{
-    FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget,
+use advanced_show_control::fade::{
+    FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget, spawn_engine,
 };
 use advanced_show_control::lv1::{Lv1Event, SceneState, encode_frame, spawn_actor};
 use advanced_show_control::osc::OscArg;

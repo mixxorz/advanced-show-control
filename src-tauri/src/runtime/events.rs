@@ -1,6 +1,6 @@
 use tokio::sync::broadcast;
 
-use crate::fade::events::FadeEvent;
+use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scene_recall::events::SceneRecallEvent;
 use crate::show::events::ShowEvent;

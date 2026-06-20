@@ -1,4 +1,4 @@
-use crate::fade::fader_law::pos_to_db;
+use crate::fade::pos_to_db;
 
 pub const WAVE_WIDTH_FADERS: f64 = 8.0;
 pub const GROUP_STRIDE: i32 = 128;

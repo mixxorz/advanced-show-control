@@ -4,8 +4,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::fade::handle::FadeEngineHandle;
-use crate::fade::types::FadeConfig;
+use crate::fade::{FadeConfig, FadeEngineHandle};
 use crate::lv1::{ChannelInfo, Lv1ActorError, Lv1ActorHandle, Lv1ParameterWrite, Lv1StateSnapshot};
 use crate::show::commands::{
     CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult, SelectedSceneResult,
@@ -646,9 +645,9 @@ fn log_failure(command: &str, result: &Result<(), AppCommandError>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fade::commands::FadeCommand;
-    use crate::fade::curve::FadeCurve;
-    use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
+    use crate::fade::{
+        FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget,
+    };
     use crate::lv1::{
         ChannelInfo, ConnectionStatus, Lv1Command, Lv1StateSnapshot, Lv1WriteParameter,
         SceneListEntry, test_actor_handle,
