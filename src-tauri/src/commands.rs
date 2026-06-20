@@ -809,7 +809,7 @@ async fn connect_to_target<R: Runtime>(
         ..Default::default()
     };
 
-    let initial_snapshot = lv1.get_state().await;
+    let initial_snapshot = connect_initial_lv1_snapshot(lifecycle).await?;
     if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
         runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
@@ -883,6 +883,17 @@ async fn connect_to_target<R: Runtime>(
     );
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
+}
+
+async fn connect_initial_lv1_snapshot(
+    lifecycle: &AppLifecycle,
+) -> Result<crate::lv1::types::Lv1StateSnapshot, String> {
+    lifecycle
+        .current_command_bus()
+        .await
+        .get_lv1_state()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 fn should_save_connection_preferences(
@@ -1469,6 +1480,43 @@ mod tests {
 
         assert_eq!(snapshot.cued_scene_id, Some("1::Verse".to_string()));
         assert!(snapshot.lockout);
+    }
+
+    #[tokio::test]
+    async fn connect_initial_lv1_snapshot_uses_lifecycle_command_bus_targets() {
+        let event_bus = AppEventBus::default();
+        let show = crate::show::handle::ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = crate::lv1::handle::Lv1ActorHandle::new(lv1_tx);
+        lifecycle
+            .current_command_bus()
+            .await
+            .set_lv1(Some(lv1))
+            .await;
+
+        tokio::spawn(async move {
+            while let Some(command) = lv1_rx.recv().await {
+                if let crate::lv1::commands::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
+                        connection: crate::lv1::types::ConnectionStatus::Connected,
+                        scene: None,
+                        scene_list: Vec::new(),
+                        channels: Vec::new(),
+                    });
+                    break;
+                }
+            }
+        });
+
+        let snapshot = connect_initial_lv1_snapshot(&lifecycle)
+            .await
+            .expect("command bus should provide LV1 state");
+
+        assert_eq!(
+            snapshot.connection,
+            crate::lv1::types::ConnectionStatus::Connected
+        );
     }
 
     async fn recall_state_with_unstored_scene(lockout: bool) -> ShellState {
