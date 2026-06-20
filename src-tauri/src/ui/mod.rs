@@ -6,7 +6,7 @@
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use crate::runtime::events::AppEventBus;
-use crate::show::ShowStateHandle;
+use crate::show::build_show_actor;
 use tauri::Manager;
 use tokio::sync::broadcast;
 
@@ -18,8 +18,9 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
             let event_bus = AppEventBus::default();
-            let show = ShowStateHandle::new_empty(event_bus.clone());
-            let lifecycle = AppLifecycle::new(event_bus, show.clone());
+            let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
+            let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
+            show_task.spawn();
             let logging_runtime = logging::init_logging(app.handle())?;
             app.manage(show);
             app.manage(lifecycle);

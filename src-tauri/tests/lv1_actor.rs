@@ -1,6 +1,6 @@
 use advanced_show_control::lv1::{
-    ConnectionStatus, Lv1Command, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame,
-    spawn_actor,
+    ConnectionStatus, Lv1Command, Lv1Event, Lv1Frame, build_actor, decode_frame_payload,
+    encode_frame,
 };
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
@@ -10,6 +10,17 @@ use tokio::sync::oneshot;
 
 fn make_lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
     encode_frame(address, args).unwrap()
+}
+
+fn build_and_spawn_actor(
+    host: String,
+    port: u16,
+    event_bus: AppEventBus,
+    generation: u64,
+) -> advanced_show_control::lv1::Lv1ActorHandle {
+    let (handle, task) = build_actor(host, port, event_bus, generation);
+    task.spawn();
+    handle
 }
 
 #[derive(Default)]
@@ -70,7 +81,7 @@ async fn actor_connects_and_emits_connected_event() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.recv())
         .await
@@ -112,7 +123,7 @@ async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     let mut got_disconnect = false;
     let mut got_reconnect = false;
@@ -164,7 +175,7 @@ async fn actor_parses_and_emits_scene_changed() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     let mut scene_event = None;
     tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -202,7 +213,7 @@ async fn get_state_returns_snapshot_with_current_values() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -237,7 +248,7 @@ async fn actor_handles_set_gain_command() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -292,7 +303,7 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -362,7 +373,7 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -441,7 +452,7 @@ async fn actor_routes_pong_without_blocking_read_loop() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
     wait_for_connected(&mut events).await;
 
     let args = tokio::task::spawn_blocking(move || {
@@ -461,7 +472,7 @@ async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
-    let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default(), 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default(), 0);
 
     let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         let (reply, rx) = oneshot::channel();
@@ -497,7 +508,7 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -567,7 +578,7 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -639,7 +650,7 @@ async fn actor_flush_waits_for_prior_set_gain_command() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     wait_for_connected(&mut events).await;
 
@@ -702,7 +713,7 @@ async fn silent_server_disconnects_after_ping_timeout() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
     // With paused time, advance a little to let the TCP handshake complete
     tokio::time::advance(std::time::Duration::from_millis(100)).await;

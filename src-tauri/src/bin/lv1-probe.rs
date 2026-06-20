@@ -1,11 +1,11 @@
 use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
-    FadeSceneIdentity, FadeTarget, spawn_engine,
+    FadeSceneIdentity, FadeTarget, build_engine,
 };
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
-    ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1TcpClient,
-    decode_frame_payload, discover, pong_for_ping, resolve_target, spawn_actor,
+    ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1TcpClient, build_actor,
+    decode_frame_payload, discover, pong_for_ping, resolve_target,
 };
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
@@ -504,7 +504,8 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let _handle = spawn_actor(host.clone(), port, event_bus.clone(), 0);
+    let (_handle, task) = build_actor(host.clone(), port, event_bus.clone(), 0);
+    task.spawn();
 
     loop {
         match events.recv().await {
@@ -702,9 +703,13 @@ async fn run_fade_test(
 
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
+    let (lv1, lv1_task) = build_actor(host.clone(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let engine = spawn_engine(runtime_generation, lv1.clone(), event_bus.clone(), 0);
+    let (engine, engine_task, engine_peers) =
+        build_engine(runtime_generation, event_bus.clone(), 0);
+    engine_peers.set_lv1(lv1.clone());
+    lv1_task.spawn();
+    engine_task.spawn();
     let mut fade_events = event_bus.subscribe();
 
     // Wait for LV1 connection
@@ -989,9 +994,13 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
 
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
+    let (lv1, lv1_task) = build_actor(host.clone(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let engine = spawn_engine(runtime_generation, lv1.clone(), event_bus.clone(), 0);
+    let (engine, engine_task, engine_peers) =
+        build_engine(runtime_generation, event_bus.clone(), 0);
+    engine_peers.set_lv1(lv1.clone());
+    lv1_task.spawn();
+    engine_task.spawn();
     let mut fade_events = event_bus.subscribe();
 
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -1571,7 +1580,8 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
+    let (lv1, task) = build_actor(host.clone(), port, event_bus.clone(), 0);
+    task.spawn();
 
     tokio::time::timeout(Duration::from_millis(timeout_ms), async {
         loop {
@@ -2005,7 +2015,8 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+        let (handle, task) = build_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+        task.spawn();
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -2099,7 +2110,8 @@ mod tests {
 
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let handle = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+        let (handle, task) = build_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+        task.spawn();
 
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {

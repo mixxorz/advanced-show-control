@@ -7,6 +7,7 @@ mod show_file;
 mod state;
 mod types;
 
+pub use actor::{ShowActorPeers, ShowActorTask, build_show_actor};
 pub use commands::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
     SelectedSceneResult, ShowCommand, ShowCommandResult, validate_recall_scene_request,

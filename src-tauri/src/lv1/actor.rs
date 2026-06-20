@@ -23,16 +23,42 @@ const PING_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WRITER_QUEUE_CAPACITY: usize = 64;
 
-/// Spawn the LV1 actor. Returns a handle immediately; the actor connects in the background.
-pub fn spawn_actor(
+pub struct Lv1ActorTask {
     host: String,
     port: u16,
     event_bus: AppEventBus,
     generation: u64,
-) -> Lv1ActorHandle {
+    cmd_rx: mpsc::Receiver<Lv1Command>,
+}
+
+impl Lv1ActorTask {
+    pub fn spawn(self) {
+        tokio::spawn(run_actor(
+            self.host,
+            self.port,
+            self.event_bus,
+            self.generation,
+            self.cmd_rx,
+        ));
+    }
+}
+
+pub fn build_actor(
+    host: String,
+    port: u16,
+    event_bus: AppEventBus,
+    generation: u64,
+) -> (Lv1ActorHandle, Lv1ActorTask) {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_actor(host, port, event_bus, generation, cmd_rx));
-    Lv1ActorHandle::new(cmd_tx)
+    let handle = Lv1ActorHandle::new(cmd_tx);
+    let task = Lv1ActorTask {
+        host,
+        port,
+        event_bus,
+        generation,
+        cmd_rx,
+    };
+    (handle, task)
 }
 
 #[derive(Debug, PartialEq, Eq)]

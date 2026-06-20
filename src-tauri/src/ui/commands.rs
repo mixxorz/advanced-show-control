@@ -223,7 +223,7 @@ async fn choose_save_show_file_path() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use crate::runtime::events::AppEventBus;
-    use crate::show::{SceneConfig, SceneScopeToggles, ShowDocument, ShowStateHandle};
+    use crate::show::{SceneConfig, SceneScopeToggles, ShowDocument};
 
     fn temp_show_file_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -239,7 +239,8 @@ mod tests {
     #[tokio::test]
     async fn save_show_file_uses_existing_show_file_path() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus);
+        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
         let (reply, rx) = oneshot::channel();
         show.send(ShowCommand::ReplaceSnapshotForTest {
             snapshot: ShowDocument {
@@ -260,7 +261,7 @@ mod tests {
         .await
         .unwrap();
         let _ = rx.await;
-        let lifecycle = AppLifecycle::new(AppEventBus::default(), show.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
         let path = temp_show_file_path("save-existing");
         let (reply, rx) = oneshot::channel();
         show.send(ShowCommand::GetShowDocument { reply })

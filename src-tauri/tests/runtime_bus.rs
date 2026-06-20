@@ -1,7 +1,7 @@
 use advanced_show_control::fade::{
-    FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget, spawn_engine,
+    FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget, build_engine,
 };
-use advanced_show_control::lv1::{Lv1Event, SceneState, encode_frame, spawn_actor};
+use advanced_show_control::lv1::{Lv1Event, SceneState, build_actor, encode_frame};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use advanced_show_control::runtime::generation::RuntimeGeneration;
@@ -65,9 +65,12 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let (lv1, lv1_task) = build_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let fade = spawn_engine(runtime_generation, lv1, event_bus, 0);
+    let (fade, fade_task, fade_peers) = build_engine(runtime_generation, event_bus, 0);
+    fade_peers.set_lv1(lv1);
+    lv1_task.spawn();
+    fade_task.spawn();
 
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {

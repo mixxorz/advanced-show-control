@@ -1,5 +1,8 @@
+use std::sync::{Arc, Mutex};
+
 use tokio::sync::mpsc;
 
+use crate::lv1::Lv1ActorHandle;
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 use super::commands::ShowCommand;
@@ -9,16 +12,60 @@ use super::show_file::import_show_file;
 use super::state::ShowState;
 use super::{LoadShowFileResult, NewShowFileResult, ShowCommandResult};
 
-pub fn spawn_show_actor(event_bus: AppEventBus) -> ShowStateHandle {
-    let (tx, rx) = mpsc::channel(32);
-    tauri::async_runtime::spawn(run_show_actor(rx, event_bus));
-    ShowStateHandle::new(tx)
+#[derive(Clone, Default)]
+pub struct ShowActorPeers {
+    lv1: Arc<Mutex<Option<(u64, Lv1ActorHandle)>>>,
 }
 
-async fn run_show_actor(mut rx: mpsc::Receiver<ShowCommand>, event_bus: AppEventBus) {
+impl ShowActorPeers {
+    pub fn set_lv1(&self, generation: u64, lv1: Lv1ActorHandle) {
+        *self.lv1.lock().expect("show peer lock poisoned") = Some((generation, lv1));
+    }
+
+    pub fn clear_lv1(&self, generation: u64) {
+        let mut lv1 = self.lv1.lock().expect("show peer lock poisoned");
+        if lv1
+            .as_ref()
+            .is_some_and(|(peer_generation, _)| *peer_generation == generation)
+        {
+            *lv1 = None;
+        }
+    }
+}
+
+pub struct ShowActorTask {
+    rx: mpsc::Receiver<ShowCommand>,
+    event_bus: AppEventBus,
+    peers: ShowActorPeers,
+}
+
+impl ShowActorTask {
+    pub fn spawn(self) {
+        tauri::async_runtime::spawn(run_show_actor(self.rx, self.event_bus, self.peers));
+    }
+}
+
+pub fn build_show_actor(
+    event_bus: AppEventBus,
+) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
+    let (tx, rx) = mpsc::channel(32);
+    let peers = ShowActorPeers::default();
+    let task = ShowActorTask {
+        rx,
+        event_bus,
+        peers: peers.clone(),
+    };
+    (ShowStateHandle::new(tx), task, peers)
+}
+
+async fn run_show_actor(
+    mut rx: mpsc::Receiver<ShowCommand>,
+    event_bus: AppEventBus,
+    peers: ShowActorPeers,
+) {
     let mut state = ShowState::default();
     while let Some(command) = rx.recv().await {
-        handle_command(command, &mut state, &event_bus);
+        handle_command(command, &mut state, &event_bus, &peers);
     }
 }
 
@@ -40,7 +87,13 @@ fn publish_if_changed(
     }
 }
 
-fn handle_command(command: ShowCommand, state: &mut ShowState, event_bus: &AppEventBus) {
+fn handle_command(
+    command: ShowCommand,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    peers: &ShowActorPeers,
+) {
+    let _ = peers;
     match command {
         ShowCommand::GetShowDocument { reply } => {
             let _ = reply.send(state.snapshot());

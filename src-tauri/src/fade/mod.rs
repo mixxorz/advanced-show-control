@@ -8,7 +8,7 @@ mod state;
 mod tick;
 mod types;
 
-pub use actor::spawn_engine;
+pub use actor::{FadeEnginePeers, FadeEngineTask, build_engine};
 pub use commands::FadeCommand;
 pub use curve::FadeCurve;
 pub use events::FadeEvent;

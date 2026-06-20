@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::{FadeCommand, FadeEngineHandle};
@@ -17,6 +19,33 @@ use crate::show::{RecallSceneResult, ShowCommand, ShowStateHandle};
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
+#[derive(Clone, Default)]
+pub struct SceneRecallFaderPeers {
+    peers: Arc<Mutex<Option<SceneRecallFaderPeerHandles>>>,
+}
+
+#[derive(Clone)]
+struct SceneRecallFaderPeerHandles {
+    show: ShowStateHandle,
+    lv1: Lv1ActorHandle,
+    fade: FadeEngineHandle,
+}
+
+impl SceneRecallFaderPeers {
+    pub fn set_peers(&self, show: ShowStateHandle, lv1: Lv1ActorHandle, fade: FadeEngineHandle) {
+        *self.peers.lock().expect("scene recall peer lock poisoned") =
+            Some(SceneRecallFaderPeerHandles { show, lv1, fade });
+    }
+
+    fn handles(&self) -> SceneRecallFaderPeerHandles {
+        self.peers
+            .lock()
+            .expect("scene recall peer lock poisoned")
+            .clone()
+            .expect("scene recall peers must be set before use")
+    }
+}
+
 struct PendingSceneObservation {
     scene: SceneState,
     seen_at: tokio::time::Instant,
@@ -33,104 +62,91 @@ impl PendingSceneObservation {
     }
 }
 
-pub fn spawn_scene_recall_fader(
+pub struct SceneRecallFaderTask {
     generation: u64,
     runtime_generation: RuntimeGeneration,
-    show: ShowStateHandle,
-    lv1: Lv1ActorHandle,
-    fade: FadeEngineHandle,
+    peers: SceneRecallFaderPeers,
     event_bus: AppEventBus,
-) -> SceneRecallFaderHandle {
-    let mut events = event_bus.subscribe();
-    let (command_tx, mut command_rx) = mpsc::channel(8);
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    command_rx: mpsc::Receiver<SceneRecallCommand>,
+}
 
-    tokio::spawn(async move {
-        let mut recall_state = SceneRecallState::default();
-        let mut pending_scene: Option<PendingSceneObservation> = None;
+impl SceneRecallFaderTask {
+    pub fn spawn(self) {
+        tokio::spawn(run_scene_recall_fader(self));
+    }
+}
 
-        // Recall timing windows:
-        //
-        // - 25 ms settle:         Allows LV1 scene-state to stabilize after a scene change event.
-        //                         The scene name/index can arrive in multiple frames; we wait for
-        //                         the dust to settle before evaluating recall policy.
-        //
-        // - 500 ms edit suppression: After the scene list is modified, suppress recall to avoid
-        //                         triggering fades against a partially-edited show file.
-        //
-        // - 2 s arming delay:     The first scene seen after arming is treated as the baseline
-        //                         (current scene at arm time), not a scene change to recall.
-        //
-        // - 500 ms repeat delay:  Prevents the same scene from triggering two consecutive recalls
-        //                         if a bounce or duplicate event arrives.
-        loop {
-            if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
-                tokio::select! {
-                    command = command_rx.recv() => {
-                        match command {
-                            Some(SceneRecallCommand::RecallScene { scene_id, reply }) => {
-                                let _ = reply.send(handle_explicit_recall_scene(&show, &lv1, scene_id).await);
-                            }
-                            Some(SceneRecallCommand::Shutdown) | None => break,
-                        }
-                    }
-                    event = events.recv() => {
-                        match event {
-                            Ok(AppEvent::Lv1 { event: Lv1Event::SceneListChanged(scene_list), .. }) => {
-                                recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
-                            }
-                            Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
-                                pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
-                            }
-                            Ok(_) => {}
-                            Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                                log_lagged_subscriber("scene-recall", count);
-                            }
-                            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                        }
-                    }
-                    _ = tokio::time::sleep_until(deadline) => {
-                        if let Some(observation) = pending_scene.take() {
-                        process_scene_observation(
-                            generation,
-                            &runtime_generation,
-                            &show,
-                            &lv1,
-                            &fade,
-                            &event_bus,
-                                &mut recall_state,
-                                observation,
-                            ).await;
-                        }
-                    }
-                }
-                continue;
-            }
+pub fn build_scene_recall_fader(
+    generation: u64,
+    runtime_generation: RuntimeGeneration,
+    event_bus: AppEventBus,
+) -> (
+    SceneRecallFaderHandle,
+    SceneRecallFaderTask,
+    SceneRecallFaderPeers,
+) {
+    let (command_tx, command_rx) = mpsc::channel(8);
 
+    let handle = SceneRecallFaderHandle::new(command_tx);
+    let peers = SceneRecallFaderPeers::default();
+    let task = SceneRecallFaderTask {
+        generation,
+        runtime_generation,
+        peers: peers.clone(),
+        events: event_bus.subscribe(),
+        event_bus,
+        command_rx,
+    };
+    (handle, task, peers)
+}
+
+async fn run_scene_recall_fader(task: SceneRecallFaderTask) {
+    let SceneRecallFaderTask {
+        generation,
+        runtime_generation,
+        peers,
+        event_bus,
+        mut events,
+        mut command_rx,
+    } = task;
+
+    let mut recall_state = SceneRecallState::default();
+    let mut pending_scene: Option<PendingSceneObservation> = None;
+
+    // Recall timing windows:
+    //
+    // - 25 ms settle:         Allows LV1 scene-state to stabilize after a scene change event.
+    //                         The scene name/index can arrive in multiple frames; we wait for
+    //                         the dust to settle before evaluating recall policy.
+    //
+    // - 500 ms edit suppression: After the scene list is modified, suppress recall to avoid
+    //                         triggering fades against a partially-edited show file.
+    //
+    // - 2 s arming delay:     The first scene seen after arming is treated as the baseline
+    //                         (current scene at arm time), not a scene change to recall.
+    //
+    // - 500 ms repeat delay:  Prevents the same scene from triggering two consecutive recalls
+    //                         if a bounce or duplicate event arrives.
+    loop {
+        if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
             tokio::select! {
                 command = command_rx.recv() => {
                     match command {
                         Some(SceneRecallCommand::RecallScene { scene_id, reply }) => {
-                            let _ = reply.send(handle_explicit_recall_scene(&show, &lv1, scene_id).await);
+                            let peer_handles = peers.handles();
+                            let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, scene_id).await);
                         }
                         Some(SceneRecallCommand::Shutdown) | None => break,
                     }
                 }
                 event = events.recv() => {
                     match event {
-                        Ok(AppEvent::Lv1 {
-                            event: Lv1Event::SceneListChanged(scene_list),
-                            ..
-                        }) => {
+                        Ok(AppEvent::Lv1 { event: Lv1Event::SceneListChanged(scene_list), .. }) => {
                             recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
                         }
-                        Ok(AppEvent::Lv1 {
-                            event: Lv1Event::SceneChanged(scene),
-                            ..
-                        }) => {
-                            pending_scene = Some(PendingSceneObservation::new(
-                                scene,
-                                tokio::time::Instant::now(),
-                            ));
+                        Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
+                            pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
                         }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -139,11 +155,61 @@ pub fn spawn_scene_recall_fader(
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
+                _ = tokio::time::sleep_until(deadline) => {
+                    if let Some(observation) = pending_scene.take() {
+                        let peer_handles = peers.handles();
+                        process_scene_observation(
+                            generation,
+                            &runtime_generation,
+                            &peer_handles.show,
+                            &peer_handles.lv1,
+                            &peer_handles.fade,
+                            &event_bus,
+                            &mut recall_state,
+                            observation,
+                        ).await;
+                    }
+                }
+            }
+            continue;
+        }
+
+        tokio::select! {
+            command = command_rx.recv() => {
+                match command {
+                    Some(SceneRecallCommand::RecallScene { scene_id, reply }) => {
+                        let peer_handles = peers.handles();
+                        let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, scene_id).await);
+                    }
+                    Some(SceneRecallCommand::Shutdown) | None => break,
+                }
+            }
+            event = events.recv() => {
+                match event {
+                    Ok(AppEvent::Lv1 {
+                        event: Lv1Event::SceneListChanged(scene_list),
+                        ..
+                    }) => {
+                        recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
+                    }
+                    Ok(AppEvent::Lv1 {
+                        event: Lv1Event::SceneChanged(scene),
+                        ..
+                    }) => {
+                        pending_scene = Some(PendingSceneObservation::new(
+                            scene,
+                            tokio::time::Instant::now(),
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("scene-recall", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
             }
         }
-    });
-
-    SceneRecallFaderHandle::new(command_tx)
+    }
 }
 
 async fn is_generation_current(expected: u64, runtime_generation: &RuntimeGeneration) -> bool {
@@ -583,7 +649,7 @@ mod tests {
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
         let show = ShowStateHandle::new_empty(event_bus.clone());
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -620,7 +686,7 @@ mod tests {
         let fade = FadeEngineHandle::new(fade_tx);
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -653,7 +719,7 @@ mod tests {
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation,
             ShowStateHandle::new_empty(event_bus.clone()),
@@ -676,7 +742,7 @@ mod tests {
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -741,7 +807,7 @@ mod tests {
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -786,7 +852,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -844,7 +910,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -898,7 +964,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -954,7 +1020,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -1009,7 +1075,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -1067,7 +1133,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -1146,7 +1212,7 @@ mod tests {
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show(&show).await;
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -1220,7 +1286,7 @@ mod tests {
         .unwrap();
         let _ = rx.await.unwrap().unwrap();
 
-        let handle = spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
             show.clone(),
@@ -1504,5 +1570,20 @@ mod tests {
             index: 1,
             name: "Intro".to_string(),
         }
+    }
+
+    fn build_and_spawn_scene_recall_fader(
+        generation: u64,
+        runtime_generation: RuntimeGeneration,
+        show: ShowStateHandle,
+        lv1: Lv1ActorHandle,
+        fade: FadeEngineHandle,
+        event_bus: AppEventBus,
+    ) -> SceneRecallFaderHandle {
+        let (handle, task, peers) =
+            build_scene_recall_fader(generation, runtime_generation, event_bus);
+        peers.set_peers(show, lv1, fade);
+        task.spawn();
+        handle
     }
 }

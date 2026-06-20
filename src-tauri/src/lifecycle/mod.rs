@@ -6,15 +6,15 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::fade::{FadeEngineHandle, spawn_engine};
+use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
-use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, spawn_actor};
+use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::runtime::generation::RuntimeGeneration;
-use crate::scene_recall::{SceneRecallFaderHandle, spawn_scene_recall_fader};
+use crate::scene_recall::{SceneRecallFaderHandle, build_scene_recall_fader};
 use crate::show::{
-    ConnectCommandResult, ShowCommand, ShowCommandResult, ShowStateHandle,
+    ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowStateHandle,
     spawn_lv1_scene_list_monitor,
 };
 
@@ -48,6 +48,68 @@ impl RuntimeHandles {
 pub enum RuntimeInstallRejection {
     StaleGeneration { handles: RuntimeHandles },
     MissingRuntimeTargets { handles: RuntimeHandles },
+}
+
+struct BuiltConnectedRuntime {
+    lv1: Lv1ActorHandle,
+    lv1_task: crate::lv1::Lv1ActorTask,
+    fade: FadeEngineHandle,
+    fade_task: crate::fade::FadeEngineTask,
+    scene_recall_fader: SceneRecallFaderHandle,
+    scene_recall_task: crate::scene_recall::SceneRecallFaderTask,
+}
+
+impl BuiltConnectedRuntime {
+    fn runtime_targets(&self) -> RuntimeHandles {
+        RuntimeHandles::with_runtime_targets(self.lv1.clone(), self.fade.clone())
+    }
+
+    fn spawn_lv1_and_fade(self) -> StartedConnectedRuntime {
+        self.lv1_task.spawn();
+        self.fade_task.spawn();
+        StartedConnectedRuntime {
+            lv1: self.lv1,
+            scene_recall_fader: self.scene_recall_fader,
+            scene_recall_task: self.scene_recall_task,
+        }
+    }
+}
+
+struct StartedConnectedRuntime {
+    lv1: Lv1ActorHandle,
+    scene_recall_fader: SceneRecallFaderHandle,
+    scene_recall_task: crate::scene_recall::SceneRecallFaderTask,
+}
+
+fn build_connected_runtime(
+    generation: u64,
+    runtime_generation: RuntimeGeneration,
+    identity: &crate::connection_state::Lv1SystemIdentity,
+    show: ShowStateHandle,
+    show_peers: ShowActorPeers,
+    event_bus: AppEventBus,
+) -> BuiltConnectedRuntime {
+    let (lv1, lv1_task) = build_actor(
+        identity.address.clone(),
+        identity.port,
+        event_bus.clone(),
+        generation,
+    );
+    let (fade, fade_task, fade_peers) =
+        build_engine(runtime_generation.clone(), event_bus.clone(), generation);
+    let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
+        build_scene_recall_fader(generation, runtime_generation, event_bus);
+    show_peers.set_lv1(generation, lv1.clone());
+    fade_peers.set_lv1(lv1.clone());
+    scene_recall_peers.set_peers(show, lv1.clone(), fade.clone());
+    BuiltConnectedRuntime {
+        lv1,
+        lv1_task,
+        fade,
+        fade_task,
+        scene_recall_fader,
+        scene_recall_task,
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -94,10 +156,11 @@ pub struct AppLifecycle {
     inner: Arc<Mutex<LifecycleInner>>,
     event_bus: AppEventBus,
     show: ShowStateHandle,
+    show_peers: ShowActorPeers,
 }
 
 impl AppLifecycle {
-    pub fn new(event_bus: AppEventBus, show: ShowStateHandle) -> Self {
+    pub fn new(event_bus: AppEventBus, show: ShowStateHandle, show_peers: ShowActorPeers) -> Self {
         let runtime_generation = RuntimeGeneration::new();
 
         Self {
@@ -112,6 +175,7 @@ impl AppLifecycle {
             })),
             event_bus,
             show,
+            show_peers,
         }
     }
 
@@ -161,6 +225,7 @@ impl AppLifecycle {
             return;
         }
         inner.handles.abort_all();
+        self.show_peers.clear_lv1(generation);
         inner.runtime_generation.set(inner.generation).await;
         inner.generation = inner.generation.saturating_add(1);
         let generation = inner.generation;
@@ -187,6 +252,7 @@ impl AppLifecycle {
             inner.handles.abort_all();
             (inner.generation, inner.runtime_generation.clone())
         };
+        self.show_peers.clear_lv1(generation);
         runtime_generation.set(generation).await;
     }
 
@@ -201,27 +267,27 @@ impl AppLifecycle {
         log_lv1_connecting(&identity);
         let event_bus = self.event_bus.clone();
         let runtime_generation = self.current_runtime_generation().await;
-        let lv1 = spawn_actor(
-            identity.address.clone(),
-            identity.port,
-            event_bus.clone(),
+        let built_runtime = build_connected_runtime(
             generation,
-        );
-        let fade = spawn_engine(
-            runtime_generation.clone(),
-            lv1.clone(),
+            runtime_generation,
+            &identity,
+            self.show.clone(),
+            self.show_peers.clone(),
             event_bus.clone(),
-            generation,
         );
-        let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
+        let handles = built_runtime.runtime_targets();
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
             let mut handles = rejection.into_handles();
             handles.abort_all();
+            self.show_peers.clear_lv1(generation);
             return Err("generation is stale".to_string());
         }
+        let started_runtime = built_runtime.spawn_lv1_and_fade();
 
         let (reply, rx) = oneshot::channel();
-        lv1.send(Lv1Command::GetState { reply })
+        started_runtime
+            .lv1
+            .send(Lv1Command::GetState { reply })
             .await
             .map_err(|error| error.to_string())?;
         let initial_snapshot = rx
@@ -241,18 +307,9 @@ impl AppLifecycle {
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
-        let _ = lv1;
-        let _ = fade;
-        let scene_recall_fader = spawn_scene_recall_fader(
-            generation,
-            runtime_generation,
-            self.show.clone(),
-            lv1,
-            fade,
-            event_bus,
-        );
-        self.install_scene_recall_fader(generation, scene_recall_fader)
+        self.install_scene_recall_fader(generation, started_runtime.scene_recall_fader)
             .await;
+        started_runtime.scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
     }
@@ -303,16 +360,12 @@ impl AppLifecycle {
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(runtime_generation.clone());
         }
-        let scene_recall_fader = spawn_scene_recall_fader(
-            generation,
-            runtime_generation,
-            self.show.clone(),
-            lv1,
-            fade,
-            event_bus,
-        );
+        let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
+            build_scene_recall_fader(generation, runtime_generation, event_bus);
+        scene_recall_peers.set_peers(self.show.clone(), lv1, fade);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
+        scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
     }
@@ -546,8 +599,9 @@ impl AppLifecycle {
 impl Default for AppLifecycle {
     fn default() -> Self {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        Self::new(event_bus, show)
+        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
+        Self::new(event_bus, show, show_peers)
     }
 }
 
@@ -745,6 +799,12 @@ mod tests {
         test_actor_handle(tx)
     }
 
+    fn lifecycle_for_test(event_bus: AppEventBus) -> AppLifecycle {
+        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
+        AppLifecycle::new(event_bus, show, show_peers)
+    }
+
     fn connected_snapshot() -> Lv1StateSnapshot {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
@@ -766,8 +826,7 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_allocates_monotonic_generations() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
 
         let first = lifecycle.begin_connecting().await.unwrap();
         lifecycle.abort_current_runtime().await;
@@ -780,8 +839,7 @@ mod tests {
     async fn lifecycle_publishes_active_generation_when_connecting_begins() {
         let event_bus = AppEventBus::default();
         let mut rx = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
 
         let generation = lifecycle.begin_connecting().await.unwrap();
 
@@ -796,8 +854,7 @@ mod tests {
     #[tokio::test]
     async fn connected_identity_metadata_is_applied() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
         let mut events = lifecycle.event_bus.subscribe();
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
@@ -823,8 +880,7 @@ mod tests {
     #[tokio::test]
     async fn failed_connect_metadata_is_applied() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
         let mut events = lifecycle.event_bus.subscribe();
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
@@ -884,8 +940,7 @@ mod tests {
     #[tokio::test]
     async fn connect_failure_clears_runtime_targets_after_failed_initial_lv1_state() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(disconnected_snapshot());
@@ -919,8 +974,7 @@ mod tests {
     #[tokio::test]
     async fn connect_installs_runtime_targets_before_scene_recall_startup() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
@@ -971,8 +1025,7 @@ mod tests {
         let subscriber = Registry::default().with(captured);
         let _guard = tracing::subscriber::set_default(subscriber);
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
@@ -1009,8 +1062,7 @@ mod tests {
     #[tokio::test]
     async fn connect_retains_scene_recall_fader_handle() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
@@ -1052,8 +1104,7 @@ mod tests {
     async fn runtime_install_starts_show_scene_list_monitor() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
@@ -1099,8 +1150,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let app = mock_app();
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
 
         let result = lifecycle
             .connect_lv1_system(
@@ -1141,8 +1191,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let app = mock_app();
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
         let (reply, rx) = oneshot::channel();
         lifecycle
             .show
@@ -1177,8 +1226,7 @@ mod tests {
     async fn startup_auto_connect_noops_without_stored_identity() {
         let app = mock_app();
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
 
         let result = lifecycle
             .startup_auto_connect_lv1(app.handle().clone())
@@ -1191,8 +1239,7 @@ mod tests {
     #[tokio::test]
     async fn stale_runtime_install_returns_abortable_handles() {
         let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
@@ -1215,8 +1262,7 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let event_bus = AppEventBus::default();
         let mut rx = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
+        let lifecycle = lifecycle_for_test(event_bus);
 
         let generation = lifecycle.begin_connecting().await.unwrap();
         assert!(matches!(

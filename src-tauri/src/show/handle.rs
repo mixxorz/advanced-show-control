@@ -12,7 +12,9 @@ pub struct ShowStateHandle {
 
 impl ShowStateHandle {
     pub fn new_empty(event_bus: AppEventBus) -> Self {
-        super::actor::spawn_show_actor(event_bus)
+        let (handle, task, _peers) = super::actor::build_show_actor(event_bus);
+        task.spawn();
+        handle
     }
 
     pub(super) fn new(tx: mpsc::Sender<ShowCommand>) -> Self {

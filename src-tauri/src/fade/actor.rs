@@ -1,5 +1,6 @@
 //! Fade engine actor — animates LV1 faders over time.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot};
 
@@ -14,26 +15,66 @@ use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::runtime::generation::RuntimeGeneration;
 
-pub fn spawn_engine(
+#[derive(Clone, Default)]
+pub struct FadeEnginePeers {
+    lv1: Arc<Mutex<Option<Lv1ActorHandle>>>,
+}
+
+impl FadeEnginePeers {
+    pub fn set_lv1(&self, lv1: Lv1ActorHandle) {
+        *self.lv1.lock().expect("fade peer lock poisoned") = Some(lv1);
+    }
+
+    fn lv1(&self) -> Lv1ActorHandle {
+        self.lv1
+            .lock()
+            .expect("fade peer lock poisoned")
+            .clone()
+            .expect("fade LV1 peer must be set before use")
+    }
+}
+
+pub struct FadeEngineTask {
     runtime_generation: RuntimeGeneration,
-    lv1: Lv1ActorHandle,
+    peers: FadeEnginePeers,
     event_bus: AppEventBus,
     generation: u64,
-) -> FadeEngineHandle {
+    cmd_rx: mpsc::Receiver<FadeCommand>,
+}
+
+impl FadeEngineTask {
+    pub fn spawn(self) {
+        tokio::spawn(run_engine(
+            self.runtime_generation,
+            self.peers,
+            self.event_bus,
+            self.generation,
+            self.cmd_rx,
+        ));
+    }
+}
+
+pub fn build_engine(
+    runtime_generation: RuntimeGeneration,
+    event_bus: AppEventBus,
+    generation: u64,
+) -> (FadeEngineHandle, FadeEngineTask, FadeEnginePeers) {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_engine(
+    let handle = FadeEngineHandle::new(cmd_tx);
+    let peers = FadeEnginePeers::default();
+    let task = FadeEngineTask {
         runtime_generation,
-        lv1,
+        peers: peers.clone(),
         event_bus,
         generation,
         cmd_rx,
-    ));
-    FadeEngineHandle::new(cmd_tx)
+    };
+    (handle, task, peers)
 }
 
 async fn run_engine(
     runtime_generation: RuntimeGeneration,
-    lv1: Lv1ActorHandle,
+    peers: FadeEnginePeers,
     event_bus: AppEventBus,
     generation: u64,
     mut cmd_rx: mpsc::Receiver<FadeCommand>,
@@ -63,6 +104,7 @@ async fn run_engine(
                         let scene_name = config.scene.name.clone();
                         let duration_ms = config.duration_ms;
                         let target_count = config.targets.len();
+                        let lv1 = peers.lv1();
                         let result = handle_recall_scene_fade(&runtime_generation, &lv1, &mut state, config, expected_generation).await;
 
                         match result {
@@ -128,6 +170,7 @@ async fn run_engine(
                     for (expected_generation, writes) in group_writes_by_generation(&state.channels, writes) {
                         let sent = match expected_generation {
                             Some(expected_generation) => {
+                                let lv1 = peers.lv1();
                                 send_batch_if_generation(
                                     &runtime_generation,
                                     &lv1,
@@ -138,6 +181,7 @@ async fn run_engine(
                                 .await
                             }
                             None => {
+                                let lv1 = peers.lv1();
                                 send_batch(&lv1, &state.event_bus, writes).await;
                                 true
                             }
@@ -611,7 +655,9 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lv1 = test_actor_handle(tx);
         let runtime_generation = RuntimeGeneration::new();
-        let engine = spawn_engine(runtime_generation, lv1, event_bus.clone(), 0);
+        let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 0);
+        peers.set_lv1(lv1);
+        task.spawn();
         (event_bus, engine, rx)
     }
 
@@ -1225,7 +1271,9 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lv1 = test_actor_handle(tx);
         let runtime_generation = RuntimeGeneration::new();
-        let engine = spawn_engine(runtime_generation, lv1, event_bus.clone(), 0);
+        let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 0);
+        peers.set_lv1(lv1);
+        task.spawn();
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
 

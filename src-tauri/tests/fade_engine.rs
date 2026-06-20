@@ -1,9 +1,9 @@
 use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
-    FadeSceneIdentity, FadeTarget, FadeTargetKey, spawn_engine,
+    FadeSceneIdentity, FadeTarget, FadeTargetKey, build_engine,
 };
 use advanced_show_control::lv1::{
-    Lv1ActorHandle, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame, spawn_actor,
+    Lv1ActorHandle, Lv1Event, Lv1Frame, build_actor, decode_frame_payload, encode_frame,
 };
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
@@ -14,6 +14,17 @@ use std::net::TcpListener;
 
 fn lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
     encode_frame(address, args).unwrap()
+}
+
+fn build_and_spawn_actor(
+    host: String,
+    port: u16,
+    event_bus: AppEventBus,
+    generation: u64,
+) -> Lv1ActorHandle {
+    let (handle, task) = build_actor(host, port, event_bus, generation);
+    task.spawn();
+    handle
 }
 
 #[derive(Default)]
@@ -182,7 +193,9 @@ async fn spawn_runtime_for_test(
     event_bus: AppEventBus,
 ) -> (RuntimeGeneration, FadeEngineHandle) {
     let runtime_generation = RuntimeGeneration::new();
-    let engine = spawn_engine(runtime_generation.clone(), lv1, event_bus, 0);
+    let (engine, task, peers) = build_engine(runtime_generation.clone(), event_bus, 0);
+    peers.set_lv1(lv1);
+    task.spawn();
     (runtime_generation, engine)
 }
 
@@ -259,7 +272,7 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_runtime_generation, engine) =
         spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
@@ -351,7 +364,7 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_runtime_generation, engine) =
         spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
@@ -420,9 +433,11 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let engine = spawn_engine(runtime_generation, lv1, event_bus.clone(), 0);
+    let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 0);
+    peers.set_lv1(lv1);
+    task.spawn();
     let mut app_events = event_bus.subscribe();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -519,7 +534,7 @@ async fn zero_duration_pan_family_targets_send_exact_final_values() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -608,7 +623,7 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -742,7 +757,7 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -845,7 +860,7 @@ async fn same_scene_non_fader_targets_do_not_finish_active_fader_fade() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -911,7 +926,7 @@ async fn engine_emits_fade_started_and_completed() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -966,7 +981,7 @@ async fn engine_abort_all_stops_fade() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1035,7 +1050,7 @@ async fn engine_detects_manual_override() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1090,7 +1105,7 @@ async fn different_scene_fade_while_running_replaces_previous_channel() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1171,7 +1186,7 @@ async fn different_scene_fade_does_not_cancel_unrelated_channel() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1253,7 +1268,7 @@ async fn recalling_same_scene_finishes_only_that_scene_channels() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1370,7 +1385,7 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1460,7 +1475,7 @@ async fn disconnect_aborts_active_fade() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
@@ -1552,7 +1567,7 @@ async fn override_of_last_target_emits_terminal_event() {
     });
 
     let event_bus = AppEventBus::default();
-    let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
+    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
