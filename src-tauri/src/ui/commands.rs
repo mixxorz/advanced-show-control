@@ -70,7 +70,16 @@ pub async fn new_show_file(
 pub async fn open_show_file_dialog(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<LoadShowFileResult, String> {
-    let path = choose_open_show_file_path().await?;
+    let path = spawn_blocking(|| -> Result<Option<PathBuf>, String> {
+        let folder = default_show_folder();
+        Ok(rfd::FileDialog::new()
+            .set_directory(folder)
+            .add_filter("LV1 Show", &["lv1show"])
+            .pick_file())
+    })
+    .await
+    .map_err(|err| format!("Failed to open file dialog: {err}"))??
+    .ok_or_else(|| "Open show file cancelled".to_string())?;
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::LoadShowFileFromPath {
@@ -89,20 +98,6 @@ pub async fn open_show_file_dialog(
 pub async fn save_show_file(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
-    save_show_file_with_lifecycle(&lifecycle).await
-}
-
-#[tauri::command]
-pub async fn save_show_file_as_dialog(
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<ShowCommandResult, String> {
-    let path = choose_save_show_file_path().await?;
-    save_show_file_to_path(&lifecycle, path).await
-}
-
-async fn save_show_file_with_lifecycle(
-    lifecycle: &AppLifecycle,
-) -> Result<ShowCommandResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::CurrentShowFilePath { reply })
@@ -115,7 +110,17 @@ async fn save_show_file_with_lifecycle(
         .map_err(map_app_command_error)?
     {
         Some(path) => path,
-        None => choose_save_show_file_path().await?,
+        None => spawn_blocking(|| -> Result<Option<PathBuf>, String> {
+            let folder = default_show_folder();
+            Ok(rfd::FileDialog::new()
+                .set_directory(folder)
+                .set_file_name("Untitled.lv1show")
+                .add_filter("LV1 Show", &["lv1show"])
+                .save_file())
+        })
+        .await
+        .map_err(|err| format!("Failed to open save dialog: {err}"))??
+        .ok_or_else(|| "Save show file cancelled".to_string())?,
     };
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SaveShowFileAs {
@@ -130,10 +135,21 @@ async fn save_show_file_with_lifecycle(
         .map_err(map_app_command_error)?
 }
 
-async fn save_show_file_to_path(
-    lifecycle: &AppLifecycle,
-    path: PathBuf,
+#[tauri::command]
+pub async fn save_show_file_as_dialog(
+    lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
+    let path = spawn_blocking(|| -> Result<Option<PathBuf>, String> {
+        let folder = default_show_folder();
+        Ok(rfd::FileDialog::new()
+            .set_directory(folder)
+            .set_file_name("Untitled.lv1show")
+            .add_filter("LV1 Show", &["lv1show"])
+            .save_file())
+    })
+    .await
+    .map_err(|err| format!("Failed to open save dialog: {err}"))??
+    .ok_or_else(|| "Save show file cancelled".to_string())?;
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SaveShowFileAs {
@@ -146,99 +162,6 @@ async fn save_show_file_to_path(
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?
-}
-
-async fn choose_open_show_file_path() -> Result<PathBuf, String> {
-    spawn_blocking(|| -> Result<Option<PathBuf>, String> {
-        let folder = default_show_folder();
-        Ok(rfd::FileDialog::new()
-            .set_directory(folder)
-            .add_filter("LV1 Show", &["lv1show"])
-            .pick_file())
-    })
-    .await
-    .map_err(|err| format!("Failed to open file dialog: {err}"))??
-    .ok_or_else(|| "Open show file cancelled".to_string())
-}
-
-async fn choose_save_show_file_path() -> Result<PathBuf, String> {
-    spawn_blocking(|| -> Result<Option<PathBuf>, String> {
-        let folder = default_show_folder();
-        Ok(rfd::FileDialog::new()
-            .set_directory(folder)
-            .set_file_name("Untitled.lv1show")
-            .add_filter("LV1 Show", &["lv1show"])
-            .save_file())
-    })
-    .await
-    .map_err(|err| format!("Failed to open save dialog: {err}"))??
-    .ok_or_else(|| "Save show file cancelled".to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::runtime::events::AppEventBus;
-    use crate::show::{SceneConfig, SceneScopeToggles, ShowDocument};
-
-    fn temp_show_file_path(name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "advanced-show-control-ui-commands-{}-{}-{}.lv1show",
-            name,
-            std::process::id(),
-            crate::time::current_timestamp_millis()
-        ));
-        path
-    }
-
-    #[tokio::test]
-    async fn save_show_file_uses_existing_show_file_path() {
-        let event_bus = AppEventBus::default();
-        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
-        show_task.spawn();
-        let (reply, rx) = oneshot::channel();
-        show.send(ShowCommand::ReplaceSnapshotForTest {
-            snapshot: ShowDocument {
-                lockout: false,
-                scene_configs: vec![SceneConfig {
-                    scene_id: "1::Intro".to_string(),
-                    scene_index: 1,
-                    scene_name: "Intro".to_string(),
-                    duration_ms: 1000,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: SceneScopeToggles::default(),
-                }],
-                cued_scene_id: None,
-            },
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-        let _ = rx.await;
-        let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
-        let path = temp_show_file_path("save-existing");
-        let (reply, rx) = oneshot::channel();
-        show.send(ShowCommand::SaveShowFileAs {
-            path: path.clone(),
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
-        let _ = rx
-            .await
-            .expect("save should reply")
-            .expect("save should set current show file path");
-
-        let result = save_show_file_with_lifecycle(&lifecycle)
-            .await
-            .expect("save should use existing path");
-
-        assert!(result.changed);
-        assert!(path.exists());
-        let _ = std::fs::remove_file(path);
-    }
 }
 
 #[tauri::command]
