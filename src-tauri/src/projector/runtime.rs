@@ -3,8 +3,8 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
 
-use crate::app_state::AppViewState;
 use crate::logging::UiLogEvent;
+use crate::projector::AppViewState;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
 use crate::show::{ShowEvent, ShowProjectionState};
@@ -114,7 +114,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::LogSeverity;
+    use crate::projector::LogSeverity;
     use crate::runtime::events::AppEventBus;
     use crate::show::{ShowEvent, ShowProjectionReason, ShowProjectionState};
     use std::sync::{Arc, Mutex};

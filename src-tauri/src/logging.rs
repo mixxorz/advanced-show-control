@@ -12,8 +12,8 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::util::SubscriberInitExt;
 
-use crate::app_state::LogSeverity;
 use crate::diagnostics::diagnostic_log_path;
+use crate::projector::LogSeverity;
 
 const UI_SINK_TARGET: &str = "advanced_show_control_tauri::logging::ui_sink";
 

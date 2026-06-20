@@ -1,14 +1,14 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use crate::app_state::{
-    AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, SceneSummary,
-};
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::fade::FadeEvent;
 use crate::logging::UiLogEvent;
 use crate::lv1::{
     ChannelInfo, ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState,
+};
+use crate::projector::{
+    AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, SceneSummary,
 };
 use crate::show::ShowProjectionState;
 
@@ -346,9 +346,9 @@ impl ProjectionCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app_state::LogSeverity;
     use crate::fade::FadeParameter;
     use crate::lv1::{ChannelInfo, SceneState};
+    use crate::projector::LogSeverity;
     #[test]
     fn cache_builds_initial_disconnected_snapshot_with_incrementing_versions() {
         let mut cache = ProjectionCache::new();
