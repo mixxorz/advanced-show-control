@@ -143,14 +143,36 @@ pub async fn set_all_channels_scoped(
 }
 
 pub async fn cue_scene(show: &ShowStateHandle, scene_id: String) -> Result<CueSceneResult, String> {
+    tracing::debug!(
+        event = "scene_cue_requested",
+        scene_id = %scene_id,
+        "Scene cue requested"
+    );
     let scene = show
         .get_scene_config(scene_id.clone())
         .await
-        .ok_or_else(|| "Scene config not found".to_string())?;
-    Ok(CueSceneResult {
+        .ok_or_else(|| {
+            tracing::warn!(
+                event = "scene_cue_blocked",
+                scene_id = %scene_id,
+                reason = "scene config not found",
+                "Scene cue blocked: scene config not found"
+            );
+            "Scene config not found".to_string()
+        })?;
+    let result = CueSceneResult {
         changed: show.cue_scene(scene_id).await?,
         scene,
-    })
+    };
+    tracing::info!(
+        event = "scene_cued",
+        scene_id = %result.scene.scene_id,
+        scene_index = result.scene.scene_index,
+        scene_name = %result.scene.scene_name,
+        "Scene cued: {}",
+        result.scene.scene_name
+    );
+    Ok(result)
 }
 
 pub async fn select_scene_config(
@@ -161,6 +183,13 @@ pub async fn select_scene_config(
         .get_scene_config(scene_id)
         .await
         .ok_or_else(|| "Scene config not found".to_string())?;
+    let selected_scene_id = scene.scene_id.clone();
+    show.mutate_for_command(super::events::ShowProjectionReason::ShowState, |state| {
+        let changed = state.set_selected_scene_id(Some(selected_scene_id));
+        Ok::<(bool, ()), std::convert::Infallible>((changed, ()))
+    })
+    .await
+    .expect("infallible selected scene mutation");
     Ok(SelectedSceneResult { scene })
 }
 
@@ -223,6 +252,7 @@ pub async fn new_show_file(
         })
         .await?;
 
+    tracing::info!(event = "show_file_created", "New show file created");
     Ok(NewShowFileResult { selected_scene_id })
 }
 
@@ -240,6 +270,7 @@ pub async fn mark_show_file_saved(
     )
     .await
     .expect("infallible show file saved mutation");
+    tracing::info!(event = "show_file_saved", "Show file saved");
     ShowCommandResult { changed: true }
 }
 
@@ -381,6 +412,15 @@ pub async fn load_show_file_from_dto(
     )
     .await?;
 
+    for scene in report.removed_scenes.iter() {
+        tracing::warn!(
+            event = "show_file_scene_pruned",
+            scene = %scene,
+            "Skipped loading \"{scene}\" because it was not found in the current scene list."
+        );
+    }
+    tracing::info!(event = "show_file_opened", "Show file loaded");
+
     Ok(LoadShowFileResult {
         selected_scene_id,
         saved_at,
@@ -398,6 +438,74 @@ mod tests {
     use crate::show::handle::ShowStateHandle;
     use crate::show::show_file::{ShowFile, ShowFileSafety, ShowFileSceneConfig};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Debug, Default, Clone)]
+    struct CapturedLogEvent {
+        fields: HashMap<String, String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogEvents(Arc<StdMutex<Vec<CapturedLogEvent>>>);
+
+    impl<S> Layer<S> for CapturedLogEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedLogEvent::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedLogEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.fields.insert(
+                field.name().to_string(),
+                format!("{value:?}").trim_matches('"').to_string(),
+            );
+        }
+    }
+
+    fn with_captured_logs() -> (
+        tracing::subscriber::DefaultGuard,
+        Arc<StdMutex<Vec<CapturedLogEvent>>>,
+    ) {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        (tracing::subscriber::set_default(subscriber), logs)
+    }
+
+    fn saw_event(logs: &Arc<StdMutex<Vec<CapturedLogEvent>>>, event_name: &str) -> bool {
+        logs.lock()
+            .unwrap()
+            .iter()
+            .any(|log| log.fields.get("event").map(String::as_str) == Some(event_name))
+    }
 
     fn recall_lv1(connection: ConnectionStatus, name: &str) -> Lv1StateSnapshot {
         Lv1StateSnapshot {
@@ -526,6 +634,78 @@ mod tests {
         }
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn show_file_commands_restore_main_log_events() {
+        let (_guard, logs) = with_captured_logs();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+
+        new_show_file(
+            &show,
+            Some(recall_lv1(ConnectionStatus::Connected, "Intro")),
+        )
+        .await
+        .unwrap();
+        mark_show_file_saved(
+            &show,
+            std::path::PathBuf::from("/tmp/log-test.lv1show"),
+            "2026-01-01T00:00:00.000Z".to_string(),
+        )
+        .await;
+        load_show_file_from_dto(
+            &show,
+            std::path::PathBuf::from("/tmp/log-test.lv1show"),
+            show_file_with_scenes(&["Intro", "Missing"], None),
+            Some(recall_lv1(ConnectionStatus::Connected, "Intro")),
+        )
+        .await
+        .unwrap();
+
+        assert!(saw_event(&logs, "show_file_created"));
+        assert!(saw_event(&logs, "show_file_saved"));
+        assert!(saw_event(&logs, "show_file_opened"));
+        assert!(saw_event(&logs, "show_file_scene_pruned"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cue_scene_restores_main_log_events() {
+        let (_guard, logs) = with_captured_logs();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+        new_show_file(
+            &show,
+            Some(recall_lv1(ConnectionStatus::Connected, "Intro")),
+        )
+        .await
+        .unwrap();
+
+        let result = cue_scene(&show, "1::Intro".to_string()).await.unwrap();
+
+        assert_eq!(result.scene.scene_name, "Intro");
+        assert!(saw_event(&logs, "scene_cue_requested"));
+        assert!(saw_event(&logs, "scene_cued"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cue_scene_unknown_id_restores_main_blocked_log_event() {
+        let (_guard, logs) = with_captured_logs();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+        new_show_file(
+            &show,
+            Some(recall_lv1(ConnectionStatus::Connected, "Intro")),
+        )
+        .await
+        .unwrap();
+
+        let err = cue_scene(&show, "99::Missing".to_string())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err, "Scene config not found");
+        assert!(saw_event(&logs, "scene_cue_blocked"));
+    }
+
     #[tokio::test]
     async fn changed_scene_duration_marks_show_dirty_in_command() {
         let event_bus = AppEventBus::default();
@@ -606,6 +786,49 @@ mod tests {
                     state.show_file_path,
                     Some(std::path::PathBuf::from("/tmp/test.lv1show"))
                 );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn select_scene_config_updates_selected_scene_and_publishes_state() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+        load_show_file_from_dto(
+            &show,
+            std::path::PathBuf::from("/tmp/select.lv1show"),
+            show_file_with_scenes(&["Intro", "Verse"], None),
+            Some(Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![
+                    SceneListEntry {
+                        index: 1,
+                        name: "Intro".to_string(),
+                    },
+                    SceneListEntry {
+                        index: 2,
+                        name: "Verse".to_string(),
+                    },
+                ],
+                channels: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+        drain_show_events(&mut events).await;
+
+        let result = select_scene_config(&show, "2::Verse".to_string())
+            .await
+            .unwrap();
+
+        assert_eq!(result.scene.scene_id, "2::Verse");
+        let event = events.recv().await.unwrap();
+        match event {
+            AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
+                assert_eq!(state.selected_scene_id, Some("2::Verse".to_string()));
             }
             other => panic!("unexpected event: {other:?}"),
         }

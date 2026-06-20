@@ -15,14 +15,13 @@ use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::scene_recall::spawn_scene_recall_fader;
 use crate::show::commands::ShowCommandResult;
-use crate::show::handle::ShowStateHandle;
+use crate::show::handle::{ShowStateHandle, spawn_lv1_scene_list_monitor};
 
 #[derive(Default)]
 pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
     pub scene_recall_fader: Option<JoinHandle<()>>,
-    pub lifecycle_event_monitor: Option<JoinHandle<()>>,
     pub show_scene_list_monitor: Option<JoinHandle<()>>,
 }
 
@@ -37,9 +36,6 @@ impl RuntimeHandles {
 
     pub fn abort_all(&mut self) {
         if let Some(handle) = self.scene_recall_fader.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.lifecycle_event_monitor.take() {
             handle.abort();
         }
         if let Some(handle) = self.show_scene_list_monitor.take() {
@@ -154,6 +150,11 @@ impl AppLifecycle {
             .command_bus
             .set_runtime_targets(generation, lv1, fade)
             .await;
+        let mut handles = handles;
+        handles.show_scene_list_monitor = Some(spawn_lv1_scene_list_monitor(
+            self.show.clone(),
+            self.event_bus.subscribe(),
+        ));
         inner.handles = handles;
         inner.connecting = false;
         Ok(())
@@ -171,6 +172,17 @@ impl AppLifecycle {
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
+    }
+
+    async fn install_scene_recall_fader(&self, generation: u64, handle: JoinHandle<()>) {
+        let mut inner = self.inner.lock().await;
+        if inner.generation == generation {
+            if let Some(previous) = inner.handles.scene_recall_fader.replace(handle) {
+                previous.abort();
+            }
+        } else {
+            handle.abort();
+        }
     }
 
     pub async fn abort_current_runtime(&self) {
@@ -194,6 +206,8 @@ impl AppLifecycle {
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
     ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+        log_lv1_connect_requested(&identity);
+        log_lv1_connecting(&identity);
         let event_bus = self.event_bus.clone();
         let command_bus = self.current_command_bus().await;
         let lv1 = spawn_actor(
@@ -221,6 +235,7 @@ impl AppLifecycle {
             let _ = self
                 .apply_failed_connect_metadata(&command_bus, failure_mode)
                 .await;
+            log_lv1_connect_failed(&identity, failure_mode);
             return Err("LV1 did not connect".to_string());
         }
 
@@ -229,9 +244,12 @@ impl AppLifecycle {
             .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
             .await
             .map_err(|error| error.to_string())?;
+        log_lv1_connected(&identity);
         let _ = lv1;
         let _ = fade;
-        let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        self.install_scene_recall_fader(generation, scene_recall_fader)
+            .await;
         let _ = app;
         Ok(connect_result)
     }
@@ -270,6 +288,7 @@ impl AppLifecycle {
             let _ = self
                 .apply_failed_connect_metadata(&command_bus, failure_mode)
                 .await;
+            log_lv1_connect_failed(&identity, failure_mode);
             return Err("LV1 did not connect".to_string());
         }
 
@@ -278,10 +297,13 @@ impl AppLifecycle {
             .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
             .await
             .map_err(|error| error.to_string())?;
+        log_lv1_connected(&identity);
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(command_bus.clone());
         }
-        let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        self.install_scene_recall_fader(generation, scene_recall_fader)
+            .await;
         let _ = app;
         Ok(connect_result)
     }
@@ -325,6 +347,10 @@ impl AppLifecycle {
     }
 
     pub async fn disconnect_current_runtime(&self) -> Result<ShowCommandResult, String> {
+        tracing::debug!(
+            event = "lv1_disconnect_requested",
+            "LV1 disconnect requested"
+        );
         let generation = self.active_generation().await;
         let reason = "Disconnected by user".to_string();
         self.abort_runtime_handles_without_advancing_generation()
@@ -334,6 +360,7 @@ impl AppLifecycle {
             event: Lv1Event::Disconnected { reason },
         });
         self.clear_runtime_transaction(generation).await;
+        tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
         Ok(ShowCommandResult { changed: true })
     }
 
@@ -462,6 +489,59 @@ impl Default for AppLifecycle {
     }
 }
 
+fn log_lv1_connected(identity: &crate::connection_state::Lv1SystemIdentity) {
+    let host = identity
+        .host
+        .as_deref()
+        .unwrap_or(identity.address.as_str());
+    tracing::info!(
+        event = "lv1_connected",
+        host = %host,
+        port = identity.port,
+        "LV1 connected"
+    );
+}
+
+fn log_lv1_connect_requested(identity: &crate::connection_state::Lv1SystemIdentity) {
+    tracing::debug!(
+        event = "lv1_connect_requested",
+        host = %identity.address,
+        port = identity.port,
+        "LV1 connect requested"
+    );
+}
+
+fn log_lv1_connecting(identity: &crate::connection_state::Lv1SystemIdentity) {
+    tracing::info!(
+        event = "lv1_connecting",
+        host = %identity.address,
+        port = identity.port,
+        "Connecting to LV1"
+    );
+}
+
+fn log_lv1_connect_failed(
+    identity: &crate::connection_state::Lv1SystemIdentity,
+    failure_mode: ConnectFailureMode,
+) {
+    match failure_mode {
+        ConnectFailureMode::ClearConnectedIdentity => tracing::warn!(
+            event = "lv1_connect_failed",
+            host = %identity.address,
+            port = identity.port,
+            error = "LV1 did not connect",
+            "LV1 did not connect"
+        ),
+        ConnectFailureMode::PreserveConnectedIdentity => tracing::warn!(
+            event = "lv1_reconnect_failed",
+            host = %identity.address,
+            port = identity.port,
+            error = "LV1 did not connect",
+            "LV1 did not connect"
+        ),
+    }
+}
+
 fn spawn_show_runtime_metadata_monitor(
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     command_bus: AppCommandBus,
@@ -516,30 +596,6 @@ fn spawn_show_runtime_metadata_monitor_with_notifier(
     })
 }
 
-pub fn spawn_lifecycle_event_monitor(
-    generation: u64,
-    lifecycle: AppLifecycle,
-    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(AppEvent::Lv1 {
-                    generation: event_generation,
-                    event: Lv1Event::Disconnected { .. },
-                }) if event_generation == generation => {
-                    lifecycle.clear_runtime_transaction(generation).await;
-                }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    crate::runtime::events::log_lagged_subscriber("lifecycle-event-monitor", count);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -548,8 +604,67 @@ mod tests {
     use crate::fade::handle::FadeEngineHandle;
     use crate::lv1::commands::Lv1Command;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
+    use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct CapturedLogEvent {
+        event: Option<String>,
+        host: Option<String>,
+        port: Option<u16>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogEvents(Arc<StdMutex<Vec<CapturedLogEvent>>>);
+
+    impl<S> Layer<S> for CapturedLogEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedLogEvent::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedLogEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            match field.name() {
+                "event" => self.event = Some(value.to_string()),
+                "host" => self.host = Some(value.to_string()),
+                _ => {}
+            }
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            if field.name() == "port" {
+                self.port = u16::try_from(value).ok();
+            }
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            if field.name() == "port" {
+                self.port = u16::try_from(value).ok();
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            let value = format!("{value:?}").trim_matches('"').to_string();
+            match field.name() {
+                "event" => self.event = Some(value),
+                "host" => self.host = Some(value),
+                _ => {}
+            }
+        }
+    }
 
     fn fake_lv1_handle(
         snapshot: crate::lv1::types::Lv1StateSnapshot,
@@ -831,8 +946,139 @@ mod tests {
         assert!(matches!(seen_rx.await, Ok(true)));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn connect_completion_logs_lv1_connected_for_ui_log_projection() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let command_bus = lifecycle.current_command_bus().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                Lv1SystemIdentity {
+                    uuid: Some("uuid-1".to_string()),
+                    host: Some("LV1-FOH".to_string()),
+                    address: "192.168.1.35".to_string(),
+                    port: 50000,
+                },
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                command_bus,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(logs.lock().unwrap().iter().any(|log| {
+            log.event.as_deref() == Some("lv1_connected")
+                && log.host.as_deref() == Some("LV1-FOH")
+                && log.port == Some(50000)
+        }));
+    }
+
     #[tokio::test]
+    async fn connect_retains_scene_recall_fader_handle() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let command_bus = lifecycle.current_command_bus().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                Lv1SystemIdentity {
+                    uuid: Some("uuid-1".to_string()),
+                    host: Some("LV1-FOH".to_string()),
+                    address: "192.168.1.35".to_string(),
+                    port: 50000,
+                },
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                command_bus,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(
+            lifecycle
+                .inner
+                .lock()
+                .await
+                .handles
+                .scene_recall_fader
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_install_starts_show_scene_list_monitor() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus.clone(), show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    generation,
+                    RuntimeHandles::with_runtime_targets(lv1, fade)
+                )
+                .await
+                .is_ok()
+        );
+        event_bus.publish_lv1(
+            generation,
+            Lv1Event::SceneListChanged(vec![crate::lv1::types::SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+        );
+
+        let mut saw_scene_config = false;
+        for _ in 0..8 {
+            if let Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) = events.recv().await
+                && state
+                    .scene_configs
+                    .iter()
+                    .any(|scene| scene.scene_name == "Intro")
+            {
+                saw_scene_config = true;
+                break;
+            }
+        }
+        assert!(saw_scene_config);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn connect_lv1_system_attempts_selected_identity() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
         let app = mock_app();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
@@ -854,10 +1100,27 @@ mod tests {
             result.is_err(),
             "unreachable selected identity should fail instead of returning a false success"
         );
+        let logs = logs.lock().unwrap();
+        assert!(
+            logs.iter()
+                .any(|log| log.event.as_deref() == Some("lv1_connect_requested"))
+        );
+        assert!(
+            logs.iter()
+                .any(|log| log.event.as_deref() == Some("lv1_connecting"))
+        );
+        assert!(
+            logs.iter()
+                .any(|log| log.event.as_deref() == Some("lv1_connect_failed"))
+        );
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn attempt_reconnect_uses_stored_connected_identity() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
         let app = mock_app();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
@@ -879,6 +1142,12 @@ mod tests {
         assert!(
             result.is_err(),
             "unreachable stored identity should fail instead of returning a false success"
+        );
+        assert!(
+            logs.lock()
+                .unwrap()
+                .iter()
+                .any(|log| log.event.as_deref() == Some("lv1_reconnect_failed"))
         );
     }
 
@@ -916,8 +1185,12 @@ mod tests {
         handles.abort_all();
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn disconnect_current_runtime_publishes_active_generation_disconnect() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
         let event_bus = AppEventBus::default();
         let mut rx = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus.clone());
@@ -942,6 +1215,15 @@ mod tests {
             AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
                 if event_generation == generation + 1
         ));
+        let logs = logs.lock().unwrap();
+        assert!(
+            logs.iter()
+                .any(|log| log.event.as_deref() == Some("lv1_disconnect_requested"))
+        );
+        assert!(
+            logs.iter()
+                .any(|log| log.event.as_deref() == Some("lv1_disconnected"))
+        );
     }
 
     #[tokio::test]

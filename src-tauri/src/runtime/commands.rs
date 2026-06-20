@@ -392,19 +392,59 @@ impl AppCommandBus {
         &self,
         scene_id: String,
     ) -> Result<RecallSceneResult, AppCommandError> {
-        let show = self.show_target().await?;
-        let lv1 = self.get_lv1_state().await.map_err(|error| match error {
-            AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                "Recall blocked: LV1 state is unavailable".to_string(),
-            ),
-            other => other,
+        tracing::debug!(
+            event = "scene_recall_requested",
+            scene_id = %scene_id,
+            "Scene recall requested"
+        );
+        let show = self.show_target().await.map_err(|error| {
+            let message = map_app_command_error(error);
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %message,
+                "Scene recall blocked: {message}"
+            );
+            AppCommandError::CommandFailed(message)
+        })?;
+        let lv1 = self.get_lv1_state().await.map_err(|error| {
+            let mapped = match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Recall blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            };
+            let message = map_app_command_error(mapped.clone());
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %message,
+                "Scene recall blocked: {message}"
+            );
+            mapped
         })?;
         let show_document = crate::show::commands::get_show_document(&show).await;
         let result =
             crate::show::commands::validate_recall_scene_request(&show_document, &lv1, &scene_id)
-                .map_err(AppCommandError::CommandFailed)?;
+                .map_err(|message| {
+                tracing::warn!(
+                    event = "scene_recall_blocked",
+                    scene_id = %scene_id,
+                    reason = %message,
+                    "Scene recall blocked: {message}"
+                );
+                AppCommandError::CommandFailed(message)
+            })?;
 
         self.recall_scene(result.lv1_scene_index).await?;
+        tracing::debug!(
+            event = "scene_recall_command_sent",
+            scene_id = %result.scene.scene_id,
+            scene_index = result.scene.scene_index,
+            scene_name = %result.scene.scene_name,
+            "Scene recall command sent: {}",
+            result.scene.scene_name
+        );
         Ok(result)
     }
 
@@ -588,6 +628,13 @@ fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
     }
 }
 
+fn map_app_command_error(error: AppCommandError) -> String {
+    match error {
+        AppCommandError::CommandFailed(message) => message,
+        other => other.to_string(),
+    }
+}
+
 fn log_failure(command: &str, result: &Result<(), AppCommandError>) {
     if let Err(error) = result {
         tracing::error!(
@@ -613,6 +660,74 @@ mod tests {
         ShowFileSceneScopeToggles,
     };
     use crate::show::types::{ChannelConfig, SceneConfig, SceneScopeToggles, ShowDocument};
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex as StdMutex};
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Debug, Default, Clone)]
+    struct CapturedLogEvent {
+        fields: HashMap<String, String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogEvents(Arc<StdMutex<Vec<CapturedLogEvent>>>);
+
+    impl<S> Layer<S> for CapturedLogEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedLogEvent::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedLogEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.fields.insert(
+                field.name().to_string(),
+                format!("{value:?}").trim_matches('"').to_string(),
+            );
+        }
+    }
+
+    fn with_captured_logs() -> (
+        tracing::subscriber::DefaultGuard,
+        Arc<StdMutex<Vec<CapturedLogEvent>>>,
+    ) {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        (tracing::subscriber::set_default(subscriber), logs)
+    }
+
+    fn saw_event(logs: &Arc<StdMutex<Vec<CapturedLogEvent>>>, event_name: &str) -> bool {
+        logs.lock()
+            .unwrap()
+            .iter()
+            .any(|log| log.fields.get("event").map(String::as_str) == Some(event_name))
+    }
 
     fn scene_config() -> SceneConfig {
         SceneConfig {
@@ -1395,8 +1510,9 @@ mod tests {
         assert!(recall.await.unwrap().is_ok());
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn recall_scene_by_id_validates_show_and_sends_matching_lv1_index() {
+        let (_guard, logs) = with_captured_logs();
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
@@ -1455,10 +1571,13 @@ mod tests {
         assert_eq!(recall_rx.recv().await, Some(1));
         assert_eq!(result.scene.scene_id, "1::Verse");
         assert_eq!(result.lv1_scene_index, 1);
+        assert!(saw_event(&logs, "scene_recall_requested"));
+        assert!(saw_event(&logs, "scene_recall_command_sent"));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "current_thread")]
     async fn recall_scene_by_id_blocks_lockout_before_sending_to_lv1() {
+        let (_guard, logs) = with_captured_logs();
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
@@ -1519,6 +1638,8 @@ mod tests {
             AppCommandError::CommandFailed("Recall blocked: lockout is enabled".to_string())
         );
         assert!(recall_rx.try_recv().is_err());
+        assert!(saw_event(&logs, "scene_recall_requested"));
+        assert!(saw_event(&logs, "scene_recall_blocked"));
     }
 
     #[tokio::test]

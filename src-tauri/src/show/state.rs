@@ -230,8 +230,12 @@ impl ShowState {
         self.show_file_dirty = false;
     }
 
-    pub(crate) fn set_selected_scene_id(&mut self, selected_scene_id: Option<String>) {
+    pub(crate) fn set_selected_scene_id(&mut self, selected_scene_id: Option<String>) -> bool {
+        if self.selected_scene_id == selected_scene_id {
+            return false;
+        }
         self.selected_scene_id = selected_scene_id;
+        true
     }
 
     pub(crate) fn mark_dirty(&mut self) {
