@@ -116,7 +116,7 @@ Core + Tauri tracing events
 
 Low-risk show/app mutations, show-file import/export mapping, UI-requested recall validation/dispatch, and projector-cache runtime projection route through their target module boundaries. The Tauri command layer no longer returns or emits `AppViewState` snapshots.
 
-`app-status-changed` emission is now owned only by the projector runtime.
+`app-status-changed` emission is owned only by the projector runtime. Logging publishes `UiLogEvent` entries for the projector cache, but it does not emit app-status snapshots.
 
 `FadeEngine` tracks parameter-aware targets keyed by `(group, channel, FadeParameter)`. Fader targets use fader-law interpolation and fader-law override detection. Pan, balance, and width targets use direct linear interpolation. Pan-family manual override is driven only by pan movement. A pan override cancels pan, balance, and width for that channel together. Balance and width reports do not trigger override cancellation. Fader fades are not cancelled by pan-family override.
 

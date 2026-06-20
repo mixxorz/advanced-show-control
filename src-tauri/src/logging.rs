@@ -74,6 +74,7 @@ pub fn init_logging<R: Runtime>(
         .with_filter(LevelFilter::DEBUG);
 
     let (ui_tx, _ui_rx) = broadcast::channel(64);
+    // UI logs are routed separately from the projector's app-status snapshots.
     let ui_layer = UiLogLayer { tx: ui_tx.clone() }.with_filter(LevelFilter::INFO);
 
     tracing_subscriber::registry()

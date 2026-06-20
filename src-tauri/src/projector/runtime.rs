@@ -3,6 +3,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
 
+use crate::app_state::AppViewState;
 use crate::logging::UiLogEvent;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
@@ -84,7 +85,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
     })
 }
 
-fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &crate::app_state::AppViewState) {
+fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         tracing::debug!(
             event = "projector_emit_failed",
