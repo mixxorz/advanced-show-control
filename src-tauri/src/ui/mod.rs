@@ -15,14 +15,14 @@ pub mod commands;
 pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
-    let event_bus = AppEventBus::default();
-    let show = ShowStateHandle::new_empty(event_bus.clone());
-    let lifecycle = AppLifecycle::new(event_bus, show.clone());
     tauri::Builder::default()
-        .manage(show)
-        .manage(lifecycle)
         .setup(|app| {
+            let event_bus = AppEventBus::default();
+            let show = ShowStateHandle::new_empty(event_bus.clone());
+            let lifecycle = AppLifecycle::new(event_bus, show.clone());
             let logging_runtime = logging::init_logging(app.handle())?;
+            app.manage(show);
+            app.manage(lifecycle);
             app.manage(logging_runtime.guard);
             app.manage(logging_runtime.ui_logs);
             tracing::info!(event = "app_started", "Starting Advanced Show Control");
@@ -56,8 +56,8 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
 
 #[cfg(test)]
 mod tests {
-    #[tokio::test]
-    async fn build_app_constructs_builder() {
+    #[test]
+    fn build_app_constructs_builder() {
         let _builder = super::build_app();
     }
 

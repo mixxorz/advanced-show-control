@@ -13,7 +13,8 @@ use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::scene_recall::{SceneRecallFaderHandle, spawn_scene_recall_fader};
 use crate::show::{
-    ConnectCommandResult, ShowCommandResult, ShowStateHandle, spawn_lv1_scene_list_monitor,
+    ConnectCommandResult, ShowCommand, ShowCommandResult, ShowStateHandle,
+    spawn_lv1_scene_list_monitor,
 };
 
 #[derive(Default)]
@@ -96,7 +97,7 @@ pub struct AppLifecycle {
 
 impl AppLifecycle {
     pub fn new(event_bus: AppEventBus, show: ShowStateHandle) -> Self {
-        let command_bus = AppCommandBus::new_with_show(show.clone());
+        let command_bus = AppCommandBus::new();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
@@ -243,8 +244,14 @@ impl AppLifecycle {
         log_lv1_connected(&identity);
         let _ = lv1;
         let _ = fade;
-        let scene_recall_fader =
-            spawn_scene_recall_fader(generation, command_bus, lv1, fade, event_bus);
+        let scene_recall_fader = spawn_scene_recall_fader(
+            generation,
+            command_bus,
+            self.show.clone(),
+            lv1,
+            fade,
+            event_bus,
+        );
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         let _ = app;
@@ -299,8 +306,14 @@ impl AppLifecycle {
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(command_bus.clone());
         }
-        let scene_recall_fader =
-            spawn_scene_recall_fader(generation, command_bus, lv1, fade, event_bus);
+        let scene_recall_fader = spawn_scene_recall_fader(
+            generation,
+            command_bus,
+            self.show.clone(),
+            lv1,
+            fade,
+            event_bus,
+        );
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         let _ = app;
@@ -313,11 +326,42 @@ impl AppLifecycle {
         identity: crate::connection_state::Lv1SystemIdentity,
         reconnect: crate::connection_state::ReconnectState,
     ) -> Result<ConnectCommandResult, crate::runtime::commands::AppCommandError> {
-        let pending_result = command_bus.set_pending_lv1_identity(None).await?;
-        let connected_result = command_bus
-            .establish_connected_lv1_identity(identity)
-            .await?;
-        let reconnect_result = command_bus.set_reconnect_state(reconnect).await?;
+        let _ = command_bus;
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::SetPendingLv1Identity {
+                identity: None,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+        let pending_result = rx
+            .await
+            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::EstablishConnectedLv1Identity {
+                identity,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+        let connected_result = rx
+            .await
+            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::SetReconnectState {
+                reconnect,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+        let reconnect_result = rx
+            .await
+            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
         Ok(ConnectCommandResult {
             changed: pending_result.changed || connected_result.changed || reconnect_result.changed,
         })
@@ -328,15 +372,41 @@ impl AppLifecycle {
         command_bus: &AppCommandBus,
         failure_mode: ConnectFailureMode,
     ) -> Result<(), crate::runtime::commands::AppCommandError> {
+        let _ = command_bus;
         match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => {
-                let _ = command_bus.clear_connected_lv1_identity().await?;
+                let (reply, rx) = oneshot::channel();
+                self.show
+                    .send(ShowCommand::ClearConnectedLv1Identity { reply: Some(reply) })
+                    .await
+                    .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+                let _ = rx
+                    .await
+                    .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
             }
             ConnectFailureMode::PreserveConnectedIdentity => {
-                let _ = command_bus.set_pending_lv1_identity(None).await?;
-                let _ = command_bus
-                    .set_reconnect_state(crate::connection_state::ReconnectState::default())
-                    .await?;
+                let (reply, rx) = oneshot::channel();
+                self.show
+                    .send(ShowCommand::SetPendingLv1Identity {
+                        identity: None,
+                        reply: Some(reply),
+                    })
+                    .await
+                    .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+                let _ = rx
+                    .await
+                    .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+                let (reply, rx) = oneshot::channel();
+                self.show
+                    .send(ShowCommand::SetReconnectState {
+                        reconnect: crate::connection_state::ReconnectState::default(),
+                        reply: Some(reply),
+                    })
+                    .await
+                    .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+                let _ = rx
+                    .await
+                    .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
             }
         }
         Ok(())
@@ -361,12 +431,11 @@ impl AppLifecycle {
     }
 
     pub async fn current_command_bus(&self) -> AppCommandBus {
-        let (command_bus, show) = {
-            let inner = self.inner.lock().await;
-            (inner.command_bus.clone(), self.show.clone())
-        };
-        command_bus.set_show_target(show).await;
-        command_bus
+        self.inner.lock().await.command_bus.clone()
+    }
+
+    pub async fn current_show(&self) -> ShowStateHandle {
+        self.show.clone()
     }
 
     pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
@@ -380,10 +449,13 @@ impl AppLifecycle {
     pub(crate) async fn connected_lv1_identity(
         &self,
     ) -> Option<crate::connection_state::Lv1SystemIdentity> {
+        let (reply, rx) = oneshot::channel();
         self.show
-            .initial_projection_state()
+            .send(ShowCommand::InitialProjectionState { reply })
             .await
-            .connected_lv1_identity
+            .map_err(|_| ())
+            .ok()?;
+        rx.await.ok()?.connected_lv1_identity
     }
 
     pub async fn connect_lv1_system<R: Runtime>(
@@ -453,7 +525,14 @@ impl AppLifecycle {
         app: AppHandle<R>,
         logs: tokio::sync::broadcast::Receiver<UiLogEvent>,
     ) -> Result<(), String> {
-        let initial_show_state = self.show.initial_projection_state().await;
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .map_err(|_| "Show state is unavailable".to_string())?;
+        let initial_show_state = rx
+            .await
+            .map_err(|_| "Show state reply channel is closed".to_string())?;
         let mut inner = self.inner.lock().await;
         if inner.frontend_ready {
             return Ok(());
@@ -463,7 +542,7 @@ impl AppLifecycle {
         if inner.show_runtime_metadata_monitor.is_none() {
             inner.show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
                 self.event_bus.subscribe(),
-                inner.command_bus.clone(),
+                self.show.clone(),
             ));
         }
         inner.projector = Some(crate::projector::spawn_projector(
@@ -548,14 +627,14 @@ fn log_lv1_connect_failed(
 
 fn spawn_show_runtime_metadata_monitor(
     events: tokio::sync::broadcast::Receiver<AppEvent>,
-    command_bus: AppCommandBus,
+    show: ShowStateHandle,
 ) -> JoinHandle<()> {
-    spawn_show_runtime_metadata_monitor_with_notifier(events, command_bus, |_| {})
+    spawn_show_runtime_metadata_monitor_with_notifier(events, show, |_| {})
 }
 
 fn spawn_show_runtime_metadata_monitor_with_notifier(
     events: tokio::sync::broadcast::Receiver<AppEvent>,
-    command_bus: AppCommandBus,
+    show: ShowStateHandle,
     notify: impl Fn(ShowRuntimeMetadataMonitorNotification) + Send + 'static,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -579,7 +658,12 @@ fn spawn_show_runtime_metadata_monitor_with_notifier(
                             generation,
                             active: true,
                         });
-                        let _ = command_bus.handle_runtime_disconnected(reason).await;
+                        let _ = show
+                            .send(ShowCommand::HandleRuntimeDisconnected {
+                                reason,
+                                reply: None,
+                            })
+                            .await;
                     }
                 }
                 Ok(AppEvent::Lv1 { generation, .. }) => {
@@ -603,8 +687,8 @@ fn spawn_show_runtime_metadata_monitor_with_notifier(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_state::Lv1SystemIdentity;
     use crate::connection_state::ReconnectState;
-    use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
     use crate::show::{ShowEvent, ShowProjectionReason};
@@ -731,69 +815,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lifecycle_exposes_show_command_bus_before_runtime_connection() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
-
-        let bus = lifecycle.current_command_bus().await;
-        let result = bus.set_lockout(true).await.unwrap();
-        assert!(result.changed);
-    }
-
-    #[tokio::test]
-    async fn app_lifecycle_initializes_show_command_bus_on_construction() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
-
-        let result = lifecycle
-            .current_command_bus()
-            .await
-            .set_lockout(true)
-            .await
-            .unwrap();
-
-        assert!(result.changed);
-    }
-
-    #[test]
-    fn app_lifecycle_constructs_without_tokio_runtime() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-
-        let _lifecycle = AppLifecycle::new(event_bus, show);
-    }
-
-    fn discovered_system(host: &str) -> DiscoveredLv1System {
-        DiscoveredLv1System {
-            identity: Lv1SystemIdentity {
-                uuid: None,
-                host: Some(host.to_string()),
-                address: host.to_string(),
-                port: 0,
-            },
-            latency_ms: Some(1),
-            status: DiscoveredLv1Status::Available,
-        }
-    }
-
-    #[tokio::test]
-    async fn disconnected_discovery_metadata_uses_app_lifetime_command_bus() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let lifecycle = AppLifecycle::new(event_bus, show);
-        let bus = lifecycle.current_command_bus().await;
-
-        let result = bus
-            .set_discovered_lv1_systems(vec![discovered_system("10.0.0.2")])
-            .await
-            .unwrap();
-
-        assert!(result.changed);
-    }
-
-    #[tokio::test]
     async fn connected_identity_metadata_is_applied_through_app_command_bus() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
@@ -835,21 +856,39 @@ mod tests {
             port: 50000,
         };
 
-        command_bus
-            .set_pending_lv1_identity(Some(identity.clone()))
-            .await
-            .unwrap();
-        command_bus
-            .establish_connected_lv1_identity(identity.clone())
-            .await
-            .unwrap();
-        command_bus
-            .set_reconnect_state(ReconnectState {
-                active: true,
-                attempt: 3,
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::SetPendingLv1Identity {
+                identity: Some(identity.clone()),
+                reply: Some(reply),
             })
             .await
             .unwrap();
+        let _ = rx.await.unwrap();
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::EstablishConnectedLv1Identity {
+                identity: identity.clone(),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap();
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::SetReconnectState {
+                reconnect: ReconnectState {
+                    active: true,
+                    attempt: 3,
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap();
 
         lifecycle
             .apply_failed_connect_metadata(
@@ -1130,17 +1169,21 @@ mod tests {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus, show);
+        let (reply, rx) = oneshot::channel();
         lifecycle
-            .current_command_bus()
-            .await
-            .establish_connected_lv1_identity(Lv1SystemIdentity {
-                uuid: None,
-                host: Some("Unreachable".to_string()),
-                address: "127.0.0.1".to_string(),
-                port: 1,
+            .show
+            .send(ShowCommand::EstablishConnectedLv1Identity {
+                identity: Lv1SystemIdentity {
+                    uuid: None,
+                    host: Some("Unreachable".to_string()),
+                    address: "127.0.0.1".to_string(),
+                    port: 1,
+                },
+                reply: Some(reply),
             })
             .await
-            .expect("stored identity should be set");
+            .expect("stored identity should be sent");
+        rx.await.expect("stored identity should be set");
 
         let result = lifecycle.attempt_reconnect_lv1(app.handle().clone()).await;
 
@@ -1235,13 +1278,11 @@ mod tests {
     async fn show_runtime_metadata_monitor_ignores_stale_disconnect_facts() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        let command_bus = AppCommandBus::new();
-        command_bus.set_show_target(show.clone()).await;
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let monitor = spawn_show_runtime_metadata_monitor_with_notifier(
             event_bus.subscribe(),
-            command_bus,
+            show.clone(),
             move |notification| {
                 tx.send(notification).unwrap();
             },
@@ -1278,12 +1319,11 @@ mod tests {
     async fn show_runtime_metadata_monitor_notifies_on_runtime_generation_and_disconnect() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        let command_bus = AppCommandBus::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let _monitor = spawn_show_runtime_metadata_monitor_with_notifier(
             event_bus.subscribe(),
-            command_bus,
+            show.clone(),
             move |notification| {
                 tx.send(notification).unwrap();
             },
@@ -1318,12 +1358,11 @@ mod tests {
     async fn show_runtime_metadata_monitor_notifies_on_ignored_stale_events() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        let command_bus = AppCommandBus::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         let _monitor = spawn_show_runtime_metadata_monitor_with_notifier(
             event_bus.subscribe(),
-            command_bus,
+            show.clone(),
             move |notification| {
                 tx.send(notification).unwrap();
             },

@@ -7,7 +7,7 @@ use crate::lv1::{Lv1ActorError, Lv1Command};
 use crate::runtime::commands::AppCommandError;
 use crate::show::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
-    SelectedSceneResult, ShowCommandResult,
+    SelectedSceneResult, ShowCommand, ShowCommandResult,
 };
 use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 use crate::ui::UiLogReceiverState;
@@ -37,7 +37,6 @@ pub async fn refresh_lv1_discovery(
     lifecycle: State<'_, AppLifecycle>,
     timeout_ms: Option<u64>,
 ) -> Result<ShowCommandResult, String> {
-    let command_bus = lifecycle.current_command_bus().await;
     let systems = crate::lv1::discover(crate::lv1::DiscoverOptions {
         timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
         ..Default::default()
@@ -51,9 +50,17 @@ pub async fn refresh_lv1_discovery(
         status: crate::connection_state::DiscoveredLv1Status::Available,
     })
     .collect();
-    command_bus
-        .set_discovered_lv1_systems(systems)
-        .await
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetDiscoveredLv1Systems {
+        systems,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)
 }
 
@@ -61,11 +68,18 @@ pub async fn refresh_lv1_discovery(
 pub async fn new_show_file(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<NewShowFileResult, String> {
-    let command_bus = lifecycle.current_command_bus().await;
-    command_bus
-        .new_show_file(None)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::NewShowFile {
+        lv1: None,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -74,7 +88,6 @@ pub async fn open_show_file_dialog(
 ) -> Result<LoadShowFileResult, String> {
     let path = choose_open_show_file_path().await?;
     let file = read_show_file(&path)?;
-    let command_bus = lifecycle.current_command_bus().await;
     let lv1 = lifecycle
         .current_lv1()
         .await
@@ -92,10 +105,20 @@ pub async fn open_show_file_dialog(
         .await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?;
-    command_bus
-        .load_show_file_from_path(path, file, lv1)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::LoadShowFileFromDto {
+        path,
+        file,
+        lv1: Some(lv1),
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -116,10 +139,15 @@ pub async fn save_show_file_as_dialog(
 async fn save_show_file_with_lifecycle(
     lifecycle: &AppLifecycle,
 ) -> Result<ShowCommandResult, String> {
-    let command_bus = lifecycle.current_command_bus().await;
-    if let Some(path) = command_bus
-        .current_show_file_path()
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::CurrentShowFilePath { reply })
         .await
+        .map_err(|_| AppCommandError::ShowUnavailable)
+        .map_err(map_app_command_error)?;
+    if let Some(path) = rx
+        .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?
     {
         return save_show_file_to_path(lifecycle, path).await;
@@ -133,16 +161,32 @@ async fn save_show_file_to_path(
     lifecycle: &AppLifecycle,
     path: PathBuf,
 ) -> Result<ShowCommandResult, String> {
-    let command_bus = lifecycle.current_command_bus().await;
     let saved_at = crate::time::current_timestamp_millis();
-    let file = command_bus
-        .export_show_file_snapshot(saved_at.clone())
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::ExportShowFileSnapshot {
+        saved_at: saved_at.clone(),
+        reply,
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    let file = rx
         .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?;
     write_show_file(&path, &file, &backup_folder())?;
-    command_bus
-        .mark_show_file_saved(path, saved_at)
-        .await
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::MarkShowFileSaved {
+        path,
+        saved_at,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?;
     Ok(ShowCommandResult { changed: true })
 }
@@ -195,9 +239,9 @@ mod tests {
     async fn save_show_file_uses_existing_show_file_path() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::replace_show_document_for_test(
-            &show,
-            ShowDocument {
+        let (reply, rx) = oneshot::channel();
+        show.send(ShowCommand::ReplaceSnapshotForTest {
+            snapshot: ShowDocument {
                 lockout: false,
                 scene_configs: vec![SceneConfig {
                     scene_id: "1::Intro".to_string(),
@@ -210,20 +254,29 @@ mod tests {
                 }],
                 cued_scene_id: None,
             },
-        )
-        .await;
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        let _ = rx.await;
         let lifecycle = AppLifecycle::new(AppEventBus::default(), show.clone());
         let path = temp_show_file_path("save-existing");
-        let initial_file = crate::show::export_show_file(
-            crate::show::get_show_document(&show).await,
-            "saved".to_string(),
-        );
+        let (reply, rx) = oneshot::channel();
+        show.send(ShowCommand::GetShowDocument { reply })
+            .await
+            .unwrap();
+        let initial_file = crate::show::export_show_file(rx.await.unwrap(), "saved".to_string());
         write_show_file(&path, &initial_file, &backup_folder())
             .expect("seed show file should write");
-        lifecycle
-            .current_command_bus()
-            .await
-            .mark_show_file_saved(path.clone(), "saved".to_string())
+        let (reply, rx) = oneshot::channel();
+        show.send(ShowCommand::MarkShowFileSaved {
+            path: path.clone(),
+            saved_at: "saved".to_string(),
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        let _ = rx
             .await
             .expect("mark saved should set current show file path");
 
@@ -243,12 +296,19 @@ pub async fn set_scene_duration_ms(
     scene_id: String,
     duration_ms: u64,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .set_scene_duration_ms(scene_id, duration_ms)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetSceneDuration {
+        scene_id,
+        duration_ms,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -256,12 +316,18 @@ pub async fn select_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<SelectedSceneResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .select_scene_config(scene_id)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SelectSceneConfig {
+        scene_id,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -269,12 +335,18 @@ pub async fn cue_scene(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<CueSceneResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .cue_scene(scene_id)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::CueScene {
+        scene_id,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -287,7 +359,6 @@ pub async fn recall_scene(
         scene_id = %scene_id,
         "Scene recall requested"
     );
-    let command_bus = lifecycle.current_command_bus().await;
     let lv1 = lifecycle
         .current_lv1()
         .await
@@ -347,9 +418,15 @@ pub async fn recall_scene(
             );
             message
         })?;
-    let show_document = command_bus
-        .get_show_document()
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::GetShowDocument { reply })
         .await
+        .map_err(|_| AppCommandError::ShowUnavailable)
+        .map_err(map_app_command_error)?;
+    let show_document = rx
+        .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?;
     let result =
         crate::show::validate_recall_scene_request(&show_document, &lv1_snapshot, &scene_id)
@@ -456,7 +533,6 @@ pub async fn store_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<ShowCommandResult, String> {
-    let command_bus = lifecycle.current_command_bus().await;
     let lv1 = lifecycle
         .current_lv1()
         .await
@@ -495,10 +571,19 @@ pub async fn store_scene_config(
                 other => other,
             })
         })?;
-    command_bus
-        .store_scene_config(scene_id, lv1.channels)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::StoreSceneConfig {
+        scene_id,
+        channels: lv1.channels,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -509,12 +594,21 @@ pub async fn set_channel_scoped(
     channel: i32,
     scoped: bool,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .set_channel_scoped(scene_id, group, channel, scoped)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetChannelScoped {
+        scene_id,
+        group,
+        channel,
+        scoped,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -523,12 +617,19 @@ pub async fn set_all_channels_scoped(
     scene_id: String,
     scoped: bool,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .set_all_channels_scoped(scene_id, scoped)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetAllChannelsScoped {
+        scene_id,
+        scoped,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -537,12 +638,19 @@ pub async fn set_scene_scope_faders_enabled(
     scene_id: String,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .set_scene_scope_faders_enabled(scene_id, enabled)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetSceneScopeFadersEnabled {
+        scene_id,
+        enabled,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -551,12 +659,19 @@ pub async fn set_scene_scope_pan_enabled(
     scene_id: String,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .set_scene_scope_pan_enabled(scene_id, enabled)
-        .await
-        .map_err(map_app_command_error)
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetSceneScopePanEnabled {
+        scene_id,
+        enabled,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 #[tauri::command]
@@ -564,10 +679,16 @@ pub async fn set_lockout(
     lifecycle: State<'_, AppLifecycle>,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
-        .await
-        .set_lockout(enabled)
-        .await
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SetLockout {
+        enabled,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)
 }

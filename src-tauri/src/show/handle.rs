@@ -1,211 +1,29 @@
-use std::sync::Arc;
+use tokio::sync::mpsc;
 
-use tokio::sync::Mutex;
-
-use crate::lv1::{ChannelInfo, Lv1Event, SceneListEntry};
+use crate::lv1::Lv1Event;
 use crate::runtime::events::{AppEvent, AppEventBus};
 
-use super::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
-use super::state::ShowState;
-use super::types::{SceneConfig, ShowDocument};
+use super::commands::ShowCommand;
 
 #[derive(Clone)]
 pub struct ShowStateHandle {
-    state: Arc<Mutex<ShowState>>,
-    event_bus: AppEventBus,
+    tx: mpsc::Sender<ShowCommand>,
 }
 
 impl ShowStateHandle {
     pub fn new_empty(event_bus: AppEventBus) -> Self {
-        Self {
-            state: Arc::new(Mutex::new(ShowState::default())),
-            event_bus,
-        }
+        super::actor::spawn_show_actor(event_bus)
     }
 
-    fn publish_state_changed(&self, reason: ShowProjectionReason, state: &ShowState) {
-        self.event_bus
-            .publish(AppEvent::Show(ShowEvent::StateChanged {
-                reason,
-                state: state.projection_state(),
-            }));
+    pub(super) fn new(tx: mpsc::Sender<ShowCommand>) -> Self {
+        Self { tx }
     }
 
-    pub(super) async fn mutate_for_command<R, E>(
+    pub async fn send(
         &self,
-        reason: ShowProjectionReason,
-        apply: impl FnOnce(&mut ShowState) -> Result<(bool, R), E>,
-    ) -> Result<R, E> {
-        let mut state = self.state.lock().await;
-        let (changed, result) = apply(&mut state)?;
-        if changed {
-            self.publish_state_changed(reason, &state);
-        }
-        Ok(result)
-    }
-
-    pub(super) async fn query<R>(&self, read: impl FnOnce(&ShowState) -> R) -> R {
-        let state = self.state.lock().await;
-        read(&state)
-    }
-
-    #[cfg(test)]
-    pub(crate) async fn projection_state_for_test(&self) -> ShowProjectionState {
-        self.query(|state| state.projection_state()).await
-    }
-
-    pub(super) async fn get_snapshot(&self) -> ShowDocument {
-        self.query(|state| state.snapshot()).await
-    }
-
-    pub(super) async fn get_scene_config(&self, scene_id: String) -> Option<SceneConfig> {
-        self.query(|state| state.get_scene_config(&scene_id)).await
-    }
-
-    pub(super) async fn cue_scene(&self, scene_id: String) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.cue_scene(&scene_id)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
-    }
-
-    pub(super) async fn get_lockout(&self) -> bool {
-        self.query(|state| state.lockout()).await
-    }
-
-    pub(super) async fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
-        self.query(|state| state.current_show_file_path()).await
-    }
-
-    #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.
-    pub(crate) async fn initial_projection_state(&self) -> ShowProjectionState {
-        let state = self.state.lock().await;
-        state.projection_state()
-    }
-
-    async fn command_set_lockout(&self, enabled: bool) -> bool {
-        let mut state = self.state.lock().await;
-        let changed = state.set_lockout(enabled);
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        changed
-    }
-
-    pub(super) async fn set_lockout(&self, enabled: bool) -> bool {
-        self.command_set_lockout(enabled).await
-    }
-
-    pub(super) async fn set_scene_scope_faders_enabled(
-        &self,
-        scene_id: String,
-        enabled: bool,
-    ) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.set_scene_scope_faders_enabled(&scene_id, enabled)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
-    }
-
-    pub(super) async fn set_scene_scope_pan_enabled(
-        &self,
-        scene_id: String,
-        enabled: bool,
-    ) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.set_scene_scope_pan_enabled(&scene_id, enabled)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
-    }
-
-    pub(super) async fn set_channel_scoped(
-        &self,
-        scene_id: String,
-        group: i32,
-        channel: i32,
-        scoped: bool,
-    ) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.set_channel_scoped(&scene_id, group, channel, scoped)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
-    }
-
-    pub(super) async fn set_all_channels_scoped(
-        &self,
-        scene_id: String,
-        scoped: bool,
-    ) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.set_all_channels_scoped(&scene_id, scoped)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
-    }
-
-    pub(super) async fn store_scene_config(
-        &self,
-        scene_id: String,
-        channels: Vec<ChannelInfo>,
-    ) -> Result<bool, String> {
-        let mut state = self.state.lock().await;
-        let changed = state.store_scene_config(&scene_id, &channels)?;
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        Ok(changed)
-    }
-
-    pub(super) async fn reconcile_scene_list(&self, scenes: Vec<SceneListEntry>) -> bool {
-        let mut state = self.state.lock().await;
-        let changed = state.reconcile_scene_fade_configs(&scenes);
-        if changed {
-            self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-        }
-        changed
-    }
-
-    async fn scene_reconciliation_diagnostic(&self, scenes: Vec<SceneListEntry>) -> String {
-        self.state
-            .lock()
-            .await
-            .scene_reconciliation_diagnostic(&scenes)
-    }
-
-    pub(crate) async fn handle_lv1_scene_list_changed(&self, scenes: Vec<SceneListEntry>) -> bool {
-        let _ = self.scene_reconciliation_diagnostic(scenes.clone()).await;
-        self.reconcile_scene_list(scenes).await
-    }
-
-    #[cfg(test)]
-    pub(super) async fn replace_snapshot(&self, snapshot: ShowDocument) {
-        let mut state = self.state.lock().await;
-        if state.snapshot() == snapshot {
-            return;
-        }
-
-        state.replace_snapshot(snapshot);
-        self.publish_state_changed(ShowProjectionReason::ShowState, &state);
-    }
-
-    #[cfg(test)]
-    pub(super) async fn clear(&self) {
-        let mut state = self.state.lock().await;
-        if state.snapshot() == ShowDocument::empty() {
-            return;
-        }
-
-        state.clear();
-        self.publish_state_changed(ShowProjectionReason::ShowState, &state);
+        command: ShowCommand,
+    ) -> Result<(), mpsc::error::SendError<ShowCommand>> {
+        self.tx.send(command).await
     }
 }
 
@@ -220,7 +38,12 @@ pub fn spawn_lv1_scene_list_monitor(
                     event: Lv1Event::SceneListChanged(scenes),
                     ..
                 }) => {
-                    show.handle_lv1_scene_list_changed(scenes).await;
+                    let _ = show
+                        .send(ShowCommand::ReconcileSceneList {
+                            scenes,
+                            reply: None,
+                        })
+                        .await;
                 }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -237,6 +60,7 @@ mod tests {
     use super::*;
     use crate::lv1::{Lv1Event, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus};
+    use crate::show::ShowCommand;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
 
@@ -273,7 +97,12 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
 
-        show.command_set_lockout(true).await;
+        show.send(ShowCommand::SetLockout {
+            enabled: true,
+            reply: None,
+        })
+        .await
+        .unwrap();
 
         let event = events.recv().await.unwrap();
         match event {
@@ -293,7 +122,14 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
 
-        assert!(show.set_lockout(true).await);
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLockout {
+            enabled: true,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        assert!(rx.await.unwrap().changed);
 
         recv_show_event(&mut events, ShowProjectionReason::ShowState).await;
     }
@@ -304,7 +140,14 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
 
-        assert!(!show.set_lockout(false).await);
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLockout {
+            enabled: false,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        assert!(!rx.await.unwrap().changed);
 
         assert!(events.try_recv().is_err());
     }
@@ -315,12 +158,16 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
 
-        show.replace_snapshot(ShowDocument {
-            lockout: true,
-            scene_configs: vec![scene_config()],
-            cued_scene_id: None,
+        show.send(ShowCommand::ReplaceSnapshotForTest {
+            snapshot: ShowDocument {
+                lockout: true,
+                scene_configs: vec![scene_config()],
+                cued_scene_id: None,
+            },
+            reply: None,
         })
-        .await;
+        .await
+        .unwrap();
 
         recv_show_event(&mut events, ShowProjectionReason::ShowState).await;
     }
@@ -330,9 +177,18 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
-        let snapshot = show.get_snapshot().await;
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::GetShowDocument { reply })
+            .await
+            .unwrap();
+        let snapshot = rx.await.unwrap();
 
-        show.replace_snapshot(snapshot).await;
+        show.send(ShowCommand::ReplaceSnapshotForTest {
+            snapshot,
+            reply: None,
+        })
+        .await
+        .unwrap();
 
         assert!(events.try_recv().is_err());
     }
@@ -343,7 +199,9 @@ mod tests {
         let mut events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus);
 
-        show.clear().await;
+        show.send(ShowCommand::ClearForTest { reply: None })
+            .await
+            .unwrap();
 
         assert!(events.try_recv().is_err());
     }
@@ -353,20 +211,24 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut show_events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        show.replace_snapshot(ShowDocument {
-            lockout: false,
-            scene_configs: vec![SceneConfig {
-                scene_id: "1::Verse".to_string(),
-                scene_index: 1,
-                scene_name: "Verse".to_string(),
-                duration_ms: 1_500,
-                channel_configs: Vec::new(),
-                scoped_channels: Vec::new(),
-                scope_toggles: SceneScopeToggles::default(),
-            }],
-            cued_scene_id: None,
+        show.send(ShowCommand::ReplaceSnapshotForTest {
+            snapshot: ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 1_500,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                }],
+                cued_scene_id: None,
+            },
+            reply: None,
         })
-        .await;
+        .await
+        .unwrap();
         recv_show_event(&mut show_events, ShowProjectionReason::ShowState).await;
 
         let monitor = spawn_lv1_scene_list_monitor(show.clone(), event_bus.subscribe());
@@ -379,7 +241,11 @@ mod tests {
         });
 
         recv_show_event(&mut show_events, ShowProjectionReason::ShowState).await;
-        let snapshot = show.get_snapshot().await;
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::GetShowDocument { reply })
+            .await
+            .unwrap();
+        let snapshot = rx.await.unwrap();
         assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse Big");
         assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
         monitor.abort();
