@@ -1,11 +1,10 @@
-use crate::fade::actor::spawn_engine;
-use crate::lifecycle::{AppLifecycle, spawn_lifecycle_event_monitor};
-use crate::lv1::actor::spawn_actor;
+use crate::lifecycle::{AppLifecycle, ConnectFailureMode, spawn_lifecycle_event_monitor};
 use crate::lv1::discovery::resolve_target;
 use crate::projector::{ProjectorInputs, spawn_projector};
 use crate::runtime::commands::AppCommandBus;
-use crate::runtime::events::{AppEvent, AppEventBus};
-use crate::scene_recall::spawn_scene_recall_fader;
+use crate::runtime::events::AppEvent;
+#[cfg(test)]
+use crate::runtime::events::AppEventBus;
 use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use tokio::task::spawn_blocking;
@@ -706,12 +705,6 @@ async fn attempt_reconnect_lv1_snapshot<R: Runtime>(
     .await
 }
 
-#[derive(Clone, Copy)]
-enum ConnectFailureMode {
-    ClearConnectedIdentity,
-    PreserveConnectedIdentity,
-}
-
 #[tauri::command]
 pub async fn startup_auto_connect_lv1(
     app: AppHandle,
@@ -751,7 +744,6 @@ async fn connect_to_target<R: Runtime>(
     identity: crate::connection_state::Lv1SystemIdentity,
     failure_mode: ConnectFailureMode,
 ) -> Result<AppViewState, String> {
-    let event_bus = AppEventBus::default();
     tracing::debug!(
         event = "lv1_connect_requested",
         host = %identity.address,
@@ -769,7 +761,6 @@ async fn connect_to_target<R: Runtime>(
         port = identity.port,
         "Connecting to LV1"
     );
-    lifecycle.abort_current_runtime().await;
     emit_snapshot(&app, &connecting_snapshot);
     if let Some(pending_snapshot) = state
         .set_pending_lv1_identity(generation, Some(identity.clone()))
@@ -777,41 +768,8 @@ async fn connect_to_target<R: Runtime>(
     {
         emit_snapshot(&app, &pending_snapshot);
     }
-    let events = event_bus.subscribe();
-
-    let shell_state = state.clone();
-
-    let lv1 = spawn_actor(
-        identity.address.clone(),
-        identity.port,
-        event_bus.clone(),
-        generation,
-    );
-    let command_bus = AppCommandBus::new();
-    command_bus.set_generation(generation).await;
-    command_bus.set_lv1(Some(lv1.clone())).await;
-    command_bus.set_show(Some(shell_state.show.clone())).await;
-    let fade_command_bus = command_bus.clone();
-    let fade = spawn_engine(command_bus, event_bus.clone(), generation);
-    fade_command_bus.set_fade(Some(fade.clone())).await;
-
-    let mut runtime_handles = RuntimeHandles {
-        active_generation: 0,
-        lv1: Some(lv1.clone()),
-        fade: Some(fade),
-        command_bus: Some(fade_command_bus.clone()),
-        projector: None,
-        scene_recall_fader: Some(spawn_scene_recall_fader(
-            generation,
-            fade_command_bus.clone(),
-            event_bus.clone(),
-        )),
-        ..Default::default()
-    };
-
     let initial_snapshot = connect_initial_lv1_snapshot(lifecycle).await?;
     if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
-        runtime_handles.abort_all().await;
         let failed_snapshot = match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => state.fail_connect(generation).await,
             ConnectFailureMode::PreserveConnectedIdentity => state.fail_reconnect(generation).await,
@@ -842,25 +800,21 @@ async fn connect_to_target<R: Runtime>(
         return Err("LV1 did not connect".to_string());
     }
 
-    let snapshot = match state.begin_connection(generation, initial_snapshot).await {
-        Some(snapshot) => snapshot,
-        None => {
-            runtime_handles.abort_all().await;
-            let snapshot = state.snapshot().await;
-            return Ok(snapshot);
-        }
-    };
+    let _ = lifecycle
+        .connect_to_identity(
+            app.clone(),
+            &state,
+            generation,
+            identity.clone(),
+            failure_mode,
+            initial_snapshot.clone(),
+        )
+        .await?;
 
-    let _installed_snapshot = install_connected_runtime(
-        &app,
-        &state,
-        generation,
-        snapshot,
-        events,
-        runtime_handles,
-        lifecycle,
-    )
-    .await?;
+    let _snapshot = match state.begin_connection(generation, initial_snapshot).await {
+        Some(snapshot) => snapshot,
+        None => return Ok(state.snapshot().await),
+    };
 
     let connected_host = identity.address.clone();
     let connected_port = identity.port;
@@ -894,6 +848,57 @@ async fn connect_initial_lv1_snapshot(
         .get_lv1_state()
         .await
         .map_err(|error| error.to_string())
+}
+
+#[allow(dead_code, clippy::too_many_arguments)]
+async fn install_connected_runtime<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &ShellState,
+    generation: u64,
+    snapshot: AppViewState,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    mut runtime_handles: RuntimeHandles,
+    lifecycle: &AppLifecycle,
+) -> Result<AppViewState, String> {
+    let lifecycle_events = events.resubscribe();
+    let show_events = events.resubscribe();
+    let initial_show_state = state.show.initial_projection_state().await;
+    runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
+        app: app.clone(),
+        generation,
+        initial_show_state,
+        events,
+        logs: ui_log_receiver(app)?,
+    }));
+    runtime_handles.lifecycle_event_monitor = Some(spawn_lifecycle_event_monitor(
+        generation,
+        state.clone(),
+        lifecycle.clone(),
+        lifecycle_events,
+    ));
+    runtime_handles.show_scene_list_monitor = Some(crate::show::spawn_lv1_scene_list_monitor(
+        state.show.clone(),
+        show_events,
+    ));
+
+    if let Err(mut stale_handles) = lifecycle
+        .install_runtime_handles(state, generation, runtime_handles)
+        .await
+    {
+        stale_handles.abort_all().await;
+        let snapshot = state.snapshot().await;
+        return Ok(snapshot);
+    }
+
+    emit_snapshot(app, &snapshot);
+    Ok(snapshot)
+}
+
+#[allow(dead_code)]
+fn ui_log_receiver<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>, String> {
+    Ok(app.state::<UiLogReceiverState>().subscribe())
 }
 
 fn should_save_connection_preferences(
@@ -957,61 +962,10 @@ async fn startup_discovery_or_current_snapshot(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn install_connected_runtime<R: Runtime>(
-    app: &AppHandle<R>,
-    state: &ShellState,
-    generation: u64,
-    snapshot: AppViewState,
-    events: tokio::sync::broadcast::Receiver<AppEvent>,
-    mut runtime_handles: RuntimeHandles,
-    lifecycle: &AppLifecycle,
-) -> Result<AppViewState, String> {
-    let lifecycle_events = events.resubscribe();
-    let show_events = events.resubscribe();
-    let initial_show_state = state.show.initial_projection_state().await;
-    runtime_handles.projector = Some(spawn_projector(ProjectorInputs {
-        app: app.clone(),
-        generation,
-        initial_show_state,
-        events,
-        logs: ui_log_receiver(app)?,
-    }));
-    runtime_handles.lifecycle_event_monitor = Some(spawn_lifecycle_event_monitor(
-        generation,
-        state.clone(),
-        lifecycle.clone(),
-        lifecycle_events,
-    ));
-    runtime_handles.show_scene_list_monitor = Some(crate::show::spawn_lv1_scene_list_monitor(
-        state.show.clone(),
-        show_events,
-    ));
-
-    if let Err(mut stale_handles) = lifecycle
-        .install_runtime_handles(state, generation, runtime_handles)
-        .await
-    {
-        stale_handles.abort_all().await;
-        let snapshot = state.snapshot().await;
-        return Ok(snapshot);
-    }
-
-    // Emit the initial snapshot before any buffered bus events can be projected.
-    emit_snapshot(app, &snapshot);
-    Ok(snapshot)
-}
-
 fn emit_snapshot<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         eprintln!("failed to emit app-status-changed: {err}");
     }
-}
-
-fn ui_log_receiver<R: Runtime>(
-    app: &AppHandle<R>,
-) -> Result<tokio::sync::broadcast::Receiver<crate::logging::UiLogEvent>, String> {
-    Ok(app.state::<UiLogReceiverState>().subscribe())
 }
 
 async fn save_show_file_to_path(

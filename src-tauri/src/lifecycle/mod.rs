@@ -194,14 +194,12 @@ impl AppLifecycle {
     pub async fn connect_to_identity<R: Runtime>(
         &self,
         app: AppHandle<R>,
+        state: &crate::app_state::ShellState,
+        generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
+        initial_snapshot: crate::lv1::types::Lv1StateSnapshot,
     ) -> Result<crate::show::commands::ConnectCommandResult, String> {
-        self.abort_current_runtime().await;
-        let Some(generation) = self.begin_connecting().await else {
-            return Ok(crate::show::commands::ConnectCommandResult { changed: false });
-        };
-
         let event_bus = self.event_bus.clone();
         let command_bus = self.current_command_bus().await;
         let lv1 = spawn_actor(
@@ -212,46 +210,37 @@ impl AppLifecycle {
         );
         let fade =
             crate::fade::actor::spawn_engine(command_bus.clone(), event_bus.clone(), generation);
-        self.finish_connect_transaction(
-            app,
-            identity,
-            failure_mode,
-            generation,
-            command_bus,
-            event_bus,
-            lv1,
-            fade,
-        )
-        .await
+        let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
+        if self
+            .install_runtime_transaction(generation, handles)
+            .await
+            .is_err()
+        {
+            return Err("generation is stale".to_string());
+        }
+
+        if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
+            self.clear_runtime_transaction(generation).await;
+            let _ = self
+                .apply_failed_connect_metadata(&command_bus, failure_mode)
+                .await;
+            return Err("LV1 did not connect".to_string());
+        }
+
+        let reconnect_state = crate::connection_state::ReconnectState::default();
+        let connect_result = self
+            .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = state;
+        let _ = lv1;
+        let _ = fade;
+        let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        let _ = app;
+        Ok(connect_result)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn finish_connect_transaction<R: Runtime>(
-        &self,
-        app: AppHandle<R>,
-        identity: crate::connection_state::Lv1SystemIdentity,
-        failure_mode: ConnectFailureMode,
-        generation: u64,
-        command_bus: AppCommandBus,
-        event_bus: AppEventBus,
-        lv1: crate::lv1::handle::Lv1ActorHandle,
-        fade: crate::fade::handle::FadeEngineHandle,
-    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
-        self.finish_connect_transaction_inner(
-            app,
-            identity,
-            failure_mode,
-            generation,
-            command_bus,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, dead_code)]
     async fn finish_connect_transaction_inner<R: Runtime>(
         &self,
         app: AppHandle<R>,
