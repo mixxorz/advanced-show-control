@@ -1,10 +1,12 @@
 use advanced_show_control::lv1::{
-    ConnectionStatus, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame, spawn_actor,
+    ConnectionStatus, Lv1Command, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame,
+    spawn_actor,
 };
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
 use std::net::TcpListener;
+use tokio::sync::oneshot;
 
 fn make_lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
     encode_frame(address, args).unwrap()
@@ -204,7 +206,9 @@ async fn get_state_returns_snapshot_with_current_values() {
 
     wait_for_connected(&mut events).await;
 
-    let snapshot = handle.get_state().await;
+    let (reply, rx) = oneshot::channel();
+    handle.send(Lv1Command::GetState { reply }).await.unwrap();
+    let snapshot = rx.await.unwrap();
     assert_eq!(snapshot.connection, ConnectionStatus::Connected);
 }
 
@@ -237,7 +241,19 @@ async fn actor_handles_set_gain_command() {
 
     wait_for_connected(&mut events).await;
 
-    assert!(handle.set_gain(0, 0, -20.0).await.is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(
+        handle
+            .send(Lv1Command::SetGain {
+                group: 0,
+                channel: 0,
+                gain_db: -20.0,
+                reply,
+            })
+            .await
+            .is_ok()
+    );
+    assert!(rx.await.unwrap().is_ok());
 }
 
 #[tokio::test]
@@ -281,7 +297,19 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
     wait_for_connected(&mut events).await;
 
     let sent_at = std::time::Instant::now();
-    assert!(handle.set_gain(0, 1, -12.5).await.is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(
+        handle
+            .send(Lv1Command::SetGain {
+                group: 0,
+                channel: 1,
+                gain_db: -12.5,
+                reply,
+            })
+            .await
+            .is_ok()
+    );
+    assert!(rx.await.unwrap().is_ok());
 
     tokio::task::spawn_blocking(move || {
         loop {
@@ -339,7 +367,19 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
     wait_for_connected(&mut events).await;
 
     let sent_at = std::time::Instant::now();
-    assert!(handle.set_mute(0, 1, true).await.is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(
+        handle
+            .send(Lv1Command::SetMute {
+                group: 0,
+                channel: 1,
+                muted: true,
+                reply,
+            })
+            .await
+            .is_ok()
+    );
+    assert!(rx.await.unwrap().is_ok());
 
     tokio::task::spawn_blocking(move || {
         loop {
@@ -423,10 +463,18 @@ async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
 
     let handle = spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default(), 0);
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        handle.set_mute(0, 1, true),
-    )
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(Lv1Command::SetMute {
+                group: 0,
+                channel: 1,
+                muted: true,
+                reply,
+            })
+            .await?;
+        rx.await.unwrap()
+    })
     .await
     .unwrap();
 
@@ -469,8 +517,18 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
     .await
     .unwrap();
 
-    let result = handle.set_mute(0, 1, true).await;
-    assert!(result.is_err());
+    let (reply, rx) = oneshot::channel();
+    let send_result = handle
+        .send(Lv1Command::SetMute {
+            group: 0,
+            channel: 1,
+            muted: true,
+            reply,
+        })
+        .await;
+    if send_result.is_ok() {
+        assert!(rx.await.unwrap().is_err());
+    }
 }
 
 #[tokio::test]
@@ -513,8 +571,22 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
 
     wait_for_connected(&mut events).await;
 
-    assert!(handle.set_mute(0, 1, true).await.is_ok());
-    assert!(handle.flush().await.is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(
+        handle
+            .send(Lv1Command::SetMute {
+                group: 0,
+                channel: 1,
+                muted: true,
+                reply,
+            })
+            .await
+            .is_ok()
+    );
+    assert!(rx.await.unwrap().is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(handle.send(Lv1Command::Flush { reply }).await.is_ok());
+    assert!(rx.await.unwrap().is_ok());
 
     loop {
         let address = address_rx
@@ -566,8 +638,22 @@ async fn actor_flush_waits_for_prior_set_gain_command() {
 
     wait_for_connected(&mut events).await;
 
-    assert!(handle.set_gain(0, 1, -9.5).await.is_ok());
-    assert!(handle.flush().await.is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(
+        handle
+            .send(Lv1Command::SetGain {
+                group: 0,
+                channel: 1,
+                gain_db: -9.5,
+                reply,
+            })
+            .await
+            .is_ok()
+    );
+    assert!(rx.await.unwrap().is_ok());
+    let (reply, rx) = oneshot::channel();
+    assert!(handle.send(Lv1Command::Flush { reply }).await.is_ok());
+    assert!(rx.await.unwrap().is_ok());
 
     loop {
         let address = address_rx

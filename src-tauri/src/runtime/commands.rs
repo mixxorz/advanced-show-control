@@ -5,10 +5,10 @@ use tokio::sync::Mutex;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::fade::{FadeConfig, FadeEngineHandle};
-use crate::lv1::{ChannelInfo, Lv1ActorError, Lv1ActorHandle, Lv1ParameterWrite, Lv1StateSnapshot};
+use crate::lv1::{ChannelInfo, Lv1StateSnapshot};
 use crate::show::{
-    CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult, SceneConfig,
-    SelectedSceneResult, ShowCommandResult, ShowDocument, ShowFile, ShowStateHandle,
+    CueSceneResult, LoadShowFileResult, NewShowFileResult, SceneConfig, SelectedSceneResult,
+    ShowCommandResult, ShowDocument, ShowFile, ShowStateHandle,
 };
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -29,7 +29,6 @@ pub enum AppCommandError {
 
 #[derive(Clone, Default)]
 struct AppCommandTargets {
-    lv1: Option<Lv1ActorHandle>,
     fade: Option<FadeEngineHandle>,
     show: Option<ShowStateHandle>,
     generation: u64,
@@ -60,22 +59,15 @@ impl AppCommandBus {
         self.targets.lock().await.show = Some(show);
     }
 
-    pub(crate) async fn set_runtime_targets(
-        &self,
-        generation: u64,
-        lv1: Lv1ActorHandle,
-        fade: FadeEngineHandle,
-    ) {
+    pub(crate) async fn set_runtime_targets(&self, generation: u64, fade: FadeEngineHandle) {
         let mut targets = self.targets.lock().await;
         targets.generation = generation;
-        targets.lv1 = Some(lv1);
         targets.fade = Some(fade);
     }
 
     pub(crate) async fn clear_runtime_targets(&self, generation: u64) {
         let mut targets = self.targets.lock().await;
         if targets.generation == generation {
-            targets.lv1 = None;
             targets.fade = None;
         }
     }
@@ -125,10 +117,6 @@ impl AppCommandBus {
         Ok(crate::show::set_reconnect_state(&show, reconnect).await)
     }
 
-    pub async fn set_lv1(&self, lv1: Option<Lv1ActorHandle>) {
-        self.targets.lock().await.lv1 = lv1;
-    }
-
     pub async fn set_fade(&self, fade: Option<FadeEngineHandle>) {
         self.targets.lock().await.fade = fade;
     }
@@ -171,7 +159,6 @@ impl AppCommandBus {
 
     pub async fn clear_targets(&self) {
         let mut targets = self.targets.lock().await;
-        targets.lv1 = None;
         targets.fade = None;
         targets.show = None;
         targets.generation += 1;
@@ -313,19 +300,6 @@ impl AppCommandBus {
             .map_err(AppCommandError::CommandFailed)
     }
 
-    pub async fn store_scene_config_from_current_lv1_state(
-        &self,
-        scene_id: String,
-    ) -> Result<ShowCommandResult, AppCommandError> {
-        let lv1 = self.get_lv1_state().await.map_err(|error| match error {
-            AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                "Store scene blocked: LV1 state is unavailable".to_string(),
-            ),
-            other => other,
-        })?;
-        self.store_scene_config(scene_id, lv1.channels).await
-    }
-
     pub async fn new_show_file(
         &self,
         lv1: Option<Lv1StateSnapshot>,
@@ -381,207 +355,6 @@ impl AppCommandBus {
         self.load_show_file_from_path(path, file, lv1).await
     }
 
-    pub async fn recall_scene_by_id(
-        &self,
-        scene_id: String,
-    ) -> Result<RecallSceneResult, AppCommandError> {
-        tracing::debug!(
-            event = "scene_recall_requested",
-            scene_id = %scene_id,
-            "Scene recall requested"
-        );
-        let show = self.show_target().await.map_err(|error| {
-            let message = map_app_command_error(error);
-            tracing::warn!(
-                event = "scene_recall_blocked",
-                scene_id = %scene_id,
-                reason = %message,
-                "Scene recall blocked: {message}"
-            );
-            AppCommandError::CommandFailed(message)
-        })?;
-        let lv1 = self.get_lv1_state().await.map_err(|error| {
-            let mapped = match error {
-                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                    "Recall blocked: LV1 state is unavailable".to_string(),
-                ),
-                other => other,
-            };
-            let message = map_app_command_error(mapped.clone());
-            tracing::warn!(
-                event = "scene_recall_blocked",
-                scene_id = %scene_id,
-                reason = %message,
-                "Scene recall blocked: {message}"
-            );
-            mapped
-        })?;
-        let show_document = crate::show::get_show_document(&show).await;
-        let result = crate::show::validate_recall_scene_request(&show_document, &lv1, &scene_id)
-            .map_err(|message| {
-                tracing::warn!(
-                    event = "scene_recall_blocked",
-                    scene_id = %scene_id,
-                    reason = %message,
-                    "Scene recall blocked: {message}"
-                );
-                AppCommandError::CommandFailed(message)
-            })?;
-
-        self.recall_scene(result.lv1_scene_index).await?;
-        tracing::debug!(
-            event = "scene_recall_command_sent",
-            scene_id = %result.scene.scene_id,
-            scene_index = result.scene.scene_index,
-            scene_name = %result.scene.scene_name,
-            "Scene recall command sent: {}",
-            result.scene.scene_name
-        );
-        Ok(result)
-    }
-
-    pub async fn get_lv1_state(&self) -> Result<Lv1StateSnapshot, AppCommandError> {
-        let lv1 = self.targets.lock().await.lv1.clone();
-        match lv1 {
-            Some(lv1) => Ok(lv1.get_state().await),
-            None => Err(AppCommandError::Lv1Unavailable),
-        }
-    }
-
-    pub async fn set_gain(
-        &self,
-        group: i32,
-        channel: i32,
-        gain_db: f64,
-    ) -> Result<(), AppCommandError> {
-        let lv1 = self.targets.lock().await.lv1.clone();
-        let result = match lv1 {
-            Some(lv1) => lv1
-                .set_gain(group, channel, gain_db)
-                .await
-                .map_err(map_lv1_error),
-            None => Err(AppCommandError::Lv1Unavailable),
-        };
-        log_failure("set_gain", &result);
-        result
-    }
-
-    pub async fn set_pan(
-        &self,
-        group: i32,
-        channel: i32,
-        value: f64,
-    ) -> Result<(), AppCommandError> {
-        let lv1 = self.targets.lock().await.lv1.clone();
-        let result = match lv1 {
-            Some(lv1) => lv1
-                .set_pan(group, channel, value)
-                .await
-                .map_err(map_lv1_error),
-            None => Err(AppCommandError::Lv1Unavailable),
-        };
-        log_failure("set_pan", &result);
-        result
-    }
-
-    pub async fn set_balance(
-        &self,
-        group: i32,
-        channel: i32,
-        value: f64,
-    ) -> Result<(), AppCommandError> {
-        let lv1 = self.targets.lock().await.lv1.clone();
-        let result = match lv1 {
-            Some(lv1) => lv1
-                .set_balance(group, channel, value)
-                .await
-                .map_err(map_lv1_error),
-            None => Err(AppCommandError::Lv1Unavailable),
-        };
-        log_failure("set_balance", &result);
-        result
-    }
-
-    pub async fn set_width(
-        &self,
-        group: i32,
-        channel: i32,
-        value: f64,
-    ) -> Result<(), AppCommandError> {
-        let lv1 = self.targets.lock().await.lv1.clone();
-        let result = match lv1 {
-            Some(lv1) => lv1
-                .set_width(group, channel, value)
-                .await
-                .map_err(map_lv1_error),
-            None => Err(AppCommandError::Lv1Unavailable),
-        };
-        log_failure("set_width", &result);
-        result
-    }
-
-    pub async fn recall_scene(&self, scene_index: i32) -> Result<(), AppCommandError> {
-        let lv1 = self.targets.lock().await.lv1.clone();
-        let result = match lv1 {
-            Some(lv1) => lv1.recall_scene(scene_index).await.map_err(map_lv1_error),
-            None => Err(AppCommandError::Lv1Unavailable),
-        };
-        log_failure("recall_scene", &result);
-        result
-    }
-
-    pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), AppCommandError> {
-        self.write_batch_with_generation(None, writes).await
-    }
-
-    pub async fn write_batch_if_generation(
-        &self,
-        expected: u64,
-        writes: Vec<Lv1ParameterWrite>,
-    ) -> Result<(), AppCommandError> {
-        self.write_batch_with_generation(Some(expected), writes)
-            .await
-    }
-
-    /// Clones the current LV1 handle only after the optional generation check passes.
-    ///
-    /// The actual `lv1.write_batch(...)` call still happens after the mutex guard is dropped,
-    /// because the LV1 actor API is async and must be awaited outside the command-target lock.
-    /// This closes the stale-target selection window, but not the in-flight actor write itself;
-    /// fully eliminating that remaining gap would require moving generation ownership into the
-    /// LV1 actor/write path.
-    async fn write_batch_with_generation(
-        &self,
-        expected: Option<u64>,
-        writes: Vec<Lv1ParameterWrite>,
-    ) -> Result<(), AppCommandError> {
-        if writes.is_empty() {
-            return Ok(());
-        }
-
-        let lv1 = {
-            let targets = self.targets.lock().await;
-            if let Some(expected) = expected
-                && targets.generation != expected
-            {
-                let result = Err(AppCommandError::StaleGeneration);
-                log_failure("write_batch_if_generation", &result);
-                return result;
-            }
-            targets.lv1.clone()
-        };
-
-        let result = match lv1 {
-            Some(lv1) => lv1.write_batch(writes).await.map_err(map_lv1_error),
-            None => Err(AppCommandError::Lv1Unavailable),
-        };
-        log_failure(
-            expected.map_or("write_batch", |_| "write_batch_if_generation"),
-            &result,
-        );
-        result
-    }
-
     /// Starts a fade without any generation check.
     ///
     /// Scene recall automation must prefer `start_fade_if_generation` so stale recall tasks
@@ -613,20 +386,6 @@ impl Default for AppCommandBus {
     }
 }
 
-fn map_lv1_error(error: Lv1ActorError) -> AppCommandError {
-    match error {
-        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-        other => AppCommandError::CommandFailed(other.to_string()),
-    }
-}
-
-fn map_app_command_error(error: AppCommandError) -> String {
-    match error {
-        AppCommandError::CommandFailed(message) => message,
-        other => other.to_string(),
-    }
-}
-
 fn log_failure(command: &str, result: &Result<(), AppCommandError>) {
     if let Err(error) = result {
         tracing::error!(
@@ -644,84 +403,12 @@ mod tests {
     use crate::fade::{
         FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget,
     };
-    use crate::lv1::{
-        ChannelInfo, ConnectionStatus, Lv1Command, Lv1StateSnapshot, Lv1WriteParameter,
-        SceneListEntry, test_actor_handle,
-    };
+    use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::AppEventBus;
     use crate::show::{
         ChannelConfig, SHOW_FILE_SCHEMA_VERSION, SceneConfig, SceneScopeToggles, ShowDocument,
         ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowFileSceneScopeToggles, ShowStateHandle,
     };
-    use std::collections::HashMap;
-    use std::sync::{Arc, Mutex as StdMutex};
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
-
-    #[derive(Debug, Default, Clone)]
-    struct CapturedLogEvent {
-        fields: HashMap<String, String>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedLogEvents(Arc<StdMutex<Vec<CapturedLogEvent>>>);
-
-    impl<S> Layer<S> for CapturedLogEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent::default();
-            event.record(&mut visitor);
-            self.0.lock().unwrap().push(visitor);
-        }
-    }
-
-    impl Visit for CapturedLogEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_i64(&mut self, field: &Field, value: i64) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_u64(&mut self, field: &Field, value: u64) {
-            self.fields
-                .insert(field.name().to_string(), value.to_string());
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            self.fields.insert(
-                field.name().to_string(),
-                format!("{value:?}").trim_matches('"').to_string(),
-            );
-        }
-    }
-
-    fn with_captured_logs() -> (
-        tracing::subscriber::DefaultGuard,
-        Arc<StdMutex<Vec<CapturedLogEvent>>>,
-    ) {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        (tracing::subscriber::set_default(subscriber), logs)
-    }
-
-    fn saw_event(logs: &Arc<StdMutex<Vec<CapturedLogEvent>>>, event_name: &str) -> bool {
-        logs.lock()
-            .unwrap()
-            .iter()
-            .any(|log| log.fields.get("event").map(String::as_str) == Some(event_name))
-    }
-
     fn scene_config() -> SceneConfig {
         SceneConfig {
             scene_id: "1::Intro".to_string(),
@@ -756,18 +443,6 @@ mod tests {
         }
     }
 
-    fn fake_lv1_handle(snapshot: Lv1StateSnapshot) -> Lv1ActorHandle {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            while let Some(command) = rx.recv().await {
-                if let Lv1Command::GetState { reply } = command {
-                    let _ = reply.send(snapshot.clone());
-                }
-            }
-        });
-        test_actor_handle(tx)
-    }
-
     async fn bus_with_show_document(snapshot: ShowDocument) -> (AppCommandBus, AppEventBus) {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
@@ -775,15 +450,6 @@ mod tests {
         let bus = AppCommandBus::new();
         bus.set_show(Some(show)).await;
         (bus, event_bus)
-    }
-
-    #[tokio::test]
-    async fn command_bus_constructs_without_event_bus() {
-        let bus = AppCommandBus::new();
-
-        let err = bus.get_lv1_state().await.unwrap_err();
-
-        assert_eq!(err, AppCommandError::Lv1Unavailable);
     }
 
     #[tokio::test]
@@ -810,14 +476,12 @@ mod tests {
     async fn runtime_targets_clear_after_mutex_contention_releases() {
         let bus = AppCommandBus::new();
         let guard = bus.targets.lock().await;
-        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
         let fade = FadeEngineHandle::new(fade_tx);
         let update_bus = bus.clone();
 
         let update = tokio::spawn(async move {
-            update_bus.set_runtime_targets(7, lv1, fade).await;
+            update_bus.set_runtime_targets(7, fade).await;
         });
 
         tokio::task::yield_now().await;
@@ -839,17 +503,7 @@ mod tests {
 
         clear.await.unwrap();
         let targets = bus.targets.lock().await;
-        assert!(targets.lv1.is_none());
         assert!(targets.fade.is_none());
-    }
-
-    #[tokio::test]
-    async fn missing_lv1_returns_lv1_unavailable() {
-        let bus = AppCommandBus::new();
-
-        let err = bus.get_lv1_state().await.unwrap_err();
-
-        assert_eq!(err, AppCommandError::Lv1Unavailable);
     }
 
     #[tokio::test]
@@ -1193,36 +847,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_scene_config_from_current_lv1_state_uses_live_channels() {
-        let snapshot = ShowDocument {
-            scene_configs: vec![scene_config()],
-            ..ShowDocument::empty()
-        };
-        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
-        bus.set_lv1(Some(fake_lv1_handle(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![],
-            channels: vec![channel_info()],
-        })))
-        .await;
-
-        let result = bus
-            .store_scene_config_from_current_lv1_state("1::Intro".to_string())
-            .await
-            .unwrap();
-
-        assert!(result.changed);
-        let updated = bus
-            .get_scene_config("1::Intro".to_string())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(updated.channel_configs.len(), 1);
-        assert_eq!(updated.channel_configs[0].fader_db, Some(-12.0));
-    }
-
-    #[tokio::test]
     async fn low_risk_show_commands_return_show_unavailable_without_target() {
         let bus = AppCommandBus::new();
 
@@ -1453,417 +1077,5 @@ mod tests {
         assert!(!result.report.removed_anything());
         assert!(bus.get_show_document().await.unwrap().lockout);
         assert_eq!(result.saved_at, "saved");
-    }
-
-    #[tokio::test]
-    async fn set_pan_routes_to_lv1_without_event_bus_log() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-
-        tokio::spawn(async move {
-            if let Some(Lv1Command::SetPan {
-                group,
-                channel,
-                value,
-                reply,
-            }) = lv1_rx.recv().await
-            {
-                assert_eq!((group, channel, value), (2, 7, -18.5));
-                let _ = reply.send(Ok(()));
-            }
-        });
-
-        assert_eq!(bus.set_pan(2, 7, -18.5).await, Ok(()));
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn recall_scene_sends_index_to_lv1_actor() {
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-
-        let recall = tokio::spawn({
-            let bus = bus.clone();
-            async move { bus.recall_scene(4).await }
-        });
-
-        if let Some(Lv1Command::RecallScene { scene_index, reply }) = lv1_rx.recv().await {
-            assert_eq!(scene_index, 4);
-            let _ = reply.send(Ok(()));
-        } else {
-            panic!("expected RecallScene command");
-        }
-
-        assert!(recall.await.unwrap().is_ok());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn recall_scene_by_id_validates_show_and_sends_matching_lv1_index() {
-        let (_guard, logs) = with_captured_logs();
-        let bus = AppCommandBus::new();
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::replace_show_document_for_test(
-            &show,
-            ShowDocument {
-                lockout: false,
-                scene_configs: vec![SceneConfig {
-                    scene_id: "1::Verse".to_string(),
-                    scene_index: 1,
-                    scene_name: "Verse".to_string(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: Default::default(),
-                }],
-                cued_scene_id: Some("1::Verse".to_string()),
-            },
-        )
-        .await;
-        bus.set_show(Some(show)).await;
-
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        let lv1 = Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![SceneListEntry {
-                index: 1,
-                name: "Verse".to_string(),
-            }],
-            channels: Vec::new(),
-        };
-
-        let (recall_tx, mut recall_rx) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                match command {
-                    Lv1Command::GetState { reply } => {
-                        let _ = reply.send(lv1.clone());
-                    }
-                    Lv1Command::RecallScene { scene_index, reply } => {
-                        let _ = recall_tx.send(scene_index).await;
-                        let _ = reply.send(Ok(()));
-                    }
-                    _ => panic!("unexpected LV1 command"),
-                }
-            }
-        });
-
-        let result = bus
-            .recall_scene_by_id("1::Verse".to_string())
-            .await
-            .unwrap();
-
-        assert_eq!(recall_rx.recv().await, Some(1));
-        assert_eq!(result.scene.scene_id, "1::Verse");
-        assert_eq!(result.lv1_scene_index, 1);
-        assert!(saw_event(&logs, "scene_recall_requested"));
-        assert!(saw_event(&logs, "scene_recall_command_sent"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn recall_scene_by_id_blocks_lockout_before_sending_to_lv1() {
-        let (_guard, logs) = with_captured_logs();
-        let bus = AppCommandBus::new();
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::replace_show_document_for_test(
-            &show,
-            ShowDocument {
-                lockout: true,
-                scene_configs: vec![SceneConfig {
-                    scene_id: "1::Verse".to_string(),
-                    scene_index: 1,
-                    scene_name: "Verse".to_string(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: Default::default(),
-                }],
-                cued_scene_id: Some("1::Verse".to_string()),
-            },
-        )
-        .await;
-        bus.set_show(Some(show)).await;
-
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        let lv1 = Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![SceneListEntry {
-                index: 1,
-                name: "Verse".to_string(),
-            }],
-            channels: Vec::new(),
-        };
-        let (recall_tx, mut recall_rx) = tokio::sync::mpsc::channel(1);
-
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                match command {
-                    Lv1Command::GetState { reply } => {
-                        let _ = reply.send(lv1.clone());
-                    }
-                    Lv1Command::RecallScene { scene_index, reply } => {
-                        let _ = recall_tx.send(scene_index).await;
-                        let _ = reply.send(Ok(()));
-                    }
-                    _ => panic!("unexpected LV1 command"),
-                }
-            }
-        });
-
-        let err = bus
-            .recall_scene_by_id("1::Verse".to_string())
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            err,
-            AppCommandError::CommandFailed("Recall blocked: lockout is enabled".to_string())
-        );
-        assert!(recall_rx.try_recv().is_err());
-        assert!(saw_event(&logs, "scene_recall_requested"));
-        assert!(saw_event(&logs, "scene_recall_blocked"));
-    }
-
-    #[tokio::test]
-    async fn recall_scene_by_id_blocks_identity_mismatch_before_sending_to_lv1() {
-        let bus = AppCommandBus::new();
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::replace_show_document_for_test(
-            &show,
-            ShowDocument {
-                lockout: false,
-                scene_configs: vec![SceneConfig {
-                    scene_id: "1::Verse".to_string(),
-                    scene_index: 1,
-                    scene_name: "Verse".to_string(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: Default::default(),
-                }],
-                cued_scene_id: Some("1::Verse".to_string()),
-            },
-        )
-        .await;
-        bus.set_show(Some(show)).await;
-
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        let lv1 = Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![SceneListEntry {
-                index: 1,
-                name: "Different".to_string(),
-            }],
-            channels: Vec::new(),
-        };
-        let (recall_tx, mut recall_rx) = tokio::sync::mpsc::channel(1);
-
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                match command {
-                    Lv1Command::GetState { reply } => {
-                        let _ = reply.send(lv1.clone());
-                    }
-                    Lv1Command::RecallScene { scene_index, reply } => {
-                        let _ = recall_tx.send(scene_index).await;
-                        let _ = reply.send(Ok(()));
-                    }
-                    _ => panic!("unexpected LV1 command"),
-                }
-            }
-        });
-
-        let err = bus
-            .recall_scene_by_id("1::Verse".to_string())
-            .await
-            .unwrap_err();
-
-        assert_eq!(
-            err,
-            AppCommandError::CommandFailed("Recall blocked: scene identity mismatch".to_string())
-        );
-        assert!(recall_rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn recall_scene_by_id_returns_lv1_recall_failure_without_show_mutation() {
-        let bus = AppCommandBus::new();
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::replace_show_document_for_test(
-            &show,
-            ShowDocument {
-                lockout: false,
-                scene_configs: vec![SceneConfig {
-                    scene_id: "1::Verse".to_string(),
-                    scene_index: 1,
-                    scene_name: "Verse".to_string(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: Default::default(),
-                }],
-                cued_scene_id: Some("1::Verse".to_string()),
-            },
-        )
-        .await;
-        bus.set_show(Some(show)).await;
-
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                match command {
-                    Lv1Command::GetState { reply } => {
-                        let _ = reply.send(Lv1StateSnapshot {
-                            connection: ConnectionStatus::Connected,
-                            scene: None,
-                            scene_list: vec![SceneListEntry {
-                                index: 1,
-                                name: "Verse".to_string(),
-                            }],
-                            channels: Vec::new(),
-                        });
-                    }
-                    Lv1Command::RecallScene { reply, .. } => {
-                        let _ = reply.send(Err(Lv1ActorError::NotConnected));
-                    }
-                    _ => panic!("unexpected LV1 command"),
-                }
-            }
-        });
-
-        let err = bus
-            .recall_scene_by_id("1::Verse".to_string())
-            .await
-            .unwrap_err();
-
-        assert_eq!(err, AppCommandError::Lv1Unavailable);
-    }
-
-    #[tokio::test]
-    async fn missing_lv1_for_balance_returns_error_without_event_bus_log() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new();
-
-        let err = bus.set_balance(1, 3, 0.25).await.unwrap_err();
-
-        assert_eq!(err, AppCommandError::Lv1Unavailable);
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn write_batch_routes_to_lv1_without_reply() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-
-        let writes = vec![Lv1ParameterWrite {
-            group: 0,
-            channel: 1,
-            parameter: Lv1WriteParameter::FaderDb,
-            value: -18.0,
-        }];
-        let expected = writes.clone();
-
-        tokio::spawn(async move {
-            if let Some(Lv1Command::WriteBatch(received)) = lv1_rx.recv().await {
-                assert_eq!(received, expected);
-            }
-        });
-
-        assert_eq!(bus.write_batch(writes).await, Ok(()));
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn write_batch_if_generation_rejects_stale_generation_before_sending() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        bus.set_generation(2).await;
-
-        let writes = vec![Lv1ParameterWrite {
-            group: 0,
-            channel: 1,
-            parameter: Lv1WriteParameter::FaderDb,
-            value: -18.0,
-        }];
-
-        let err = bus.write_batch_if_generation(1, writes).await.unwrap_err();
-
-        assert_eq!(err, AppCommandError::StaleGeneration);
-        assert!(lv1_rx.try_recv().is_err());
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn write_batch_if_generation_routes_fresh_writes() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        bus.set_generation(2).await;
-
-        let writes = vec![Lv1ParameterWrite {
-            group: 0,
-            channel: 1,
-            parameter: Lv1WriteParameter::FaderDb,
-            value: -18.0,
-        }];
-        let expected = writes.clone();
-
-        tokio::spawn(async move {
-            if let Some(Lv1Command::WriteBatch(received)) = lv1_rx.recv().await {
-                assert_eq!(received, expected);
-            }
-        });
-
-        assert_eq!(bus.write_batch_if_generation(2, writes).await, Ok(()));
-        assert!(events.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn write_batch_if_generation_leaves_lv1_unlocked_during_write() {
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-        bus.set_generation(2).await;
-
-        let writes = vec![Lv1ParameterWrite {
-            group: 0,
-            channel: 1,
-            parameter: Lv1WriteParameter::FaderDb,
-            value: -18.0,
-        }];
-
-        let write = tokio::spawn(async move {
-            let _ = bus.write_batch_if_generation(2, writes).await;
-        });
-
-        let command = tokio::time::timeout(std::time::Duration::from_secs(1), lv1_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(matches!(command, Lv1Command::WriteBatch(_)));
-        write.await.unwrap();
     }
 }

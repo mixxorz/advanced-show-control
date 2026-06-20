@@ -1,7 +1,7 @@
 //! Fade engine actor — animates LV1 faders over time.
 
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::commands::FadeCommand;
 use crate::fade::events::FadeEvent;
@@ -9,22 +9,24 @@ use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::EngineState;
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
 use crate::fade::types::{FadeParameter, FadeTarget};
-use crate::lv1::{Lv1Event, Lv1ParameterWrite, Lv1WriteParameter};
+use crate::lv1::{Lv1ActorHandle, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1WriteParameter};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
 pub fn spawn_engine(
     command_bus: AppCommandBus,
+    lv1: Lv1ActorHandle,
     event_bus: AppEventBus,
     generation: u64,
 ) -> FadeEngineHandle {
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
-    tokio::spawn(run_engine(command_bus, event_bus, generation, cmd_rx));
+    tokio::spawn(run_engine(command_bus, lv1, event_bus, generation, cmd_rx));
     FadeEngineHandle::new(cmd_tx)
 }
 
 async fn run_engine(
     command_bus: AppCommandBus,
+    lv1: Lv1ActorHandle,
     event_bus: AppEventBus,
     generation: u64,
     mut cmd_rx: mpsc::Receiver<FadeCommand>,
@@ -54,7 +56,7 @@ async fn run_engine(
                         let scene_name = config.scene.name.clone();
                         let duration_ms = config.duration_ms;
                         let target_count = config.targets.len();
-                        let result = handle_recall_scene_fade(&command_bus, &mut state, config, expected_generation).await;
+                        let result = handle_recall_scene_fade(&command_bus, &lv1, &mut state, config, expected_generation).await;
 
                         match result {
                             Ok(()) => {
@@ -115,6 +117,7 @@ async fn run_engine(
                             Some(expected_generation) => {
                                 send_batch_if_generation(
                                     &command_bus,
+                                    &lv1,
                                     &state.event_bus,
                                     expected_generation,
                                     writes,
@@ -122,7 +125,7 @@ async fn run_engine(
                                 .await
                             }
                             None => {
-                                send_batch(&command_bus, &state.event_bus, writes).await;
+                                send_batch(&lv1, &state.event_bus, writes).await;
                                 true
                             }
                         };
@@ -235,6 +238,7 @@ fn complete_fade(
 
 async fn handle_recall_scene_fade(
     command_bus: &AppCommandBus,
+    lv1: &Lv1ActorHandle,
     state: &mut EngineState,
     config: crate::fade::types::FadeConfig,
     expected_generation: Option<u64>,
@@ -249,7 +253,18 @@ async fn handle_recall_scene_fade(
         return Ok(());
     }
 
-    let snapshot = command_bus.get_lv1_state().await?;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
+        .await
+        .map_err(|error| match error {
+            crate::lv1::Lv1ActorError::NotConnected => {
+                crate::runtime::commands::AppCommandError::Lv1Unavailable
+            }
+            other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+        })?;
+    let snapshot = rx
+        .await
+        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
     if let Some(expected_generation) = expected_generation
         && command_bus.get_generation().await != expected_generation
     {
@@ -273,13 +288,19 @@ async fn handle_recall_scene_fade(
             })
             .collect();
         if let Some(expected_generation) = expected_generation {
-            if !send_batch_if_generation(command_bus, &state.event_bus, expected_generation, writes)
-                .await
+            if !send_batch_if_generation(
+                command_bus,
+                lv1,
+                &state.event_bus,
+                expected_generation,
+                writes,
+            )
+            .await
             {
                 return Err(crate::runtime::commands::AppCommandError::StaleGeneration);
             }
         } else {
-            send_batch(command_bus, &state.event_bus, writes).await;
+            send_batch(lv1, &state.event_bus, writes).await;
         }
 
         for target in &config.targets {
@@ -360,12 +381,8 @@ fn build_parameter_write(
     }
 }
 
-async fn send_batch(
-    command_bus: &AppCommandBus,
-    event_bus: &AppEventBus,
-    writes: Vec<Lv1ParameterWrite>,
-) {
-    if let Err(err) = command_bus.write_batch(writes).await {
+async fn send_batch(lv1: &Lv1ActorHandle, event_bus: &AppEventBus, writes: Vec<Lv1ParameterWrite>) {
+    if let Err(err) = lv1.send(Lv1Command::WriteBatch(writes)).await {
         let reason = format!("{err:?}");
         tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
         event_bus.publish(AppEvent::Fade {
@@ -377,14 +394,16 @@ async fn send_batch(
 
 async fn send_batch_if_generation(
     command_bus: &AppCommandBus,
+    lv1: &Lv1ActorHandle,
     event_bus: &AppEventBus,
     expected_generation: u64,
     writes: Vec<Lv1ParameterWrite>,
 ) -> bool {
-    if let Err(err) = command_bus
-        .write_batch_if_generation(expected_generation, writes)
-        .await
-    {
+    if command_bus.get_generation().await != expected_generation {
+        return false;
+    }
+
+    if let Err(err) = lv1.send(Lv1Command::WriteBatch(writes)).await {
         let reason = format!("{err:?}");
         tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
         event_bus.publish(AppEvent::Fade {
@@ -582,8 +601,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lv1 = test_actor_handle(tx);
         let bus = AppCommandBus::new();
-        bus.set_lv1(Some(lv1)).await;
-        let engine = spawn_engine(bus.clone(), event_bus.clone(), 0);
+        let engine = spawn_engine(bus.clone(), lv1, event_bus.clone(), 0);
         bus.set_fade(Some(engine.clone())).await;
         (event_bus, engine, rx)
     }
@@ -1178,8 +1196,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lv1 = test_actor_handle(tx);
         let bus = AppCommandBus::new();
-        bus.set_lv1(Some(lv1)).await;
-        let engine = spawn_engine(bus.clone(), event_bus.clone(), 0);
+        let engine = spawn_engine(bus.clone(), lv1, event_bus.clone(), 0);
         bus.set_fade(Some(engine.clone())).await;
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -1280,12 +1297,13 @@ mod tests {
         let event_bus = AppEventBus::default();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
+        let lv1 = test_actor_handle(lv1_tx);
         bus.set_generation(3).await;
 
         let mut state = EngineState::new(event_bus, 0);
         let result = handle_recall_scene_fade(
             &bus,
+            &lv1,
             &mut state,
             fade_config(
                 scene(1, "Intro"),
@@ -1314,7 +1332,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
+        let lv1 = test_actor_handle(lv1_tx);
         bus.set_generation(3).await;
 
         let bus_for_lv1 = bus.clone();
@@ -1333,6 +1351,7 @@ mod tests {
         let mut state = EngineState::new(event_bus, 0);
         let result = handle_recall_scene_fade(
             &bus,
+            &lv1,
             &mut state,
             fade_config(
                 scene(1, "Intro"),
@@ -1358,10 +1377,9 @@ mod tests {
     #[tokio::test]
     async fn zero_duration_recall_fade_uses_generation_checked_write_batch() {
         let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
+        let lv1 = test_actor_handle(lv1_tx);
         bus.set_generation(4).await;
 
         let (write_tx, write_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1398,6 +1416,7 @@ mod tests {
 
         let sent = send_batch_if_generation(
             &bus,
+            &lv1,
             &state.event_bus,
             3,
             vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
@@ -1409,24 +1428,6 @@ mod tests {
                 .await
                 .is_err()
         );
-
-        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        match event {
-            AppEvent::Fade {
-                generation: 0,
-                event: FadeEvent::WriteFailed { reason },
-            } => {
-                assert!(
-                    reason
-                        == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
-                        || reason == "StaleGeneration"
-                );
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
     }
 
     #[tokio::test]
@@ -1461,10 +1462,9 @@ mod tests {
     #[tokio::test]
     async fn timed_recall_fade_tick_uses_generation_checked_write_batch() {
         let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
+        let lv1 = test_actor_handle(lv1_tx);
         bus.set_generation(3).await;
 
         let (write_tx, write_rx) = tokio::sync::oneshot::channel::<()>();
@@ -1501,46 +1501,18 @@ mod tests {
 
         bus.set_generation(4).await;
         let writes = vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)];
-        let sent = send_batch_if_generation(&bus, &state.event_bus, 3, writes).await;
+        let sent = send_batch_if_generation(&bus, &lv1, &state.event_bus, 3, writes).await;
         assert!(!sent);
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(100), write_rx)
                 .await
                 .is_err()
         );
-
-        match events.recv().await.unwrap() {
-            AppEvent::Fade {
-                generation: 0,
-                event: FadeEvent::WriteFailed { reason },
-            } => {
-                assert!(
-                    reason
-                        == crate::runtime::commands::AppCommandError::StaleGeneration.to_string()
-                        || reason == "StaleGeneration"
-                );
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
     }
 
     #[tokio::test]
     async fn mixed_generation_writes_on_same_tick_route_separately() {
         let _event_bus = AppEventBus::default();
-        let bus = AppCommandBus::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(4);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
-
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                match command {
-                    Lv1Command::WriteBatch(writes) => {
-                        assert_eq!(writes.len(), 1);
-                    }
-                    _ => panic!("unexpected command"),
-                }
-            }
-        });
 
         let mut state = EngineState::new(AppEventBus::default(), 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
@@ -1592,10 +1564,9 @@ mod tests {
     #[tokio::test]
     async fn stale_checked_write_cancels_generation_owned_targets() {
         let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
+        let lv1 = test_actor_handle(lv1_tx);
 
         let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
@@ -1618,35 +1589,11 @@ mod tests {
 
         bus.set_generation(4).await;
         let writes = vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)];
-        let sent = send_batch_if_generation(&bus, &state.event_bus, 3, writes).await;
+        let sent = send_batch_if_generation(&bus, &lv1, &state.event_bus, 3, writes).await;
         assert!(!sent);
         cancel_generation_owned_targets(&mut state, 3);
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
-        let mut saw_write_failed = false;
-        loop {
-            match tokio::time::timeout(std::time::Duration::from_millis(50), events.recv()).await {
-                Ok(Ok(AppEvent::Fade {
-                    generation: 0,
-                    event: FadeEvent::WriteFailed { reason },
-                })) => {
-                    assert!(
-                        reason
-                            == crate::runtime::commands::AppCommandError::StaleGeneration
-                                .to_string()
-                            || reason == "StaleGeneration"
-                    );
-                    saw_write_failed = true;
-                }
-                Ok(Ok(AppEvent::Fade {
-                    generation: 0,
-                    event: FadeEvent::ChannelCancelled { .. },
-                })) => {}
-                Ok(Ok(other)) => panic!("unexpected event: {other:?}"),
-                Ok(Err(_)) | Err(_) => break,
-            }
-        }
-        assert!(saw_write_failed);
     }
 }

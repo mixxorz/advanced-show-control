@@ -4,14 +4,15 @@ use advanced_show_control::fade::{
 };
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
-    ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Event, Lv1TcpClient, decode_frame_payload,
-    discover, pong_for_ping, resolve_target, spawn_actor,
+    ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1TcpClient,
+    decode_frame_payload, discover, pong_for_ping, resolve_target, spawn_actor,
 };
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+use tokio::sync::oneshot;
 
 type AppResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -703,8 +704,7 @@ async fn run_fade_test(
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
-    command_bus.set_lv1(Some(lv1.clone())).await;
-    let engine = spawn_engine(command_bus.clone(), event_bus.clone(), 0);
+    let engine = spawn_engine(command_bus.clone(), lv1.clone(), event_bus.clone(), 0);
     command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = event_bus.subscribe();
 
@@ -735,7 +735,9 @@ async fn run_fade_test(
     // Wait briefly for /Channels to arrive
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    let snapshot = lv1.get_state().await;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply }).await?;
+    let snapshot = rx.await?;
     let current_db = snapshot
         .channels
         .iter()
@@ -984,8 +986,7 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
-    command_bus.set_lv1(Some(lv1.clone())).await;
-    let engine = spawn_engine(command_bus.clone(), event_bus.clone(), 0);
+    let engine = spawn_engine(command_bus.clone(), lv1.clone(), event_bus.clone(), 0);
     command_bus.set_fade(Some(engine.clone())).await;
     let mut fade_events = event_bus.subscribe();
 
@@ -1011,7 +1012,9 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     .map_err(|_| "timed out waiting for LV1 connection")?;
 
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let snapshot = lv1.get_state().await;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply }).await?;
+    let snapshot = rx.await?;
     let channel_found = snapshot
         .channels
         .iter()
@@ -1379,7 +1382,9 @@ async fn wait_for_channels_until(
     deadline: Instant,
 ) -> AppResult<Vec<ChannelInfo>> {
     loop {
-        let snapshot = lv1.get_state().await;
+        let (reply, rx) = oneshot::channel();
+        lv1.send(Lv1Command::GetState { reply }).await?;
+        let snapshot = rx.await?;
         if !snapshot.channels.is_empty() {
             return Ok(snapshot.channels);
         }
@@ -1418,7 +1423,9 @@ async fn wait_for_channels_with_mute_settle(
 
         tokio::select! {
             _ = &mut sleep => {
-                let latest = lv1.get_state().await;
+                let (reply, rx) = oneshot::channel();
+                lv1.send(Lv1Command::GetState { reply }).await?;
+                let latest = rx.await?;
                 if !latest.channels.is_empty() {
                     snapshot = latest.channels;
                 }
@@ -1434,7 +1441,9 @@ async fn wait_for_channels_with_mute_settle(
                         };
 
                         if matches!(event, Lv1Event::MuteChanged { .. } | Lv1Event::ChannelTopologyChanged(_)) {
-                            let latest = lv1.get_state().await;
+                            let (reply, rx) = oneshot::channel();
+                            lv1.send(Lv1Command::GetState { reply }).await?;
+                            let latest = rx.await?;
                             if !latest.channels.is_empty() {
                                 snapshot = latest.channels;
                             }
@@ -1459,26 +1468,70 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
     let mut failures = Vec::new();
 
     for ch in original {
-        if let Err(err) = lv1.set_gain(ch.group, ch.channel, ch.gain_db).await {
+        let (reply, rx) = oneshot::channel();
+        if let Err(err) = lv1
+            .send(Lv1Command::SetGain {
+                group: ch.group,
+                channel: ch.channel,
+                gain_db: ch.gain_db,
+                reply,
+            })
+            .await
+        {
+            failures.push(format!(
+                "gain restore failed for {}:{} ({err})",
+                ch.group, ch.channel
+            ));
+            continue;
+        }
+        if let Err(err) = rx.await? {
             failures.push(format!(
                 "gain restore failed for {}:{} ({err})",
                 ch.group, ch.channel
             ));
         }
     }
-    if let Err(err) = lv1.flush().await {
+    let (reply, rx) = oneshot::channel();
+    if let Err(err) = lv1.send(Lv1Command::Flush { reply }).await {
+        failures.push(format!("gain flush failed ({err})"));
+    }
+    if let Ok(result) = rx.await
+        && let Err(err) = result
+    {
         failures.push(format!("gain flush failed ({err})"));
     }
 
     for ch in original {
-        if let Err(err) = lv1.set_mute(ch.group, ch.channel, ch.muted).await {
+        let (reply, rx) = oneshot::channel();
+        if let Err(err) = lv1
+            .send(Lv1Command::SetMute {
+                group: ch.group,
+                channel: ch.channel,
+                muted: ch.muted,
+                reply,
+            })
+            .await
+        {
+            failures.push(format!(
+                "mute restore failed for {}:{} ({err})",
+                ch.group, ch.channel
+            ));
+            continue;
+        }
+        if let Err(err) = rx.await? {
             failures.push(format!(
                 "mute restore failed for {}:{} ({err})",
                 ch.group, ch.channel
             ));
         }
     }
-    if let Err(err) = lv1.flush().await {
+    let (reply, rx) = oneshot::channel();
+    if let Err(err) = lv1.send(Lv1Command::Flush { reply }).await {
+        failures.push(format!("mute flush failed ({err})"));
+    }
+    if let Ok(result) = rx.await
+        && let Err(err) = result
+    {
         failures.push(format!("mute flush failed ({err})"));
     }
 
@@ -1530,9 +1583,19 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     println!("[vegas] captured {} faders", original.len());
 
     for ch in &original {
-        lv1.set_mute(ch.group, ch.channel, true).await?;
+        let (reply, rx) = oneshot::channel();
+        lv1.send(Lv1Command::SetMute {
+            group: ch.group,
+            channel: ch.channel,
+            muted: true,
+            reply,
+        })
+        .await?;
+        rx.await??;
     }
-    lv1.flush().await?;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::Flush { reply }).await?;
+    rx.await??;
     println!("[vegas] muted captured faders; press Ctrl-C to stop and restore");
 
     let mut interval = tokio::time::interval(Duration::from_millis(1000 / VEGAS_TICK_HZ));
@@ -1547,7 +1610,20 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
             }
             _ = interval.tick() => {
                 for ch in &original {
-                    if let Err(err) = lv1.set_gain(ch.group, ch.channel, gain_db_at(ch.group, ch.channel, tick)).await {
+                    let (reply, rx) = oneshot::channel();
+                    let result: AppResult<()> = match lv1.send(Lv1Command::SetGain {
+                        group: ch.group,
+                        channel: ch.channel,
+                        gain_db: gain_db_at(ch.group, ch.channel, tick),
+                        reply,
+                    }).await {
+                        Ok(()) => match rx.await {
+                            Ok(result) => result.map_err(|err| err.into()),
+                            Err(err) => Err(err.into()),
+                        },
+                        Err(err) => Err(err.into()),
+                    };
+                    if let Err(err) = result {
                         let animation_error = format!("[vegas] animation failed for {}:{} ({err})", ch.group, ch.channel);
                         let restore_error = restore_vegas_snapshot(&lv1, &original).await.err();
                         return match restore_error {

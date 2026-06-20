@@ -3,12 +3,12 @@
 use std::sync::Arc;
 
 use tauri::{AppHandle, Runtime};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::fade::{FadeEngineHandle, spawn_engine};
 use crate::logging::UiLogEvent;
-use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Event, spawn_actor};
+use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, spawn_actor};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::scene_recall::spawn_scene_recall_fader;
@@ -140,14 +140,14 @@ impl AppLifecycle {
             return Err(RuntimeInstallRejection::StaleGeneration { handles });
         }
 
-        let (lv1, fade) = match (handles.lv1.clone(), handles.fade.clone()) {
-            (Some(lv1), Some(fade)) => (lv1, fade),
+        let fade = match handles.fade.clone() {
+            Some(fade) if handles.lv1.is_some() => fade,
             _ => return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles }),
         };
 
         inner
             .command_bus
-            .set_runtime_targets(generation, lv1, fade)
+            .set_runtime_targets(generation, fade)
             .await;
         let mut handles = handles;
         handles.show_scene_list_monitor = Some(spawn_lv1_scene_list_monitor(
@@ -215,7 +215,12 @@ impl AppLifecycle {
             event_bus.clone(),
             generation,
         );
-        let fade = spawn_engine(command_bus.clone(), event_bus.clone(), generation);
+        let fade = spawn_engine(
+            command_bus.clone(),
+            lv1.clone(),
+            event_bus.clone(),
+            generation,
+        );
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
             let mut handles = rejection.into_handles();
@@ -223,10 +228,13 @@ impl AppLifecycle {
             return Err("generation is stale".to_string());
         }
 
-        let initial_snapshot = command_bus
-            .get_lv1_state()
+        let (reply, rx) = oneshot::channel();
+        lv1.send(Lv1Command::GetState { reply })
             .await
             .map_err(|error| error.to_string())?;
+        let initial_snapshot = rx.await.map_err(|_| {
+            crate::runtime::commands::AppCommandError::ReplyChannelClosed.to_string()
+        })?;
 
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
@@ -245,7 +253,7 @@ impl AppLifecycle {
         log_lv1_connected(&identity);
         let _ = lv1;
         let _ = fade;
-        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, lv1, event_bus);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         let _ = app;
@@ -275,12 +283,13 @@ impl AppLifecycle {
             return Err("generation is stale".to_string());
         }
 
-        let initial_snapshot = self
-            .current_command_bus()
-            .await
-            .get_lv1_state()
+        let (reply, rx) = oneshot::channel();
+        lv1.send(Lv1Command::GetState { reply })
             .await
             .map_err(|error| error.to_string())?;
+        let initial_snapshot = rx.await.map_err(|_| {
+            crate::runtime::commands::AppCommandError::ReplyChannelClosed.to_string()
+        })?;
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
             let _ = self
@@ -299,7 +308,7 @@ impl AppLifecycle {
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(command_bus.clone());
         }
-        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
+        let scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, lv1, event_bus);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         let _ = app;
@@ -366,6 +375,10 @@ impl AppLifecycle {
         };
         command_bus.set_show_target(show).await;
         command_bus
+    }
+
+    pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
+        self.inner.lock().await.handles.lv1.clone()
     }
 
     pub(crate) async fn connected_lv1_identity(
@@ -891,10 +904,7 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(message) if message == "LV1 did not connect"));
-        assert!(matches!(
-            lifecycle.current_command_bus().await.get_lv1_state().await,
-            Err(crate::runtime::commands::AppCommandError::Lv1Unavailable)
-        ));
+        assert!(lifecycle.current_lv1().await.is_none());
     }
 
     #[tokio::test]
@@ -905,6 +915,7 @@ mod tests {
         let generation = lifecycle.begin_connecting().await.unwrap();
         let command_bus = lifecycle.current_command_bus().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
+        let lv1_for_assertion = lv1.clone();
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
         let identity = Lv1SystemIdentity {
@@ -925,10 +936,15 @@ mod tests {
                 event_bus,
                 lv1,
                 fade,
-                Some(Box::new(move |bus: AppCommandBus| {
+                Some(Box::new(move |_bus: AppCommandBus| {
                     let seen_tx = seen_tx;
                     tokio::spawn(async move {
-                        let ok = matches!(bus.get_lv1_state().await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
+                        let (reply, rx) = oneshot::channel();
+                        let ok = lv1_for_assertion
+                            .send(Lv1Command::GetState { reply })
+                            .await
+                            .is_ok()
+                            && matches!(rx.await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
                         let _ = seen_tx.send(ok);
                     });
                 })),

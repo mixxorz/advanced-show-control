@@ -182,8 +182,7 @@ async fn spawn_runtime_for_test(
     event_bus: AppEventBus,
 ) -> (AppCommandBus, FadeEngineHandle) {
     let bus = AppCommandBus::new();
-    bus.set_lv1(Some(lv1)).await;
-    let engine = spawn_engine(bus.clone(), event_bus, 0);
+    let engine = spawn_engine(bus.clone(), lv1, event_bus, 0);
     bus.set_fade(Some(engine.clone())).await;
     (bus, engine)
 }
@@ -392,8 +391,7 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
     let event_bus = AppEventBus::default();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
-    command_bus.set_lv1(Some(lv1)).await;
-    let engine = spawn_engine(command_bus.clone(), event_bus.clone(), 0);
+    let engine = spawn_engine(command_bus.clone(), lv1, event_bus.clone(), 0);
     command_bus.set_fade(Some(engine.clone())).await;
     let mut app_events = event_bus.subscribe();
 

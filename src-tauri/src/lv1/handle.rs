@@ -1,8 +1,7 @@
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
-use super::commands::{Lv1Command, Lv1ParameterWrite};
+use super::commands::Lv1Command;
 use super::events::Lv1ActorError;
-use super::types::Lv1StateSnapshot;
 
 /// A cloneable handle to the LV1 actor. Use this to send commands.
 #[derive(Clone)]
@@ -15,178 +14,37 @@ impl Lv1ActorHandle {
         Self { tx }
     }
 
-    /// Get a point-in-time snapshot of the current state.
-    pub async fn get_state(&self) -> Lv1StateSnapshot {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self.tx.send(Lv1Command::GetState { reply: reply_tx }).await;
-        reply_rx
-            .await
-            .expect("actor dropped before responding to GetState")
-    }
-
-    /// Send a `/Set/Track/Out/Gain` command to LV1. Fire and forget.
-    pub async fn set_gain(
-        &self,
-        group: i32,
-        channel: i32,
-        gain_db: f64,
-    ) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
+    pub async fn send(&self, command: Lv1Command) -> Result<(), Lv1ActorError> {
         self.tx
-            .send(Lv1Command::SetGain {
-                group,
-                channel,
-                gain_db,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Send a `/Set/Track/Out/Mute` command to LV1. Fire and forget.
-    pub async fn set_mute(
-        &self,
-        group: i32,
-        channel: i32,
-        muted: bool,
-    ) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::SetMute {
-                group,
-                channel,
-                muted,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Send a `/Set/Track/Pan` command to LV1. Fire and forget.
-    pub async fn set_pan(&self, group: i32, channel: i32, value: f64) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::SetPan {
-                group,
-                channel,
-                value,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Send a `/Set/Track/Pan/Balance` command to LV1. Fire and forget.
-    pub async fn set_balance(
-        &self,
-        group: i32,
-        channel: i32,
-        value: f64,
-    ) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::SetBalance {
-                group,
-                channel,
-                value,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Send a `/Set/Track/Pan/Width` command to LV1. Fire and forget.
-    pub async fn set_width(
-        &self,
-        group: i32,
-        channel: i32,
-        value: f64,
-    ) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::SetWidth {
-                group,
-                channel,
-                value,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    /// Send a `/Set/CurSceneIndex` command to LV1.
-    pub async fn recall_scene(&self, scene_index: i32) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::RecallScene {
-                scene_index,
-                reply: reply_tx,
-            })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
-    }
-
-    pub async fn write_batch(&self, writes: Vec<Lv1ParameterWrite>) -> Result<(), Lv1ActorError> {
-        if writes.is_empty() {
-            return Ok(());
-        }
-
-        self.tx
-            .send(Lv1Command::WriteBatch(writes))
+            .send(command)
             .await
             .map_err(|_| Lv1ActorError::CommandChannelClosed)
-    }
-
-    /// Wait until all previously queued commands have been processed.
-    pub async fn flush(&self) -> Result<(), Lv1ActorError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        self.tx
-            .send(Lv1Command::Flush { reply: reply_tx })
-            .await
-            .map_err(|_| Lv1ActorError::CommandChannelClosed)?;
-
-        reply_rx
-            .await
-            .map_err(|_| Lv1ActorError::ReplyChannelClosed)?
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::oneshot;
 
     #[tokio::test]
     async fn handle_sends_pan_family_commands() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(3);
         let handle = Lv1ActorHandle::new(tx);
 
+        let (reply, pan_rx) = oneshot::channel();
         let pan = tokio::spawn({
             let handle = handle.clone();
-            async move { handle.set_pan(1, 2, -0.5).await }
+            async move {
+                handle
+                    .send(Lv1Command::SetPan {
+                        group: 1,
+                        channel: 2,
+                        value: -0.5,
+                        reply,
+                    })
+                    .await
+            }
         });
         if let Some(Lv1Command::SetPan {
             group,
@@ -201,10 +59,21 @@ mod tests {
             panic!("expected SetPan command");
         }
         assert_eq!(pan.await.unwrap(), Ok(()));
+        assert_eq!(pan_rx.await.unwrap(), Ok(()));
 
+        let (reply, balance_rx) = oneshot::channel();
         let balance = tokio::spawn({
             let handle = handle.clone();
-            async move { handle.set_balance(3, 4, 0.25).await }
+            async move {
+                handle
+                    .send(Lv1Command::SetBalance {
+                        group: 3,
+                        channel: 4,
+                        value: 0.25,
+                        reply,
+                    })
+                    .await
+            }
         });
         if let Some(Lv1Command::SetBalance {
             group,
@@ -219,10 +88,21 @@ mod tests {
             panic!("expected SetBalance command");
         }
         assert_eq!(balance.await.unwrap(), Ok(()));
+        assert_eq!(balance_rx.await.unwrap(), Ok(()));
 
+        let (reply, width_rx) = oneshot::channel();
         let width = tokio::spawn({
             let handle = handle.clone();
-            async move { handle.set_width(5, 6, 0.75).await }
+            async move {
+                handle
+                    .send(Lv1Command::SetWidth {
+                        group: 5,
+                        channel: 6,
+                        value: 0.75,
+                        reply,
+                    })
+                    .await
+            }
         });
         if let Some(Lv1Command::SetWidth {
             group,
@@ -237,6 +117,7 @@ mod tests {
             panic!("expected SetWidth command");
         }
         assert_eq!(width.await.unwrap(), Ok(()));
+        assert_eq!(width_rx.await.unwrap(), Ok(()));
     }
 
     #[tokio::test]
@@ -250,7 +131,10 @@ mod tests {
             value: -18.0,
         }];
 
-        assert_eq!(handle.write_batch(writes.clone()).await, Ok(()));
+        assert_eq!(
+            handle.send(Lv1Command::WriteBatch(writes.clone())).await,
+            Ok(())
+        );
 
         match rx.recv().await {
             Some(Lv1Command::WriteBatch(received)) => assert_eq!(received, writes),
@@ -264,7 +148,15 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         let handle = Lv1ActorHandle::new(tx);
 
-        let recall = tokio::spawn(async move { handle.recall_scene(4).await });
+        let (reply, recall_rx) = oneshot::channel();
+        let recall = tokio::spawn(async move {
+            handle
+                .send(Lv1Command::RecallScene {
+                    scene_index: 4,
+                    reply,
+                })
+                .await
+        });
 
         if let Some(Lv1Command::RecallScene { scene_index, reply }) = rx.recv().await {
             assert_eq!(scene_index, 4);
@@ -274,5 +166,6 @@ mod tests {
         }
 
         assert!(recall.await.unwrap().is_ok());
+        assert_eq!(recall_rx.await.unwrap(), Ok(()));
     }
 }

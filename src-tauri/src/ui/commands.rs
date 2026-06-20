@@ -2,6 +2,7 @@
 
 use crate::connection_state::Lv1SystemIdentity;
 use crate::lifecycle::AppLifecycle;
+use crate::lv1::{Lv1ActorError, Lv1Command};
 use crate::runtime::commands::AppCommandError;
 use crate::show::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
@@ -11,6 +12,7 @@ use crate::show_file::{backup_folder, default_show_folder, read_show_file, write
 use crate::ui::UiLogReceiverState;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime, State};
+use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 
 fn map_app_command_error(error: AppCommandError) -> String {
@@ -72,9 +74,22 @@ pub async fn open_show_file_dialog(
     let path = choose_open_show_file_path().await?;
     let file = read_show_file(&path)?;
     let command_bus = lifecycle.current_command_bus().await;
-    let lv1 = command_bus
-        .get_lv1_state()
+    let lv1 = lifecycle
+        .current_lv1()
         .await
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
+        .await
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
+        })
+        .map_err(map_app_command_error)?;
+    let lv1 = rx
+        .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?;
     command_bus
         .load_show_file_from_path(path, file, lv1)
@@ -266,12 +281,115 @@ pub async fn recall_scene(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<RecallSceneResult, String> {
-    lifecycle
-        .current_command_bus()
+    tracing::debug!(
+        event = "scene_recall_requested",
+        scene_id = %scene_id,
+        "Scene recall requested"
+    );
+    let command_bus = lifecycle.current_command_bus().await;
+    let lv1 = lifecycle
+        .current_lv1()
         .await
-        .recall_scene_by_id(scene_id)
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(|error| {
+            let message = map_app_command_error(match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Recall blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            });
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %message,
+                "Scene recall blocked: {message}"
+            );
+            message
+        })?;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
         .await
-        .map_err(map_app_command_error)
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
+        })
+        .map_err(|error| {
+            let message = map_app_command_error(match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Recall blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            });
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %message,
+                "Scene recall blocked: {message}"
+            );
+            message
+        })?;
+    let lv1_snapshot = rx
+        .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(|error| {
+            let message = map_app_command_error(match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Recall blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            });
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %message,
+                "Scene recall blocked: {message}"
+            );
+            message
+        })?;
+    let show_document = command_bus
+        .get_show_document()
+        .await
+        .map_err(map_app_command_error)?;
+    let result =
+        crate::show::validate_recall_scene_request(&show_document, &lv1_snapshot, &scene_id)
+            .map_err(|message| {
+                tracing::warn!(
+                    event = "scene_recall_blocked",
+                    scene_id = %scene_id,
+                    reason = %message,
+                    "Scene recall blocked: {message}"
+                );
+                message
+            })?;
+
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::RecallScene {
+        scene_index: result.lv1_scene_index,
+        reply,
+    })
+    .await
+    .map_err(|error| match error {
+        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+        other => AppCommandError::CommandFailed(other.to_string()),
+    })
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
+        })
+        .map_err(map_app_command_error)?;
+    tracing::debug!(
+        event = "scene_recall_command_sent",
+        scene_id = %result.scene.scene_id,
+        scene_index = result.scene.scene_index,
+        scene_name = %result.scene.scene_name,
+        "Scene recall command sent: {}",
+        result.scene.scene_name
+    );
+    Ok(result)
 }
 
 #[tauri::command]
@@ -329,10 +447,47 @@ pub async fn store_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle
-        .current_command_bus()
+    let command_bus = lifecycle.current_command_bus().await;
+    let lv1 = lifecycle
+        .current_lv1()
         .await
-        .store_scene_config_from_current_lv1_state(scene_id)
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(|error| {
+            map_app_command_error(match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Store scene blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            })
+        })?;
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
+        .await
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
+        })
+        .map_err(|error| {
+            map_app_command_error(match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Store scene blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            })
+        })?;
+    let lv1 = rx
+        .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(|error| {
+            map_app_command_error(match error {
+                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                    "Store scene blocked: LV1 state is unavailable".to_string(),
+                ),
+                other => other,
+            })
+        })?;
+    command_bus
+        .store_scene_config(scene_id, lv1.channels)
         .await
         .map_err(map_app_command_error)
 }

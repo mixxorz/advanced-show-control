@@ -67,8 +67,7 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     let mut events = event_bus.subscribe();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let command_bus = AppCommandBus::new();
-    command_bus.set_lv1(Some(lv1)).await;
-    let fade = spawn_engine(command_bus.clone(), event_bus, 0);
+    let fade = spawn_engine(command_bus.clone(), lv1, event_bus, 0);
     command_bus.set_fade(Some(fade.clone())).await;
 
     tokio::time::timeout(Duration::from_secs(2), async {
