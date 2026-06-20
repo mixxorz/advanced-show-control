@@ -12,6 +12,11 @@ pub struct ShowCommandResult {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectCommandResult {
+    pub changed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CueSceneResult {
     pub changed: bool,
