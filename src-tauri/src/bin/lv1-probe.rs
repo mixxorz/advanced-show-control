@@ -1,11 +1,9 @@
 use advanced_show_control::fade::types::FadeParameter;
-use advanced_show_control::lv1::actor::spawn_actor;
-use advanced_show_control::lv1::discovery::{DiscoverOptions, discover, resolve_target};
-use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::handle::Lv1ActorHandle;
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
-use advanced_show_control::lv1::tcp::{Lv1TcpClient, decode_frame_payload, pong_for_ping};
-use advanced_show_control::lv1::types::ChannelInfo;
+use advanced_show_control::lv1::{
+    ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Event, Lv1TcpClient, decode_frame_payload,
+    discover, pong_for_ping, resolve_target, spawn_actor,
+};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use clap::{Parser, Subcommand};
@@ -1916,7 +1914,7 @@ mod tests {
                 args.push(advanced_show_control::osc::OscArg::Int(0));
             }
 
-            let frame = advanced_show_control::lv1::tcp::encode_frame("/Channels", &args).unwrap();
+            let frame = advanced_show_control::lv1::encode_frame("/Channels", &args).unwrap();
             stream.write_all(&frame).unwrap();
             std::thread::sleep(Duration::from_millis(250));
         });
@@ -1985,8 +1983,7 @@ mod tests {
                 advanced_show_control::osc::OscArg::Int(0),
                 advanced_show_control::osc::OscArg::Int(0),
             ];
-            let frame =
-                advanced_show_control::lv1::tcp::encode_frame("/Channels", &channels).unwrap();
+            let frame = advanced_show_control::lv1::encode_frame("/Channels", &channels).unwrap();
             stream.write_all(&frame).unwrap();
 
             std::thread::sleep(Duration::from_millis(50));
@@ -1997,7 +1994,7 @@ mod tests {
                 advanced_show_control::osc::OscArg::Bool(true),
             ];
             let frame =
-                advanced_show_control::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_on)
+                advanced_show_control::lv1::encode_frame("/Notify/Track/Out/Mute", &mute_on)
                     .unwrap();
             stream.write_all(&frame).unwrap();
 
@@ -2009,7 +2006,7 @@ mod tests {
                 advanced_show_control::osc::OscArg::Bool(false),
             ];
             let frame =
-                advanced_show_control::lv1::tcp::encode_frame("/Notify/Track/Out/Mute", &mute_off)
+                advanced_show_control::lv1::encode_frame("/Notify/Track/Out/Mute", &mute_off)
                     .unwrap();
             stream.write_all(&frame).unwrap();
 

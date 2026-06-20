@@ -7,9 +7,8 @@ use crate::app_state::{
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::fade::events::FadeEvent;
 use crate::logging::UiLogEvent;
-use crate::lv1::events::Lv1Event;
-use crate::lv1::types::{
-    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState,
+use crate::lv1::{
+    ChannelInfo, ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
 use crate::show::events::ShowProjectionState;
 
@@ -349,7 +348,7 @@ mod tests {
     use super::*;
     use crate::app_state::LogSeverity;
     use crate::fade::types::FadeParameter;
-    use crate::lv1::types::{ChannelInfo, SceneState};
+    use crate::lv1::{ChannelInfo, SceneState};
     #[test]
     fn cache_builds_initial_disconnected_snapshot_with_incrementing_versions() {
         let mut cache = ProjectionCache::new();

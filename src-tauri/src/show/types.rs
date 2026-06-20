@@ -16,7 +16,7 @@ pub struct ChannelConfig {
     pub pan: Option<f64>,
     pub balance: Option<f64>,
     pub width: Option<f64>,
-    pub pan_mode: Option<crate::lv1::types::PanMode>,
+    pub pan_mode: Option<crate::lv1::PanMode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +101,7 @@ mod tests {
                 pan: Some(0.25),
                 balance: Some(-0.5),
                 width: Some(1.0),
-                pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                pan_mode: Some(crate::lv1::PanMode::Stereo),
             }],
             scoped_channels: vec![ChannelRef {
                 group: 0,
@@ -138,7 +138,7 @@ mod tests {
                 pan: Some(0.25),
                 balance: Some(-0.5),
                 width: Some(1.0),
-                pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                pan_mode: Some(crate::lv1::PanMode::Stereo),
             }],
             scoped_channels: vec![ChannelRef {
                 group: 0,
@@ -173,7 +173,7 @@ mod tests {
                 pan: None,
                 balance: None,
                 width: None,
-                pan_mode: Some(crate::lv1::types::PanMode::None),
+                pan_mode: Some(crate::lv1::PanMode::None),
             }],
             scoped_channels: vec![ChannelRef {
                 group: 12,

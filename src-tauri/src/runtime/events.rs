@@ -1,7 +1,7 @@
 use tokio::sync::broadcast;
 
 use crate::fade::events::FadeEvent;
-use crate::lv1::events::Lv1Event;
+use crate::lv1::Lv1Event;
 use crate::scene_recall::events::SceneRecallEvent;
 use crate::show::events::ShowEvent;
 
@@ -85,7 +85,7 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::types::SceneState;
+    use crate::lv1::SceneState;
     use crate::show::events::ShowProjectionReason;
 
     #[tokio::test]

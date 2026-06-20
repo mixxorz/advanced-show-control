@@ -35,7 +35,7 @@ pub async fn refresh_lv1_discovery(
     timeout_ms: Option<u64>,
 ) -> Result<ShowCommandResult, String> {
     let command_bus = lifecycle.current_command_bus().await;
-    let systems = crate::lv1::discovery::discover(crate::lv1::discovery::DiscoverOptions {
+    let systems = crate::lv1::discover(crate::lv1::DiscoverOptions {
         timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
         ..Default::default()
     })

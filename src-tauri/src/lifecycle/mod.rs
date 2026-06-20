@@ -8,9 +8,7 @@ use tokio::task::JoinHandle;
 
 use crate::fade::handle::FadeEngineHandle;
 use crate::logging::UiLogEvent;
-use crate::lv1::actor::spawn_actor;
-use crate::lv1::events::Lv1Event;
-use crate::lv1::handle::Lv1ActorHandle;
+use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Event, spawn_actor};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::scene_recall::spawn_scene_recall_fader;
@@ -230,7 +228,7 @@ impl AppLifecycle {
             .await
             .map_err(|error| error.to_string())?;
 
-        if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
+        if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
             let _ = self
                 .apply_failed_connect_metadata(&command_bus, failure_mode)
@@ -263,7 +261,7 @@ impl AppLifecycle {
         generation: u64,
         command_bus: AppCommandBus,
         event_bus: AppEventBus,
-        lv1: crate::lv1::handle::Lv1ActorHandle,
+        lv1: crate::lv1::Lv1ActorHandle,
         fade: crate::fade::handle::FadeEngineHandle,
         before_scene_recall_start: Option<Box<dyn FnOnce(AppCommandBus) + Send>>,
     ) -> Result<crate::show::commands::ConnectCommandResult, String> {
@@ -283,7 +281,7 @@ impl AppLifecycle {
             .get_lv1_state()
             .await
             .map_err(|error| error.to_string())?;
-        if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
+        if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
             let _ = self
                 .apply_failed_connect_metadata(&command_bus, failure_mode)
@@ -602,7 +600,7 @@ mod tests {
     use crate::connection_state::ReconnectState;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::fade::handle::FadeEngineHandle;
-    use crate::lv1::commands::Lv1Command;
+    use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
@@ -666,9 +664,7 @@ mod tests {
         }
     }
 
-    fn fake_lv1_handle(
-        snapshot: crate::lv1::types::Lv1StateSnapshot,
-    ) -> crate::lv1::handle::Lv1ActorHandle {
+    fn fake_lv1_handle(snapshot: Lv1StateSnapshot) -> crate::lv1::Lv1ActorHandle {
         let (tx, mut rx) = mpsc::channel(8);
         tokio::spawn(async move {
             while let Some(command) = rx.recv().await {
@@ -677,21 +673,21 @@ mod tests {
                 }
             }
         });
-        crate::lv1::handle::Lv1ActorHandle::new(tx)
+        test_actor_handle(tx)
     }
 
-    fn connected_snapshot() -> crate::lv1::types::Lv1StateSnapshot {
-        crate::lv1::types::Lv1StateSnapshot {
-            connection: crate::lv1::types::ConnectionStatus::Connected,
+    fn connected_snapshot() -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
             scene: None,
             scene_list: vec![],
             channels: vec![],
         }
     }
 
-    fn disconnected_snapshot() -> crate::lv1::types::Lv1StateSnapshot {
-        crate::lv1::types::Lv1StateSnapshot {
-            connection: crate::lv1::types::ConnectionStatus::Disconnected,
+    fn disconnected_snapshot() -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: ConnectionStatus::Disconnected,
             scene: None,
             scene_list: vec![],
             channels: vec![],
@@ -935,7 +931,7 @@ mod tests {
                 Some(Box::new(move |bus: AppCommandBus| {
                     let seen_tx = seen_tx;
                     tokio::spawn(async move {
-                        let ok = matches!(bus.get_lv1_state().await, Ok(snapshot) if snapshot.connection == crate::lv1::types::ConnectionStatus::Connected);
+                        let ok = matches!(bus.get_lv1_state().await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
                         let _ = seen_tx.send(ok);
                     });
                 })),
@@ -1052,7 +1048,7 @@ mod tests {
         );
         event_bus.publish_lv1(
             generation,
-            Lv1Event::SceneListChanged(vec![crate::lv1::types::SceneListEntry {
+            Lv1Event::SceneListChanged(vec![SceneListEntry {
                 index: 1,
                 name: "Intro".to_string(),
             }]),

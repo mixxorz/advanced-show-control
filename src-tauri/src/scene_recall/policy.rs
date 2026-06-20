@@ -1,6 +1,6 @@
 use crate::fade::curve::FadeCurve;
 use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
-use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneState};
+use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, PanMode, SceneState};
 use crate::show::types::SceneConfig;
 
 pub struct RecallPolicyInput {
@@ -90,8 +90,8 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
         }
         if pan_enabled {
             match stored.pan_mode.as_ref() {
-                Some(crate::lv1::types::PanMode::None) | None => {}
-                Some(crate::lv1::types::PanMode::Mono) => {
+                Some(PanMode::None) | None => {}
+                Some(PanMode::Mono) => {
                     if let Some(pan) = stored.pan {
                         targets.push(FadeTarget {
                             group: scoped.group,
@@ -101,7 +101,7 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
                         });
                     }
                 }
-                Some(crate::lv1::types::PanMode::Stereo) => {
+                Some(PanMode::Stereo) => {
                     if let Some(pan) = stored.pan {
                         targets.push(FadeTarget {
                             group: scoped.group,
@@ -159,7 +159,7 @@ fn blocked(reason: impl Into<String>) -> RecallPolicyDecision {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneState};
+    use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, PanMode, SceneState};
     use crate::show::types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     fn snapshot(scene: Option<SceneState>, channels: Vec<ChannelInfo>) -> Lv1StateSnapshot {
@@ -177,7 +177,7 @@ mod tests {
         pan: Option<f64>,
         balance: Option<f64>,
         width: Option<f64>,
-        pan_mode: Option<crate::lv1::types::PanMode>,
+        pan_mode: Option<PanMode>,
     ) -> SceneConfig {
         SceneConfig {
             scene_id: "1::Intro".to_string(),
@@ -299,7 +299,7 @@ mod tests {
             Some(0.25),
             Some(-0.5),
             Some(1.0),
-            Some(crate::lv1::types::PanMode::Stereo),
+            Some(PanMode::Stereo),
         );
         scene_config.scope_toggles.faders = false;
         scene_config.scope_toggles.pan = false;
@@ -323,7 +323,7 @@ mod tests {
                     pan: Some(0.0),
                     balance: Some(0.0),
                     width: Some(0.0),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             ),
             lockout: false,
@@ -338,14 +338,7 @@ mod tests {
 
     #[test]
     fn pan_only_mono_builds_pan_target() {
-        let mut scene_config = config(
-            1000,
-            None,
-            Some(0.25),
-            None,
-            None,
-            Some(crate::lv1::types::PanMode::Mono),
-        );
+        let mut scene_config = config(1000, None, Some(0.25), None, None, Some(PanMode::Mono));
         scene_config.scope_toggles.faders = false;
         scene_config.scope_toggles.pan = true;
 
@@ -368,7 +361,7 @@ mod tests {
                     pan: Some(0.0),
                     balance: None,
                     width: None,
-                    pan_mode: Some(crate::lv1::types::PanMode::Mono),
+                    pan_mode: Some(PanMode::Mono),
                 }],
             ),
             lockout: false,
@@ -393,7 +386,7 @@ mod tests {
             Some(0.25),
             Some(-0.5),
             Some(1.0),
-            Some(crate::lv1::types::PanMode::Stereo),
+            Some(PanMode::Stereo),
         );
         scene_config.scope_toggles.faders = false;
         scene_config.scope_toggles.pan = true;
@@ -417,7 +410,7 @@ mod tests {
                     pan: Some(0.0),
                     balance: Some(0.0),
                     width: Some(0.0),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             ),
             lockout: false,
@@ -455,7 +448,7 @@ mod tests {
             Some(0.25),
             None,
             Some(1.0),
-            Some(crate::lv1::types::PanMode::Stereo),
+            Some(PanMode::Stereo),
         );
         scene_config.scope_toggles.faders = false;
         scene_config.scope_toggles.pan = true;
@@ -479,7 +472,7 @@ mod tests {
                     pan: Some(0.0),
                     balance: Some(0.0),
                     width: Some(0.0),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             ),
             lockout: false,
@@ -518,7 +511,7 @@ mod tests {
             Some(0.25),
             Some(-0.5),
             None,
-            Some(crate::lv1::types::PanMode::Stereo),
+            Some(PanMode::Stereo),
         );
         scene_config.scope_toggles.faders = false;
         scene_config.scope_toggles.pan = true;
@@ -542,7 +535,7 @@ mod tests {
                     pan: Some(0.0),
                     balance: Some(0.0),
                     width: Some(0.0),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             ),
             lockout: false,
@@ -575,14 +568,7 @@ mod tests {
 
     #[test]
     fn pan_only_no_pan_mode_skips_without_blocking() {
-        let mut scene_config = config(
-            1000,
-            None,
-            None,
-            None,
-            None,
-            Some(crate::lv1::types::PanMode::None),
-        );
+        let mut scene_config = config(1000, None, None, None, None, Some(PanMode::None));
         scene_config.scope_toggles.faders = false;
         scene_config.scope_toggles.pan = true;
 
@@ -605,7 +591,7 @@ mod tests {
                     pan: None,
                     balance: None,
                     width: None,
-                    pan_mode: Some(crate::lv1::types::PanMode::None),
+                    pan_mode: Some(PanMode::None),
                 }],
             ),
             lockout: false,
@@ -662,7 +648,7 @@ mod tests {
             Some(0.25),
             Some(-0.5),
             Some(1.0),
-            Some(crate::lv1::types::PanMode::Stereo),
+            Some(PanMode::Stereo),
         );
         scene_config.scope_toggles.faders = true;
         scene_config.scope_toggles.pan = true;
@@ -686,7 +672,7 @@ mod tests {
                     pan: Some(0.0),
                     balance: Some(0.0),
                     width: Some(0.0),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             ),
             lockout: false,

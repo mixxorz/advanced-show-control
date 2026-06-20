@@ -1,7 +1,7 @@
 //! Show-owned application command handlers.
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
+use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
 use crate::show::show_file::{LoadValidationReport, ShowFile, import_show_file};
 use serde::{Deserialize, Serialize};
 
@@ -243,7 +243,7 @@ pub async fn store_scene_config(
 
 pub async fn new_show_file(
     show: &ShowStateHandle,
-    lv1: Option<crate::lv1::types::Lv1StateSnapshot>,
+    lv1: Option<crate::lv1::Lv1StateSnapshot>,
 ) -> Result<NewShowFileResult, String> {
     let selected_scene_id = show
         .mutate_for_command(super::events::ShowProjectionReason::FileMetadata, |state| {
@@ -385,7 +385,7 @@ pub async fn load_show_file_from_dto(
     show: &ShowStateHandle,
     path: std::path::PathBuf,
     mut file: ShowFile,
-    lv1: Option<crate::lv1::types::Lv1StateSnapshot>,
+    lv1: Option<crate::lv1::Lv1StateSnapshot>,
 ) -> Result<LoadShowFileResult, String> {
     let lv1 = lv1.ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())?;
     let imported = import_show_file(&mut file, &lv1)?;
@@ -432,7 +432,7 @@ pub async fn load_show_file_from_dto(
 mod tests {
     use super::*;
     use crate::connection_state::Lv1SystemIdentity;
-    use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+    use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::handle::ShowStateHandle;

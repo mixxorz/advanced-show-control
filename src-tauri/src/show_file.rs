@@ -267,7 +267,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+    use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

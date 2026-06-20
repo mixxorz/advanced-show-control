@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::lv1::types::{Lv1StateSnapshot, PanMode};
+use crate::lv1::{Lv1StateSnapshot, PanMode};
 use crate::show::types::{
     ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument, scene_id,
 };
@@ -244,7 +244,7 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::types::SceneListEntry;
+    use crate::lv1::{ConnectionStatus, SceneListEntry};
 
     #[test]
     fn export_show_file_contains_current_configs() {
@@ -319,7 +319,7 @@ mod tests {
             ],
         };
         let lv1 = Lv1StateSnapshot {
-            connection: crate::lv1::types::ConnectionStatus::Connected,
+            connection: ConnectionStatus::Connected,
             scene: None,
             scene_list: vec![SceneListEntry {
                 index: 1,

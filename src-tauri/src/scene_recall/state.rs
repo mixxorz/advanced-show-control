@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use tokio::time::Instant;
 
-use crate::lv1::types::{SceneListEntry, SceneState};
+use crate::lv1::{SceneListEntry, SceneState};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
 const SAME_SCENE_REPEAT_DELAY: Duration = Duration::from_millis(500);

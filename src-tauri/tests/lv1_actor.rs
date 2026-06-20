@@ -1,7 +1,6 @@
-use advanced_show_control::lv1::actor::spawn_actor;
-use advanced_show_control::lv1::events::Lv1Event;
-use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
-use advanced_show_control::lv1::types::ConnectionStatus;
+use advanced_show_control::lv1::{
+    ConnectionStatus, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame, spawn_actor,
+};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
@@ -9,6 +8,34 @@ use std::net::TcpListener;
 
 fn make_lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
     encode_frame(address, args).unwrap()
+}
+
+#[derive(Default)]
+struct TestFrameDecoder {
+    buffer: Vec<u8>,
+}
+
+impl TestFrameDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Vec<Lv1Frame> {
+        const HEADER_LEN: usize = 8;
+
+        self.buffer.extend_from_slice(bytes);
+        let mut frames = Vec::new();
+        while self.buffer.len() >= 4 + HEADER_LEN {
+            let payload_len = u32::from_be_bytes(self.buffer[0..4].try_into().unwrap()) as usize;
+            let total_len = 4 + HEADER_LEN + payload_len;
+            if self.buffer.len() < total_len {
+                break;
+            }
+
+            let mut header = [0_u8; HEADER_LEN];
+            header.copy_from_slice(&self.buffer[4..4 + HEADER_LEN]);
+            let payload = self.buffer[4 + HEADER_LEN..total_len].to_vec();
+            self.buffer.drain(..total_len);
+            frames.push(Lv1Frame { header, payload });
+        }
+        frames
+    }
 }
 
 async fn wait_for_connected(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
@@ -228,13 +255,13 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         let _ = address_tx.send(msg.address);
                     }
@@ -286,13 +313,13 @@ async fn actor_sends_set_mute_while_waiting_for_input() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         let _ = address_tx.send(msg.address);
                     }
@@ -350,13 +377,13 @@ async fn actor_routes_pong_without_blocking_read_loop() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         if msg.address == "/pong" {
                             pong_tx.send(msg.args).unwrap();
@@ -461,13 +488,13 @@ async fn actor_flush_waits_for_prior_set_mute_command() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         let _ = address_tx.send(msg.address);
                     }
@@ -514,13 +541,13 @@ async fn actor_flush_waits_for_prior_set_gain_command() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         let _ = address_tx.send(msg.address);
                     }

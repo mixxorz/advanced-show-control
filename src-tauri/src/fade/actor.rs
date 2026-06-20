@@ -9,7 +9,7 @@ use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::EngineState;
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
 use crate::fade::types::{FadeParameter, FadeTarget};
-use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
+use crate::lv1::{Lv1Event, Lv1ParameterWrite, Lv1WriteParameter};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 
@@ -149,7 +149,7 @@ async fn run_engine(
 
             app_event = app_events.recv() => {
                 match app_event {
-                    Ok(AppEvent::Lv1 { event: crate::lv1::events::Lv1Event::FaderChanged { group, channel, gain_db }, .. }) => {
+                    Ok(AppEvent::Lv1 { event: Lv1Event::FaderChanged { group, channel, gain_db }, .. }) => {
                         if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
                             && state.channels[pos].is_override(gain_db)
                         {
@@ -179,7 +179,7 @@ async fn run_engine(
                             }
                         }
                     }
-                    Ok(AppEvent::Lv1 { event: crate::lv1::events::Lv1Event::PanChanged { group, channel, pan }, .. }) => {
+                    Ok(AppEvent::Lv1 { event: Lv1Event::PanChanged { group, channel, pan }, .. }) => {
                         handle_pan_family_pan_report(
                             &mut state,
                             group,
@@ -189,7 +189,7 @@ async fn run_engine(
                             &mut fade_completed_emitted,
                         );
                     }
-                    Ok(AppEvent::Lv1 { event: crate::lv1::events::Lv1Event::Disconnected { .. }, .. }) => {
+                    Ok(AppEvent::Lv1 { event: Lv1Event::Disconnected { .. }, .. }) => {
                         if state.is_active() {
                             state.cancel_all_in_place();
                             tick_interval = None;
@@ -332,10 +332,7 @@ async fn handle_recall_scene_fade(
     Ok(())
 }
 
-fn live_value_for_snapshot(
-    channel: &crate::lv1::types::ChannelInfo,
-    target: &FadeTarget,
-) -> Option<f64> {
+fn live_value_for_snapshot(channel: &crate::lv1::ChannelInfo, target: &FadeTarget) -> Option<f64> {
     match target.parameter {
         FadeParameter::FaderDb => Some(channel.gain_db),
         FadeParameter::Pan => channel.pan,
@@ -529,7 +526,10 @@ mod tests {
     use crate::fade::curve::FadeCurve;
     use crate::fade::handle::FadeEngineHandle;
     use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
-    use crate::lv1::commands::{Lv1Command, Lv1ParameterWrite, Lv1WriteParameter};
+    use crate::lv1::{
+        ConnectionStatus, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1StateSnapshot,
+        Lv1WriteParameter, test_actor_handle,
+    };
     use crate::runtime::events::AppEventBus;
 
     fn scene(index: i32, name: &str) -> FadeSceneIdentity {
@@ -580,7 +580,7 @@ mod tests {
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel(8);
         let event_bus = AppEventBus::default();
-        let lv1 = crate::lv1::handle::Lv1ActorHandle::new(tx);
+        let lv1 = test_actor_handle(tx);
         let bus = AppCommandBus::new();
         bus.set_lv1(Some(lv1)).await;
         let engine = spawn_engine(bus.clone(), event_bus.clone(), 0);
@@ -597,8 +597,8 @@ mod tests {
             while let Some(command) = rx.recv().await {
                 match command {
                     Lv1Command::GetState { reply } => {
-                        let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
-                            connection: crate::lv1::types::ConnectionStatus::Connected,
+                        let _ = reply.send(Lv1StateSnapshot {
+                            connection: ConnectionStatus::Connected,
                             scene: None,
                             scene_list: vec![],
                             channels: vec![],
@@ -647,12 +647,12 @@ mod tests {
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
             event: match parameter {
-                FadeParameter::Balance => crate::lv1::events::Lv1Event::BalanceChanged {
+                FadeParameter::Balance => Lv1Event::BalanceChanged {
                     group: 0,
                     channel: 0,
                     balance: -45.0,
                 },
-                FadeParameter::Width => crate::lv1::events::Lv1Event::WidthChanged {
+                FadeParameter::Width => Lv1Event::WidthChanged {
                     group: 0,
                     channel: 0,
                     width: -45.0,
@@ -1108,8 +1108,8 @@ mod tests {
             while let Some(command) = rx.recv().await {
                 match command {
                     Lv1Command::GetState { reply } => {
-                        let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
-                            connection: crate::lv1::types::ConnectionStatus::Connected,
+                        let _ = reply.send(Lv1StateSnapshot {
+                            connection: ConnectionStatus::Connected,
                             scene: None,
                             scene_list: vec![],
                             channels: vec![],
@@ -1176,7 +1176,7 @@ mod tests {
     async fn zero_duration_fade_sends_all_parameters_in_one_batch() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
         let event_bus = AppEventBus::default();
-        let lv1 = crate::lv1::handle::Lv1ActorHandle::new(tx);
+        let lv1 = test_actor_handle(tx);
         let bus = AppCommandBus::new();
         bus.set_lv1(Some(lv1)).await;
         let engine = spawn_engine(bus.clone(), event_bus.clone(), 0);
@@ -1189,8 +1189,8 @@ mod tests {
             while let Some(command) = rx.recv().await {
                 match command {
                     Lv1Command::GetState { reply } => {
-                        let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
-                            connection: crate::lv1::types::ConnectionStatus::Connected,
+                        let _ = reply.send(Lv1StateSnapshot {
+                            connection: ConnectionStatus::Connected,
                             scene: None,
                             scene_list: vec![],
                             channels: vec![],
@@ -1280,8 +1280,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
-            .await;
+        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
         bus.set_generation(3).await;
 
         let mut state = EngineState::new(event_bus, 0);
@@ -1315,17 +1314,15 @@ mod tests {
         let event_bus = AppEventBus::default();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
-            .await;
+        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
         bus.set_generation(3).await;
 
         let bus_for_lv1 = bus.clone();
         tokio::spawn(async move {
-            if let Some(crate::lv1::commands::Lv1Command::GetState { reply }) = lv1_rx.recv().await
-            {
+            if let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await {
                 bus_for_lv1.set_generation(4).await;
-                let _ = reply.send(crate::lv1::types::Lv1StateSnapshot {
-                    connection: crate::lv1::types::ConnectionStatus::Connected,
+                let _ = reply.send(Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
                     scene: None,
                     scene_list: vec![],
                     channels: vec![],
@@ -1364,15 +1361,14 @@ mod tests {
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
-            .await;
+        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
         bus.set_generation(4).await;
 
         let (write_tx, write_rx) = tokio::sync::oneshot::channel::<()>();
         let write_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(write_tx)));
         tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {
-                if let crate::lv1::commands::Lv1Command::WriteBatch(_) = command
+                if let Lv1Command::WriteBatch(_) = command
                     && let Some(tx) = write_tx.lock().unwrap().take()
                 {
                     let _ = tx.send(());
@@ -1468,15 +1464,14 @@ mod tests {
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
-            .await;
+        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
         bus.set_generation(3).await;
 
         let (write_tx, write_rx) = tokio::sync::oneshot::channel::<()>();
         let write_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(write_tx)));
         tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {
-                if let crate::lv1::commands::Lv1Command::WriteBatch(_) = command
+                if let Lv1Command::WriteBatch(_) = command
                     && let Some(tx) = write_tx.lock().unwrap().take()
                 {
                     let _ = tx.send(());
@@ -1534,13 +1529,12 @@ mod tests {
         let _event_bus = AppEventBus::default();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(4);
-        bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
-            .await;
+        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
 
         tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {
                 match command {
-                    crate::lv1::commands::Lv1Command::WriteBatch(writes) => {
+                    Lv1Command::WriteBatch(writes) => {
                         assert_eq!(writes.len(), 1);
                     }
                     _ => panic!("unexpected command"),
@@ -1601,8 +1595,7 @@ mod tests {
         let mut events = event_bus.subscribe();
         let bus = AppCommandBus::new();
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
-            .await;
+        bus.set_lv1(Some(test_actor_handle(lv1_tx))).await;
 
         let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {

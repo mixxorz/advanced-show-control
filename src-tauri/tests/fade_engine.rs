@@ -5,8 +5,9 @@ use advanced_show_control::fade::handle::FadeEngineHandle;
 use advanced_show_control::fade::types::{
     FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget, FadeTargetKey,
 };
-use advanced_show_control::lv1::actor::spawn_actor;
-use advanced_show_control::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_frame};
+use advanced_show_control::lv1::{
+    Lv1ActorHandle, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame, spawn_actor,
+};
 use advanced_show_control::osc::OscArg;
 use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
@@ -16,6 +17,34 @@ use std::net::TcpListener;
 
 fn lv1_frame(address: &str, args: &[OscArg]) -> Vec<u8> {
     encode_frame(address, args).unwrap()
+}
+
+#[derive(Default)]
+struct TestFrameDecoder {
+    buffer: Vec<u8>,
+}
+
+impl TestFrameDecoder {
+    fn push(&mut self, bytes: &[u8]) -> Vec<Lv1Frame> {
+        const HEADER_LEN: usize = 8;
+
+        self.buffer.extend_from_slice(bytes);
+        let mut frames = Vec::new();
+        while self.buffer.len() >= 4 + HEADER_LEN {
+            let payload_len = u32::from_be_bytes(self.buffer[0..4].try_into().unwrap()) as usize;
+            let total_len = 4 + HEADER_LEN + payload_len;
+            if self.buffer.len() < total_len {
+                break;
+            }
+
+            let mut header = [0_u8; HEADER_LEN];
+            header.copy_from_slice(&self.buffer[4..4 + HEADER_LEN]);
+            let payload = self.buffer[4 + HEADER_LEN..total_len].to_vec();
+            self.buffer.drain(..total_len);
+            frames.push(Lv1Frame { header, payload });
+        }
+        frames
+    }
 }
 
 fn scene(index: i32, name: &str) -> FadeSceneIdentity {
@@ -152,7 +181,7 @@ async fn wait_for_app_event(
 }
 
 async fn spawn_runtime_for_test(
-    lv1: advanced_show_control::lv1::handle::Lv1ActorHandle,
+    lv1: Lv1ActorHandle,
     event_bus: AppEventBus,
 ) -> (AppCommandBus, FadeEngineHandle) {
     let bus = AppCommandBus::new();
@@ -181,13 +210,13 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         if msg.address == "/Set/Track/Out/Gain"
                             && let (
@@ -276,13 +305,13 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         if msg.address == "/Set/Track/Out/Gain" {
                             let _ = gain_tx.send(msg.address);
@@ -428,13 +457,13 @@ async fn zero_duration_pan_family_targets_send_exact_final_values() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         match msg.address.as_str() {
                             "/Set/Track/Pan"
@@ -648,14 +677,14 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let mut sent_override = false;
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         if !sent_override && msg.address == "/Set/Track/Pan" {
                             stream
@@ -690,7 +719,7 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
         matches!(
             e,
             AppEvent::Lv1 {
-                event: advanced_show_control::lv1::events::Lv1Event::ChannelTopologyChanged(_),
+                event: Lv1Event::ChannelTopologyChanged(_),
                 ..
             }
         )
@@ -1256,13 +1285,13 @@ async fn replacement_fade_starts_from_active_mid_fade_value() {
             .unwrap();
 
         let mut buf = [0_u8; 1024];
-        let mut decoder = FrameDecoder::default();
+        let mut decoder = TestFrameDecoder::default();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while std::time::Instant::now() < deadline {
             match stream.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    for frame in decoder.push(&buf[..n]).unwrap() {
+                    for frame in decoder.push(&buf[..n]) {
                         let msg = decode_frame_payload(&frame).unwrap();
                         if msg.address == "/Set/Track/Out/Gain"
                             && let (

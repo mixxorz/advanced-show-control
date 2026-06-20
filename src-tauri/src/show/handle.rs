@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
-use crate::lv1::types::{ChannelInfo, SceneListEntry};
+use crate::lv1::{ChannelInfo, Lv1Event, SceneListEntry};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 use super::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
@@ -217,7 +217,7 @@ pub fn spawn_lv1_scene_list_monitor(
         loop {
             match events.recv().await {
                 Ok(AppEvent::Lv1 {
-                    event: crate::lv1::events::Lv1Event::SceneListChanged(scenes),
+                    event: Lv1Event::SceneListChanged(scenes),
                     ..
                 }) => {
                     show.handle_lv1_scene_list_changed(scenes).await;
@@ -235,7 +235,7 @@ pub fn spawn_lv1_scene_list_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::types::SceneListEntry;
+    use crate::lv1::{Lv1Event, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
@@ -372,7 +372,7 @@ mod tests {
         let monitor = spawn_lv1_scene_list_monitor(show.clone(), event_bus.subscribe());
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
-            event: crate::lv1::events::Lv1Event::SceneListChanged(vec![SceneListEntry {
+            event: Lv1Event::SceneListChanged(vec![SceneListEntry {
                 index: 1,
                 name: "Verse Big".to_string(),
             }]),

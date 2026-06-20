@@ -9,22 +9,6 @@ use super::events::Lv1Event;
 use super::parsers::{parse_channels_batch, parse_scene_list};
 use super::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
 
-// ---------------------------------------------------------------------------
-// Group constants (confirmed from hardware logs)
-// ---------------------------------------------------------------------------
-
-pub mod group {
-    pub const INPUT: i32 = 0;
-    pub const GROUP: i32 = 1;
-    pub const AUX: i32 = 2;
-    pub const LR: i32 = 3;
-    pub const CENTER: i32 = 4;
-    pub const MONO: i32 = 5;
-    pub const MATRIX: i32 = 6;
-    pub const CUE: i32 = 7;
-    pub const TALKBACK: i32 = 8;
-}
-
 /// Pairs `/Notify/CurSceneIndex` and `/Notify/Scene/Name` OSC messages into a
 /// complete `SceneState`. LV1 sends these as two separate messages that always
 /// arrive close together but in either order. Call `apply_index` and `apply_name`

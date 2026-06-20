@@ -1,4 +1,4 @@
-use crate::lv1::events::Lv1Event;
+use crate::lv1::{ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneState};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::scene_recall::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
@@ -7,13 +7,13 @@ use crate::scene_recall::state::SceneRecallState;
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
 struct PendingSceneObservation {
-    scene: crate::lv1::types::SceneState,
+    scene: SceneState,
     seen_at: tokio::time::Instant,
     settle_after: tokio::time::Instant,
 }
 
 impl PendingSceneObservation {
-    fn new(scene: crate::lv1::types::SceneState, now: tokio::time::Instant) -> Self {
+    fn new(scene: SceneState, now: tokio::time::Instant) -> Self {
         Self {
             scene,
             seen_at: now,
@@ -271,18 +271,18 @@ async fn process_scene_observation(
     }
 }
 
-fn scene_label(scene: &crate::lv1::types::SceneState) -> String {
+fn scene_label(scene: &SceneState) -> String {
     format!("{}: {}", scene.index, scene.name)
 }
 
 async fn fresh_lv1_snapshot(
     command_bus: &AppCommandBus,
-    scene: &crate::lv1::types::SceneState,
-) -> Result<crate::lv1::types::Lv1StateSnapshot, crate::runtime::commands::AppCommandError> {
+    scene: &SceneState,
+) -> Result<Lv1StateSnapshot, crate::runtime::commands::AppCommandError> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let snapshot = command_bus.get_lv1_state().await?;
-        if snapshot.connection == crate::lv1::types::ConnectionStatus::Connected
+        if snapshot.connection == ConnectionStatus::Connected
             && snapshot.scene.as_ref() == Some(scene)
         {
             return Ok(snapshot);
@@ -306,9 +306,7 @@ mod tests {
     use crate::fade::curve::FadeCurve;
     use crate::fade::handle::FadeEngineHandle;
     use crate::fade::types::{FadeConfig, FadeParameter, FadeSceneIdentity, FadeTarget};
-    use crate::lv1::events::Lv1Event;
-    use crate::lv1::handle::Lv1ActorHandle;
-    use crate::lv1::types::{Lv1StateSnapshot, SceneListEntry, SceneState};
+    use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scene_recall::events::SceneRecallEvent;
     use crate::show::types::{
         ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument,
@@ -1072,10 +1070,10 @@ mod tests {
         let server = tokio::spawn(async move {
             let _ = release_rx.await;
             let snapshot = Lv1StateSnapshot {
-                connection: crate::lv1::types::ConnectionStatus::Connected,
+                connection: crate::lv1::ConnectionStatus::Connected,
                 scene: Some(intro_scene()),
                 scene_list: Vec::new(),
-                channels: vec![crate::lv1::types::ChannelInfo {
+                channels: vec![crate::lv1::ChannelInfo {
                     group: 0,
                     channel: 2,
                     name: "Lead".to_string(),
@@ -1089,39 +1087,35 @@ mod tests {
             };
             while let Some(command) = lv1_rx.recv().await {
                 match command {
-                    crate::lv1::commands::Lv1Command::GetState { reply } => {
+                    crate::lv1::Lv1Command::GetState { reply } => {
                         let _ = reply.send(snapshot.clone());
                     }
-                    crate::lv1::commands::Lv1Command::WriteBatch(_) => {}
-                    crate::lv1::commands::Lv1Command::SetGain { reply, .. } => {
+                    crate::lv1::Lv1Command::WriteBatch(_) => {}
+                    crate::lv1::Lv1Command::SetGain { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetPan { reply, .. } => {
+                    crate::lv1::Lv1Command::SetPan { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetBalance { reply, .. } => {
+                    crate::lv1::Lv1Command::SetBalance { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetWidth { reply, .. } => {
+                    crate::lv1::Lv1Command::SetWidth { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
+                    crate::lv1::Lv1Command::SetMute { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
+                    crate::lv1::Lv1Command::RecallScene { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::Flush { reply } => {
+                    crate::lv1::Lv1Command::Flush { reply } => {
                         let _ = reply.send(Ok(()));
                     }
                 }
             }
         });
-        (
-            crate::lv1::handle::Lv1ActorHandle::new(lv1_tx),
-            release_tx,
-            server,
-        )
+        (crate::lv1::test_actor_handle(lv1_tx), release_tx, server)
     }
 
     async fn spawn_fake_lv1_with_mismatched_scene(
@@ -1136,13 +1130,13 @@ mod tests {
         let server = tokio::spawn(async move {
             let _ = release_rx.await;
             let snapshot = Lv1StateSnapshot {
-                connection: crate::lv1::types::ConnectionStatus::Connected,
+                connection: crate::lv1::ConnectionStatus::Connected,
                 scene: Some(SceneState {
                     index: 2,
                     name: "Wrong".to_string(),
                 }),
                 scene_list: Vec::new(),
-                channels: vec![crate::lv1::types::ChannelInfo {
+                channels: vec![crate::lv1::ChannelInfo {
                     group: 0,
                     channel: 2,
                     name: "Lead".to_string(),
@@ -1156,39 +1150,35 @@ mod tests {
             };
             while let Some(command) = lv1_rx.recv().await {
                 match command {
-                    crate::lv1::commands::Lv1Command::GetState { reply } => {
+                    crate::lv1::Lv1Command::GetState { reply } => {
                         let _ = reply.send(snapshot.clone());
                     }
-                    crate::lv1::commands::Lv1Command::WriteBatch(_) => {}
-                    crate::lv1::commands::Lv1Command::SetGain { reply, .. } => {
+                    crate::lv1::Lv1Command::WriteBatch(_) => {}
+                    crate::lv1::Lv1Command::SetGain { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetPan { reply, .. } => {
+                    crate::lv1::Lv1Command::SetPan { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetBalance { reply, .. } => {
+                    crate::lv1::Lv1Command::SetBalance { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetWidth { reply, .. } => {
+                    crate::lv1::Lv1Command::SetWidth { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::SetMute { reply, .. } => {
+                    crate::lv1::Lv1Command::SetMute { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::RecallScene { reply, .. } => {
+                    crate::lv1::Lv1Command::RecallScene { reply, .. } => {
                         let _ = reply.send(Ok(()));
                     }
-                    crate::lv1::commands::Lv1Command::Flush { reply } => {
+                    crate::lv1::Lv1Command::Flush { reply } => {
                         let _ = reply.send(Ok(()));
                     }
                 }
             }
         });
-        (
-            crate::lv1::handle::Lv1ActorHandle::new(lv1_tx),
-            release_tx,
-            server,
-        )
+        (crate::lv1::test_actor_handle(lv1_tx), release_tx, server)
     }
 
     fn show_handle() -> crate::show::handle::ShowStateHandle {

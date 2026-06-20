@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::lv1::types::SceneListEntry;
+use crate::lv1::{Lv1StateSnapshot, SceneListEntry};
 use crate::show::show_file::{ShowFile, export_show_file};
 
 use super::types::{SceneConfig, SceneScopeToggles, ShowDocument, scene_id};
@@ -204,10 +204,7 @@ pub struct ShowState {
 }
 
 impl ShowState {
-    pub(crate) fn reset_for_new_show(
-        &mut self,
-        lv1: Option<&crate::lv1::types::Lv1StateSnapshot>,
-    ) -> Option<String> {
+    pub(crate) fn reset_for_new_show(&mut self, lv1: Option<&Lv1StateSnapshot>) -> Option<String> {
         self.clear();
         if let Some(lv1) = lv1
             && !lv1.scene_list.is_empty()
@@ -526,7 +523,7 @@ impl ShowState {
 mod tests {
     use super::super::types::parse_scene_id;
     use super::*;
-    use crate::lv1::types::ChannelInfo;
+    use crate::lv1::{ChannelInfo, PanMode};
     use crate::show::ChannelConfig;
 
     fn channel(group: i32, channel: i32, name: &str, gain_db: f64) -> ChannelInfo {
@@ -1103,7 +1100,7 @@ mod tests {
                     pan: Some(-12.0),
                     balance: Some(3.0),
                     width: Some(1.2),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             )],
             cued_scene_id: None,
@@ -1121,7 +1118,7 @@ mod tests {
         assert_eq!(stored.pan, Some(-12.0));
         assert_eq!(stored.balance, Some(3.0));
         assert_eq!(stored.width, Some(1.2));
-        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Stereo));
+        assert_eq!(stored.pan_mode, Some(PanMode::Stereo));
     }
 
     #[test]
@@ -1138,7 +1135,7 @@ mod tests {
                     pan: Some(-12.0),
                     balance: Some(3.0),
                     width: Some(1.2),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             )],
             cued_scene_id: None,
@@ -1158,7 +1155,7 @@ mod tests {
                         pan: Some(0.25),
                         balance: Some(-0.5),
                         width: Some(1.0),
-                        pan_mode: Some(crate::lv1::types::PanMode::Mono),
+                        pan_mode: Some(PanMode::Mono),
                     }]
                 )
                 .unwrap()
@@ -1169,7 +1166,7 @@ mod tests {
         assert_eq!(stored.pan, Some(0.25));
         assert_eq!(stored.balance, Some(-0.5));
         assert_eq!(stored.width, Some(1.0));
-        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Mono));
+        assert_eq!(stored.pan_mode, Some(PanMode::Mono));
     }
 
     #[test]
@@ -1186,7 +1183,7 @@ mod tests {
                     pan: Some(-12.0),
                     balance: Some(3.0),
                     width: Some(1.2),
-                    pan_mode: Some(crate::lv1::types::PanMode::Stereo),
+                    pan_mode: Some(PanMode::Stereo),
                 }],
             )],
             cued_scene_id: None,
@@ -1217,7 +1214,7 @@ mod tests {
         assert_eq!(stored.pan, Some(-12.0));
         assert_eq!(stored.balance, Some(3.0));
         assert_eq!(stored.width, Some(2.0));
-        assert_eq!(stored.pan_mode, Some(crate::lv1::types::PanMode::Stereo));
+        assert_eq!(stored.pan_mode, Some(PanMode::Stereo));
     }
 
     #[test]

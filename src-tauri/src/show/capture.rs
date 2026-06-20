@@ -1,4 +1,4 @@
-use crate::lv1::types::ChannelInfo;
+use crate::lv1::ChannelInfo;
 
 use super::state::ShowState;
 use super::types::{ChannelConfig, ChannelRef, SceneConfig, parse_scene_id};
