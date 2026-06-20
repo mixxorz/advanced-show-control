@@ -85,7 +85,7 @@ pub async fn open_show_file_dialog(
 pub async fn save_show_file(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
-    save_show_file_as_dialog(lifecycle).await
+    save_show_file_with_lifecycle(&lifecycle).await
 }
 
 #[tauri::command]
@@ -93,6 +93,29 @@ pub async fn save_show_file_as_dialog(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
     let path = choose_save_show_file_path().await?;
+    save_show_file_to_path(&lifecycle, path).await
+}
+
+async fn save_show_file_with_lifecycle(
+    lifecycle: &AppLifecycle,
+) -> Result<ShowCommandResult, String> {
+    let command_bus = lifecycle.current_command_bus().await;
+    if let Some(path) = command_bus
+        .current_show_file_path()
+        .await
+        .map_err(map_app_command_error)?
+    {
+        return save_show_file_to_path(lifecycle, path).await;
+    }
+
+    let path = choose_save_show_file_path().await?;
+    save_show_file_to_path(lifecycle, path).await
+}
+
+async fn save_show_file_to_path(
+    lifecycle: &AppLifecycle,
+    path: PathBuf,
+) -> Result<ShowCommandResult, String> {
     let command_bus = lifecycle.current_command_bus().await;
     let file = command_bus
         .export_show_file_for_save(String::new())
@@ -127,6 +150,66 @@ async fn choose_save_show_file_path() -> Result<PathBuf, String> {
     .await
     .map_err(|err| format!("Failed to open save dialog: {err}"))??
     .ok_or_else(|| "Save show file cancelled".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::events::AppEventBus;
+    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowSnapshot};
+
+    fn temp_show_file_path(name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "advanced-show-control-ui-commands-{}-{}-{}.lv1show",
+            name,
+            std::process::id(),
+            crate::time::current_timestamp_millis()
+        ));
+        path
+    }
+
+    #[tokio::test]
+    async fn save_show_file_uses_existing_show_file_path() {
+        let event_bus = AppEventBus::default();
+        let show = crate::show::handle::ShowStateHandle::new_empty(event_bus);
+        show.replace_snapshot(ShowSnapshot {
+            lockout: false,
+            scene_configs: vec![SceneConfig {
+                scene_id: "1::Intro".to_string(),
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                duration_ms: 1000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            cued_scene_id: None,
+        })
+        .await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), show.clone());
+        let path = temp_show_file_path("save-existing");
+        let initial_file = crate::show::show_file::export_show_file(
+            show.get_snapshot().await,
+            "saved".to_string(),
+        );
+        write_show_file(&path, &initial_file, &backup_folder())
+            .expect("seed show file should write");
+        lifecycle
+            .current_command_bus()
+            .await
+            .mark_show_file_saved(path.clone(), "saved".to_string())
+            .await
+            .expect("mark saved should set current show file path");
+
+        let result = save_show_file_with_lifecycle(&lifecycle)
+            .await
+            .expect("save should use existing path");
+
+        assert!(result.changed);
+        assert!(path.exists());
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 #[tauri::command]

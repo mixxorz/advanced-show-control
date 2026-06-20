@@ -192,6 +192,16 @@ impl AppCommandBus {
         }
     }
 
+    pub async fn current_show_file_path(
+        &self,
+    ) -> Result<Option<std::path::PathBuf>, AppCommandError> {
+        let show = self.targets.lock().await.show.clone();
+        match show {
+            Some(show) => Ok(show.current_show_file_path().await),
+            None => Err(AppCommandError::ShowUnavailable),
+        }
+    }
+
     pub async fn get_scene_config(
         &self,
         scene_id: String,
@@ -326,6 +336,15 @@ impl AppCommandBus {
     ) -> Result<ShowFile, AppCommandError> {
         let show = self.show_target().await?;
         Ok(crate::show::commands::export_show_file_for_save(&show, saved_at).await)
+    }
+
+    pub async fn mark_show_file_saved(
+        &self,
+        path: std::path::PathBuf,
+        saved_at: String,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let show = self.show_target().await?;
+        Ok(crate::show::commands::mark_show_file_saved(&show, path, saved_at).await)
     }
 
     pub async fn load_show_file_from_dto(

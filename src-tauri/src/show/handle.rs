@@ -70,6 +70,10 @@ impl ShowStateHandle {
         self.query(|state| state.lockout()).await
     }
 
+    pub async fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
+        self.query(|state| state.current_show_file_path()).await
+    }
+
     #[allow(dead_code)] // Used by later lifecycle/projector startup tasks.
     pub(crate) async fn initial_projection_state(&self) -> ShowProjectionState {
         let state = self.state.lock().await;

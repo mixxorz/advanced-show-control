@@ -317,6 +317,10 @@ impl ShowState {
         self.lockout
     }
 
+    pub(crate) fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
+        self.show_file_path.clone()
+    }
+
     pub(crate) fn scene_configs_mut(&mut self) -> &mut Vec<SceneConfig> {
         &mut self.scene_configs
     }
