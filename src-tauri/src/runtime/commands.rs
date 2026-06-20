@@ -53,6 +53,15 @@ impl AppCommandBus {
         }
     }
 
+    pub fn new_with_show(show: ShowStateHandle) -> Self {
+        Self {
+            targets: Arc::new(Mutex::new(AppCommandTargets {
+                show: Some(show),
+                ..AppCommandTargets::default()
+            })),
+        }
+    }
+
     pub async fn set_show_target(&self, show: ShowStateHandle) {
         self.targets.lock().await.show = Some(show);
     }

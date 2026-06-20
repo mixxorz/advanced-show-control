@@ -70,6 +70,21 @@ struct LifecycleInner {
     command_bus: AppCommandBus,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShowRuntimeMetadataMonitorNotification {
+    RuntimeGenerationChanged {
+        generation: u64,
+    },
+    Lv1Disconnected {
+        generation: u64,
+        active: bool,
+    },
+    StaleLv1EventIgnored {
+        generation: u64,
+        active_generation: u64,
+    },
+}
+
 #[derive(Clone)]
 pub struct AppLifecycle {
     inner: Arc<Mutex<LifecycleInner>>,
@@ -79,7 +94,7 @@ pub struct AppLifecycle {
 
 impl AppLifecycle {
     pub fn new(event_bus: AppEventBus, show: ShowStateHandle) -> Self {
-        let command_bus = AppCommandBus::new();
+        let command_bus = AppCommandBus::new_with_show(show.clone());
         let show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
             event_bus.subscribe(),
             command_bus.clone(),
@@ -244,10 +259,19 @@ impl Default for AppLifecycle {
 }
 
 fn spawn_show_runtime_metadata_monitor(
-    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
     command_bus: AppCommandBus,
 ) -> JoinHandle<()> {
+    spawn_show_runtime_metadata_monitor_with_notifier(events, command_bus, |_| {})
+}
+
+fn spawn_show_runtime_metadata_monitor_with_notifier(
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    command_bus: AppCommandBus,
+    notify: impl Fn(ShowRuntimeMetadataMonitorNotification) + Send + 'static,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut events = events;
         let mut active_generation = 0;
         loop {
             match events.recv().await {
@@ -255,13 +279,29 @@ fn spawn_show_runtime_metadata_monitor(
                     generation,
                 })) => {
                     active_generation = generation;
+                    notify(
+                        ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged {
+                            generation,
+                        },
+                    );
                 }
                 Ok(AppEvent::Lv1 { generation, event }) if generation == active_generation => {
                     if let Lv1Event::Disconnected { reason } = event {
+                        notify(ShowRuntimeMetadataMonitorNotification::Lv1Disconnected {
+                            generation,
+                            active: true,
+                        });
                         let _ = command_bus.handle_runtime_disconnected(reason).await;
                     }
                 }
-                Ok(AppEvent::Lv1 { .. }) => {}
+                Ok(AppEvent::Lv1 { generation, .. }) => {
+                    notify(
+                        ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
+                            generation,
+                            active_generation,
+                        },
+                    );
+                }
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     tracing::debug!(skipped, "show runtime metadata monitor lagged");
@@ -300,6 +340,7 @@ pub fn spawn_lifecycle_event_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn lifecycle_allocates_monotonic_generations() {
@@ -340,5 +381,103 @@ mod tests {
         let bus = lifecycle.current_command_bus().await;
         let result = bus.set_lockout(true).await.unwrap();
         assert!(result.changed);
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_initializes_show_command_bus_on_construction() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+
+        let result = lifecycle
+            .current_command_bus()
+            .await
+            .set_lockout(true)
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+    }
+
+    #[tokio::test]
+    async fn show_runtime_metadata_monitor_notifies_on_runtime_generation_and_disconnect() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let command_bus = AppCommandBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let _monitor = spawn_show_runtime_metadata_monitor_with_notifier(
+            event_bus.subscribe(),
+            command_bus,
+            move |notification| {
+                tx.send(notification).unwrap();
+            },
+        );
+
+        event_bus.publish_runtime_generation_changed(7);
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::Disconnected {
+                reason: "link lost".to_string(),
+            },
+        });
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(
+                ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged { generation: 7 }
+            )
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(ShowRuntimeMetadataMonitorNotification::Lv1Disconnected {
+                generation: 7,
+                active: true
+            })
+        ));
+
+        drop(show);
+    }
+
+    #[tokio::test]
+    async fn show_runtime_metadata_monitor_notifies_on_ignored_stale_events() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let command_bus = AppCommandBus::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let _monitor = spawn_show_runtime_metadata_monitor_with_notifier(
+            event_bus.subscribe(),
+            command_bus,
+            move |notification| {
+                tx.send(notification).unwrap();
+            },
+        );
+
+        event_bus.publish_runtime_generation_changed(8);
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::Disconnected {
+                reason: "stale".to_string(),
+            },
+        });
+
+        assert!(matches!(
+            rx.recv().await,
+            Some(
+                ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged { generation: 8 }
+            )
+        ));
+        assert!(matches!(
+            rx.recv().await,
+            Some(
+                ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
+                    generation: 7,
+                    active_generation: 8
+                }
+            )
+        ));
+
+        drop(show);
     }
 }
