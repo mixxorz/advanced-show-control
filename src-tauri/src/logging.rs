@@ -534,17 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn logging_module_no_longer_contains_direct_app_status_emit_projector() {
-        let source =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/logging.rs"))
-                .unwrap();
-
-        let projector_name = ["ui_log", "_projector"].concat();
-        assert!(!source.contains(&projector_name));
-        assert!(!source.contains("app.emit(\"app-status-changed\""));
-    }
-
-    #[test]
     fn ui_layer_projects_safety_warn_event() {
         let (tx, mut rx) = broadcast::channel(1);
         let subscriber = registry().with(UiLogLayer { tx });

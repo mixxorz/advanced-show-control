@@ -26,7 +26,8 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - The Tauri shell exposes a working test-bed UI with connection, scene, and logs tabs, global lockout/abort controls, show-file controls, store workflow, duration editing, and scoped-channel controls.
 - Storybook is configured for frontend component development outside the live Tauri runtime, with typed app-state fixtures and representative stories for the current test-bed components.
 - `SceneRecallFader` validates LV1 scene recall events, blocks unsafe recalls, skips disabled fader scope, starts validated scene-owned fades, and moves duration `0` scenes immediately.
-- Runtime architecture is actor-oriented with `Lv1Actor`, `FadeEngine`, `ShowState`, `SceneRecallFader`, `ShellState`, `AppEventBus`, and `AppCommandBus` as the main ownership boundaries.
+- Runtime architecture is actor-oriented with `Lv1Actor`, `FadeEngine`, `ShowState`, `SceneRecallFader`, `AppLifecycle`, `AppEventBus`, `AppCommandBus`, and `projector` as the main ownership boundaries.
+- The projector is the only backend `app-status-changed` emitter, and the React app listens to that event for state updates.
 
 ## MVP Roadmap
 
@@ -36,7 +37,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Use more debug-level logging for log files.
    - Send info-level operational logging to the frontend as well.
    - Preserve user-visible safety blocks and operational events.
-2. Make shell state projection more efficient.
+2. Make projector emission more efficient.
    - Limit how often runtime state updates are sent to the frontend.
    - Keep safety-critical changes visible without flooding the UI.
 3. Reduce false-positive manual override reports for balance/rotation fades.

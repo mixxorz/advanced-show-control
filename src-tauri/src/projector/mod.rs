@@ -1,6 +1,6 @@
-//! AppViewState projection and `app-status-changed` emission.
+//! AppViewState projection for the frontend status channel.
 //!
-//! The projector will become the only backend owner of app-status-changed emission.
+//! The projector is the backend owner of the `app-status-changed` event.
 
 mod cache;
 mod runtime;
