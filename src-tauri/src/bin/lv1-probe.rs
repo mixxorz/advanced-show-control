@@ -691,7 +691,7 @@ async fn run_fade_test(
     duration_ms: u64,
     curve: CurveArg,
 ) -> AppResult<()> {
-    use advanced_show_control::runtime::commands::AppCommandBus;
+    use advanced_show_control::runtime::generation::RuntimeGeneration;
 
     let (host, port) = resolve_target(host, port, timeout_ms)?;
     eprintln!("connecting to {host}:{port}");
@@ -703,8 +703,8 @@ async fn run_fade_test(
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
-    let command_bus = AppCommandBus::new();
-    let engine = spawn_engine(command_bus.clone(), lv1.clone(), event_bus.clone(), 0);
+    let runtime_generation = RuntimeGeneration::new();
+    let engine = spawn_engine(runtime_generation, lv1.clone(), event_bus.clone(), 0);
     let mut fade_events = event_bus.subscribe();
 
     // Wait for LV1 connection
@@ -956,7 +956,7 @@ fn pan_family_smoke_config(group: i32, channel: i32, step: &PanFamilySmokeStep) 
 }
 
 async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<()> {
-    use advanced_show_control::runtime::commands::AppCommandBus;
+    use advanced_show_control::runtime::generation::RuntimeGeneration;
 
     let PanFamilySmokeOptions {
         host,
@@ -990,8 +990,8 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let event_bus = AppEventBus::default();
     let mut lv1_events = event_bus.subscribe();
     let lv1 = spawn_actor(host.clone(), port, event_bus.clone(), 0);
-    let command_bus = AppCommandBus::new();
-    let engine = spawn_engine(command_bus.clone(), lv1.clone(), event_bus.clone(), 0);
+    let runtime_generation = RuntimeGeneration::new();
+    let engine = spawn_engine(runtime_generation, lv1.clone(), event_bus.clone(), 0);
     let mut fade_events = event_bus.subscribe();
 
     tokio::time::timeout(Duration::from_secs(10), async {

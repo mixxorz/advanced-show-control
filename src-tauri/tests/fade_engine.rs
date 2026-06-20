@@ -6,8 +6,8 @@ use advanced_show_control::lv1::{
     Lv1ActorHandle, Lv1Event, Lv1Frame, decode_frame_payload, encode_frame, spawn_actor,
 };
 use advanced_show_control::osc::OscArg;
-use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
+use advanced_show_control::runtime::generation::RuntimeGeneration;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
@@ -180,10 +180,10 @@ async fn wait_for_app_event(
 async fn spawn_runtime_for_test(
     lv1: Lv1ActorHandle,
     event_bus: AppEventBus,
-) -> (AppCommandBus, FadeEngineHandle) {
-    let bus = AppCommandBus::new();
-    let engine = spawn_engine(bus.clone(), lv1, event_bus, 0);
-    (bus, engine)
+) -> (RuntimeGeneration, FadeEngineHandle) {
+    let runtime_generation = RuntimeGeneration::new();
+    let engine = spawn_engine(runtime_generation.clone(), lv1, event_bus, 0);
+    (runtime_generation, engine)
 }
 
 async fn start_fade(engine: &FadeEngineHandle, config: FadeConfig) -> Result<(), String> {
@@ -260,7 +260,8 @@ async fn zero_duration_fade_sends_final_gain_without_running_state() {
 
     let event_bus = AppEventBus::default();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let (_runtime_generation, engine) =
+        spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -351,7 +352,8 @@ async fn non_fader_targets_do_not_send_gain_commands_before_parameter_support() 
 
     let event_bus = AppEventBus::default();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
+    let (_runtime_generation, engine) =
+        spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
     let mut app_events = event_bus.subscribe();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -419,8 +421,8 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
 
     let event_bus = AppEventBus::default();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let command_bus = AppCommandBus::new();
-    let engine = spawn_engine(command_bus.clone(), lv1, event_bus.clone(), 0);
+    let runtime_generation = RuntimeGeneration::new();
+    let engine = spawn_engine(runtime_generation, lv1, event_bus.clone(), 0);
     let mut app_events = event_bus.subscribe();
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;

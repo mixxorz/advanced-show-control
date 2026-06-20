@@ -9,8 +9,9 @@ use tokio::task::JoinHandle;
 use crate::fade::{FadeEngineHandle, spawn_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, spawn_actor};
-use crate::runtime::commands::AppCommandBus;
+use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+use crate::runtime::generation::RuntimeGeneration;
 use crate::scene_recall::{SceneRecallFaderHandle, spawn_scene_recall_fader};
 use crate::show::{
     ConnectCommandResult, ShowCommand, ShowCommandResult, ShowStateHandle,
@@ -70,7 +71,7 @@ struct LifecycleInner {
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
     show_runtime_metadata_monitor: Option<JoinHandle<()>>,
-    command_bus: AppCommandBus,
+    runtime_generation: RuntimeGeneration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +98,7 @@ pub struct AppLifecycle {
 
 impl AppLifecycle {
     pub fn new(event_bus: AppEventBus, show: ShowStateHandle) -> Self {
-        let command_bus = AppCommandBus::new();
+        let runtime_generation = RuntimeGeneration::new();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
@@ -107,7 +108,7 @@ impl AppLifecycle {
                 handles: RuntimeHandles::default(),
                 projector: None,
                 show_runtime_metadata_monitor: None,
-                command_bus,
+                runtime_generation,
             })),
             event_bus,
             show,
@@ -143,7 +144,7 @@ impl AppLifecycle {
             return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles });
         }
 
-        inner.command_bus.set_runtime_targets(generation).await;
+        inner.runtime_generation.set(generation).await;
         let mut handles = handles;
         handles.show_scene_list_monitor = Some(spawn_lv1_scene_list_monitor(
             self.show.clone(),
@@ -160,7 +161,7 @@ impl AppLifecycle {
             return;
         }
         inner.handles.abort_all();
-        inner.command_bus.clear_runtime_targets(generation).await;
+        inner.runtime_generation.set(inner.generation).await;
         inner.generation = inner.generation.saturating_add(1);
         let generation = inner.generation;
         drop(inner);
@@ -181,12 +182,12 @@ impl AppLifecycle {
     }
 
     pub async fn abort_runtime_handles_without_advancing_generation(&self) {
-        let (generation, command_bus) = {
+        let (generation, runtime_generation) = {
             let mut inner = self.inner.lock().await;
             inner.handles.abort_all();
-            (inner.generation, inner.command_bus.clone())
+            (inner.generation, inner.runtime_generation.clone())
         };
-        command_bus.clear_runtime_targets(generation).await;
+        runtime_generation.set(generation).await;
     }
 
     pub async fn connect_to_identity<R: Runtime>(
@@ -199,7 +200,7 @@ impl AppLifecycle {
         log_lv1_connect_requested(&identity);
         log_lv1_connecting(&identity);
         let event_bus = self.event_bus.clone();
-        let command_bus = self.current_command_bus().await;
+        let runtime_generation = self.current_runtime_generation().await;
         let lv1 = spawn_actor(
             identity.address.clone(),
             identity.port,
@@ -207,7 +208,7 @@ impl AppLifecycle {
             generation,
         );
         let fade = spawn_engine(
-            command_bus.clone(),
+            runtime_generation.clone(),
             lv1.clone(),
             event_bus.clone(),
             generation,
@@ -223,22 +224,20 @@ impl AppLifecycle {
         lv1.send(Lv1Command::GetState { reply })
             .await
             .map_err(|error| error.to_string())?;
-        let initial_snapshot = rx.await.map_err(|_| {
-            crate::runtime::commands::AppCommandError::ReplyChannelClosed.to_string()
-        })?;
+        let initial_snapshot = rx
+            .await
+            .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())?;
 
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
-            let _ = self
-                .apply_failed_connect_metadata(&command_bus, failure_mode)
-                .await;
+            let _ = self.apply_failed_connect_metadata(failure_mode).await;
             log_lv1_connect_failed(&identity, failure_mode);
             return Err("LV1 did not connect".to_string());
         }
 
         let reconnect_state = crate::connection_state::ReconnectState::default();
         let connect_result = self
-            .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
+            .apply_connected_lv1_metadata(identity.clone(), reconnect_state)
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
@@ -246,7 +245,7 @@ impl AppLifecycle {
         let _ = fade;
         let scene_recall_fader = spawn_scene_recall_fader(
             generation,
-            command_bus,
+            runtime_generation,
             self.show.clone(),
             lv1,
             fade,
@@ -265,11 +264,11 @@ impl AppLifecycle {
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
         generation: u64,
-        command_bus: AppCommandBus,
+        runtime_generation: RuntimeGeneration,
         event_bus: AppEventBus,
         lv1: crate::lv1::Lv1ActorHandle,
         fade: crate::fade::FadeEngineHandle,
-        before_scene_recall_start: Option<Box<dyn FnOnce(AppCommandBus) + Send>>,
+        before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
     ) -> Result<ConnectCommandResult, String> {
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
 
@@ -285,30 +284,28 @@ impl AppLifecycle {
         lv1.send(Lv1Command::GetState { reply })
             .await
             .map_err(|error| error.to_string())?;
-        let initial_snapshot = rx.await.map_err(|_| {
-            crate::runtime::commands::AppCommandError::ReplyChannelClosed.to_string()
-        })?;
+        let initial_snapshot = rx
+            .await
+            .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())?;
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
-            let _ = self
-                .apply_failed_connect_metadata(&command_bus, failure_mode)
-                .await;
+            let _ = self.apply_failed_connect_metadata(failure_mode).await;
             log_lv1_connect_failed(&identity, failure_mode);
             return Err("LV1 did not connect".to_string());
         }
 
         let reconnect_state = crate::connection_state::ReconnectState::default();
         let connect_result = self
-            .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
+            .apply_connected_lv1_metadata(identity.clone(), reconnect_state)
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
         if let Some(before_scene_recall_start) = before_scene_recall_start {
-            before_scene_recall_start(command_bus.clone());
+            before_scene_recall_start(runtime_generation.clone());
         }
         let scene_recall_fader = spawn_scene_recall_fader(
             generation,
-            command_bus,
+            runtime_generation,
             self.show.clone(),
             lv1,
             fade,
@@ -322,11 +319,9 @@ impl AppLifecycle {
 
     async fn apply_connected_lv1_metadata(
         &self,
-        command_bus: &AppCommandBus,
         identity: crate::connection_state::Lv1SystemIdentity,
         reconnect: crate::connection_state::ReconnectState,
-    ) -> Result<ConnectCommandResult, crate::runtime::commands::AppCommandError> {
-        let _ = command_bus;
+    ) -> Result<ConnectCommandResult, AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.show
             .send(ShowCommand::SetPendingLv1Identity {
@@ -334,10 +329,8 @@ impl AppLifecycle {
                 reply: Some(reply),
             })
             .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-        let pending_result = rx
-            .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+            .map_err(|_| AppCommandError::ShowUnavailable)?;
+        let pending_result = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
 
         let (reply, rx) = oneshot::channel();
         self.show
@@ -346,10 +339,8 @@ impl AppLifecycle {
                 reply: Some(reply),
             })
             .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-        let connected_result = rx
-            .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+            .map_err(|_| AppCommandError::ShowUnavailable)?;
+        let connected_result = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
 
         let (reply, rx) = oneshot::channel();
         self.show
@@ -358,10 +349,8 @@ impl AppLifecycle {
                 reply: Some(reply),
             })
             .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-        let reconnect_result = rx
-            .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+            .map_err(|_| AppCommandError::ShowUnavailable)?;
+        let reconnect_result = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
         Ok(ConnectCommandResult {
             changed: pending_result.changed || connected_result.changed || reconnect_result.changed,
         })
@@ -369,20 +358,16 @@ impl AppLifecycle {
 
     async fn apply_failed_connect_metadata(
         &self,
-        command_bus: &AppCommandBus,
         failure_mode: ConnectFailureMode,
-    ) -> Result<(), crate::runtime::commands::AppCommandError> {
-        let _ = command_bus;
+    ) -> Result<(), AppCommandError> {
         match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => {
                 let (reply, rx) = oneshot::channel();
                 self.show
                     .send(ShowCommand::ClearConnectedLv1Identity { reply: Some(reply) })
                     .await
-                    .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-                let _ = rx
-                    .await
-                    .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+                    .map_err(|_| AppCommandError::ShowUnavailable)?;
+                let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
             }
             ConnectFailureMode::PreserveConnectedIdentity => {
                 let (reply, rx) = oneshot::channel();
@@ -392,10 +377,8 @@ impl AppLifecycle {
                         reply: Some(reply),
                     })
                     .await
-                    .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-                let _ = rx
-                    .await
-                    .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+                    .map_err(|_| AppCommandError::ShowUnavailable)?;
+                let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
                 let (reply, rx) = oneshot::channel();
                 self.show
                     .send(ShowCommand::SetReconnectState {
@@ -403,10 +386,8 @@ impl AppLifecycle {
                         reply: Some(reply),
                     })
                     .await
-                    .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-                let _ = rx
-                    .await
-                    .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+                    .map_err(|_| AppCommandError::ShowUnavailable)?;
+                let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
             }
         }
         Ok(())
@@ -430,8 +411,8 @@ impl AppLifecycle {
         Ok(ShowCommandResult { changed: true })
     }
 
-    pub async fn current_command_bus(&self) -> AppCommandBus {
-        self.inner.lock().await.command_bus.clone()
+    pub async fn current_runtime_generation(&self) -> RuntimeGeneration {
+        self.inner.lock().await.runtime_generation.clone()
     }
 
     pub async fn current_show(&self) -> ShowStateHandle {
@@ -559,12 +540,6 @@ impl AppLifecycle {
             },
         ));
         Ok(())
-    }
-
-    pub async fn set_command_bus(&self, command_bus: Option<AppCommandBus>) {
-        if let Some(command_bus) = command_bus {
-            self.inner.lock().await.command_bus = command_bus;
-        }
     }
 }
 
@@ -819,11 +794,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_identity_metadata_is_applied_through_app_command_bus() {
+    async fn connected_identity_metadata_is_applied() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus, show);
-        let command_bus = lifecycle.current_command_bus().await;
         let mut events = lifecycle.event_bus.subscribe();
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
@@ -833,9 +807,9 @@ mod tests {
         };
 
         lifecycle
-            .apply_connected_lv1_metadata(&command_bus, identity.clone(), ReconnectState::default())
+            .apply_connected_lv1_metadata(identity.clone(), ReconnectState::default())
             .await
-            .expect("connected metadata should apply through the command bus");
+            .expect("connected metadata should apply");
 
         assert!(matches!(
             events.recv().await.unwrap(),
@@ -847,11 +821,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_connect_metadata_is_applied_through_app_command_bus() {
+    async fn failed_connect_metadata_is_applied() {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus, show);
-        let command_bus = lifecycle.current_command_bus().await;
         let mut events = lifecycle.event_bus.subscribe();
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
@@ -895,12 +868,9 @@ mod tests {
         let _ = rx.await.unwrap();
 
         lifecycle
-            .apply_failed_connect_metadata(
-                &command_bus,
-                ConnectFailureMode::PreserveConnectedIdentity,
-            )
+            .apply_failed_connect_metadata(ConnectFailureMode::PreserveConnectedIdentity)
             .await
-            .expect("failed connect metadata should apply through the command bus");
+            .expect("failed connect metadata should apply");
 
         assert!(matches!(
             events.recv().await.unwrap(),
@@ -917,7 +887,7 @@ mod tests {
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus, show);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let command_bus = lifecycle.current_command_bus().await;
+        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(disconnected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
@@ -934,7 +904,7 @@ mod tests {
                 identity,
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                command_bus,
+                runtime_generation,
                 lifecycle.event_bus.clone(),
                 lv1,
                 fade,
@@ -952,7 +922,7 @@ mod tests {
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus.clone(), show);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let command_bus = lifecycle.current_command_bus().await;
+        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let lv1_for_assertion = lv1.clone();
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
@@ -971,11 +941,11 @@ mod tests {
                 identity,
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                command_bus,
+                runtime_generation,
                 event_bus,
                 lv1,
                 fade,
-                Some(Box::new(move |_bus: AppCommandBus| {
+                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
                     let seen_tx = seen_tx;
                     tokio::spawn(async move {
                         let (reply, rx) = oneshot::channel();
@@ -1004,7 +974,7 @@ mod tests {
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus.clone(), show);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let command_bus = lifecycle.current_command_bus().await;
+        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
@@ -1020,7 +990,7 @@ mod tests {
                 },
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                command_bus,
+                runtime_generation,
                 event_bus,
                 lv1,
                 fade,
@@ -1042,7 +1012,7 @@ mod tests {
         let show = ShowStateHandle::new_empty(event_bus.clone());
         let lifecycle = AppLifecycle::new(event_bus.clone(), show);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let command_bus = lifecycle.current_command_bus().await;
+        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
@@ -1058,7 +1028,7 @@ mod tests {
                 },
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                command_bus,
+                runtime_generation,
                 event_bus,
                 lv1,
                 fade,

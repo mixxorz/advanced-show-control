@@ -3,8 +3,8 @@ use advanced_show_control::fade::{
 };
 use advanced_show_control::lv1::{Lv1Event, SceneState, encode_frame, spawn_actor};
 use advanced_show_control::osc::OscArg;
-use advanced_show_control::runtime::commands::AppCommandBus;
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
+use advanced_show_control::runtime::generation::RuntimeGeneration;
 use std::io::Write;
 use std::net::TcpListener;
 use std::time::Duration;
@@ -66,8 +66,8 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
     let lv1 = spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let command_bus = AppCommandBus::new();
-    let fade = spawn_engine(command_bus.clone(), lv1, event_bus, 0);
+    let runtime_generation = RuntimeGeneration::new();
+    let fade = spawn_engine(runtime_generation, lv1, event_bus, 0);
 
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {

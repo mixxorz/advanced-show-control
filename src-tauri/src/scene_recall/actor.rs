@@ -5,8 +5,9 @@ use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
     SceneState,
 };
-use crate::runtime::commands::AppCommandBus;
+use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use crate::runtime::generation::RuntimeGeneration;
 use crate::scene_recall::SceneRecallEvent;
 use crate::scene_recall::commands::SceneRecallCommand;
 use crate::scene_recall::handle::SceneRecallFaderHandle;
@@ -34,7 +35,7 @@ impl PendingSceneObservation {
 
 pub fn spawn_scene_recall_fader(
     generation: u64,
-    command_bus: AppCommandBus,
+    runtime_generation: RuntimeGeneration,
     show: ShowStateHandle,
     lv1: Lv1ActorHandle,
     fade: FadeEngineHandle,
@@ -91,7 +92,7 @@ pub fn spawn_scene_recall_fader(
                         if let Some(observation) = pending_scene.take() {
                         process_scene_observation(
                             generation,
-                            &command_bus,
+                            &runtime_generation,
                             &show,
                             &lv1,
                             &fade,
@@ -145,14 +146,14 @@ pub fn spawn_scene_recall_fader(
     SceneRecallFaderHandle::new(command_tx)
 }
 
-async fn is_generation_current(expected: u64, command_bus: &AppCommandBus) -> bool {
-    command_bus.get_generation().await == expected
+async fn is_generation_current(expected: u64, runtime_generation: &RuntimeGeneration) -> bool {
+    runtime_generation.current().await == expected
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn process_scene_observation(
     generation: u64,
-    command_bus: &AppCommandBus,
+    runtime_generation: &RuntimeGeneration,
     show: &ShowStateHandle,
     lv1: &Lv1ActorHandle,
     fade: &FadeEngineHandle,
@@ -176,14 +177,14 @@ async fn process_scene_observation(
         return;
     }
 
-    if !is_generation_current(generation, command_bus).await {
+    if !is_generation_current(generation, runtime_generation).await {
         return;
     }
 
     let lv1_snapshot = match fresh_lv1_snapshot(lv1, &observation.scene).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
-            if !is_generation_current(generation, command_bus).await {
+            if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             event_bus.publish_scene_recall(
@@ -206,7 +207,7 @@ async fn process_scene_observation(
         .await
         .is_err()
     {
-        if !is_generation_current(generation, command_bus).await {
+        if !is_generation_current(generation, runtime_generation).await {
             return;
         }
         event_bus.publish_scene_recall(
@@ -221,7 +222,7 @@ async fn process_scene_observation(
     let scene_config = match rx.await {
         Ok(scene_config) => scene_config,
         Err(_) => {
-            if !is_generation_current(generation, command_bus).await {
+            if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             event_bus.publish_scene_recall(
@@ -237,7 +238,7 @@ async fn process_scene_observation(
 
     let (reply, rx) = oneshot::channel();
     if show.send(ShowCommand::GetLockout { reply }).await.is_err() {
-        if !is_generation_current(generation, command_bus).await {
+        if !is_generation_current(generation, runtime_generation).await {
             return;
         }
         event_bus.publish_scene_recall(
@@ -252,7 +253,7 @@ async fn process_scene_observation(
     let lockout = match rx.await {
         Ok(lockout) => lockout,
         Err(_) => {
-            if !is_generation_current(generation, command_bus).await {
+            if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             event_bus.publish_scene_recall(
@@ -274,7 +275,7 @@ async fn process_scene_observation(
     }) {
         RecallPolicyDecision::Start(fade_config) => {
             let scene_label = scene_label(&observation.scene);
-            if !is_generation_current(generation, command_bus).await {
+            if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
@@ -293,8 +294,8 @@ async fn process_scene_observation(
                 },
             );
             let (reply, rx) = oneshot::channel();
-            let result = if !is_generation_current(generation, command_bus).await {
-                Err(crate::runtime::commands::AppCommandError::StaleGeneration)
+            let result = if !is_generation_current(generation, runtime_generation).await {
+                Err(AppCommandError::StaleGeneration)
             } else {
                 match fade
                     .send(FadeCommand::RecallSceneFade {
@@ -306,15 +307,13 @@ async fn process_scene_observation(
                 {
                     Ok(()) => match rx.await {
                         Ok(result) => result,
-                        Err(_) => {
-                            Err(crate::runtime::commands::AppCommandError::ReplyChannelClosed)
-                        }
+                        Err(_) => Err(AppCommandError::ReplyChannelClosed),
                     },
-                    Err(_) => Err(crate::runtime::commands::AppCommandError::FadeUnavailable),
+                    Err(_) => Err(AppCommandError::FadeUnavailable),
                 }
             };
             match result {
-                Ok(()) | Err(crate::runtime::commands::AppCommandError::StaleGeneration) => (),
+                Ok(()) | Err(AppCommandError::StaleGeneration) => (),
                 Err(err) => {
                     event_bus.publish_scene_recall(
                         generation,
@@ -327,7 +326,7 @@ async fn process_scene_observation(
             }
         }
         RecallPolicyDecision::Skip { reason } => {
-            if !is_generation_current(generation, command_bus).await {
+            if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             event_bus.publish_scene_recall(
@@ -339,7 +338,7 @@ async fn process_scene_observation(
             );
         }
         RecallPolicyDecision::Blocked { reason } => {
-            if !is_generation_current(generation, command_bus).await {
+            if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             let scene_label = scene_label(&observation.scene);
@@ -368,7 +367,7 @@ async fn handle_explicit_recall_scene(
     show: &ShowStateHandle,
     lv1: &Lv1ActorHandle,
     scene_id: String,
-) -> Result<RecallSceneResult, crate::runtime::commands::AppCommandError> {
+) -> Result<RecallSceneResult, AppCommandError> {
     tracing::debug!(
         event = "scene_recall_requested",
         scene_id = %scene_id,
@@ -379,12 +378,10 @@ async fn handle_explicit_recall_scene(
     lv1.send(Lv1Command::GetState { reply })
         .await
         .map_err(|error| match error {
-            Lv1ActorError::NotConnected => {
-                crate::runtime::commands::AppCommandError::CommandFailed(
-                    "Recall blocked: LV1 state is unavailable".to_string(),
-                )
-            }
-            other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+            Lv1ActorError::NotConnected => AppCommandError::CommandFailed(
+                "Recall blocked: LV1 state is unavailable".to_string(),
+            ),
+            other => AppCommandError::CommandFailed(other.to_string()),
         })
         .map_err(|error| {
             tracing::warn!(
@@ -397,7 +394,7 @@ async fn handle_explicit_recall_scene(
         })?;
     let lv1_snapshot = rx
         .await
-        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(|error| {
             tracing::warn!(
                 event = "scene_recall_blocked",
@@ -410,10 +407,8 @@ async fn handle_explicit_recall_scene(
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::GetShowDocument { reply })
         .await
-        .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
-    let show_document = rx
-        .await
-        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+        .map_err(|_| AppCommandError::ShowUnavailable)?;
+    let show_document = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
     let result =
         crate::show::validate_recall_scene_request(&show_document, &lv1_snapshot, &scene_id)
             .map_err(|message| {
@@ -423,7 +418,7 @@ async fn handle_explicit_recall_scene(
                     reason = %message,
                     "Scene recall blocked: {message}"
                 );
-                crate::runtime::commands::AppCommandError::CommandFailed(message)
+                AppCommandError::CommandFailed(message)
             })?;
 
     let (reply, rx) = oneshot::channel();
@@ -433,16 +428,14 @@ async fn handle_explicit_recall_scene(
     })
     .await
     .map_err(|error| match error {
-        Lv1ActorError::NotConnected => crate::runtime::commands::AppCommandError::Lv1Unavailable,
-        other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+        other => AppCommandError::CommandFailed(other.to_string()),
     })?;
     rx.await
-        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?
+        .map_err(|_| AppCommandError::ReplyChannelClosed)?
         .map_err(|error| match error {
-            Lv1ActorError::NotConnected => {
-                crate::runtime::commands::AppCommandError::Lv1Unavailable
-            }
-            other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
         })?;
     tracing::debug!(
         event = "scene_recall_command_sent",
@@ -458,35 +451,27 @@ async fn handle_explicit_recall_scene(
 async fn fresh_lv1_snapshot(
     lv1: &Lv1ActorHandle,
     scene: &SceneState,
-) -> Result<Lv1StateSnapshot, crate::runtime::commands::AppCommandError> {
+) -> Result<Lv1StateSnapshot, AppCommandError> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
         let (reply, rx) = oneshot::channel();
         lv1.send(Lv1Command::GetState { reply })
             .await
             .map_err(|error| match error {
-                crate::lv1::Lv1ActorError::NotConnected => {
-                    crate::runtime::commands::AppCommandError::Lv1Unavailable
-                }
-                other => {
-                    crate::runtime::commands::AppCommandError::CommandFailed(other.to_string())
-                }
+                crate::lv1::Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+                other => AppCommandError::CommandFailed(other.to_string()),
             })?;
-        let snapshot = rx
-            .await
-            .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+        let snapshot = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
         if snapshot.connection == ConnectionStatus::Connected
             && snapshot.scene.as_ref() == Some(scene)
         {
             return Ok(snapshot);
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(crate::runtime::commands::AppCommandError::CommandFailed(
-                format!(
-                    "timed out waiting for fresh LV1 scene to match recalled scene {}: {}",
-                    scene.index, scene.name
-                ),
-            ));
+            return Err(AppCommandError::CommandFailed(format!(
+                "timed out waiting for fresh LV1 scene to match recalled scene {}: {}",
+                scene.index, scene.name
+            )));
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -590,8 +575,8 @@ mod tests {
     async fn unavailable_lv1_state_blocks_before_start() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
         drop(lv1_rx);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
@@ -600,7 +585,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -626,8 +611,8 @@ mod tests {
     async fn blocked_recall_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade_tx, fade_rx) = tokio::sync::mpsc::channel(1);
@@ -637,7 +622,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -662,7 +647,7 @@ mod tests {
     #[tokio::test]
     async fn scene_recall_handle_sends_shutdown_command() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new();
+        let runtime_generation = RuntimeGeneration::new();
         let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
@@ -670,7 +655,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus,
+            runtime_generation,
             ShowStateHandle::new_empty(event_bus.clone()),
             lv1,
             fade,
@@ -684,8 +669,8 @@ mod tests {
     async fn stale_generation_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
@@ -693,7 +678,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -703,7 +688,7 @@ mod tests {
         arm_recall_state(&event_bus).await;
 
         // Bump generation BEFORE the scene change — any fade started after this is stale
-        command_bus.set_generation(2).await;
+        runtime_generation.set(2).await;
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
             event: Lv1Event::SceneChanged(intro_scene()),
@@ -749,8 +734,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn generation_flip_between_scene_change_and_fade_start_blocks_fade() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
@@ -758,7 +743,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -775,7 +760,7 @@ mod tests {
         yield_to_actor().await;
 
         // Flip generation while the actor is settling (before it dispatches start_fade)
-        command_bus.set_generation(2).await;
+        runtime_generation.set(2).await;
 
         // Now advance past the settle delay — policy will decide Start but generation is stale
         tokio::time::advance(Duration::from_millis(50)).await;
@@ -794,8 +779,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn valid_recall_starts_fade() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -803,7 +788,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -852,8 +837,8 @@ mod tests {
     async fn current_scene_move_sequence_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -861,7 +846,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -906,8 +891,8 @@ mod tests {
     async fn non_current_rename_delayed_pair_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -915,7 +900,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -962,8 +947,8 @@ mod tests {
     async fn scene_changed_before_changed_scene_list_in_same_burst_does_not_start_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -971,7 +956,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -1017,8 +1002,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn identical_scene_list_resend_does_not_block_real_recall() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -1026,7 +1011,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -1075,8 +1060,8 @@ mod tests {
     async fn valid_recall_after_scene_list_edit_window_starts_fade() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -1084,7 +1069,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -1153,8 +1138,8 @@ mod tests {
     async fn mismatched_fresh_lv1_snapshot_blocks_recall() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) =
             spawn_fake_lv1_with_mismatched_scene(event_bus.clone()).await;
@@ -1163,7 +1148,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,
@@ -1219,8 +1204,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn skipped_recall_does_not_abort_existing_fade() {
         let event_bus = AppEventBus::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_generation(1).await;
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
         let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
@@ -1237,7 +1222,7 @@ mod tests {
 
         let handle = spawn_scene_recall_fader(
             1,
-            command_bus.clone(),
+            runtime_generation.clone(),
             show.clone(),
             lv1,
             fade,

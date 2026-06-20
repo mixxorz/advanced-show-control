@@ -4,7 +4,7 @@ use crate::connection_state::Lv1SystemIdentity;
 use crate::fade::FadeCommand;
 use crate::lifecycle::AppLifecycle;
 use crate::lv1::{Lv1ActorError, Lv1Command};
-use crate::runtime::commands::AppCommandError;
+use crate::runtime::errors::AppCommandError;
 use crate::scene_recall::SceneRecallCommand;
 use crate::show::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,

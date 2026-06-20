@@ -1,7 +1,7 @@
 use tokio::sync::oneshot;
 
 use crate::fade::types::FadeConfig;
-use crate::runtime::commands::AppCommandError;
+use crate::runtime::errors::AppCommandError;
 
 #[derive(Debug)]
 pub enum FadeCommand {
