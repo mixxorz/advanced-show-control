@@ -3,7 +3,7 @@ use tokio::sync::broadcast;
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scene_recall::events::SceneRecallEvent;
-use crate::show::events::ShowEvent;
+use crate::show::ShowEvent;
 
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
@@ -86,7 +86,7 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
 mod tests {
     use super::*;
     use crate::lv1::SceneState;
-    use crate::show::events::ShowProjectionReason;
+    use crate::show::ShowProjectionReason;
 
     #[tokio::test]
     async fn publish_succeeds_without_subscribers() {
@@ -226,7 +226,7 @@ mod tests {
 
         bus.publish(AppEvent::Show(ShowEvent::StateChanged {
             reason: ShowProjectionReason::ShowState,
-            state: crate::show::events::ShowProjectionState {
+            state: crate::show::ShowProjectionState {
                 lockout: false,
                 scene_configs: vec![],
                 cued_scene_id: None,
@@ -259,7 +259,7 @@ mod tests {
 
         let sent = bus.publish(AppEvent::Show(ShowEvent::StateChanged {
             reason: ShowProjectionReason::ShowState,
-            state: crate::show::events::ShowProjectionState {
+            state: crate::show::ShowProjectionState {
                 lockout: false,
                 scene_configs: vec![],
                 cued_scene_id: None,

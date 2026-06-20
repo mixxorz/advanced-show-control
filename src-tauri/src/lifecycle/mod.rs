@@ -12,8 +12,9 @@ use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Event, spawn_actor};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::scene_recall::spawn_scene_recall_fader;
-use crate::show::commands::ShowCommandResult;
-use crate::show::handle::{ShowStateHandle, spawn_lv1_scene_list_monitor};
+use crate::show::{
+    ConnectCommandResult, ShowCommandResult, ShowStateHandle, spawn_lv1_scene_list_monitor,
+};
 
 #[derive(Default)]
 pub struct RuntimeHandles {
@@ -203,7 +204,7 @@ impl AppLifecycle {
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
-    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+    ) -> Result<ConnectCommandResult, String> {
         log_lv1_connect_requested(&identity);
         log_lv1_connecting(&identity);
         let event_bus = self.event_bus.clone();
@@ -263,7 +264,7 @@ impl AppLifecycle {
         lv1: crate::lv1::Lv1ActorHandle,
         fade: crate::fade::FadeEngineHandle,
         before_scene_recall_start: Option<Box<dyn FnOnce(AppCommandBus) + Send>>,
-    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+    ) -> Result<ConnectCommandResult, String> {
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
 
         if self
@@ -310,16 +311,13 @@ impl AppLifecycle {
         command_bus: &AppCommandBus,
         identity: crate::connection_state::Lv1SystemIdentity,
         reconnect: crate::connection_state::ReconnectState,
-    ) -> Result<
-        crate::show::commands::ConnectCommandResult,
-        crate::runtime::commands::AppCommandError,
-    > {
+    ) -> Result<ConnectCommandResult, crate::runtime::commands::AppCommandError> {
         let pending_result = command_bus.set_pending_lv1_identity(None).await?;
         let connected_result = command_bus
             .establish_connected_lv1_identity(identity)
             .await?;
         let reconnect_result = command_bus.set_reconnect_state(reconnect).await?;
-        Ok(crate::show::commands::ConnectCommandResult {
+        Ok(ConnectCommandResult {
             changed: pending_result.changed || connected_result.changed || reconnect_result.changed,
         })
     }
@@ -383,7 +381,7 @@ impl AppLifecycle {
         &self,
         app: AppHandle<R>,
         identity: crate::connection_state::Lv1SystemIdentity,
-    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+    ) -> Result<ConnectCommandResult, String> {
         self.abort_current_runtime().await;
         let generation = self
             .begin_connecting()
@@ -401,7 +399,7 @@ impl AppLifecycle {
     pub async fn attempt_reconnect_lv1<R: Runtime>(
         &self,
         app: AppHandle<R>,
-    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+    ) -> Result<ConnectCommandResult, String> {
         let identity = self
             .connected_lv1_identity()
             .await
@@ -423,9 +421,9 @@ impl AppLifecycle {
     pub async fn startup_auto_connect_lv1<R: Runtime>(
         &self,
         app: AppHandle<R>,
-    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+    ) -> Result<ConnectCommandResult, String> {
         let Some(identity) = self.connected_lv1_identity().await else {
-            return Ok(crate::show::commands::ConnectCommandResult { changed: false });
+            return Ok(ConnectCommandResult { changed: false });
         };
         self.abort_current_runtime().await;
         let generation = self
@@ -600,7 +598,7 @@ mod tests {
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
-    use crate::show::events::{ShowEvent, ShowProjectionReason};
+    use crate::show::{ShowEvent, ShowProjectionReason};
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};

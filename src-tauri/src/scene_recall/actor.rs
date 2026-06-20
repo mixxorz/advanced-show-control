@@ -308,8 +308,8 @@ mod tests {
     };
     use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scene_recall::events::SceneRecallEvent;
-    use crate::show::types::{
-        ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument,
+    use crate::show::{
+        ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument, ShowStateHandle,
     };
     use std::sync::{
         Arc,
@@ -965,13 +965,9 @@ mod tests {
         command_bus.set_fade(Some(fade)).await;
         command_bus.set_show(Some(show.clone())).await;
         seed_show_with_duration(&show, 0).await;
-        let _ = crate::show::commands::set_scene_scope_faders_enabled(
-            &show,
-            "1::Intro".to_string(),
-            false,
-        )
-        .await
-        .unwrap();
+        let _ = crate::show::set_scene_scope_faders_enabled(&show, "1::Intro".to_string(), false)
+            .await
+            .unwrap();
 
         let handle = spawn_scene_recall_fader(1, command_bus.clone(), event_bus.clone());
         release_lv1.send(()).unwrap();
@@ -1181,18 +1177,15 @@ mod tests {
         (crate::lv1::test_actor_handle(lv1_tx), release_tx, server)
     }
 
-    fn show_handle() -> crate::show::handle::ShowStateHandle {
-        crate::show::handle::ShowStateHandle::new_empty(AppEventBus::default())
+    fn show_handle() -> ShowStateHandle {
+        ShowStateHandle::new_empty(AppEventBus::default())
     }
 
-    async fn seed_show(handle: &crate::show::handle::ShowStateHandle) {
+    async fn seed_show(handle: &ShowStateHandle) {
         seed_show_with_duration(handle, 4_000).await;
     }
 
-    async fn seed_show_with_duration(
-        handle: &crate::show::handle::ShowStateHandle,
-        duration_ms: u64,
-    ) {
+    async fn seed_show_with_duration(handle: &ShowStateHandle, duration_ms: u64) {
         let snapshot = ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
@@ -1217,7 +1210,7 @@ mod tests {
             }],
             cued_scene_id: None,
         };
-        crate::show::commands::replace_show_document_for_test(handle, snapshot).await;
+        crate::show::replace_show_document_for_test(handle, snapshot).await;
     }
 
     fn fake_fade_handle() -> (

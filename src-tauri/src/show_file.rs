@@ -1,4 +1,4 @@
-pub use crate::show::show_file::{
+pub use crate::show::{
     ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
     ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
     ShowFileSceneScopeToggles, export_show_file, import_show_file, prune_show_file_to_lv1_scenes,

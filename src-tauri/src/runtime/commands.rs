@@ -6,13 +6,10 @@ use tokio::sync::Mutex;
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::fade::{FadeConfig, FadeEngineHandle};
 use crate::lv1::{ChannelInfo, Lv1ActorError, Lv1ActorHandle, Lv1ParameterWrite, Lv1StateSnapshot};
-use crate::show::commands::{
-    CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult, SelectedSceneResult,
-    ShowCommandResult,
+use crate::show::{
+    CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult, SceneConfig,
+    SelectedSceneResult, ShowCommandResult, ShowDocument, ShowFile, ShowStateHandle,
 };
-use crate::show::handle::ShowStateHandle;
-use crate::show::show_file::ShowFile;
-use crate::show::types::{SceneConfig, ShowDocument};
 
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AppCommandError {
@@ -88,7 +85,7 @@ impl AppCommandBus {
         reason: String,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::handle_runtime_disconnected(&show, reason).await)
+        Ok(crate::show::handle_runtime_disconnected(&show, reason).await)
     }
 
     pub async fn set_discovered_lv1_systems(
@@ -96,7 +93,7 @@ impl AppCommandBus {
         systems: Vec<DiscoveredLv1System>,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::set_discovered_lv1_systems(&show, systems).await)
+        Ok(crate::show::set_discovered_lv1_systems(&show, systems).await)
     }
 
     pub async fn set_pending_lv1_identity(
@@ -104,7 +101,7 @@ impl AppCommandBus {
         identity: Option<Lv1SystemIdentity>,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::set_pending_lv1_identity(&show, identity).await)
+        Ok(crate::show::set_pending_lv1_identity(&show, identity).await)
     }
 
     pub async fn establish_connected_lv1_identity(
@@ -112,12 +109,12 @@ impl AppCommandBus {
         identity: Lv1SystemIdentity,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::establish_connected_lv1_identity(&show, identity).await)
+        Ok(crate::show::establish_connected_lv1_identity(&show, identity).await)
     }
 
     pub async fn clear_connected_lv1_identity(&self) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::clear_connected_lv1_identity(&show).await)
+        Ok(crate::show::clear_connected_lv1_identity(&show).await)
     }
 
     pub async fn set_reconnect_state(
@@ -125,7 +122,7 @@ impl AppCommandBus {
         reconnect: ReconnectState,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::set_reconnect_state(&show, reconnect).await)
+        Ok(crate::show::set_reconnect_state(&show, reconnect).await)
     }
 
     pub async fn set_lv1(&self, lv1: Option<Lv1ActorHandle>) {
@@ -183,7 +180,7 @@ impl AppCommandBus {
     pub async fn get_show_document(&self) -> Result<ShowDocument, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(crate::show::commands::get_show_document(&show).await),
+            Some(show) => Ok(crate::show::get_show_document(&show).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -193,7 +190,7 @@ impl AppCommandBus {
     ) -> Result<Option<std::path::PathBuf>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(crate::show::commands::current_show_file_path(&show).await),
+            Some(show) => Ok(crate::show::current_show_file_path(&show).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -204,7 +201,7 @@ impl AppCommandBus {
     ) -> Result<Option<SceneConfig>, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(crate::show::commands::get_scene_config(&show, scene_id).await),
+            Some(show) => Ok(crate::show::get_scene_config(&show, scene_id).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -212,7 +209,7 @@ impl AppCommandBus {
     pub async fn get_lockout(&self) -> Result<bool, AppCommandError> {
         let show = self.targets.lock().await.show.clone();
         match show {
-            Some(show) => Ok(crate::show::commands::get_lockout(&show).await),
+            Some(show) => Ok(crate::show::get_lockout(&show).await),
             None => Err(AppCommandError::ShowUnavailable),
         }
     }
@@ -228,7 +225,7 @@ impl AppCommandBus {
 
     pub async fn set_lockout(&self, enabled: bool) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::set_lockout(&show, enabled).await)
+        Ok(crate::show::set_lockout(&show, enabled).await)
     }
 
     pub async fn set_scene_duration_ms(
@@ -237,7 +234,7 @@ impl AppCommandBus {
         duration_ms: u64,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::set_scene_duration_ms(&show, scene_id, duration_ms)
+        crate::show::set_scene_duration_ms(&show, scene_id, duration_ms)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -248,7 +245,7 @@ impl AppCommandBus {
         enabled: bool,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::set_scene_scope_faders_enabled(&show, scene_id, enabled)
+        crate::show::set_scene_scope_faders_enabled(&show, scene_id, enabled)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -259,7 +256,7 @@ impl AppCommandBus {
         enabled: bool,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::set_scene_scope_pan_enabled(&show, scene_id, enabled)
+        crate::show::set_scene_scope_pan_enabled(&show, scene_id, enabled)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -272,7 +269,7 @@ impl AppCommandBus {
         scoped: bool,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::set_channel_scoped(&show, scene_id, group, channel, scoped)
+        crate::show::set_channel_scoped(&show, scene_id, group, channel, scoped)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -283,14 +280,14 @@ impl AppCommandBus {
         scoped: bool,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::set_all_channels_scoped(&show, scene_id, scoped)
+        crate::show::set_all_channels_scoped(&show, scene_id, scoped)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
 
     pub async fn cue_scene(&self, scene_id: String) -> Result<CueSceneResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::cue_scene(&show, scene_id)
+        crate::show::cue_scene(&show, scene_id)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -300,7 +297,7 @@ impl AppCommandBus {
         scene_id: String,
     ) -> Result<SelectedSceneResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::select_scene_config(&show, scene_id)
+        crate::show::select_scene_config(&show, scene_id)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -311,7 +308,7 @@ impl AppCommandBus {
         channels: Vec<ChannelInfo>,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::store_scene_config(&show, scene_id, channels)
+        crate::show::store_scene_config(&show, scene_id, channels)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -334,7 +331,7 @@ impl AppCommandBus {
         lv1: Option<Lv1StateSnapshot>,
     ) -> Result<NewShowFileResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::new_show_file(&show, lv1)
+        crate::show::new_show_file(&show, lv1)
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -344,7 +341,7 @@ impl AppCommandBus {
         saved_at: String,
     ) -> Result<ShowFile, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::export_show_file_snapshot(&show, saved_at).await)
+        Ok(crate::show::export_show_file_snapshot(&show, saved_at).await)
     }
 
     pub async fn export_show_file_for_save(
@@ -360,7 +357,7 @@ impl AppCommandBus {
         saved_at: String,
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
-        Ok(crate::show::commands::mark_show_file_saved(&show, path, saved_at).await)
+        Ok(crate::show::mark_show_file_saved(&show, path, saved_at).await)
     }
 
     pub async fn load_show_file_from_path(
@@ -370,7 +367,7 @@ impl AppCommandBus {
         lv1: Lv1StateSnapshot,
     ) -> Result<LoadShowFileResult, AppCommandError> {
         let show = self.show_target().await?;
-        crate::show::commands::load_show_file_from_dto(&show, path, file, Some(lv1))
+        crate::show::load_show_file_from_dto(&show, path, file, Some(lv1))
             .await
             .map_err(AppCommandError::CommandFailed)
     }
@@ -419,10 +416,9 @@ impl AppCommandBus {
             );
             mapped
         })?;
-        let show_document = crate::show::commands::get_show_document(&show).await;
-        let result =
-            crate::show::commands::validate_recall_scene_request(&show_document, &lv1, &scene_id)
-                .map_err(|message| {
+        let show_document = crate::show::get_show_document(&show).await;
+        let result = crate::show::validate_recall_scene_request(&show_document, &lv1, &scene_id)
+            .map_err(|message| {
                 tracing::warn!(
                     event = "scene_recall_blocked",
                     scene_id = %scene_id,
@@ -653,12 +649,10 @@ mod tests {
         SceneListEntry, test_actor_handle,
     };
     use crate::runtime::events::AppEventBus;
-    use crate::show::handle::ShowStateHandle;
-    use crate::show::show_file::{
-        SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileSafety, ShowFileSceneConfig,
-        ShowFileSceneScopeToggles,
+    use crate::show::{
+        ChannelConfig, SHOW_FILE_SCHEMA_VERSION, SceneConfig, SceneScopeToggles, ShowDocument,
+        ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowFileSceneScopeToggles, ShowStateHandle,
     };
-    use crate::show::types::{ChannelConfig, SceneConfig, SceneScopeToggles, ShowDocument};
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex as StdMutex};
     use tracing::field::{Field, Visit};
@@ -777,7 +771,7 @@ mod tests {
     async fn bus_with_show_document(snapshot: ShowDocument) -> (AppCommandBus, AppEventBus) {
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus.clone());
-        crate::show::commands::replace_show_document_for_test(&show, snapshot).await;
+        crate::show::replace_show_document_for_test(&show, snapshot).await;
         let bus = AppCommandBus::new();
         bus.set_show(Some(show)).await;
         (bus, event_bus)
@@ -1332,7 +1326,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::commands::replace_show_document_for_test(
+        crate::show::replace_show_document_for_test(
             &show,
             ShowDocument {
                 lockout: true,
@@ -1513,7 +1507,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::commands::replace_show_document_for_test(
+        crate::show::replace_show_document_for_test(
             &show,
             ShowDocument {
                 lockout: false,
@@ -1578,7 +1572,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::commands::replace_show_document_for_test(
+        crate::show::replace_show_document_for_test(
             &show,
             ShowDocument {
                 lockout: true,
@@ -1644,7 +1638,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::commands::replace_show_document_for_test(
+        crate::show::replace_show_document_for_test(
             &show,
             ShowDocument {
                 lockout: false,
@@ -1708,7 +1702,7 @@ mod tests {
         let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
-        crate::show::commands::replace_show_document_for_test(
+        crate::show::replace_show_document_for_test(
             &show,
             ShowDocument {
                 lockout: false,

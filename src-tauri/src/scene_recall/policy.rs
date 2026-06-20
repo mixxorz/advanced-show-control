@@ -1,6 +1,6 @@
 use crate::fade::{FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget};
 use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, PanMode, SceneState};
-use crate::show::types::SceneConfig;
+use crate::show::SceneConfig;
 
 pub struct RecallPolicyInput {
     pub recalled_scene: SceneState,
@@ -159,7 +159,7 @@ fn blocked(reason: impl Into<String>) -> RecallPolicyDecision {
 mod tests {
     use super::*;
     use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, PanMode, SceneState};
-    use crate::show::types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
+    use crate::show::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     fn snapshot(scene: Option<SceneState>, channels: Vec<ChannelInfo>) -> Lv1StateSnapshot {
         Lv1StateSnapshot {

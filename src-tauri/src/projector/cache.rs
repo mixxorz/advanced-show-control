@@ -10,7 +10,7 @@ use crate::logging::UiLogEvent;
 use crate::lv1::{
     ChannelInfo, ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState,
 };
-use crate::show::events::ShowProjectionState;
+use crate::show::ShowProjectionState;
 
 pub const MAX_PROJECTOR_LOGS: usize = 200;
 
@@ -26,7 +26,7 @@ pub struct ProjectionCache {
     fade_state: AppFadeState,
     selected_scene_id: Option<String>,
     lockout: bool,
-    scene_configs: Vec<crate::show::types::SceneConfig>,
+    scene_configs: Vec<crate::show::SceneConfig>,
     cued_scene_id: Option<String>,
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,

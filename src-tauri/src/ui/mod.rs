@@ -6,7 +6,7 @@
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use crate::runtime::events::AppEventBus;
-use crate::show::handle::ShowStateHandle;
+use crate::show::ShowStateHandle;
 use tauri::Manager;
 use tokio::sync::broadcast;
 

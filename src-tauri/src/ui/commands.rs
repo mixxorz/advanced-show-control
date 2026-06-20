@@ -3,7 +3,7 @@
 use crate::connection_state::Lv1SystemIdentity;
 use crate::lifecycle::AppLifecycle;
 use crate::runtime::commands::AppCommandError;
-use crate::show::commands::{
+use crate::show::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
     SelectedSceneResult, ShowCommandResult,
 };
@@ -162,7 +162,7 @@ async fn choose_save_show_file_path() -> Result<PathBuf, String> {
 mod tests {
     use super::*;
     use crate::runtime::events::AppEventBus;
-    use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
+    use crate::show::{SceneConfig, SceneScopeToggles, ShowDocument, ShowStateHandle};
 
     fn temp_show_file_path(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -178,8 +178,8 @@ mod tests {
     #[tokio::test]
     async fn save_show_file_uses_existing_show_file_path() {
         let event_bus = AppEventBus::default();
-        let show = crate::show::handle::ShowStateHandle::new_empty(event_bus);
-        crate::show::commands::replace_show_document_for_test(
+        let show = ShowStateHandle::new_empty(event_bus);
+        crate::show::replace_show_document_for_test(
             &show,
             ShowDocument {
                 lockout: false,
@@ -198,8 +198,8 @@ mod tests {
         .await;
         let lifecycle = AppLifecycle::new(AppEventBus::default(), show.clone());
         let path = temp_show_file_path("save-existing");
-        let initial_file = crate::show::show_file::export_show_file(
-            crate::show::commands::get_show_document(&show).await,
+        let initial_file = crate::show::export_show_file(
+            crate::show::get_show_document(&show).await,
             "saved".to_string(),
         );
         write_show_file(&path, &initial_file, &backup_folder())

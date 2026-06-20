@@ -7,7 +7,7 @@ use crate::app_state::AppViewState;
 use crate::logging::UiLogEvent;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
-use crate::show::events::ShowProjectionState;
+use crate::show::{ShowEvent, ShowProjectionState};
 
 use super::ProjectionCache;
 
@@ -104,7 +104,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
         AppEvent::Fade { generation, event } => cache.apply_fade_event(*generation, event),
         AppEvent::SceneRecall { .. } => false,
-        AppEvent::Show(crate::show::events::ShowEvent::StateChanged { state, .. }) => {
+        AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
             cache.apply_show_state(state.clone());
             true
         }
@@ -116,7 +116,7 @@ mod tests {
     use super::*;
     use crate::app_state::LogSeverity;
     use crate::runtime::events::AppEventBus;
-    use crate::show::events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
+    use crate::show::{ShowEvent, ShowProjectionReason, ShowProjectionState};
     use std::sync::{Arc, Mutex};
     use tauri::{Listener, test::mock_app};
 
