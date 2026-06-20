@@ -2,7 +2,7 @@ use tokio::sync::broadcast;
 
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
-use crate::scene_recall::SceneRecallEvent;
+use crate::scenes::ScenesEvent;
 use crate::show::ShowEvent;
 
 #[derive(Debug, Clone)]
@@ -14,18 +14,9 @@ pub enum RuntimeLifecycleEvent {
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Runtime(RuntimeLifecycleEvent),
-    Lv1 {
-        generation: u64,
-        event: Lv1Event,
-    },
-    Fade {
-        generation: u64,
-        event: FadeEvent,
-    },
-    SceneRecall {
-        generation: u64,
-        event: SceneRecallEvent,
-    },
+    Lv1 { generation: u64, event: Lv1Event },
+    Fade { generation: u64, event: FadeEvent },
+    SceneRecall { generation: u64, event: ScenesEvent },
     Show(ShowEvent),
 }
 
@@ -58,7 +49,7 @@ impl AppEventBus {
         self.publish(AppEvent::Fade { generation, event })
     }
 
-    pub fn publish_scene_recall(&self, generation: u64, event: SceneRecallEvent) -> usize {
+    pub fn publish_scene_recall(&self, generation: u64, event: ScenesEvent) -> usize {
         self.publish(AppEvent::SceneRecall { generation, event })
     }
 
@@ -174,7 +165,7 @@ mod tests {
 
         let sent = bus.publish(AppEvent::SceneRecall {
             generation: 0,
-            event: crate::scene_recall::SceneRecallEvent::Skipped {
+            event: crate::scenes::ScenesEvent::Skipped {
                 scene_label: "1: Intro".to_string(),
                 reason: "test".to_string(),
             },

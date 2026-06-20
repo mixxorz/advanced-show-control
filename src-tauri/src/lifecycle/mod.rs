@@ -12,7 +12,7 @@ use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_a
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::runtime::generation::RuntimeGeneration;
-use crate::scene_recall::{SceneRecallFaderHandle, build_scene_recall_fader};
+use crate::scenes::{ScenesHandle, build_scenes_actor};
 use crate::show::{
     ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowStateHandle,
     spawn_lv1_scene_list_monitor,
@@ -22,7 +22,7 @@ use crate::show::{
 pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
-    pub scene_recall_fader: Option<SceneRecallFaderHandle>,
+    pub scene_recall_fader: Option<ScenesHandle>,
     pub show_scene_list_monitor: Option<JoinHandle<()>>,
 }
 
@@ -55,8 +55,8 @@ struct BuiltConnectedRuntime {
     lv1_task: crate::lv1::Lv1ActorTask,
     fade: FadeEngineHandle,
     fade_task: crate::fade::FadeEngineTask,
-    scene_recall_fader: SceneRecallFaderHandle,
-    scene_recall_task: crate::scene_recall::SceneRecallFaderTask,
+    scene_recall_fader: ScenesHandle,
+    scene_recall_task: crate::scenes::ScenesTask,
 }
 
 impl BuiltConnectedRuntime {
@@ -77,8 +77,8 @@ impl BuiltConnectedRuntime {
 
 struct StartedConnectedRuntime {
     lv1: Lv1ActorHandle,
-    scene_recall_fader: SceneRecallFaderHandle,
-    scene_recall_task: crate::scene_recall::SceneRecallFaderTask,
+    scene_recall_fader: ScenesHandle,
+    scene_recall_task: crate::scenes::ScenesTask,
 }
 
 fn build_connected_runtime(
@@ -98,7 +98,7 @@ fn build_connected_runtime(
     let (fade, fade_task, fade_peers) =
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-        build_scene_recall_fader(generation, runtime_generation, event_bus);
+        build_scenes_actor(generation, runtime_generation, event_bus);
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(show, lv1.clone(), fade.clone());
@@ -234,7 +234,7 @@ impl AppLifecycle {
             .publish_runtime_generation_changed(generation);
     }
 
-    async fn install_scene_recall_fader(&self, generation: u64, handle: SceneRecallFaderHandle) {
+    async fn install_scene_recall_fader(&self, generation: u64, handle: ScenesHandle) {
         let mut inner = self.inner.lock().await;
         if inner.generation == generation {
             inner.handles.scene_recall_fader = Some(handle);
@@ -361,7 +361,7 @@ impl AppLifecycle {
             before_scene_recall_start(runtime_generation.clone());
         }
         let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-            build_scene_recall_fader(generation, runtime_generation, event_bus);
+            build_scenes_actor(generation, runtime_generation, event_bus);
         scene_recall_peers.set_peers(self.show.clone(), lv1, fade);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
@@ -481,7 +481,7 @@ impl AppLifecycle {
         self.inner.lock().await.handles.fade.clone()
     }
 
-    pub async fn current_scene_recall_fader(&self) -> Option<SceneRecallFaderHandle> {
+    pub async fn current_scene_recall_fader(&self) -> Option<ScenesHandle> {
         self.inner.lock().await.handles.scene_recall_fader.clone()
     }
 

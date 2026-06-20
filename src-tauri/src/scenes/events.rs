@@ -1,5 +1,5 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SceneRecallEvent {
+pub enum ScenesEvent {
     Skipped {
         scene_label: String,
         reason: String,

@@ -1,7 +1,7 @@
 use super::map_app_command_error;
 use crate::lifecycle::AppLifecycle;
 use crate::runtime::errors::AppCommandError;
-use crate::scene_recall::SceneRecallCommand;
+use crate::scenes::ScenesCommand;
 use crate::show::RecallSceneResult;
 use tauri::State;
 use tokio::sync::oneshot;
@@ -18,7 +18,7 @@ pub async fn recall_scene(
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scene_recall
-        .send(SceneRecallCommand::RecallScene { scene_id, reply })
+        .send(ScenesCommand::RecallScene { scene_id, reply })
         .await
         .map_err(|_| AppCommandError::Lv1Unavailable)
         .map_err(map_app_command_error)?;

@@ -39,7 +39,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::set_scene_duration_ms,
             commands::show::select_scene_config,
             commands::show::cue_scene,
-            commands::scene_recall::recall_scene,
+            commands::scenes::recall_scene,
             commands::lifecycle::connect_lv1_system,
             commands::lifecycle::attempt_reconnect_lv1,
             commands::lifecycle::startup_auto_connect_lv1,
@@ -66,7 +66,7 @@ mod tests {
     fn command_adapter_exports_existing_command_names() {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
-        let _ = super::commands::scene_recall::recall_scene;
+        let _ = super::commands::scenes::recall_scene;
         let _ = super::commands::show::set_lockout;
     }
 

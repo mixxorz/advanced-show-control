@@ -9,7 +9,7 @@ pub mod lv1;
 pub mod osc;
 pub mod projector;
 pub mod runtime;
-pub mod scene_recall;
+pub mod scenes;
 pub mod show;
 pub mod show_file;
 pub mod time;

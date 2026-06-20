@@ -4,7 +4,7 @@ use crate::runtime::errors::AppCommandError;
 use crate::show::RecallSceneResult;
 
 #[derive(Debug)]
-pub enum SceneRecallCommand {
+pub enum ScenesCommand {
     RecallScene {
         scene_id: String,
         reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,

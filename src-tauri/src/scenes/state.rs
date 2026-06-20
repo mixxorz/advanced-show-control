@@ -59,13 +59,13 @@ enum RecallGate {
 }
 
 #[derive(Debug, Default)]
-pub struct SceneRecallState {
+pub struct ScenesState {
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
 }
 
-impl SceneRecallState {
+impl ScenesState {
     pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {
@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn accepts_after_two_second_arming_delay() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let scene = scene(1, "Intro");
         let start = Instant::now();
 
@@ -209,7 +209,7 @@ mod tests {
 
     #[test]
     fn suppresses_same_scene_repeat_for_500ms() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let scene = scene(1, "Intro");
         let start = Instant::now();
 
@@ -227,7 +227,7 @@ mod tests {
 
     #[test]
     fn baseline_scene_seen_shortly_after_arming_is_suppressed() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let start = Instant::now();
 
         assert!(!state.accepts_at(&scene(1, "Intro"), start));
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn suppressed_baseline_echo_counts_as_trigger_for_repeat_suppression() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let start = Instant::now();
 
         assert!(!state.accepts_at(&scene(1, "Intro"), start));
@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn last_scene_seen_during_arming_becomes_the_suppressed_baseline() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let start = Instant::now();
 
         assert!(!state.accepts_at(&scene(1, "Intro"), start));
@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn different_scene_right_after_arming_is_accepted() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let start = Instant::now();
 
         assert!(!state.accepts_at(&scene(1, "Intro"), start));
@@ -275,7 +275,7 @@ mod tests {
 
     #[test]
     fn first_scene_list_establishes_baseline_without_suppression() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let now = Instant::now();
 
         state.observe_scene_list(initial_scene_list(), now);
@@ -285,7 +285,7 @@ mod tests {
 
     #[test]
     fn identical_scene_list_does_not_open_suppression_window() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let now = Instant::now();
 
         state.observe_scene_list(initial_scene_list(), now);
@@ -296,7 +296,7 @@ mod tests {
 
     #[test]
     fn changed_scene_list_suppresses_until_window_expires() {
-        let mut state = SceneRecallState::default();
+        let mut state = ScenesState::default();
         let now = Instant::now();
 
         state.observe_scene_list(initial_scene_list(), now);
