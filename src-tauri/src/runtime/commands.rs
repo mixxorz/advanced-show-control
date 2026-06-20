@@ -320,6 +320,19 @@ impl AppCommandBus {
             .map_err(AppCommandError::CommandFailed)
     }
 
+    pub async fn store_scene_config_from_current_lv1_state(
+        &self,
+        scene_id: String,
+    ) -> Result<ShowCommandResult, AppCommandError> {
+        let lv1 = self.get_lv1_state().await.map_err(|error| match error {
+            AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
+                "Store scene blocked: LV1 state is unavailable".to_string(),
+            ),
+            other => other,
+        })?;
+        self.store_scene_config(scene_id, lv1.channels).await
+    }
+
     pub async fn new_show_file(
         &self,
         lv1: Option<Lv1StateSnapshot>,
@@ -633,6 +646,18 @@ mod tests {
             width: None,
             pan_mode: None,
         }
+    }
+
+    fn fake_lv1_handle(snapshot: Lv1StateSnapshot) -> Lv1ActorHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let crate::lv1::commands::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(snapshot.clone());
+                }
+            }
+        });
+        Lv1ActorHandle::new(tx)
     }
 
     async fn bus_with_show_document(snapshot: ShowDocument) -> (AppCommandBus, AppEventBus) {
@@ -1046,6 +1071,36 @@ mod tests {
 
         let result = bus
             .store_scene_config("1::Intro".to_string(), vec![channel_info()])
+            .await
+            .unwrap();
+
+        assert!(result.changed);
+        let updated = bus
+            .get_scene_config("1::Intro".to_string())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(updated.channel_configs.len(), 1);
+        assert_eq!(updated.channel_configs[0].fader_db, Some(-12.0));
+    }
+
+    #[tokio::test]
+    async fn store_scene_config_from_current_lv1_state_uses_live_channels() {
+        let snapshot = ShowDocument {
+            scene_configs: vec![scene_config()],
+            ..ShowDocument::empty()
+        };
+        let (bus, _event_bus) = bus_with_show_document(snapshot).await;
+        bus.set_lv1(Some(fake_lv1_handle(Lv1StateSnapshot {
+            connection: crate::lv1::types::ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![],
+            channels: vec![channel_info()],
+        })))
+        .await;
+
+        let result = bus
+            .store_scene_config_from_current_lv1_state("1::Intro".to_string())
             .await
             .unwrap();
 

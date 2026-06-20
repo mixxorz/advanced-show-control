@@ -1,5 +1,6 @@
 //! Tauri command adapter exports.
 
+use crate::connection_state::Lv1SystemIdentity;
 use crate::lifecycle::AppLifecycle;
 use crate::runtime::commands::AppCommandError;
 use crate::show::commands::{
@@ -274,35 +275,28 @@ pub async fn recall_scene(
 }
 
 #[tauri::command]
-pub async fn connect_lv1(
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<ConnectCommandResult, String> {
-    let _ = lifecycle.begin_connecting().await;
-    Ok(ConnectCommandResult { changed: true })
-}
-
-#[tauri::command]
 pub async fn connect_lv1_system(
+    app: AppHandle<impl Runtime>,
     lifecycle: State<'_, AppLifecycle>,
+    identity: Lv1SystemIdentity,
 ) -> Result<ConnectCommandResult, String> {
-    let _ = lifecycle.begin_connecting().await;
-    Ok(ConnectCommandResult { changed: true })
+    lifecycle.connect_lv1_system(app, identity).await
 }
 
 #[tauri::command]
 pub async fn attempt_reconnect_lv1(
+    app: AppHandle<impl Runtime>,
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ConnectCommandResult, String> {
-    let _ = lifecycle.begin_connecting().await;
-    Ok(ConnectCommandResult { changed: true })
+    lifecycle.attempt_reconnect_lv1(app).await
 }
 
 #[tauri::command]
 pub async fn startup_auto_connect_lv1(
+    app: AppHandle<impl Runtime>,
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ConnectCommandResult, String> {
-    let _ = lifecycle.begin_connecting().await;
-    Ok(ConnectCommandResult { changed: true })
+    lifecycle.startup_auto_connect_lv1(app).await
 }
 
 #[tauri::command]
@@ -338,7 +332,7 @@ pub async fn store_scene_config(
     lifecycle
         .current_command_bus()
         .await
-        .store_scene_config(scene_id, vec![])
+        .store_scene_config_from_current_lv1_state(scene_id)
         .await
         .map_err(map_app_command_error)
 }

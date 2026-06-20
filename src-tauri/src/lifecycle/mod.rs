@@ -346,6 +346,77 @@ impl AppLifecycle {
         command_bus
     }
 
+    pub(crate) async fn connected_lv1_identity(
+        &self,
+    ) -> Option<crate::connection_state::Lv1SystemIdentity> {
+        self.show
+            .initial_projection_state()
+            .await
+            .connected_lv1_identity
+    }
+
+    pub async fn connect_lv1_system<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        identity: crate::connection_state::Lv1SystemIdentity,
+    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+        self.abort_current_runtime().await;
+        let generation = self
+            .begin_connecting()
+            .await
+            .ok_or_else(|| "Failed to begin LV1 connection".to_string())?;
+        self.connect_to_identity(
+            app,
+            generation,
+            identity,
+            ConnectFailureMode::ClearConnectedIdentity,
+        )
+        .await
+    }
+
+    pub async fn attempt_reconnect_lv1<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+        let identity = self
+            .connected_lv1_identity()
+            .await
+            .ok_or_else(|| "Reconnect unavailable: no previous LV1 identity".to_string())?;
+        self.abort_current_runtime().await;
+        let generation = self
+            .begin_connecting()
+            .await
+            .ok_or_else(|| "Failed to begin LV1 reconnect".to_string())?;
+        self.connect_to_identity(
+            app,
+            generation,
+            identity,
+            ConnectFailureMode::PreserveConnectedIdentity,
+        )
+        .await
+    }
+
+    pub async fn startup_auto_connect_lv1<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+    ) -> Result<crate::show::commands::ConnectCommandResult, String> {
+        let Some(identity) = self.connected_lv1_identity().await else {
+            return Ok(crate::show::commands::ConnectCommandResult { changed: false });
+        };
+        self.abort_current_runtime().await;
+        let generation = self
+            .begin_connecting()
+            .await
+            .ok_or_else(|| "Failed to begin LV1 startup auto-connect".to_string())?;
+        self.connect_to_identity(
+            app,
+            generation,
+            identity,
+            ConnectFailureMode::ClearConnectedIdentity,
+        )
+        .await
+    }
+
     pub async fn frontend_ready<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -758,6 +829,72 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(matches!(seen_rx.await, Ok(true)));
+    }
+
+    #[tokio::test]
+    async fn connect_lv1_system_attempts_selected_identity() {
+        let app = mock_app();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+
+        let result = lifecycle
+            .connect_lv1_system(
+                app.handle().clone(),
+                Lv1SystemIdentity {
+                    uuid: None,
+                    host: Some("Unreachable".to_string()),
+                    address: "127.0.0.1".to_string(),
+                    port: 1,
+                },
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "unreachable selected identity should fail instead of returning a false success"
+        );
+    }
+
+    #[tokio::test]
+    async fn attempt_reconnect_uses_stored_connected_identity() {
+        let app = mock_app();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        lifecycle
+            .current_command_bus()
+            .await
+            .establish_connected_lv1_identity(Lv1SystemIdentity {
+                uuid: None,
+                host: Some("Unreachable".to_string()),
+                address: "127.0.0.1".to_string(),
+                port: 1,
+            })
+            .await
+            .expect("stored identity should be set");
+
+        let result = lifecycle.attempt_reconnect_lv1(app.handle().clone()).await;
+
+        assert!(
+            result.is_err(),
+            "unreachable stored identity should fail instead of returning a false success"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_auto_connect_noops_without_stored_identity() {
+        let app = mock_app();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+
+        let result = lifecycle
+            .startup_auto_connect_lv1(app.handle().clone())
+            .await
+            .expect("startup without a stored identity should not fail");
+
+        assert!(!result.changed);
     }
 
     #[tokio::test]
