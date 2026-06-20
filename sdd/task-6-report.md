@@ -16,4 +16,4 @@
 
 ## Commit
 
-- Pending.
+- `2b477f1` `fix: query initial lv1 state through command bus`
