@@ -2,7 +2,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::{FadeCommand, FadeEngineHandle};
 use crate::lv1::{
-    ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot, SceneState,
+    ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
+    SceneState,
 };
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
@@ -11,7 +12,7 @@ use crate::scene_recall::commands::SceneRecallCommand;
 use crate::scene_recall::handle::SceneRecallFaderHandle;
 use crate::scene_recall::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scene_recall::state::SceneRecallState;
-use crate::show::{ShowCommand, ShowStateHandle};
+use crate::show::{RecallSceneResult, ShowCommand, ShowStateHandle};
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -65,6 +66,9 @@ pub fn spawn_scene_recall_fader(
                 tokio::select! {
                     command = command_rx.recv() => {
                         match command {
+                            Some(SceneRecallCommand::RecallScene { scene_id, reply }) => {
+                                let _ = reply.send(handle_explicit_recall_scene(&show, &lv1, scene_id).await);
+                            }
                             Some(SceneRecallCommand::Shutdown) | None => break,
                         }
                     }
@@ -104,6 +108,9 @@ pub fn spawn_scene_recall_fader(
             tokio::select! {
                 command = command_rx.recv() => {
                     match command {
+                        Some(SceneRecallCommand::RecallScene { scene_id, reply }) => {
+                            let _ = reply.send(handle_explicit_recall_scene(&show, &lv1, scene_id).await);
+                        }
                         Some(SceneRecallCommand::Shutdown) | None => break,
                     }
                 }
@@ -355,6 +362,97 @@ async fn process_scene_observation(
 
 fn scene_label(scene: &SceneState) -> String {
     format!("{}: {}", scene.index, scene.name)
+}
+
+async fn handle_explicit_recall_scene(
+    show: &ShowStateHandle,
+    lv1: &Lv1ActorHandle,
+    scene_id: String,
+) -> Result<RecallSceneResult, crate::runtime::commands::AppCommandError> {
+    tracing::debug!(
+        event = "scene_recall_requested",
+        scene_id = %scene_id,
+        "Scene recall requested"
+    );
+
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
+        .await
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => {
+                crate::runtime::commands::AppCommandError::CommandFailed(
+                    "Recall blocked: LV1 state is unavailable".to_string(),
+                )
+            }
+            other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+        })
+        .map_err(|error| {
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %error,
+                "Scene recall blocked: {error}"
+            );
+            error
+        })?;
+    let lv1_snapshot = rx
+        .await
+        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)
+        .map_err(|error| {
+            tracing::warn!(
+                event = "scene_recall_blocked",
+                scene_id = %scene_id,
+                reason = %error,
+                "Scene recall blocked: {error}"
+            );
+            error
+        })?;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::GetShowDocument { reply })
+        .await
+        .map_err(|_| crate::runtime::commands::AppCommandError::ShowUnavailable)?;
+    let show_document = rx
+        .await
+        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?;
+    let result =
+        crate::show::validate_recall_scene_request(&show_document, &lv1_snapshot, &scene_id)
+            .map_err(|message| {
+                tracing::warn!(
+                    event = "scene_recall_blocked",
+                    scene_id = %scene_id,
+                    reason = %message,
+                    "Scene recall blocked: {message}"
+                );
+                crate::runtime::commands::AppCommandError::CommandFailed(message)
+            })?;
+
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::RecallScene {
+        scene_index: result.lv1_scene_index,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|error| match error {
+        Lv1ActorError::NotConnected => crate::runtime::commands::AppCommandError::Lv1Unavailable,
+        other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+    })?;
+    rx.await
+        .map_err(|_| crate::runtime::commands::AppCommandError::ReplyChannelClosed)?
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => {
+                crate::runtime::commands::AppCommandError::Lv1Unavailable
+            }
+            other => crate::runtime::commands::AppCommandError::CommandFailed(other.to_string()),
+        })?;
+    tracing::debug!(
+        event = "scene_recall_command_sent",
+        scene_id = %result.scene.scene_id,
+        scene_index = result.scene.scene_index,
+        scene_name = %result.scene.scene_name,
+        "Scene recall command sent: {}",
+        result.scene.scene_name
+    );
+    Ok(result)
 }
 
 async fn fresh_lv1_snapshot(

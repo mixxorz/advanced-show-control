@@ -446,6 +446,10 @@ impl AppLifecycle {
         self.inner.lock().await.handles.fade.clone()
     }
 
+    pub async fn current_scene_recall_fader(&self) -> Option<SceneRecallFaderHandle> {
+        self.inner.lock().await.handles.scene_recall_fader.clone()
+    }
+
     pub(crate) async fn connected_lv1_identity(
         &self,
     ) -> Option<crate::connection_state::Lv1SystemIdentity> {
