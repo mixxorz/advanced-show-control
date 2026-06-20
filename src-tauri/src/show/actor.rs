@@ -2,8 +2,10 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::lv1::Lv1ActorHandle;
+use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1StateSnapshot};
+use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus};
+use crate::show_file::{backup_folder, read_show_file, write_show_file};
 
 use super::commands::ShowCommand;
 use super::events::{ShowEvent, ShowProjectionReason};
@@ -30,6 +32,14 @@ impl ShowActorPeers {
         {
             *lv1 = None;
         }
+    }
+
+    fn lv1(&self) -> Option<Lv1ActorHandle> {
+        self.lv1
+            .lock()
+            .expect("show peer lock poisoned")
+            .as_ref()
+            .map(|(_, lv1)| lv1.clone())
     }
 }
 
@@ -65,7 +75,7 @@ async fn run_show_actor(
 ) {
     let mut state = ShowState::default();
     while let Some(command) = rx.recv().await {
-        handle_command(command, &mut state, &event_bus, &peers);
+        handle_command(command, &mut state, &event_bus, &peers).await;
     }
 }
 
@@ -87,13 +97,12 @@ fn publish_if_changed(
     }
 }
 
-fn handle_command(
+async fn handle_command(
     command: ShowCommand,
     state: &mut ShowState,
     event_bus: &AppEventBus,
     peers: &ShowActorPeers,
 ) {
-    let _ = peers;
     match command {
         ShowCommand::GetShowDocument { reply } => {
             let _ = reply.send(state.snapshot());
@@ -197,30 +206,6 @@ fn handle_command(
                 let _ = reply.send(result);
             }
         }
-        ShowCommand::StoreSceneConfig {
-            scene_id,
-            channels,
-            reply,
-        } => {
-            let result = if state.get_scene_config(&scene_id).is_none() {
-                Err("Scene config not found".to_string())
-            } else {
-                state
-                    .store_scene_config(&scene_id, &channels)
-                    .map(|changed| {
-                        publish_if_changed(
-                            event_bus,
-                            ShowProjectionReason::ShowState,
-                            state,
-                            changed,
-                        );
-                        ShowCommandResult { changed }
-                    })
-            };
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
         ShowCommand::CueScene { scene_id, reply } => {
             tracing::debug!(event = "scene_cue_requested", scene_id = %scene_id, "Scene cue requested");
             let result = state
@@ -252,7 +237,8 @@ fn handle_command(
                 let _ = reply.send(result);
             }
         }
-        ShowCommand::NewShowFile { lv1, reply } => {
+        ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
+            let lv1 = current_lv1_snapshot(peers).await.ok();
             let selected_scene_id = state.reset_for_new_show(lv1.as_ref());
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
             tracing::info!(event = "show_file_created", "New show file created");
@@ -260,16 +246,10 @@ fn handle_command(
                 let _ = reply.send(Ok(NewShowFileResult { selected_scene_id }));
             }
         }
-        ShowCommand::MarkShowFileSaved {
-            path,
-            saved_at,
-            reply,
-        } => {
-            state.mark_saved(path, saved_at);
-            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-            tracing::info!(event = "show_file_saved", "Show file saved");
+        ShowCommand::SaveShowFileAs { path, reply } => {
+            let result = save_show_file_to_path(state, event_bus, path);
             if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed: true });
+                let _ = reply.send(result);
             }
         }
         ShowCommand::SetDiscoveredLv1Systems { systems, reply } => {
@@ -344,35 +324,21 @@ fn handle_command(
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
-        ShowCommand::ExportShowFileSnapshot { saved_at, reply } => {
-            let _ = reply.send(state.export_show_file(saved_at));
+        ShowCommand::LoadShowFileFromPath { path, reply } => {
+            let result = current_lv1_snapshot(peers).await.and_then(|lv1| {
+                let mut file = read_show_file(&path)?;
+                load_show_file_from_dto(state, event_bus, path, &mut file, &lv1)
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
         }
-        ShowCommand::LoadShowFileFromDto {
-            path,
-            mut file,
-            lv1,
-            reply,
-        } => {
-            let result = lv1
-                .ok_or_else(|| "Open a show file after LV1 scenes are loaded".to_string())
+        ShowCommand::StoreSceneConfigFromCurrentLv1 { scene_id, reply } => {
+            let result = current_lv1_snapshot(peers)
+                .await
+                .map_err(|_| "Store scene blocked: LV1 state is unavailable".to_string())
                 .and_then(|lv1| {
-                    let imported = import_show_file(&mut file, &lv1)?;
-                    let saved_at = file.saved_at.clone();
-                    let selected_scene_id = imported.selected_scene_id.clone();
-                    let report = imported.report.clone();
-                    let should_mark_dirty = report.removed_anything();
-                    state.replace_snapshot(imported.snapshot);
-                    state.set_selected_scene_id(selected_scene_id.clone());
-                    state.mark_saved(path, saved_at.clone());
-                    if should_mark_dirty {
-                        state.mark_dirty();
-                    }
-                    publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-                    for scene in report.removed_scenes.iter() {
-                        tracing::warn!(event = "show_file_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
-                    }
-                    tracing::info!(event = "show_file_opened", "Show file loaded");
-                    Ok(LoadShowFileResult { selected_scene_id, saved_at, report })
+                    store_scene_config_from_channels(state, event_bus, &scene_id, lv1.channels)
                 });
             if let Some(reply) = reply {
                 let _ = reply.send(result);
@@ -409,4 +375,90 @@ fn handle_command(
             }
         }
     }
+}
+
+async fn current_lv1_snapshot(peers: &ShowActorPeers) -> Result<Lv1StateSnapshot, String> {
+    let lv1 = peers
+        .lv1()
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
+        .await
+        .map_err(|error| match error {
+            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
+        })
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)
+}
+
+fn map_app_command_error(error: AppCommandError) -> String {
+    match error {
+        AppCommandError::CommandFailed(message) => message,
+        other => other.to_string(),
+    }
+}
+
+fn save_show_file_to_path(
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    path: std::path::PathBuf,
+) -> Result<ShowCommandResult, String> {
+    let saved_at = crate::time::current_timestamp_millis();
+    let file = state.export_show_file(saved_at.clone());
+    write_show_file(&path, &file, &backup_folder())?;
+    state.mark_saved(path, saved_at);
+    publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+    tracing::info!(event = "show_file_saved", "Show file saved");
+    Ok(ShowCommandResult { changed: true })
+}
+
+fn load_show_file_from_dto(
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    path: std::path::PathBuf,
+    file: &mut super::show_file::ShowFile,
+    lv1: &Lv1StateSnapshot,
+) -> Result<LoadShowFileResult, String> {
+    let imported = import_show_file(file, lv1)?;
+    let saved_at = file.saved_at.clone();
+    let selected_scene_id = imported.selected_scene_id.clone();
+    let report = imported.report.clone();
+    let should_mark_dirty = report.removed_anything();
+    state.replace_snapshot(imported.snapshot);
+    state.set_selected_scene_id(selected_scene_id.clone());
+    state.mark_saved(path, saved_at.clone());
+    if should_mark_dirty {
+        state.mark_dirty();
+    }
+    publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+    for scene in report.removed_scenes.iter() {
+        tracing::warn!(event = "show_file_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
+    }
+    tracing::info!(event = "show_file_opened", "Show file loaded");
+    Ok(LoadShowFileResult {
+        selected_scene_id,
+        saved_at,
+        report,
+    })
+}
+
+fn store_scene_config_from_channels(
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    scene_id: &str,
+    channels: Vec<crate::lv1::ChannelInfo>,
+) -> Result<ShowCommandResult, String> {
+    if state.get_scene_config(scene_id).is_none() {
+        return Err("Scene config not found".to_string());
+    }
+    state
+        .store_scene_config(scene_id, &channels)
+        .map(|changed| {
+            publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
+            ShowCommandResult { changed }
+        })
 }

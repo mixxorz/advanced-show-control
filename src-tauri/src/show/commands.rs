@@ -1,8 +1,8 @@
 //! Show-owned application command handlers.
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot};
-use crate::show::show_file::{LoadValidationReport, ShowFile};
+use crate::lv1::{ConnectionStatus, Lv1StateSnapshot};
+use crate::show::show_file::LoadValidationReport;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -56,11 +56,6 @@ pub enum ShowCommand {
         scoped: bool,
         reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
     },
-    StoreSceneConfig {
-        scene_id: String,
-        channels: Vec<ChannelInfo>,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
     CueScene {
         scene_id: String,
         reply: Option<oneshot::Sender<Result<CueSceneResult, String>>>,
@@ -69,14 +64,12 @@ pub enum ShowCommand {
         scene_id: String,
         reply: Option<oneshot::Sender<Result<SelectedSceneResult, String>>>,
     },
-    NewShowFile {
-        lv1: Option<Lv1StateSnapshot>,
+    NewShowFileFromCurrentLv1 {
         reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
     },
-    MarkShowFileSaved {
+    SaveShowFileAs {
         path: std::path::PathBuf,
-        saved_at: String,
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
+        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
     },
     SetDiscoveredLv1Systems {
         systems: Vec<DiscoveredLv1System>,
@@ -101,15 +94,13 @@ pub enum ShowCommand {
         reason: String,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
-    ExportShowFileSnapshot {
-        saved_at: String,
-        reply: oneshot::Sender<ShowFile>,
-    },
-    LoadShowFileFromDto {
+    LoadShowFileFromPath {
         path: std::path::PathBuf,
-        file: ShowFile,
-        lv1: Option<Lv1StateSnapshot>,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
+    },
+    StoreSceneConfigFromCurrentLv1 {
+        scene_id: String,
+        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
     },
     ReconcileSceneList {
         scenes: Vec<crate::lv1::SceneListEntry>,

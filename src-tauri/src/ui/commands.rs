@@ -3,14 +3,13 @@
 use crate::connection_state::Lv1SystemIdentity;
 use crate::fade::FadeCommand;
 use crate::lifecycle::AppLifecycle;
-use crate::lv1::{Lv1ActorError, Lv1Command};
 use crate::runtime::errors::AppCommandError;
 use crate::scene_recall::SceneRecallCommand;
 use crate::show::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
     SelectedSceneResult, ShowCommand, ShowCommandResult,
 };
-use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
+use crate::show_file::default_show_folder;
 use crate::ui::UiLogReceiverState;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime, State};
@@ -71,13 +70,10 @@ pub async fn new_show_file(
 ) -> Result<NewShowFileResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::NewShowFile {
-        lv1: None,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(map_app_command_error)?;
+    show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
+        .await
+        .map_err(|_| AppCommandError::ShowUnavailable)
+        .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?
@@ -88,30 +84,10 @@ pub async fn open_show_file_dialog(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<LoadShowFileResult, String> {
     let path = choose_open_show_file_path().await?;
-    let file = read_show_file(&path)?;
-    let lv1 = lifecycle
-        .current_lv1()
-        .await
-        .ok_or(AppCommandError::Lv1Unavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::GetState { reply })
-        .await
-        .map_err(|error| match error {
-            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-            other => AppCommandError::CommandFailed(other.to_string()),
-        })
-        .map_err(map_app_command_error)?;
-    let lv1 = rx
-        .await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?;
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::LoadShowFileFromDto {
+    show.send(ShowCommand::LoadShowFileFromPath {
         path,
-        file,
-        lv1: Some(lv1),
         reply: Some(reply),
     })
     .await
@@ -146,41 +122,17 @@ async fn save_show_file_with_lifecycle(
         .await
         .map_err(|_| AppCommandError::ShowUnavailable)
         .map_err(map_app_command_error)?;
-    if let Some(path) = rx
+    let path = match rx
         .await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?
     {
-        return save_show_file_to_path(lifecycle, path).await;
-    }
-
-    let path = choose_save_show_file_path().await?;
-    save_show_file_to_path(lifecycle, path).await
-}
-
-async fn save_show_file_to_path(
-    lifecycle: &AppLifecycle,
-    path: PathBuf,
-) -> Result<ShowCommandResult, String> {
-    let saved_at = crate::time::current_timestamp_millis();
-    let show = lifecycle.current_show().await;
+        Some(path) => path,
+        None => choose_save_show_file_path().await?,
+    };
     let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::ExportShowFileSnapshot {
-        saved_at: saved_at.clone(),
-        reply,
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(map_app_command_error)?;
-    let file = rx
-        .await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?;
-    write_show_file(&path, &file, &backup_folder())?;
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::MarkShowFileSaved {
+    show.send(ShowCommand::SaveShowFileAs {
         path,
-        saved_at,
         reply: Some(reply),
     })
     .await
@@ -188,8 +140,25 @@ async fn save_show_file_to_path(
     .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?;
-    Ok(ShowCommandResult { changed: true })
+        .map_err(map_app_command_error)?
+}
+
+async fn save_show_file_to_path(
+    lifecycle: &AppLifecycle,
+    path: PathBuf,
+) -> Result<ShowCommandResult, String> {
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::SaveShowFileAs {
+        path,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
 }
 
 async fn choose_open_show_file_path() -> Result<PathBuf, String> {
@@ -264,23 +233,16 @@ mod tests {
         let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
         let path = temp_show_file_path("save-existing");
         let (reply, rx) = oneshot::channel();
-        show.send(ShowCommand::GetShowDocument { reply })
-            .await
-            .unwrap();
-        let initial_file = crate::show::export_show_file(rx.await.unwrap(), "saved".to_string());
-        write_show_file(&path, &initial_file, &backup_folder())
-            .expect("seed show file should write");
-        let (reply, rx) = oneshot::channel();
-        show.send(ShowCommand::MarkShowFileSaved {
+        show.send(ShowCommand::SaveShowFileAs {
             path: path.clone(),
-            saved_at: "saved".to_string(),
             reply: Some(reply),
         })
         .await
         .unwrap();
         let _ = rx
             .await
-            .expect("mark saved should set current show file path");
+            .expect("save should reply")
+            .expect("save should set current show file path");
 
         let result = save_show_file_with_lifecycle(&lifecycle)
             .await
@@ -436,49 +398,10 @@ pub async fn store_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<ShowCommandResult, String> {
-    let lv1 = lifecycle
-        .current_lv1()
-        .await
-        .ok_or(AppCommandError::Lv1Unavailable)
-        .map_err(|error| {
-            map_app_command_error(match error {
-                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                    "Store scene blocked: LV1 state is unavailable".to_string(),
-                ),
-                other => other,
-            })
-        })?;
-    let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::GetState { reply })
-        .await
-        .map_err(|error| match error {
-            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-            other => AppCommandError::CommandFailed(other.to_string()),
-        })
-        .map_err(|error| {
-            map_app_command_error(match error {
-                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                    "Store scene blocked: LV1 state is unavailable".to_string(),
-                ),
-                other => other,
-            })
-        })?;
-    let lv1 = rx
-        .await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(|error| {
-            map_app_command_error(match error {
-                AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                    "Store scene blocked: LV1 state is unavailable".to_string(),
-                ),
-                other => other,
-            })
-        })?;
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::StoreSceneConfig {
+    show.send(ShowCommand::StoreSceneConfigFromCurrentLv1 {
         scene_id,
-        channels: lv1.channels,
         reply: Some(reply),
     })
     .await
