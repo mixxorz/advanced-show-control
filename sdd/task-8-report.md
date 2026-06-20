@@ -9,6 +9,6 @@
   - `npm run lint` -> passed
   - `npm run typecheck` -> passed
   - `npm run test` -> passed (29 tests)
-- Commit: pending
+- Commit: `c3fa260` (`refactor: use event-only frontend app state`)
 - Self-review: listener registration now precedes frontend readiness, command results are ignored, and runtime state changes only from the event listener path.
 - Concerns: none beyond the usual dependency on backend `app-status-changed` delivery order.
