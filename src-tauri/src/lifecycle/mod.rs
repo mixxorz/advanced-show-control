@@ -14,9 +14,6 @@ use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::show::handle::ShowStateHandle;
 
-// Transitional alias while pre-cutover adapters still refer to ActiveCommandBus.
-pub type ActiveCommandBus = AppCommandBus;
-
 #[derive(Default)]
 pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
@@ -83,7 +80,6 @@ pub struct AppLifecycle {
 impl AppLifecycle {
     pub fn new(event_bus: AppEventBus, show: ShowStateHandle) -> Self {
         let command_bus = AppCommandBus::new();
-        command_bus.set_show_target(show.clone());
         let show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
             event_bus.subscribe(),
             command_bus.clone(),
@@ -134,7 +130,10 @@ impl AppLifecycle {
             _ => return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles }),
         };
 
-        inner.command_bus.set_runtime_targets(generation, lv1, fade);
+        inner
+            .command_bus
+            .set_runtime_targets(generation, lv1, fade)
+            .await;
         inner.handles = handles;
         inner.connecting = false;
         Ok(())
@@ -146,7 +145,7 @@ impl AppLifecycle {
             return;
         }
         inner.handles.abort_all();
-        inner.command_bus.clear_runtime_targets(generation);
+        inner.command_bus.clear_runtime_targets(generation).await;
         inner.generation = inner.generation.saturating_add(1);
         let generation = inner.generation;
         drop(inner);
@@ -160,7 +159,12 @@ impl AppLifecycle {
     }
 
     pub async fn current_command_bus(&self) -> AppCommandBus {
-        self.inner.lock().await.command_bus.clone()
+        let (command_bus, show) = {
+            let inner = self.inner.lock().await;
+            (inner.command_bus.clone(), self.show.clone())
+        };
+        command_bus.set_show_target(show).await;
+        command_bus
     }
 
     pub async fn frontend_ready<R: Runtime>(
@@ -185,11 +189,6 @@ impl AppLifecycle {
             },
         ));
         Ok(())
-    }
-
-    // Transitional compatibility for pre-cutover command adapters.
-    pub fn command_bus_holder(&self) -> AppCommandBus {
-        self.inner.blocking_lock().command_bus.clone()
     }
 
     pub async fn set_command_bus(&self, command_bus: Option<AppCommandBus>) {
@@ -231,7 +230,7 @@ impl AppLifecycle {
 
     pub async fn abort_current_runtime_for_shell(&self, state: &crate::app_state::ShellState) {
         state
-            .abort_current_runtime(&self.command_bus_holder())
+            .abort_current_runtime(&self.current_command_bus().await)
             .await;
     }
 }

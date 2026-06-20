@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::lifecycle::ActiveCommandBus;
 use crate::lv1::types::{ConnectionStatus, Lv1StateSnapshot};
 use crate::runtime::commands::AppCommandBus;
 use crate::runtime::events::AppEventBus;
@@ -462,11 +461,7 @@ impl ShellState {
         }
     }
 
-    pub async fn clear_runtime_handles(
-        &self,
-        generation: u64,
-        active_command_bus: &ActiveCommandBus,
-    ) {
+    pub async fn clear_runtime_handles(&self, generation: u64, active_command_bus: &AppCommandBus) {
         let inner = self.inner.lock().await;
         if inner.generation != generation {
             return;
@@ -474,19 +469,19 @@ impl ShellState {
 
         let mut handles = self.handles.lock().await;
         handles.abort_all().await;
-        active_command_bus.set(None).await;
+        active_command_bus.clear_targets().await;
     }
 
-    pub async fn abort_current_runtime(&self, active_command_bus: &ActiveCommandBus) {
+    pub async fn abort_current_runtime(&self, active_command_bus: &AppCommandBus) {
         let mut handles = self.handles.lock().await;
         handles.abort_all().await;
-        active_command_bus.set(None).await;
+        active_command_bus.clear_targets().await;
     }
 
     pub async fn clear_runtime_handles_with_active_generation(
         &self,
         generation: u64,
-        active_command_bus: &ActiveCommandBus,
+        active_command_bus: &AppCommandBus,
     ) {
         let mut handles = self.handles.lock().await;
         if handles.active_generation != generation {
@@ -494,14 +489,14 @@ impl ShellState {
         }
 
         handles.abort_all().await;
-        active_command_bus.set(None).await;
+        active_command_bus.clear_targets().await;
     }
 
     pub async fn install_runtime_handles(
         &self,
         generation: u64,
         mut next: RuntimeHandles,
-        active_command_bus: &ActiveCommandBus,
+        _active_command_bus: &AppCommandBus,
     ) -> Result<(), RuntimeHandles> {
         let current_generation = { self.inner.lock().await.generation };
         if current_generation != generation {
@@ -509,7 +504,6 @@ impl ShellState {
             return Err(next);
         }
 
-        active_command_bus.set(next.command_bus.clone()).await;
         let mut handles = self.handles.lock().await;
         handles.abort_all().await;
         next.active_generation = generation;
@@ -857,7 +851,7 @@ mod tests {
             ..Default::default()
         };
 
-        let active_command_bus = crate::lifecycle::ActiveCommandBus::default();
+        let active_command_bus = crate::runtime::commands::AppCommandBus::new();
 
         match state
             .install_runtime_handles(generation, current_handles, &active_command_bus)
@@ -894,7 +888,7 @@ mod tests {
     async fn replacement_connect_cleanup_aborts_existing_runtime_and_clears_command_bus() {
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
-        let active_command_bus = crate::lifecycle::ActiveCommandBus::default();
+        let active_command_bus = crate::runtime::commands::AppCommandBus::new();
         let command_bus = AppCommandBus::new();
 
         let installed = state
@@ -917,12 +911,12 @@ mod tests {
             )
             .await;
         assert!(installed.is_ok());
-        assert!(active_command_bus.current().await.is_some());
+        assert_eq!(active_command_bus.get_generation().await, 0);
 
         let _ = state.begin_connecting().await;
         state.abort_current_runtime(&active_command_bus).await;
 
-        assert!(active_command_bus.current().await.is_none());
+        assert_eq!(active_command_bus.get_generation().await, 0);
         let handles = state.handles.lock().await;
         assert_eq!(handles.active_generation, 0);
         assert!(handles.command_bus.is_none());

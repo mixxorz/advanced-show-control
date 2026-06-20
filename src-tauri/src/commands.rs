@@ -1,5 +1,5 @@
 use crate::fade::actor::spawn_engine;
-use crate::lifecycle::{ActiveCommandBus, AppLifecycle, spawn_lifecycle_event_monitor};
+use crate::lifecycle::{AppLifecycle, spawn_lifecycle_event_monitor};
 use crate::lv1::actor::spawn_actor;
 use crate::lv1::discovery::resolve_target;
 use crate::projector::{ProjectorInputs, spawn_projector};
@@ -77,18 +77,11 @@ async fn resolve_connect_target(
 }
 
 async fn current_command_bus(
-    active_command_bus: ActiveCommandBus,
+    active_command_bus: AppCommandBus,
     command_name: &'static str,
 ) -> Result<AppCommandBus, String> {
-    active_command_bus.current().await.ok_or_else(|| {
-        tracing::warn!(
-            event = "command_blocked",
-            command = command_name,
-            reason = "app command bus is unavailable",
-            "Command blocked: app command bus is unavailable"
-        );
-        "App command bus is unavailable".to_string()
-    })
+    let _ = command_name;
+    Ok(active_command_bus)
 }
 
 fn map_app_command_error(error: crate::runtime::commands::AppCommandError) -> String {
@@ -104,7 +97,8 @@ pub async fn new_show_file(
     state: State<'_, ShellState>,
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
-    let command_bus = current_command_bus(lifecycle.command_bus_holder(), "new_show_file").await?;
+    let command_bus =
+        current_command_bus(lifecycle.current_command_bus().await, "new_show_file").await?;
     let lv1 = state.lv1_snapshot().await;
     let result = command_bus
         .new_show_file(lv1)
@@ -136,8 +130,11 @@ pub async fn open_show_file_dialog(
     .ok_or_else(|| "Open show file cancelled".to_string())?;
 
     let file = read_show_file(&path)?;
-    let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "open_show_file_dialog").await?;
+    let command_bus = current_command_bus(
+        lifecycle.current_command_bus().await,
+        "open_show_file_dialog",
+    )
+    .await?;
     let lv1 = state.lv1_snapshot_required_for_show_file().await?;
     let result = command_bus
         .load_show_file_from_dto(path.clone(), file, lv1)
@@ -170,8 +167,11 @@ pub async fn set_scene_duration_ms(
     scene_id: String,
     duration_ms: u64,
 ) -> Result<AppViewState, String> {
-    let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "set_scene_duration_ms").await?;
+    let command_bus = current_command_bus(
+        lifecycle.current_command_bus().await,
+        "set_scene_duration_ms",
+    )
+    .await?;
     let result = command_bus
         .set_scene_duration_ms(scene_id, duration_ms)
         .await
@@ -192,7 +192,7 @@ pub async fn select_scene_config(
     scene_id: String,
 ) -> Result<AppViewState, String> {
     let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "select_scene_config").await?;
+        current_command_bus(lifecycle.current_command_bus().await, "select_scene_config").await?;
     command_bus
         .select_scene_config(scene_id.clone())
         .await
@@ -209,15 +209,19 @@ pub async fn cue_scene(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<AppViewState, String> {
-    let snapshot =
-        cue_scene_snapshot((*state).clone(), lifecycle.command_bus_holder(), scene_id).await?;
+    let snapshot = cue_scene_snapshot(
+        (*state).clone(),
+        lifecycle.current_command_bus().await,
+        scene_id,
+    )
+    .await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 async fn cue_scene_snapshot(
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    active_command_bus: AppCommandBus,
     scene_id: String,
 ) -> Result<AppViewState, String> {
     tracing::debug!(
@@ -265,7 +269,7 @@ pub async fn store_scene_config(
     scene_id: String,
 ) -> Result<AppViewState, String> {
     let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "store_scene_config").await?;
+        current_command_bus(lifecycle.current_command_bus().await, "store_scene_config").await?;
     let lv1 = state
         .lv1_snapshot()
         .await
@@ -289,15 +293,19 @@ pub async fn recall_scene(
     lifecycle: State<'_, AppLifecycle>,
     scene_id: String,
 ) -> Result<AppViewState, String> {
-    let snapshot =
-        recall_scene_snapshot((*state).clone(), lifecycle.command_bus_holder(), scene_id).await?;
+    let snapshot = recall_scene_snapshot(
+        (*state).clone(),
+        lifecycle.current_command_bus().await,
+        scene_id,
+    )
+    .await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 async fn recall_scene_snapshot(
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    active_command_bus: AppCommandBus,
     scene_id: String,
 ) -> Result<AppViewState, String> {
     tracing::debug!(
@@ -344,7 +352,7 @@ pub async fn set_channel_scoped(
     scoped: bool,
 ) -> Result<AppViewState, String> {
     let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "set_channel_scoped").await?;
+        current_command_bus(lifecycle.current_command_bus().await, "set_channel_scoped").await?;
     let result = command_bus
         .set_channel_scoped(scene_id, group, channel, scoped)
         .await
@@ -365,8 +373,11 @@ pub async fn set_all_channels_scoped(
     scene_id: String,
     scoped: bool,
 ) -> Result<AppViewState, String> {
-    let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "set_all_channels_scoped").await?;
+    let command_bus = current_command_bus(
+        lifecycle.current_command_bus().await,
+        "set_all_channels_scoped",
+    )
+    .await?;
     let result = command_bus
         .set_all_channels_scoped(scene_id, scoped)
         .await
@@ -388,7 +399,7 @@ pub async fn set_scene_scope_faders_enabled(
     enabled: bool,
 ) -> Result<AppViewState, String> {
     let command_bus = current_command_bus(
-        lifecycle.command_bus_holder(),
+        lifecycle.current_command_bus().await,
         "set_scene_scope_faders_enabled",
     )
     .await?;
@@ -413,7 +424,7 @@ pub async fn set_scene_scope_pan_enabled(
     enabled: bool,
 ) -> Result<AppViewState, String> {
     let command_bus = current_command_bus(
-        lifecycle.command_bus_holder(),
+        lifecycle.current_command_bus().await,
         "set_scene_scope_pan_enabled",
     )
     .await?;
@@ -436,7 +447,8 @@ pub async fn save_show_file(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
     if let Some(path) = state.current_show_file_path().await {
-        let snapshot = save_show_file_to_path(&state, lifecycle.command_bus_holder(), path).await?;
+        let snapshot =
+            save_show_file_to_path(&state, lifecycle.current_command_bus().await, path).await?;
         emit_snapshot(&app, &snapshot);
         return Ok(snapshot);
     }
@@ -450,8 +462,11 @@ pub async fn save_show_file_as_dialog(
     state: State<'_, ShellState>,
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<AppViewState, String> {
-    let command_bus =
-        current_command_bus(lifecycle.command_bus_holder(), "save_show_file_as_dialog").await?;
+    let command_bus = current_command_bus(
+        lifecycle.current_command_bus().await,
+        "save_show_file_as_dialog",
+    )
+    .await?;
     command_bus
         .export_show_file_for_save(String::new())
         .await
@@ -470,7 +485,8 @@ pub async fn save_show_file_as_dialog(
     .map_err(|err| format!("Failed to open save dialog: {err}"))??
     .ok_or_else(|| "Save show file cancelled".to_string())?;
 
-    let snapshot = save_show_file_to_path(&state, lifecycle.command_bus_holder(), path).await?;
+    let snapshot =
+        save_show_file_to_path(&state, lifecycle.current_command_bus().await, path).await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
@@ -482,15 +498,19 @@ pub async fn set_lockout(
     lifecycle: State<'_, AppLifecycle>,
     enabled: bool,
 ) -> Result<AppViewState, String> {
-    let snapshot =
-        set_lockout_snapshot((*state).clone(), lifecycle.command_bus_holder(), enabled).await?;
+    let snapshot = set_lockout_snapshot(
+        (*state).clone(),
+        lifecycle.current_command_bus().await,
+        enabled,
+    )
+    .await?;
     emit_snapshot(&app, &snapshot);
     Ok(snapshot)
 }
 
 async fn set_lockout_snapshot(
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    active_command_bus: AppCommandBus,
     enabled: bool,
 ) -> Result<AppViewState, String> {
     let command_bus = current_command_bus(active_command_bus, "set_lockout").await?;
@@ -515,10 +535,8 @@ pub async fn disconnect_lv1(
         "LV1 disconnect requested"
     );
     let (generation, snapshot) = state.disconnect().await;
-    let active_command_bus = lifecycle.command_bus_holder();
-    if let Some(command_bus) = active_command_bus.current().await {
-        command_bus.set_generation(generation).await;
-    }
+    let command_bus = lifecycle.current_command_bus().await;
+    command_bus.set_generation(generation).await;
     lifecycle.clear_runtime_handles(&state, generation).await;
     tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
     emit_snapshot(&app, &snapshot);
@@ -977,7 +995,7 @@ fn ui_log_receiver<R: Runtime>(
 
 async fn save_show_file_to_path(
     state: &State<'_, ShellState>,
-    active_command_bus: ActiveCommandBus,
+    active_command_bus: AppCommandBus,
     path: PathBuf,
 ) -> Result<AppViewState, String> {
     let saved_at = crate::time::current_timestamp_millis();
@@ -993,7 +1011,7 @@ async fn save_show_file_to_path(
 #[cfg(test)]
 async fn new_show_file_snapshot_for_test(
     state: ShellState,
-    active_command_bus: ActiveCommandBus,
+    active_command_bus: AppCommandBus,
 ) -> Result<AppViewState, String> {
     let command_bus = current_command_bus(active_command_bus, "new_show_file").await?;
     let lv1 = state.lv1_snapshot().await;
@@ -1189,10 +1207,8 @@ mod tests {
     #[tokio::test]
     async fn cue_scene_updates_show_state_even_when_lockout_is_enabled() {
         let state = ShellState::default();
-        let active_command_bus = ActiveCommandBus::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_show(Some(state.show.clone())).await;
-        active_command_bus.set(Some(command_bus)).await;
+        let active_command_bus = AppCommandBus::new();
+        active_command_bus.set_show(Some(state.show.clone())).await;
         state
             .show
             .replace_snapshot(crate::show::types::ShowSnapshot {
@@ -1241,9 +1257,10 @@ mod tests {
             .await;
         let lifecycle = lifecycle_with_show(&state).await;
 
-        let snapshot = set_lockout_snapshot(state.clone(), lifecycle.command_bus_holder(), true)
-            .await
-            .unwrap();
+        let snapshot =
+            set_lockout_snapshot(state.clone(), lifecycle.current_command_bus().await, true)
+                .await
+                .unwrap();
 
         assert!(snapshot.lockout);
         assert!(snapshot.show_file_dirty);
@@ -1254,9 +1271,10 @@ mod tests {
         let state = ShellState::default();
         let lifecycle = lifecycle_with_show(&state).await;
 
-        let snapshot = set_lockout_snapshot(state.clone(), lifecycle.command_bus_holder(), false)
-            .await
-            .unwrap();
+        let snapshot =
+            set_lockout_snapshot(state.clone(), lifecycle.current_command_bus().await, false)
+                .await
+                .unwrap();
 
         assert!(!snapshot.lockout);
         assert!(!snapshot.show_file_dirty);
@@ -1287,9 +1305,12 @@ mod tests {
 
         lifecycle.set_command_bus(Some(command_bus)).await;
 
-        let resolved = current_command_bus(lifecycle.command_bus_holder(), "set_scene_duration_ms")
-            .await
-            .unwrap();
+        let resolved = current_command_bus(
+            lifecycle.current_command_bus().await,
+            "set_scene_duration_ms",
+        )
+        .await
+        .unwrap();
 
         resolved
             .set_scene_duration_ms("1::Intro".to_string(), 2500)
@@ -1324,9 +1345,10 @@ mod tests {
 
         lifecycle.set_command_bus(Some(command_bus)).await;
 
-        let resolved = current_command_bus(lifecycle.command_bus_holder(), "select_scene_config")
-            .await
-            .unwrap();
+        let resolved =
+            current_command_bus(lifecycle.current_command_bus().await, "select_scene_config")
+                .await
+                .unwrap();
 
         resolved
             .select_scene_config("1::Verse".to_string())
@@ -1345,13 +1367,9 @@ mod tests {
     async fn cue_scene_rejects_when_command_bus_is_unavailable() {
         let state = ShellState::default();
 
-        let err = cue_scene_snapshot(
-            state.clone(),
-            ActiveCommandBus::default(),
-            "1::Verse".to_string(),
-        )
-        .await
-        .unwrap_err();
+        let err = cue_scene_snapshot(state.clone(), AppCommandBus::new(), "1::Verse".to_string())
+            .await
+            .unwrap_err();
 
         assert_eq!(err, "App command bus is unavailable");
     }
@@ -1360,7 +1378,7 @@ mod tests {
     async fn new_show_file_requires_active_command_bus() {
         let state = ShellState::default();
 
-        let err = new_show_file_snapshot_for_test(state, ActiveCommandBus::default())
+        let err = new_show_file_snapshot_for_test(state, AppCommandBus::new())
             .await
             .unwrap_err();
 
@@ -1372,10 +1390,7 @@ mod tests {
         let state = ShellState::default();
         let command_bus = AppCommandBus::new();
         command_bus.set_show(Some(state.show.clone())).await;
-        let active_command_bus = ActiveCommandBus::default();
-        active_command_bus.set(Some(command_bus)).await;
-
-        let err = cue_scene_snapshot(state.clone(), active_command_bus, "99::Missing".to_string())
+        let err = cue_scene_snapshot(state.clone(), command_bus, "99::Missing".to_string())
             .await
             .unwrap_err();
 
@@ -1448,7 +1463,7 @@ mod tests {
 
         let snapshot = cue_scene_snapshot(
             state.clone(),
-            lifecycle.command_bus_holder(),
+            lifecycle.current_command_bus().await,
             "1::Verse".to_string(),
         )
         .await
@@ -1486,7 +1501,7 @@ mod tests {
 
         let err = recall_scene_snapshot(
             state,
-            lifecycle.command_bus_holder(),
+            lifecycle.current_command_bus().await,
             "1::Verse".to_string(),
         )
         .await
@@ -1502,7 +1517,7 @@ mod tests {
 
         let err = recall_scene_snapshot(
             state,
-            lifecycle.command_bus_holder(),
+            lifecycle.current_command_bus().await,
             "1::Verse".to_string(),
         )
         .await
@@ -1916,16 +1931,11 @@ mod tests {
 
     #[tokio::test]
     async fn active_command_bus_tracks_current_bus() {
-        let holder = ActiveCommandBus::default();
-        assert!(holder.current().await.is_none());
+        let holder = AppCommandBus::new();
+        assert_eq!(holder.get_generation().await, 0);
 
-        let bus = AppCommandBus::new();
-        holder.set(Some(bus.clone())).await;
-
-        assert!(holder.current().await.is_some());
-
-        holder.set(None).await;
-        assert!(holder.current().await.is_none());
+        holder.set_generation(3).await;
+        assert_eq!(holder.get_generation().await, 3);
     }
 
     #[tokio::test]
@@ -2366,7 +2376,7 @@ mod tests {
             .expect("connected runtime should install successfully");
 
             state
-                .clear_runtime_handles(generation, &lifecycle.command_bus_holder())
+                .clear_runtime_handles(generation, &lifecycle.current_command_bus().await)
                 .await;
         }
     }

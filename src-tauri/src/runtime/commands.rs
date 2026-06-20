@@ -53,29 +53,25 @@ impl AppCommandBus {
         }
     }
 
-    pub fn set_show_target(&self, show: ShowStateHandle) {
-        if let Ok(mut targets) = self.targets.try_lock() {
-            targets.show = Some(show);
-        }
+    pub async fn set_show_target(&self, show: ShowStateHandle) {
+        self.targets.lock().await.show = Some(show);
     }
 
-    pub(crate) fn set_runtime_targets(
+    pub(crate) async fn set_runtime_targets(
         &self,
         generation: u64,
         lv1: Lv1ActorHandle,
         fade: FadeEngineHandle,
     ) {
-        if let Ok(mut targets) = self.targets.try_lock() {
-            targets.generation = generation;
-            targets.lv1 = Some(lv1);
-            targets.fade = Some(fade);
-        }
+        let mut targets = self.targets.lock().await;
+        targets.generation = generation;
+        targets.lv1 = Some(lv1);
+        targets.fade = Some(fade);
     }
 
-    pub(crate) fn clear_runtime_targets(&self, generation: u64) {
-        if let Ok(mut targets) = self.targets.try_lock()
-            && targets.generation == generation
-        {
+    pub(crate) async fn clear_runtime_targets(&self, generation: u64) {
+        let mut targets = self.targets.lock().await;
+        if targets.generation == generation {
             targets.lv1 = None;
             targets.fade = None;
         }
@@ -87,20 +83,6 @@ impl AppCommandBus {
     ) -> Result<ShowCommandResult, AppCommandError> {
         let show = self.show_target().await?;
         Ok(crate::show::commands::handle_runtime_disconnected(&show, reason).await)
-    }
-
-    // Transitional compatibility for pre-cutover shell paths.
-    pub async fn set(&self, command_bus: Option<AppCommandBus>) {
-        let Some(command_bus) = command_bus else {
-            self.clear_targets().await;
-            return;
-        };
-        let replacement = command_bus.targets.lock().await.clone();
-        *self.targets.lock().await = replacement;
-    }
-
-    pub async fn current(&self) -> Option<AppCommandBus> {
-        Some(self.clone())
     }
 
     pub async fn set_lv1(&self, lv1: Option<Lv1ActorHandle>) {
@@ -587,6 +569,63 @@ mod tests {
         let err = bus.get_lv1_state().await.unwrap_err();
 
         assert_eq!(err, AppCommandError::Lv1Unavailable);
+    }
+
+    #[tokio::test]
+    async fn command_targets_update_after_mutex_contention_releases() {
+        let bus = AppCommandBus::new();
+        let guard = bus.targets.blocking_lock();
+        let show_bus = bus.clone();
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus);
+
+        let update = tokio::spawn(async move {
+            show_bus.set_show_target(show).await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!update.is_finished());
+        drop(guard);
+
+        update.await.unwrap();
+        assert!(bus.targets.lock().await.show.is_some());
+    }
+
+    #[tokio::test]
+    async fn runtime_targets_clear_after_mutex_contention_releases() {
+        let bus = AppCommandBus::new();
+        let guard = bus.targets.blocking_lock();
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = crate::lv1::handle::Lv1ActorHandle::new(lv1_tx);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let update_bus = bus.clone();
+
+        let update = tokio::spawn(async move {
+            update_bus.set_runtime_targets(7, lv1, fade).await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!update.is_finished());
+        drop(guard);
+
+        update.await.unwrap();
+        assert_eq!(bus.targets.lock().await.generation, 7);
+
+        let guard = bus.targets.blocking_lock();
+        let clear_bus = bus.clone();
+        let clear = tokio::spawn(async move {
+            clear_bus.clear_runtime_targets(7).await;
+        });
+
+        tokio::task::yield_now().await;
+        assert!(!clear.is_finished());
+        drop(guard);
+
+        clear.await.unwrap();
+        let targets = bus.targets.lock().await;
+        assert!(targets.lv1.is_none());
+        assert!(targets.fade.is_none());
     }
 
     #[tokio::test]
