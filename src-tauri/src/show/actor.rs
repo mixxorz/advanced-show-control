@@ -2,9 +2,9 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
-use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1StateSnapshot};
+use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
-use crate::runtime::events::{AppEvent, AppEventBus};
+use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent, log_lagged_subscriber};
 use crate::show_file::{backup_folder, read_show_file, write_show_file};
 
 use super::commands::ShowCommand;
@@ -74,8 +74,50 @@ async fn run_show_actor(
     peers: ShowActorPeers,
 ) {
     let mut state = ShowState::default();
-    while let Some(command) = rx.recv().await {
-        handle_command(command, &mut state, &event_bus, &peers).await;
+    let mut events = event_bus.subscribe();
+    let mut active_generation = 0;
+    loop {
+        tokio::select! {
+            command = rx.recv() => {
+                let Some(command) = command else { break; };
+                handle_command(command, &mut state, &event_bus, &peers).await;
+            }
+            event = events.recv() => {
+                match event {
+                    Ok(event) => handle_app_event(event, &mut active_generation, &mut state, &event_bus),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("show-actor", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }
+    }
+}
+
+fn handle_app_event(
+    event: AppEvent,
+    active_generation: &mut u64,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) {
+    match event {
+        AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
+            *active_generation = generation;
+        }
+        AppEvent::Lv1 {
+            generation,
+            event: Lv1Event::Disconnected { reason },
+        } if generation == *active_generation => {
+            let changed = state.handle_runtime_disconnected(reason);
+            publish_if_changed(
+                event_bus,
+                ShowProjectionReason::ConnectionMetadata,
+                state,
+                changed,
+            );
+        }
+        _ => {}
     }
 }
 
@@ -308,18 +350,6 @@ async fn handle_command(
         }
         ShowCommand::SetReconnectState { reconnect, reply } => {
             let changed = state.set_reconnect_state(reconnect);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::HandleRuntimeDisconnected { reason, reply } => {
-            let changed = state.handle_runtime_disconnected(reason);
             publish_if_changed(
                 event_bus,
                 ShowProjectionReason::ConnectionMetadata,

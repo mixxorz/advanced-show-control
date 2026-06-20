@@ -10,7 +10,7 @@ use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
 use crate::runtime::errors::AppCommandError;
-use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+use crate::runtime::events::{AppEvent, AppEventBus};
 use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::{ScenesHandle, build_scenes_actor};
 use crate::show::{
@@ -132,23 +132,7 @@ struct LifecycleInner {
     frontend_ready: bool,
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
-    show_runtime_metadata_monitor: Option<JoinHandle<()>>,
     runtime_generation: RuntimeGeneration,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ShowRuntimeMetadataMonitorNotification {
-    RuntimeGenerationChanged {
-        generation: u64,
-    },
-    Lv1Disconnected {
-        generation: u64,
-        active: bool,
-    },
-    StaleLv1EventIgnored {
-        generation: u64,
-        active_generation: u64,
-    },
 }
 
 #[derive(Clone)]
@@ -170,7 +154,6 @@ impl AppLifecycle {
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
                 projector: None,
-                show_runtime_metadata_monitor: None,
                 runtime_generation,
             })),
             event_bus,
@@ -578,12 +561,6 @@ impl AppLifecycle {
         }
         inner.frontend_ready = true;
         let generation = inner.generation;
-        if inner.show_runtime_metadata_monitor.is_none() {
-            inner.show_runtime_metadata_monitor = Some(spawn_show_runtime_metadata_monitor(
-                self.event_bus.subscribe(),
-                self.show.clone(),
-            ));
-        }
         inner.projector = Some(crate::projector::spawn_projector(
             crate::projector::ProjectorInputs {
                 app,
@@ -659,65 +636,6 @@ fn log_lv1_connect_failed(
     }
 }
 
-fn spawn_show_runtime_metadata_monitor(
-    events: tokio::sync::broadcast::Receiver<AppEvent>,
-    show: ShowStateHandle,
-) -> JoinHandle<()> {
-    spawn_show_runtime_metadata_monitor_with_notifier(events, show, |_| {})
-}
-
-fn spawn_show_runtime_metadata_monitor_with_notifier(
-    events: tokio::sync::broadcast::Receiver<AppEvent>,
-    show: ShowStateHandle,
-    notify: impl Fn(ShowRuntimeMetadataMonitorNotification) + Send + 'static,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        let mut events = events;
-        let mut active_generation = 0;
-        loop {
-            match events.recv().await {
-                Ok(AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged {
-                    generation,
-                })) => {
-                    active_generation = generation;
-                    notify(
-                        ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged {
-                            generation,
-                        },
-                    );
-                }
-                Ok(AppEvent::Lv1 { generation, event }) if generation == active_generation => {
-                    if let Lv1Event::Disconnected { reason } = event {
-                        notify(ShowRuntimeMetadataMonitorNotification::Lv1Disconnected {
-                            generation,
-                            active: true,
-                        });
-                        let _ = show
-                            .send(ShowCommand::HandleRuntimeDisconnected {
-                                reason,
-                                reply: None,
-                            })
-                            .await;
-                    }
-                }
-                Ok(AppEvent::Lv1 { generation, .. }) => {
-                    notify(
-                        ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
-                            generation,
-                            active_generation,
-                        },
-                    );
-                }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                    tracing::debug!(skipped, "show runtime metadata monitor lagged");
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -725,6 +643,7 @@ mod tests {
     use crate::connection_state::ReconnectState;
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
+    use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::show::{ShowEvent, ShowProjectionReason};
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
@@ -1293,126 +1212,5 @@ mod tests {
             logs.iter()
                 .any(|log| log.event.as_deref() == Some("lv1_disconnected"))
         );
-    }
-
-    #[tokio::test]
-    async fn show_runtime_metadata_monitor_ignores_stale_disconnect_facts() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let monitor = spawn_show_runtime_metadata_monitor_with_notifier(
-            event_bus.subscribe(),
-            show.clone(),
-            move |notification| {
-                tx.send(notification).unwrap();
-            },
-        );
-
-        event_bus.publish_runtime_generation_changed(9);
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 8,
-            event: Lv1Event::Disconnected {
-                reason: "stale disconnect".to_string(),
-            },
-        });
-
-        assert!(matches!(
-            rx.recv().await,
-            Some(
-                ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged { generation: 9 }
-            )
-        ));
-        assert!(matches!(
-            rx.recv().await,
-            Some(
-                ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
-                    generation: 8,
-                    active_generation: 9,
-                }
-            )
-        ));
-
-        monitor.abort();
-    }
-
-    #[tokio::test]
-    async fn show_runtime_metadata_monitor_notifies_on_runtime_generation_and_disconnect() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let _monitor = spawn_show_runtime_metadata_monitor_with_notifier(
-            event_bus.subscribe(),
-            show.clone(),
-            move |notification| {
-                tx.send(notification).unwrap();
-            },
-        );
-
-        event_bus.publish_runtime_generation_changed(7);
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 7,
-            event: Lv1Event::Disconnected {
-                reason: "link lost".to_string(),
-            },
-        });
-
-        assert!(matches!(
-            rx.recv().await,
-            Some(
-                ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged { generation: 7 }
-            )
-        ));
-        assert!(matches!(
-            rx.recv().await,
-            Some(ShowRuntimeMetadataMonitorNotification::Lv1Disconnected {
-                generation: 7,
-                active: true
-            })
-        ));
-
-        drop(show);
-    }
-
-    #[tokio::test]
-    async fn show_runtime_metadata_monitor_notifies_on_ignored_stale_events() {
-        let event_bus = AppEventBus::default();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
-        let (tx, mut rx) = mpsc::unbounded_channel();
-
-        let _monitor = spawn_show_runtime_metadata_monitor_with_notifier(
-            event_bus.subscribe(),
-            show.clone(),
-            move |notification| {
-                tx.send(notification).unwrap();
-            },
-        );
-
-        event_bus.publish_runtime_generation_changed(8);
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 7,
-            event: Lv1Event::Disconnected {
-                reason: "stale".to_string(),
-            },
-        });
-
-        assert!(matches!(
-            rx.recv().await,
-            Some(
-                ShowRuntimeMetadataMonitorNotification::RuntimeGenerationChanged { generation: 8 }
-            )
-        ));
-        assert!(matches!(
-            rx.recv().await,
-            Some(
-                ShowRuntimeMetadataMonitorNotification::StaleLv1EventIgnored {
-                    generation: 7,
-                    active_generation: 8
-                }
-            )
-        ));
-
-        drop(show);
     }
 }

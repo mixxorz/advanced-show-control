@@ -94,10 +94,6 @@ pub enum ShowCommand {
         reconnect: ReconnectState,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
-    HandleRuntimeDisconnected {
-        reason: String,
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,

@@ -60,8 +60,9 @@ pub fn spawn_lv1_scene_list_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_state::{Lv1SystemIdentity, ReconnectState};
     use crate::lv1::{Lv1Event, SceneListEntry};
-    use crate::runtime::events::{AppEvent, AppEventBus};
+    use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
     use crate::show::ShowCommand;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
@@ -251,5 +252,94 @@ mod tests {
         assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse Big");
         assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
         monitor.abort();
+    }
+
+    #[tokio::test]
+    async fn show_actor_handles_active_generation_lv1_disconnect() {
+        let event_bus = AppEventBus::default();
+        let mut show_events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+
+        let identity = Lv1SystemIdentity {
+            uuid: Some("lv1-a".to_string()),
+            host: Some("lv1-a.local".to_string()),
+            address: "192.0.2.10".to_string(),
+            port: 12345,
+        };
+        show.send(ShowCommand::EstablishConnectedLv1Identity {
+            identity,
+            reply: None,
+        })
+        .await
+        .unwrap();
+        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
+        show.send(ShowCommand::SetReconnectState {
+            reconnect: ReconnectState {
+                active: true,
+                attempt: 2,
+            },
+            reply: None,
+        })
+        .await
+        .unwrap();
+        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 7 },
+        ));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::Disconnected {
+                reason: "network lost".to_string(),
+            },
+        });
+
+        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        let state = rx.await.unwrap();
+        assert!(state.connected_lv1_identity.is_none());
+        assert_eq!(state.reconnect, ReconnectState::default());
+    }
+
+    #[tokio::test]
+    async fn show_actor_ignores_stale_generation_lv1_disconnect() {
+        let event_bus = AppEventBus::default();
+        let mut show_events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+
+        let identity = Lv1SystemIdentity {
+            uuid: Some("lv1-a".to_string()),
+            host: Some("lv1-a.local".to_string()),
+            address: "192.0.2.10".to_string(),
+            port: 12345,
+        };
+        show.send(ShowCommand::EstablishConnectedLv1Identity {
+            identity,
+            reply: None,
+        })
+        .await
+        .unwrap();
+        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 7 },
+        ));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 6,
+            event: Lv1Event::Disconnected {
+                reason: "old runtime closed".to_string(),
+            },
+        });
+
+        tokio::task::yield_now().await;
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        let state = rx.await.unwrap();
+        assert!(state.connected_lv1_identity.is_some());
     }
 }
