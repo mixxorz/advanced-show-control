@@ -1,8 +1,10 @@
 //! Tauri command adapter exports.
 //!
-//! This module is the frontend command registration surface. It re-exports the
-//! existing command implementations and the Tauri-generated command helpers so
-//! the adapter boundary can move into `ui/` without changing behavior.
+//! This module is the frontend command registration surface.
+
+use crate::lifecycle::AppLifecycle;
+use crate::ui::UiLogReceiverState;
+use tauri::{AppHandle, Manager, Runtime, State};
 
 pub use crate::commands::{
     abort_all_fades, attempt_reconnect_lv1, connect_lv1, connect_lv1_system, cue_scene,
@@ -39,3 +41,12 @@ pub use crate::commands::{
     __tauri_command_name_set_scene_scope_pan_enabled,
     __tauri_command_name_startup_auto_connect_lv1, __tauri_command_name_store_scene_config,
 };
+
+#[tauri::command]
+pub async fn frontend_ready<R: Runtime>(
+    app: AppHandle<R>,
+    lifecycle: State<'_, AppLifecycle>,
+) -> Result<(), String> {
+    let logs = app.state::<UiLogReceiverState>().subscribe();
+    lifecycle.frontend_ready(app, logs).await
+}
