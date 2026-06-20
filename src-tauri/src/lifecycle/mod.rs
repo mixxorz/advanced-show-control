@@ -225,19 +225,51 @@ impl AppLifecycle {
         let initial_snapshot = lv1.get_state().await;
         if initial_snapshot.connection != crate::lv1::types::ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
-            match failure_mode {
-                ConnectFailureMode::ClearConnectedIdentity => {
-                    let _ = command_bus.clear_connected_lv1_identity().await;
-                }
-                ConnectFailureMode::PreserveConnectedIdentity => {
-                    let _ = command_bus.set_pending_lv1_identity(None).await;
-                }
-            }
+            let _ = self
+                .apply_failed_connect_metadata(&command_bus, failure_mode)
+                .await;
             return Err("LV1 did not connect".to_string());
         }
 
+        let reconnect_state = crate::connection_state::ReconnectState::default();
+        let _ = self
+            .apply_connected_lv1_metadata(&command_bus, identity.clone(), reconnect_state)
+            .await;
         let _scene_recall_fader = spawn_scene_recall_fader(generation, command_bus, event_bus);
         let _ = app;
+        Ok(())
+    }
+
+    async fn apply_connected_lv1_metadata(
+        &self,
+        command_bus: &AppCommandBus,
+        identity: crate::connection_state::Lv1SystemIdentity,
+        reconnect: crate::connection_state::ReconnectState,
+    ) -> Result<(), crate::runtime::commands::AppCommandError> {
+        command_bus.set_pending_lv1_identity(None).await?;
+        command_bus
+            .establish_connected_lv1_identity(identity)
+            .await?;
+        command_bus.set_reconnect_state(reconnect).await?;
+        Ok(())
+    }
+
+    async fn apply_failed_connect_metadata(
+        &self,
+        command_bus: &AppCommandBus,
+        failure_mode: ConnectFailureMode,
+    ) -> Result<(), crate::runtime::commands::AppCommandError> {
+        match failure_mode {
+            ConnectFailureMode::ClearConnectedIdentity => {
+                let _ = command_bus.clear_connected_lv1_identity().await?;
+            }
+            ConnectFailureMode::PreserveConnectedIdentity => {
+                let _ = command_bus.set_pending_lv1_identity(None).await?;
+                let _ = command_bus
+                    .set_reconnect_state(crate::connection_state::ReconnectState::default())
+                    .await?;
+            }
+        }
         Ok(())
     }
 
@@ -421,7 +453,9 @@ pub fn spawn_lifecycle_event_monitor(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_state::ReconnectState;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
+    use crate::show::events::{ShowEvent, ShowProjectionReason};
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -507,6 +541,81 @@ mod tests {
             .unwrap();
 
         assert!(result.changed);
+    }
+
+    #[tokio::test]
+    async fn connected_identity_metadata_is_applied_through_app_command_bus() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        let command_bus = lifecycle.current_command_bus().await;
+        let mut events = lifecycle.event_bus.subscribe();
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+
+        lifecycle
+            .apply_connected_lv1_metadata(&command_bus, identity.clone(), ReconnectState::default())
+            .await
+            .expect("connected metadata should apply through the command bus");
+
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            AppEvent::Show(ShowEvent::StateChanged {
+                reason: ShowProjectionReason::ConnectionMetadata,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn failed_connect_metadata_is_applied_through_app_command_bus() {
+        let event_bus = AppEventBus::default();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let lifecycle = AppLifecycle::new(event_bus, show);
+        let command_bus = lifecycle.current_command_bus().await;
+        let mut events = lifecycle.event_bus.subscribe();
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50000,
+        };
+
+        command_bus
+            .set_pending_lv1_identity(Some(identity.clone()))
+            .await
+            .unwrap();
+        command_bus
+            .establish_connected_lv1_identity(identity.clone())
+            .await
+            .unwrap();
+        command_bus
+            .set_reconnect_state(ReconnectState {
+                active: true,
+                attempt: 3,
+            })
+            .await
+            .unwrap();
+
+        lifecycle
+            .apply_failed_connect_metadata(
+                &command_bus,
+                ConnectFailureMode::PreserveConnectedIdentity,
+            )
+            .await
+            .expect("failed connect metadata should apply through the command bus");
+
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            AppEvent::Show(ShowEvent::StateChanged {
+                reason: ShowProjectionReason::ConnectionMetadata,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]
