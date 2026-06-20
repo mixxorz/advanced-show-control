@@ -2097,6 +2097,7 @@ mod tests {
 
             let mute_off = vec![
                 advanced_show_control::lv1::osc::OscArg::Int(0),
+                advanced_show_control::lv1::osc::OscArg::Int(0),
                 advanced_show_control::lv1::osc::OscArg::Bool(false),
             ];
             let frame =
