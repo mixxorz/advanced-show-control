@@ -27,7 +27,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - Storybook is configured for frontend component development outside the live Tauri runtime, with typed app-state fixtures and representative stories for the current test-bed components.
 - `SceneRecallFader` validates LV1 scene recall events, blocks unsafe recalls, skips disabled fader scope, starts validated scene-owned fades, and moves duration `0` scenes immediately.
 - Runtime architecture is actor-oriented with `Lv1Actor`, `FadeEngine`, `ShowState`, `SceneRecallFader`, `AppLifecycle`, `AppEventBus`, `AppCommandBus`, and `projector` as the main ownership boundaries.
-- The projector is the only backend `app-status-changed` emitter; logging stays on the separate UI log path, and the React app listens to that event for state updates.
+- The projector remains the only backend `app-status-changed` emitter; logging stays on the separate UI log path, and the React app listens to that event for state updates.
 
 ## MVP Roadmap
 

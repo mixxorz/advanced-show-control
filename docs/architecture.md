@@ -153,11 +153,11 @@ High-rate fade writes use `write_batch`. The command bus reports an unavailable 
 ## Runtime Lifecycle
 
 - App startup constructs `ShowState` without spawning Tokio work.
-- `connect` installs the current command targets and starts the LV1 actor, fade, recall, and shell projection tasks.
+- `connect` installs the current command targets and starts the LV1 actor, fade, recall, and projector tasks.
 - `disconnect` and reconnect clear command targets and abort old runtime tasks.
 - Generation guards prevent stale events, snapshots, or handles from mutating current state.
 
-The Tauri shell projection only applies events for the active generation, and stale runtime handles are rejected instead of being installed. `SceneRecallFader` also checks the active generation before validation, before logging automation status, and immediately before dispatching a fade start so a stale recall task cannot send after disconnect or reconnect.
+The projector only applies events for the active generation, and stale runtime handles are rejected instead of being installed. `SceneRecallFader` also checks the active generation before validation, before logging automation status, and immediately before dispatching a fade start so a stale recall task cannot send after disconnect or reconnect.
 
 ## File Structure
 
