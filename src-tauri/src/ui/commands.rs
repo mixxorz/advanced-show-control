@@ -6,8 +6,11 @@ use crate::show::commands::{
     ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
     SelectedSceneResult, ShowCommandResult,
 };
+use crate::show_file::{backup_folder, default_show_folder, read_show_file, write_show_file};
 use crate::ui::UiLogReceiverState;
+use std::path::PathBuf;
 use tauri::{AppHandle, Manager, Runtime, State};
+use tokio::task::spawn_blocking;
 
 fn map_app_command_error(error: AppCommandError) -> String {
     match error {
@@ -65,24 +68,65 @@ pub async fn new_show_file(
 pub async fn open_show_file_dialog(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<LoadShowFileResult, String> {
-    let _ = lifecycle;
-    Err("open_show_file_dialog is not yet routed through ui::commands".to_string())
+    let path = choose_open_show_file_path().await?;
+    let file = read_show_file(&path)?;
+    let command_bus = lifecycle.current_command_bus().await;
+    let lv1 = command_bus
+        .get_lv1_state()
+        .await
+        .map_err(map_app_command_error)?;
+    command_bus
+        .load_show_file_from_dto(path, file, lv1)
+        .await
+        .map_err(map_app_command_error)
 }
 
 #[tauri::command]
 pub async fn save_show_file(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
-    let _ = lifecycle;
-    Err("save_show_file is not yet routed through ui::commands".to_string())
+    save_show_file_as_dialog(lifecycle).await
 }
 
 #[tauri::command]
 pub async fn save_show_file_as_dialog(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
-    let _ = lifecycle;
-    Err("save_show_file_as_dialog is not yet routed through ui::commands".to_string())
+    let path = choose_save_show_file_path().await?;
+    let command_bus = lifecycle.current_command_bus().await;
+    let file = command_bus
+        .export_show_file_for_save(String::new())
+        .await
+        .map_err(map_app_command_error)?;
+    write_show_file(&path, &file, &backup_folder())?;
+    Ok(ShowCommandResult { changed: true })
+}
+
+async fn choose_open_show_file_path() -> Result<PathBuf, String> {
+    spawn_blocking(|| -> Result<Option<PathBuf>, String> {
+        let folder = default_show_folder();
+        Ok(rfd::FileDialog::new()
+            .set_directory(folder)
+            .add_filter("LV1 Show", &["lv1show"])
+            .pick_file())
+    })
+    .await
+    .map_err(|err| format!("Failed to open file dialog: {err}"))??
+    .ok_or_else(|| "Open show file cancelled".to_string())
+}
+
+async fn choose_save_show_file_path() -> Result<PathBuf, String> {
+    spawn_blocking(|| -> Result<Option<PathBuf>, String> {
+        let folder = default_show_folder();
+        Ok(rfd::FileDialog::new()
+            .set_directory(folder)
+            .set_file_name("Untitled.lv1show")
+            .add_filter("LV1 Show", &["lv1show"])
+            .save_file())
+    })
+    .await
+    .map_err(|err| format!("Failed to open save dialog: {err}"))??
+    .ok_or_else(|| "Save show file cancelled".to_string())
 }
 
 #[tauri::command]
