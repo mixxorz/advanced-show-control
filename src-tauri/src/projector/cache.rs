@@ -17,7 +17,8 @@ pub const MAX_PROJECTOR_LOGS: usize = 200;
 
 #[derive(Debug)]
 pub struct ProjectionCache {
-    generation: u64,
+    active_generation: u64,
+    state_version: u64,
     lv1_snapshot: Option<Lv1StateSnapshot>,
     discovered_lv1_systems: Vec<DiscoveredLv1System>,
     connected_lv1_identity: Option<Lv1SystemIdentity>,
@@ -45,7 +46,8 @@ impl Default for ProjectionCache {
 impl ProjectionCache {
     pub fn new() -> Self {
         Self {
-            generation: 0,
+            active_generation: 0,
+            state_version: 0,
             lv1_snapshot: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: None,
@@ -66,7 +68,7 @@ impl ProjectionCache {
     }
 
     pub fn set_active_generation(&mut self, generation: u64) {
-        self.generation = generation;
+        self.active_generation = generation;
     }
 
     pub fn apply_show_state(&mut self, state: ShowProjectionState) {
@@ -85,7 +87,7 @@ impl ProjectionCache {
     }
 
     pub fn apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool {
-        if generation != self.generation {
+        if generation != self.active_generation {
             return false;
         }
         match event {
@@ -151,7 +153,10 @@ impl ProjectionCache {
         true
     }
 
-    pub fn apply_fade_event(&mut self, event: &FadeEvent) {
+    pub fn apply_fade_event(&mut self, generation: u64, event: &FadeEvent) -> bool {
+        if generation != self.active_generation {
+            return false;
+        }
         match event {
             FadeEvent::FadeStarted => self.fade_state = AppFadeState::Running,
             FadeEvent::FadeCompleted | FadeEvent::FadeAborted => {
@@ -161,6 +166,7 @@ impl ProjectionCache {
             FadeEvent::ChannelOverride { .. } => self.fade_state = AppFadeState::Blocked,
             FadeEvent::WriteFailed { .. } => {}
         }
+        true
     }
 
     pub fn append_log(&mut self, event: UiLogEvent) {
@@ -178,7 +184,8 @@ impl ProjectionCache {
     }
 
     pub fn seed_from_view_state(&mut self, snapshot: &AppViewState) {
-        self.generation = snapshot.state_version;
+        self.active_generation = snapshot.state_version;
+        self.state_version = snapshot.state_version;
         self.lv1_snapshot = match snapshot.connection {
             AppConnectionState::Disconnected => None,
             AppConnectionState::Connecting | AppConnectionState::Connected => {
@@ -239,8 +246,8 @@ impl ProjectionCache {
     }
 
     pub fn build_snapshot(&mut self) -> AppViewState {
-        self.generation = self.generation.saturating_add(1);
-        let state_version = self.generation;
+        self.state_version = self.state_version.saturating_add(1);
+        let state_version = self.state_version;
 
         let (connection, current_scene, scenes, channels) = self
             .lv1_snapshot
@@ -535,17 +542,30 @@ mod tests {
     fn cache_applies_fade_state_events() {
         let mut cache = ProjectionCache::new();
 
-        cache.apply_fade_event(&FadeEvent::FadeStarted);
+        assert!(cache.apply_fade_event(0, &FadeEvent::FadeStarted));
         assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Running);
 
-        cache.apply_fade_event(&FadeEvent::ChannelOverride {
-            group: 1,
-            channel: 1,
-            parameter: FadeParameter::FaderDb,
-        });
+        assert!(cache.apply_fade_event(
+            0,
+            &FadeEvent::ChannelOverride {
+                group: 1,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+            }
+        ));
         assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Blocked);
 
-        cache.apply_fade_event(&FadeEvent::FadeCompleted);
+        assert!(cache.apply_fade_event(0, &FadeEvent::FadeCompleted));
+        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Idle);
+    }
+
+    #[test]
+    fn cache_ignores_stale_generation_fade_events() {
+        let mut cache = ProjectionCache::new();
+        cache.set_active_generation(2);
+
+        assert!(!cache.apply_fade_event(1, &FadeEvent::FadeStarted));
+
         assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Idle);
     }
 
@@ -553,12 +573,15 @@ mod tests {
     fn cache_keeps_fade_state_when_channel_cancelled() {
         let mut cache = ProjectionCache::new();
 
-        cache.apply_fade_event(&FadeEvent::FadeStarted);
-        cache.apply_fade_event(&FadeEvent::ChannelCancelled {
-            group: 1,
-            channel: 1,
-            parameter: FadeParameter::FaderDb,
-        });
+        cache.apply_fade_event(0, &FadeEvent::FadeStarted);
+        cache.apply_fade_event(
+            0,
+            &FadeEvent::ChannelCancelled {
+                group: 1,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+            },
+        );
 
         assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Running);
     }

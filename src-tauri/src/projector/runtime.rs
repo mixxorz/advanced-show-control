@@ -43,7 +43,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
-        let mut dirty = false;
+        let mut dirty = true;
 
         loop {
             tokio::select! {
@@ -102,10 +102,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
             true
         }
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
-        AppEvent::Fade { event, .. } => {
-            cache.apply_fade_event(event);
-            true
-        }
+        AppEvent::Fade { generation, event } => cache.apply_fade_event(*generation, event),
         AppEvent::SceneRecall { .. } => false,
         AppEvent::Show(crate::show::events::ShowEvent::StateChanged { state, .. }) => {
             cache.apply_show_state(state.clone());
@@ -219,6 +216,49 @@ mod tests {
                 last_event_at: None,
             },
         }));
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+
+        projector.abort();
+        let snapshots = received.lock().unwrap();
+        assert!(snapshots.iter().any(|snapshot| snapshot["lockout"] == true));
+    }
+
+    #[tokio::test]
+    async fn projector_emits_initial_show_state() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let (_log_tx, log_rx) = broadcast::channel(8);
+        let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received_events = received.clone();
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            received_events.lock().unwrap().push(payload);
+        });
+
+        let projector = spawn_projector(ProjectorInputs {
+            app: handle,
+            generation: 0,
+            initial_show_state: ShowProjectionState {
+                lockout: true,
+                scene_configs: Vec::new(),
+                cued_scene_id: None,
+                selected_scene_id: None,
+                show_file_path: None,
+                show_file_name: "Seeded Show".to_string(),
+                show_file_dirty: false,
+                show_file_last_saved_at: None,
+                discovered_lv1_systems: Vec::new(),
+                connected_lv1_identity: None,
+                pending_lv1_identity: None,
+                reconnect: Default::default(),
+                last_event_at: None,
+            },
+            events: event_bus.subscribe(),
+            logs: log_rx,
+        });
+
         tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
 
         projector.abort();
