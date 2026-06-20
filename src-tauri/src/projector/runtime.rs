@@ -103,7 +103,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
         }
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
         AppEvent::Fade { generation, event } => cache.apply_fade_event(*generation, event),
-        AppEvent::SceneRecall { .. } => false,
+        AppEvent::Scenes { .. } => false,
         AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
             cache.apply_show_state(state.clone());
             true

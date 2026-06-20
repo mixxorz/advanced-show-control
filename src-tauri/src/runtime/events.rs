@@ -16,7 +16,7 @@ pub enum AppEvent {
     Runtime(RuntimeLifecycleEvent),
     Lv1 { generation: u64, event: Lv1Event },
     Fade { generation: u64, event: FadeEvent },
-    SceneRecall { generation: u64, event: ScenesEvent },
+    Scenes { generation: u64, event: ScenesEvent },
     Show(ShowEvent),
 }
 
@@ -49,8 +49,8 @@ impl AppEventBus {
         self.publish(AppEvent::Fade { generation, event })
     }
 
-    pub fn publish_scene_recall(&self, generation: u64, event: ScenesEvent) -> usize {
-        self.publish(AppEvent::SceneRecall { generation, event })
+    pub fn publish_scenes(&self, generation: u64, event: ScenesEvent) -> usize {
+        self.publish(AppEvent::Scenes { generation, event })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<AppEvent> {
@@ -163,7 +163,7 @@ mod tests {
     async fn runtime_fact_publish_without_subscribers_is_safe() {
         let bus = AppEventBus::new(1);
 
-        let sent = bus.publish(AppEvent::SceneRecall {
+        let sent = bus.publish(AppEvent::Scenes {
             generation: 0,
             event: crate::scenes::ScenesEvent::Skipped {
                 scene_label: "1: Intro".to_string(),

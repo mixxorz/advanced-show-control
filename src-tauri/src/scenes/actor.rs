@@ -249,7 +249,7 @@ async fn process_scene_observation(
             if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
@@ -272,7 +272,7 @@ async fn process_scene_observation(
         if !is_generation_current(generation, runtime_generation).await {
             return;
         }
-        event_bus.publish_scene_recall(
+        event_bus.publish_scenes(
             generation,
             ScenesEvent::Blocked {
                 scene_label: scene_label(&observation.scene),
@@ -287,7 +287,7 @@ async fn process_scene_observation(
             if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
@@ -303,7 +303,7 @@ async fn process_scene_observation(
         if !is_generation_current(generation, runtime_generation).await {
             return;
         }
-        event_bus.publish_scene_recall(
+        event_bus.publish_scenes(
             generation,
             ScenesEvent::Blocked {
                 scene_label: scene_label(&observation.scene),
@@ -318,7 +318,7 @@ async fn process_scene_observation(
             if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
@@ -342,14 +342,14 @@ async fn process_scene_observation(
             }
             tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
             tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::Ready {
                     scene_label: scene_label.clone(),
                     target_count: fade_config.targets.len(),
                 },
             );
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::StartRequested {
                     scene_label: scene_label.clone(),
@@ -377,7 +377,7 @@ async fn process_scene_observation(
             match result {
                 Ok(()) | Err(AppCommandError::StaleGeneration) => (),
                 Err(err) => {
-                    event_bus.publish_scene_recall(
+                    event_bus.publish_scenes(
                         generation,
                         ScenesEvent::Blocked {
                             scene_label,
@@ -391,7 +391,7 @@ async fn process_scene_observation(
             if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::Skipped {
                     scene_label: scene_label(&observation.scene),
@@ -410,7 +410,7 @@ async fn process_scene_observation(
                 reason = %reason,
                 "Scene recall blocked for {scene_label}: {reason}"
             );
-            event_bus.publish_scene_recall(
+            event_bus.publish_scenes(
                 generation,
                 ScenesEvent::Blocked {
                     scene_label,
@@ -773,7 +773,7 @@ mod tests {
         while let Ok(event) = events.try_recv() {
             if matches!(
                 event,
-                AppEvent::SceneRecall {
+                AppEvent::Scenes {
                     generation: 1,
                     event: crate::scenes::events::ScenesEvent::StartRequested { .. }
                 }
@@ -1165,11 +1165,11 @@ mod tests {
         let mut seen_start_requested = false;
         for _ in 0..2 {
             match next_app_event(&mut events).await {
-                AppEvent::SceneRecall {
+                AppEvent::Scenes {
                     generation: 1,
                     event: ScenesEvent::Ready { .. },
                 } => seen_ready = true,
-                AppEvent::SceneRecall {
+                AppEvent::Scenes {
                     generation: 1,
                     event: ScenesEvent::StartRequested { .. },
                 } => seen_start_requested = true,
@@ -1314,7 +1314,7 @@ mod tests {
         tokio::task::yield_now().await;
         loop {
             match events.try_recv() {
-                Ok(AppEvent::SceneRecall {
+                Ok(AppEvent::Scenes {
                     generation: 0,
                     event,
                 }) => {
@@ -1336,7 +1336,7 @@ mod tests {
         loop {
             let event = events.recv().await.unwrap();
             match event {
-                AppEvent::SceneRecall {
+                AppEvent::Scenes {
                     generation: 1,
                     event: _,
                 } => return event,
@@ -1349,7 +1349,7 @@ mod tests {
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     ) -> ScenesEvent {
         loop {
-            if let AppEvent::SceneRecall {
+            if let AppEvent::Scenes {
                 generation: 1,
                 event,
             } = events.recv().await.unwrap()
