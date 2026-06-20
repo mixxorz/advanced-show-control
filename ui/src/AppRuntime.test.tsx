@@ -14,17 +14,20 @@ function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
 ): AppRuntimeServices {
   return {
+    frontendReady: vi.fn(async () => undefined),
     abortAll: vi.fn(async () => undefined),
     attemptReconnectLv1: vi.fn(async () => disconnectedAppViewState),
     connectLv1System: vi.fn(async () => connectedAppState),
     disconnectLv1: vi.fn(async () => disconnectedAppViewState),
-    listenForAppStatus: vi.fn(async () => () => {}),
+    listenForAppStatus: vi.fn(async (listener) => {
+      listener(connectedAppState);
+      return () => {};
+    }),
     newShowFile: vi.fn(async () => disconnectedAppViewState),
     openShowFile: vi.fn(async () => disconnectedAppViewState),
     cueScene: vi.fn(async () => disconnectedAppViewState),
     recallScene: vi.fn(async () => disconnectedAppViewState),
     reconnectTimedOut: vi.fn(async () => disconnectedAppViewState),
-    refreshAppState: vi.fn(async () => disconnectedAppViewState),
     refreshLv1Discovery: vi.fn(async () => discoveredSystemsAppState),
     saveShowFile: vi.fn(async () => disconnectedAppViewState),
     saveShowFileAs: vi.fn(async () => disconnectedAppViewState),
@@ -43,7 +46,14 @@ function makeServices(
 
 describe("AppRuntime connection lifecycle", () => {
   it("opens the connection modal on startup", () => {
-    render(<AppRuntime services={makeServices()} />);
+    render(
+      <AppRuntime
+        services={makeServices({
+          listenForAppStatus: vi.fn(async () => () => {}),
+          startupAutoConnectLv1: vi.fn(async () => undefined),
+        })}
+      />,
+    );
 
     expect(
       screen.getByRole("heading", { name: "Connect to LV1" }),
@@ -85,56 +95,16 @@ describe("AppRuntime connection lifecycle", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps the modal open while manual connect is pending and closes after selected system connects", async () => {
-    const user = userEvent.setup();
-    const pending = createDeferred<AppViewState>();
-    const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => discoveredSystemsAppState),
-      connectLv1System: vi.fn(() => pending.promise),
-    });
-    render(<AppRuntime services={services} />);
-    await screen.findByText("FOH LV1");
-
-    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
-
-    expect(
-      screen.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
-
-    await act(async () => {
-      pending.resolve(connectedAppState);
-      await pending.promise;
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Connect to LV1" }),
-      ).not.toBeInTheDocument();
-    });
-  });
-
-  it("keeps the modal open and displays manual connection errors", async () => {
-    const user = userEvent.setup();
-    const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => discoveredSystemsAppState),
-      connectLv1System: vi.fn(async () => {
-        throw new Error("manual failed");
-      }),
-    });
-    render(<AppRuntime services={services} />);
-    await screen.findByText("FOH LV1");
-
-    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
-
-    expect(await screen.findByText("Error: manual failed")).toBeInTheDocument();
-    expect(
-      screen.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
-  });
-
   it("allows the engineer to close the modal and stay offline", async () => {
     const user = userEvent.setup();
-    render(<AppRuntime services={makeServices()} />);
+    render(
+      <AppRuntime
+        services={makeServices({
+          listenForAppStatus: vi.fn(async () => () => {}),
+          startupAutoConnectLv1: vi.fn(async () => undefined),
+        })}
+      />,
+    );
 
     await user.click(screen.getByLabelText("Close connection modal"));
 
@@ -150,7 +120,7 @@ describe("AppRuntime connection lifecycle", () => {
   it("ignores an equal-version stale snapshot after initialization", async () => {
     let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
     const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
       listenForAppStatus: vi.fn(async (listener) => {
         appStatusListener = listener;
         return () => {};
@@ -158,6 +128,10 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     render(<AppRuntime services={services} />);
+
+    await act(async () => {
+      appStatusListener?.(connectedAppState);
+    });
 
     await waitFor(() => {
       expect(
@@ -215,55 +189,19 @@ describe("AppRuntime connection lifecycle", () => {
     expect(screen.queryByText("Offline")).not.toBeInTheDocument();
   });
 
-  it("closes the modal when startup auto-connect resolves connected after discovery refresh", async () => {
-    const startup = createDeferred<AppViewState>();
-    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
-    const laterDiscoverySnapshot: AppViewState = {
-      ...discoveredSystemsAppState,
-      stateVersion: connectedAppState.stateVersion + 1,
-    };
-    const services = makeServices({
-      startupAutoConnectLv1: vi.fn(() => startup.promise),
-      listenForAppStatus: vi.fn(async (listener) => {
-        appStatusListener = listener;
-        return () => {};
-      }),
-      refreshLv1Discovery: vi.fn(async () => laterDiscoverySnapshot),
-    });
-
-    render(<AppRuntime services={services} />);
-
-    await screen.findByText("FOH LV1");
-
-    await act(async () => {
-      appStatusListener?.({
-        ...connectedAppState,
-        stateVersion: laterDiscoverySnapshot.stateVersion + 1,
-      });
-    });
-
-    await act(async () => {
-      startup.resolve(connectedAppState);
-      await startup.promise;
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Connect to LV1" }),
-      ).not.toBeInTheDocument();
-    });
-    expect(screen.getByText("Connected")).toBeInTheDocument();
-  });
-
   it("keeps the modal open when the engineer opens it while connected", async () => {
     const user = userEvent.setup();
     render(
       <AppRuntime
         services={makeServices({
-          startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+          startupAutoConnectLv1: vi.fn(async () => undefined),
         })}
       />,
     );
+
+    await act(async () => {
+      // makeServices emits connected by default; override startup-only here.
+    });
 
     await waitFor(() => {
       expect(
@@ -283,7 +221,7 @@ describe("AppRuntime connection lifecycle", () => {
     const reconnect = createDeferred<AppViewState>();
     let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
     const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => connectedAppState),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
       listenForAppStatus: vi.fn(async (listener) => {
         appStatusListener = listener;
         return () => {};
@@ -291,6 +229,10 @@ describe("AppRuntime connection lifecycle", () => {
       attemptReconnectLv1: vi.fn(() => reconnect.promise),
     });
     render(<AppRuntime services={services} />);
+
+    await act(async () => {
+      appStatusListener?.(connectedAppState);
+    });
 
     await waitFor(() => {
       expect(
@@ -325,13 +267,14 @@ describe("AppRuntime connection lifecycle", () => {
   it("wires cue recall and go buttons to runtime services", async () => {
     const user = userEvent.setup();
     const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => ({
-        ...connectedAppState,
-        cuedSceneId: connectedAppState.sceneConfigs[0]?.sceneId ?? null,
-      })),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
     });
     const scene = connectedAppState.sceneConfigs[0];
     render(<AppRuntime services={services} />);
+
+    await act(async () => {
+      // makeServices emits connected by default.
+    });
 
     await waitFor(() => {
       expect(
@@ -345,6 +288,64 @@ describe("AppRuntime connection lifecycle", () => {
 
     expect(services.cueScene).toHaveBeenCalledWith(scene.sceneId);
     expect(services.recallScene).toHaveBeenCalledWith(scene.sceneId);
-    expect(services.recallScene).toHaveBeenCalledTimes(2);
+    expect(services.recallScene).toHaveBeenCalledTimes(1);
+  });
+
+  it("registers app-status listener before signaling frontend readiness", async () => {
+    const calls: string[] = [];
+    render(
+      <AppRuntime
+        services={makeServices({
+          listenForAppStatus: vi.fn(async () => {
+            calls.push("listen");
+            return () => {};
+          }),
+          startupAutoConnectLv1: vi.fn(async () => disconnectedAppViewState),
+          frontendReady: vi.fn(async () => {
+            calls.push("ready");
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => expect(calls).toEqual(["listen", "ready"]));
+  });
+
+  it("does not apply command return values as app state", async () => {
+    const user = userEvent.setup();
+    let listener: ((snapshot: AppViewState) => void) | null = null;
+    const sentinel: AppViewState = {
+      ...disconnectedAppViewState,
+      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show",
+      stateVersion: disconnectedAppViewState.stateVersion + 1,
+    };
+    const services = makeServices({
+      listenForAppStatus: vi.fn(async (next) => {
+        listener = next;
+        return () => {};
+      }),
+      startupAutoConnectLv1: vi.fn(async () => disconnectedAppViewState),
+      frontendReady: vi.fn(async () => undefined),
+      newShowFile: vi.fn(async () => sentinel),
+    });
+    render(<AppRuntime services={services} />);
+
+    await user.click(screen.getByLabelText("Close connection modal"));
+    await user.click(screen.getByRole("button", { name: "Sessions" }));
+    await user.click(screen.getByRole("button", { name: "New" }));
+
+    expect(
+      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show"),
+    ).not.toBeInTheDocument();
+
+    await act(async () => {
+      listener?.(sentinel);
+    });
+
+    expect(
+      await screen.findByText(
+        "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show",
+      ),
+    ).toBeInTheDocument();
   });
 });

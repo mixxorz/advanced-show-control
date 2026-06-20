@@ -15,46 +15,40 @@ import {
 export type AppStatusListener = (appState: AppViewState) => void;
 
 export type AppRuntimeServices = {
+  frontendReady: () => Promise<void>;
   abortAll: () => Promise<void> | void;
-  attemptReconnectLv1: () => Promise<AppViewState>;
-  connectLv1System: (identity: Lv1SystemIdentity) => Promise<AppViewState>;
-  disconnectLv1: () => Promise<AppViewState>;
+  attemptReconnectLv1: () => Promise<unknown>;
+  connectLv1System: (identity: Lv1SystemIdentity) => Promise<unknown>;
+  disconnectLv1: () => Promise<unknown>;
   listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
-  newShowFile: () => Promise<AppViewState>;
-  openShowFile: () => Promise<AppViewState>;
-  reconnectTimedOut: (attempt: number) => Promise<AppViewState>;
-  refreshAppState: () => Promise<AppViewState>;
-  refreshLv1Discovery: () => Promise<AppViewState>;
-  saveShowFile: () => Promise<AppViewState>;
-  saveShowFileAs: () => Promise<AppViewState>;
-  cueScene: (sceneId: string) => Promise<AppViewState>;
-  recallScene: (sceneId: string) => Promise<AppViewState>;
-  selectSceneConfig: (sceneId: string) => Promise<AppViewState>;
-  setAllChannelsScoped: (
-    sceneId: string,
-    scoped: boolean,
-  ) => Promise<AppViewState>;
+  newShowFile: () => Promise<unknown>;
+  openShowFile: () => Promise<unknown>;
+  reconnectTimedOut: (attempt: number) => Promise<unknown>;
+  refreshLv1Discovery: () => Promise<unknown>;
+  saveShowFile: () => Promise<unknown>;
+  saveShowFileAs: () => Promise<unknown>;
+  cueScene: (sceneId: string) => Promise<unknown>;
+  recallScene: (sceneId: string) => Promise<unknown>;
+  selectSceneConfig: (sceneId: string) => Promise<unknown>;
+  setAllChannelsScoped: (sceneId: string, scoped: boolean) => Promise<unknown>;
   setChannelScoped: (
     sceneId: string,
     group: number,
     channel: number,
     scoped: boolean,
-  ) => Promise<AppViewState>;
-  setLockout: (enabled: boolean) => Promise<AppViewState>;
-  setSceneDurationMs: (
-    sceneId: string,
-    durationMs: number,
-  ) => Promise<AppViewState>;
+  ) => Promise<unknown>;
+  setLockout: (enabled: boolean) => Promise<unknown>;
+  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<unknown>;
   setSceneScopeFadersEnabled: (
     sceneId: string,
     enabled: boolean,
-  ) => Promise<AppViewState>;
+  ) => Promise<unknown>;
   setSceneScopePanEnabled: (
     sceneId: string,
     enabled: boolean,
-  ) => Promise<AppViewState>;
-  startupAutoConnectLv1: () => Promise<AppViewState>;
-  storeSceneConfig: (sceneId: string) => Promise<AppViewState>;
+  ) => Promise<unknown>;
+  startupAutoConnectLv1: () => Promise<unknown>;
+  storeSceneConfig: (sceneId: string) => Promise<unknown>;
 };
 
 type ConnectionModalMode = "startup" | "manual" | null;
@@ -94,63 +88,50 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     }
   }, []);
 
-  const runSnapshot = useCallback(
-    async (command: () => Promise<AppViewState>) => {
-      setCommandError(null);
-      try {
-        const snapshot = await command();
-        applySnapshot(snapshot);
-        return true;
-      } catch (error) {
-        setCommandError(String(error));
-        try {
-          applySnapshot(await services.refreshAppState());
-        } catch (refreshError) {
-          setCommandError(String(refreshError));
-        }
-        return false;
-      }
-    },
-    [applySnapshot, services],
-  );
+  const runCommand = useCallback(async (command: () => Promise<unknown>) => {
+    setCommandError(null);
+    try {
+      await command();
+      return true;
+    } catch (error) {
+      setCommandError(String(error));
+      return false;
+    }
+  }, []);
 
   // Kick off startup auto-connect while also subscribing to backend status
   // updates. Either path may provide the first fresh connected snapshot.
   useEffect(() => {
     let cancelled = false;
+    let unlisten: null | (() => void) = null;
 
-    async function startupAutoConnect() {
+    async function start() {
       try {
-        const snapshot = await services.startupAutoConnectLv1();
-        if (cancelled) return;
-        const accepted = applySnapshot(snapshot);
-        if (accepted) {
-          closeStartupModalIfConnected(snapshot);
+        unlisten = await services.listenForAppStatus((snapshot) => {
+          if (!cancelled && applySnapshot(snapshot)) {
+            closeStartupModalIfConnected(snapshot);
+          }
+        });
+        if (cancelled) {
+          unlisten();
+          return;
         }
+        await services.frontendReady();
+        await services.startupAutoConnectLv1();
       } catch (error) {
-        if (cancelled) return;
-        setCommandError(String(error));
-        setConnectionModalMode("startup");
+        if (!cancelled) {
+          setCommandError(String(error));
+          setConnectionModalMode("startup");
+        }
       }
     }
 
-    void startupAutoConnect();
-
-    const unlistenPromise = services.listenForAppStatus((snapshot) => {
-      if (!cancelled && applySnapshot(snapshot)) {
-        closeStartupModalIfConnected(snapshot);
-      }
-    });
+    void start();
 
     return () => {
       cancelled = true;
-      void cleanupStatusListener();
+      unlisten?.();
     };
-
-    async function cleanupStatusListener() {
-      const unlisten = await unlistenPromise;
-      void unlisten();
-    }
   }, [applySnapshot, closeStartupModalIfConnected, services]);
 
   // The connection modal doubles as discovery UI, so discovery polling is scoped
@@ -161,9 +142,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
 
     async function refreshDiscovery() {
       try {
-        const snapshot = await services.refreshLv1Discovery();
+        await services.refreshLv1Discovery();
         if (cancelled) return;
-        applySnapshot(snapshot);
       } catch (error) {
         if (!cancelled) setCommandError(String(error));
       }
@@ -192,13 +172,9 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       if (reconnectInFlight) return;
       reconnectInFlight = true;
       try {
-        const snapshot = await services.attemptReconnectLv1();
+        await services.attemptReconnectLv1();
         if (cancelled) return;
-        applySnapshot(snapshot);
-        if (snapshot.connection === "connected") {
-          setCommandError(null);
-          setConnectionModalMode((mode) => (mode === "manual" ? mode : null));
-        }
+        setCommandError(null);
       } catch (error) {
         if (!cancelled) setCommandError(String(error));
       } finally {
@@ -213,12 +189,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
 
     const timer = window.setTimeout(async () => {
       try {
-        const snapshot = await services.reconnectTimedOut(attempt);
+        await services.reconnectTimedOut(attempt);
         if (cancelled) return;
-        applySnapshot(snapshot);
-        if (!snapshot.reconnect.active && snapshot.connection !== "connected") {
-          setConnectionModalMode("startup");
-        }
       } catch (error) {
         if (!cancelled) {
           setCommandError(String(error));
@@ -247,50 +219,43 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       });
     },
     disconnect: async () => {
-      await runSnapshot(() => services.disconnectLv1());
+      await runCommand(() => services.disconnectLv1());
       // Disconnect is an explicit connection-management action; keep the modal
       // open so the engineer can immediately choose another console.
       setConnectionModalMode("manual");
     },
-    newShowFile: () => runSnapshot(() => services.newShowFile()),
-    openShowFile: () => runSnapshot(() => services.openShowFile()),
-    cueScene: (sceneId) => runSnapshot(() => services.cueScene(sceneId)),
-    recallScene: (sceneId) => runSnapshot(() => services.recallScene(sceneId)),
-    saveShowFile: () => runSnapshot(() => services.saveShowFile()),
-    saveShowFileAs: () => runSnapshot(() => services.saveShowFileAs()),
+    newShowFile: () => runCommand(() => services.newShowFile()),
+    openShowFile: () => runCommand(() => services.openShowFile()),
+    cueScene: (sceneId) => runCommand(() => services.cueScene(sceneId)),
+    recallScene: (sceneId) => runCommand(() => services.recallScene(sceneId)),
+    saveShowFile: () => runCommand(() => services.saveShowFile()),
+    saveShowFileAs: () => runCommand(() => services.saveShowFileAs()),
     selectScene: (sceneId: string) =>
-      runSnapshot(() => services.selectSceneConfig(sceneId)),
+      runCommand(() => services.selectSceneConfig(sceneId)),
     selectSystem: async (identity) => {
       setCommandError(null);
       try {
-        const snapshot = await services.connectLv1System(identity);
-        applySnapshot(snapshot);
-        if (
-          snapshot.connection === "connected" &&
-          identityMatches(snapshot.connectedLv1Identity, identity)
-        ) {
-          setConnectionModalMode(null);
-        }
+        await services.connectLv1System(identity);
       } catch (error) {
         setCommandError(String(error));
       }
     },
     setAllChannelsScoped: (sceneId: string, scoped: boolean) =>
-      runSnapshot(() => services.setAllChannelsScoped(sceneId, scoped)),
+      runCommand(() => services.setAllChannelsScoped(sceneId, scoped)),
     setChannelScoped: (sceneId, group, channel, scoped) =>
-      runSnapshot(() =>
+      runCommand(() =>
         services.setChannelScoped(sceneId, group, channel, scoped),
       ),
     setSceneDurationMs: (sceneId, durationMs) =>
-      runSnapshot(() => services.setSceneDurationMs(sceneId, durationMs)),
+      runCommand(() => services.setSceneDurationMs(sceneId, durationMs)),
     setSceneScopeFadersEnabled: (sceneId, enabled) =>
-      runSnapshot(() => services.setSceneScopeFadersEnabled(sceneId, enabled)),
+      runCommand(() => services.setSceneScopeFadersEnabled(sceneId, enabled)),
     setSceneScopePanEnabled: (sceneId, enabled) =>
-      runSnapshot(() => services.setSceneScopePanEnabled(sceneId, enabled)),
+      runCommand(() => services.setSceneScopePanEnabled(sceneId, enabled)),
     storeSceneConfig: (sceneId) =>
-      runSnapshot(() => services.storeSceneConfig(sceneId)),
+      runCommand(() => services.storeSceneConfig(sceneId)),
     toggleLockout: () =>
-      runSnapshot(() => services.setLockout(!appState.lockout)),
+      runCommand(() => services.setLockout(!appState.lockout)),
   };
 
   return (
@@ -305,18 +270,5 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         />
       </AppCommandsProvider>
     </AppStateProvider>
-  );
-}
-
-function identityMatches(
-  connected: Lv1SystemIdentity | null,
-  selected: Lv1SystemIdentity,
-) {
-  if (!connected) return false;
-  if (connected.uuid && selected.uuid) return connected.uuid === selected.uuid;
-  return (
-    connected.host === selected.host &&
-    connected.address === selected.address &&
-    connected.port === selected.port
   );
 }
