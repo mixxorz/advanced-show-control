@@ -621,7 +621,7 @@ mod tests {
     #[tokio::test]
     async fn command_targets_update_after_mutex_contention_releases() {
         let bus = AppCommandBus::new();
-        let guard = bus.targets.blocking_lock();
+        let guard = bus.targets.lock().await;
         let show_bus = bus.clone();
         let event_bus = AppEventBus::default();
         let show = ShowStateHandle::new_empty(event_bus);
@@ -641,7 +641,7 @@ mod tests {
     #[tokio::test]
     async fn runtime_targets_clear_after_mutex_contention_releases() {
         let bus = AppCommandBus::new();
-        let guard = bus.targets.blocking_lock();
+        let guard = bus.targets.lock().await;
         let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let lv1 = crate::lv1::handle::Lv1ActorHandle::new(lv1_tx);
@@ -659,7 +659,7 @@ mod tests {
         update.await.unwrap();
         assert_eq!(bus.targets.lock().await.generation, 7);
 
-        let guard = bus.targets.blocking_lock();
+        let guard = bus.targets.lock().await;
         let clear_bus = bus.clone();
         let clear = tokio::spawn(async move {
             clear_bus.clear_runtime_targets(7).await;
