@@ -1299,11 +1299,7 @@ mod tests {
                 cued_scene_id: None,
             })
             .await;
-        let lifecycle = AppLifecycle::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_show(Some(state.show.clone())).await;
-
-        lifecycle.set_command_bus(Some(command_bus)).await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
 
         let resolved = current_command_bus(
             lifecycle.current_command_bus().await,
@@ -1339,11 +1335,7 @@ mod tests {
                 cued_scene_id: None,
             })
             .await;
-        let lifecycle = AppLifecycle::default();
-        let command_bus = AppCommandBus::new();
-        command_bus.set_show(Some(state.show.clone())).await;
-
-        lifecycle.set_command_bus(Some(command_bus)).await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
 
         let resolved =
             current_command_bus(lifecycle.current_command_bus().await, "select_scene_config")
@@ -1371,7 +1363,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(err, "App command bus is unavailable");
+        assert_eq!(err, "show state is unavailable");
     }
 
     #[tokio::test]
@@ -1382,7 +1374,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(err, "App command bus is unavailable");
+        assert_eq!(err, "show state is unavailable");
     }
 
     #[tokio::test]
@@ -1399,16 +1391,10 @@ mod tests {
     }
 
     async fn lifecycle_with_show(state: &ShellState) -> AppLifecycle {
-        let lifecycle = AppLifecycle::default();
-        let bus = AppCommandBus::new();
-        bus.set_show(Some(state.show.clone())).await;
-        lifecycle.set_command_bus(Some(bus)).await;
-        lifecycle
+        AppLifecycle::new(AppEventBus::default(), state.show.clone())
     }
 
     async fn lifecycle_with_recall_show(lockout: bool, with_lv1: bool) -> AppLifecycle {
-        let lifecycle = AppLifecycle::default();
-        let bus = AppCommandBus::new();
         let event_bus = AppEventBus::default();
         let show = crate::show::handle::ShowStateHandle::new_empty(event_bus.clone());
         show.replace_snapshot(crate::show::types::ShowSnapshot {
@@ -1425,10 +1411,13 @@ mod tests {
             cued_scene_id: Some("1::Verse".to_string()),
         })
         .await;
-        bus.set_show(Some(show)).await;
+        let lifecycle = AppLifecycle::new(event_bus, show);
         if with_lv1 {
             let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(2);
-            bus.set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
+            lifecycle
+                .current_command_bus()
+                .await
+                .set_lv1(Some(crate::lv1::handle::Lv1ActorHandle::new(lv1_tx)))
                 .await;
             tokio::spawn(async move {
                 while let Some(command) = lv1_rx.recv().await {
@@ -1452,7 +1441,6 @@ mod tests {
                 }
             });
         }
-        lifecycle.set_command_bus(Some(bus)).await;
         lifecycle
     }
 
@@ -1540,7 +1528,10 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let state = ShellState::default();
-        let lifecycle = AppLifecycle::default();
+        let (generation, _) = state.begin_connecting().await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
         let reconnecting = enter_reconnect_state(&state).await;
 
         let snapshot =
@@ -1564,6 +1555,9 @@ mod tests {
 
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
         let event_bus = AppEventBus::default();
         let (_log_tx, log_rx) = tokio::sync::broadcast::channel(8);
         let projector = spawn_started_projector(handle, generation, event_bus.subscribe(), log_rx);
@@ -1585,13 +1579,16 @@ mod tests {
         let app = mock_app();
         let handle = app.handle().clone();
         let state = ShellState::default();
-        let lifecycle = AppLifecycle::default();
+        let (generation, _) = state.begin_connecting().await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
         let reconnecting = enter_reconnect_state(&state).await;
         let command_bus = AppCommandBus::new();
         let installed = lifecycle
             .install_runtime_handles(
                 &state,
-                1,
+                generation,
                 RuntimeHandles {
                     active_generation: 0,
                     lv1: None,
@@ -1977,6 +1974,9 @@ mod tests {
 
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
 
         let initial_snapshot = state
             .begin_connection(
@@ -1998,7 +1998,8 @@ mod tests {
             event: FadeEvent::FadeStarted,
         });
 
-        let lifecycle = AppLifecycle::default();
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
         let snapshot = install_connected_runtime(
             &handle,
             &state,
@@ -2039,6 +2040,9 @@ mod tests {
 
         let state = ShellState::default();
         let (generation, _) = state.begin_connecting().await;
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
         let initial_snapshot = state
             .begin_connection(
                 generation,
@@ -2059,7 +2063,9 @@ mod tests {
             .expect("current generation should accept the initial snapshot");
 
         let event_bus = AppEventBus::default();
-        let lifecycle = AppLifecycle::default();
+        let install_lifecycle = AppLifecycle::new(event_bus.clone(), state.show.clone());
+        let install_generation = install_lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, install_generation);
         install_connected_runtime(
             &handle,
             &state,
@@ -2067,7 +2073,7 @@ mod tests {
             initial_snapshot,
             event_bus.subscribe(),
             RuntimeHandles::default(),
-            &lifecycle,
+            &install_lifecycle,
         )
         .await
         .expect("connected runtime should install successfully");
@@ -2106,7 +2112,10 @@ mod tests {
         });
 
         let state = ShellState::default();
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
         let (generation, _) = state.begin_connecting().await;
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
         let _ = state
             .begin_connection(
                 generation,
@@ -2177,7 +2186,10 @@ mod tests {
         });
 
         let state = ShellState::default();
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
         let (generation, _) = state.begin_connecting().await;
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
         let _ = state
             .begin_connection(
                 generation,
@@ -2294,7 +2306,10 @@ mod tests {
         let _log_tx = manage_ui_log_receiver(&app);
         let handle = app.handle().clone();
         let state = ShellState::default();
+        let lifecycle = AppLifecycle::new(AppEventBus::default(), state.show.clone());
         let (generation, _) = state.begin_connecting().await;
+        let lifecycle_generation = lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
 
         let initial_snapshot = state
             .begin_connection(
@@ -2313,7 +2328,26 @@ mod tests {
         let scene_recall_fader = tokio::spawn(async {
             std::future::pending::<()>().await;
         });
-        let lifecycle = AppLifecycle::default();
+        let install_lifecycle = AppLifecycle::new(event_bus.clone(), state.show.clone());
+        let lifecycle_generation = install_lifecycle.begin_connecting().await.unwrap();
+        assert_eq!(generation, lifecycle_generation);
+        let active_command_bus = install_lifecycle.current_command_bus().await;
+        let installed = state
+            .install_runtime_handles(
+                generation,
+                RuntimeHandles {
+                    active_generation: 0,
+                    lv1: None,
+                    fade: None,
+                    command_bus: None,
+                    projector: None,
+                    scene_recall_fader: Some(scene_recall_fader),
+                    ..Default::default()
+                },
+                &active_command_bus,
+            )
+            .await;
+        assert!(installed.is_ok());
 
         install_connected_runtime(
             &handle,
@@ -2321,16 +2355,8 @@ mod tests {
             generation,
             initial_snapshot,
             event_bus.subscribe(),
-            RuntimeHandles {
-                active_generation: 0,
-                lv1: None,
-                fade: None,
-                command_bus: None,
-                projector: None,
-                scene_recall_fader: Some(scene_recall_fader),
-                ..Default::default()
-            },
-            &lifecycle,
+            RuntimeHandles::default(),
+            &install_lifecycle,
         )
         .await
         .expect("connected runtime should install successfully");
