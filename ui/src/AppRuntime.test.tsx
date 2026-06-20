@@ -1,5 +1,6 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
 import {
@@ -8,7 +9,6 @@ import {
 } from "./storybook/mockAppState";
 import { createDeferred } from "./test/deferred";
 import { disconnectedAppViewState, type AppViewState } from "./types";
-import { render } from "@testing-library/react";
 
 function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
@@ -16,30 +16,30 @@ function makeServices(
   return {
     frontendReady: vi.fn(async () => undefined),
     abortAll: vi.fn(async () => undefined),
-    attemptReconnectLv1: vi.fn(async () => disconnectedAppViewState),
-    connectLv1System: vi.fn(async () => connectedAppState),
-    disconnectLv1: vi.fn(async () => disconnectedAppViewState),
+    attemptReconnectLv1: vi.fn(async () => undefined),
+    connectLv1System: vi.fn(async () => undefined),
+    disconnectLv1: vi.fn(async () => undefined),
     listenForAppStatus: vi.fn(async (listener) => {
       listener(connectedAppState);
       return () => {};
     }),
-    newShowFile: vi.fn(async () => disconnectedAppViewState),
-    openShowFile: vi.fn(async () => disconnectedAppViewState),
-    cueScene: vi.fn(async () => disconnectedAppViewState),
-    recallScene: vi.fn(async () => disconnectedAppViewState),
-    reconnectTimedOut: vi.fn(async () => disconnectedAppViewState),
-    refreshLv1Discovery: vi.fn(async () => discoveredSystemsAppState),
-    saveShowFile: vi.fn(async () => disconnectedAppViewState),
-    saveShowFileAs: vi.fn(async () => disconnectedAppViewState),
-    selectSceneConfig: vi.fn(async () => disconnectedAppViewState),
-    setAllChannelsScoped: vi.fn(async () => disconnectedAppViewState),
-    setChannelScoped: vi.fn(async () => disconnectedAppViewState),
-    setLockout: vi.fn(async () => disconnectedAppViewState),
-    setSceneDurationMs: vi.fn(async () => disconnectedAppViewState),
-    setSceneScopeFadersEnabled: vi.fn(async () => disconnectedAppViewState),
-    setSceneScopePanEnabled: vi.fn(async () => disconnectedAppViewState),
-    storeSceneConfig: vi.fn(async () => disconnectedAppViewState),
-    startupAutoConnectLv1: vi.fn(async () => disconnectedAppViewState),
+    newShowFile: vi.fn(async () => undefined),
+    openShowFile: vi.fn(async () => undefined),
+    cueScene: vi.fn(async () => undefined),
+    recallScene: vi.fn(async () => undefined),
+    reconnectTimedOut: vi.fn(async () => undefined),
+    refreshLv1Discovery: vi.fn(async () => undefined),
+    saveShowFile: vi.fn(async () => undefined),
+    saveShowFileAs: vi.fn(async () => undefined),
+    selectSceneConfig: vi.fn(async () => undefined),
+    setAllChannelsScoped: vi.fn(async () => undefined),
+    setChannelScoped: vi.fn(async () => undefined),
+    setLockout: vi.fn(async () => undefined),
+    setSceneDurationMs: vi.fn(async () => undefined),
+    setSceneScopeFadersEnabled: vi.fn(async () => undefined),
+    setSceneScopePanEnabled: vi.fn(async () => undefined),
+    storeSceneConfig: vi.fn(async () => undefined),
+    startupAutoConnectLv1: vi.fn(async () => undefined),
     ...overrides,
   };
 }
