@@ -197,7 +197,33 @@ A Tauri command adapter shall not perform the following functions:
 
 The projector is the sole backend owner of `app-status-changed`.
 
-## 11.0 Projector Cache and Frontend Emission
+## 11.0 Debug Smoke Test
+
+The repository includes a development-only Tauri debug binary for LV1 hardware smoke testing. The debug binary is not part of the release production binary.
+
+The smoke runner resides in `ui/src/debug/main.tsx`. It drives the workflow from JavaScript by invoking production Tauri commands for discovery, connection, show creation, scene configuration storage, channel scoping, duration changes, scene recall, and lockout. This preserves the frontend-to-command-to-actor path under test.
+
+Debug-only Tauri commands are limited to setup or observation that production commands do not expose. These commands may write the smoke report, exit the debug app, recall a raw LV1 scene before application scene configs exist, set the test-channel gain for deterministic setup, and read the live test-channel gain.
+
+The smoke suite asserts behavior through production command results, `app-status-changed` snapshots, and live LV1 fader values. It currently validates the following workflow:
+
+1. LV1 discovery and connection.
+2. New show creation from the connected LV1.
+3. Capture of Smoke A and Smoke B scene configurations from LV1.
+4. Test-channel scope and duration configuration for both app-managed scenes.
+5. Production scene recall updates projected current scene state.
+6. Recall from Smoke A to Smoke B starts live fader movement.
+7. Recall fade reaches the stored target within tolerance.
+8. Alternating scene recalls with decreasing fade durations complete at the expected targets.
+9. Lockout blocks recall and prevents fader movement.
+
+The smoke report is written to `logs/debug-smoke-report.txt`. The debug app is launched with:
+
+```bash
+npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug
+```
+
+## 12.0 Projector Cache and Frontend Emission
 
 The projector converts backend facts into `AppViewState` for the React frontend. It subscribes to `AppEventBus` and to user-interface log events. It maintains a `ProjectionCache` and emits `app-status-changed` through Tauri.
 
@@ -223,9 +249,9 @@ The projection cache applies facts incrementally as follows:
 
 The frontend shall listen only to `app-status-changed`. The frontend shall not subscribe directly to actor events or backend logs.
 
-## 12.0 Module Responsibilities
+## 13.0 Module Responsibilities
 
-### 12.1 `lv1`
+### 13.1 `lv1`
 
 The `lv1` module owns the LV1 TCP connection lifecycle and the raw LV1 mirror.
 
@@ -242,7 +268,7 @@ The module owns the following responsibilities:
 
 The module publishes `Lv1Event` facts and accepts `Lv1Command` requests.
 
-### 12.2 `fade`
+### 13.2 `fade`
 
 The `fade` module owns active fade execution.
 
@@ -261,7 +287,7 @@ The module owns the following responsibilities:
 
 The module publishes `FadeEvent` facts and accepts `FadeCommand` requests.
 
-### 12.3 `scenes`
+### 13.3 `scenes`
 
 The `scenes` module owns scene recall automation.
 
@@ -276,7 +302,7 @@ The module owns the following responsibilities:
 
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 
-### 12.4 `show`
+### 13.4 `show`
 
 The `show` module owns show-level application state and persistence.
 
@@ -299,7 +325,7 @@ The module owns the following responsibilities:
 
 The module publishes `ShowEvent` facts and accepts `ShowCommand` requests.
 
-### 12.5 `lifecycle`
+### 13.5 `lifecycle`
 
 The `lifecycle` module owns runtime lifetime.
 
@@ -314,7 +340,7 @@ The module owns the following responsibilities:
 7. Runtime handle cleanup.
 8. Reconnect state changes that cross actor boundaries.
 
-### 12.6 `projector`
+### 13.6 `projector`
 
 The `projector` module owns frontend state projection.
 
@@ -326,7 +352,7 @@ The module owns the following responsibilities:
 4. 10 hertz dirty-cache throttling.
 5. User-interface log cache entries.
 
-### 12.7 `ui`
+### 13.7 `ui`
 
 The `ui` module owns Tauri setup and frontend command boundaries.
 
@@ -337,7 +363,7 @@ The module owns the following responsibilities:
 3. Frontend serialization boundaries.
 4. Thin command adapter modules.
 
-### 12.8 `runtime`
+### 13.8 `runtime`
 
 The `runtime` module owns shared runtime primitives.
 
@@ -349,7 +375,7 @@ The module owns the following responsibilities:
 4. Runtime generation guard state.
 5. User-interface-facing command error types.
 
-## 13.0 Module File Conventions
+## 14.0 Module File Conventions
 
 Actor and domain modules shall use consistent file names.
 
@@ -375,7 +401,7 @@ The backend shall observe the following boundary conventions:
 6. Domain logic shall not be placed in `ui/commands/*`.
 7. Convenience helpers shall not hide the command enum and reply channel pattern.
 
-## 14.0 Safety Requirements
+## 15.0 Safety Requirements
 
 The application controls live mixer faders. The backend shall implement the following safety requirements.
 
@@ -398,7 +424,7 @@ The application controls live mixer faders. The backend shall implement the foll
 17. The backend shall preserve same-scene behavior.
 18. The backend shall preserve disconnect behavior.
 
-## 15.0 Backend File Structure
+## 16.0 Backend File Structure
 
 Rust backend code resides under `src-tauri/src/` in the `advanced-show-control` crate.
 
@@ -416,7 +442,7 @@ Important directories are defined as follows:
 | `src-tauri/src/runtime/`   | Event bus, runtime errors, and generation guards.                                                                               |
 | `ui/`                      | React and TypeScript frontend.                                                                                                  |
 
-## 16.0 Explicit Non-Goals
+## 17.0 Explicit Non-Goals
 
 The backend architecture does not provide the following capabilities:
 
