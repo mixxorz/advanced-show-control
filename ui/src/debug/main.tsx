@@ -1,5 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
 import type { AppViewState, Lv1SystemIdentity } from "../types";
 import "../index.css";
 
@@ -11,48 +13,131 @@ const targetA = -10;
 const targetB = 0;
 const tolerance = 0.5;
 const timeoutMs = 15_000;
-const tests = [
+const testNames = [
   "connection",
   "scene-recall",
   "fade-starts",
   "fade-completes",
   "decreasing-xfade",
   "lockout-blocks-recall",
-].map((name) => ({ name, status: "pending", detail: "" }));
-let state: AppViewState | undefined;
-let suiteStatus = "Running";
-let closeIn: number | undefined;
+];
 
-render();
+type TestStatus = "pending" | "running" | "pass" | "fail";
+type SmokeTest = { name: string; status: TestStatus; detail: string };
 
-document.addEventListener("click", (event) => {
-  if ((event.target as HTMLElement).id === "close-now") {
-    void invoke("debug_smoke_exit_app");
-  }
-});
+export function App() {
+  const [tests, setTests] = useState<SmokeTest[]>(() =>
+    testNames.map((name) => ({ name, status: "pending", detail: "" })),
+  );
+  const [suiteStatus, setSuiteStatus] = useState("Running");
+  const [closeIn, setCloseIn] = useState<number>();
+  const stateRef = useRef<AppViewState | undefined>(undefined);
+  const startedRef = useRef(false);
 
-void listen<AppViewState>("app-status-changed", (event) => {
-  state = event.payload;
-});
+  useEffect(() => {
+    const unlisten = listen<AppViewState>("app-status-changed", (event) => {
+      stateRef.current = event.payload;
+    });
+    return () => void unlisten.then((stop) => stop());
+  }, []);
 
-void run().then((ok) => startCloseCountdown(ok));
+  useEffect(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    void run({ stateRef, setTests, setSuiteStatus }).then((ok) => {
+      setSuiteStatus(ok ? "PASS" : "FAIL");
+      setCloseIn(30);
+    });
+  }, []);
 
-async function run() {
+  useEffect(() => {
+    if (closeIn === undefined) return;
+    if (closeIn <= 0) {
+      void invoke("debug_smoke_exit_app");
+      return;
+    }
+    const timer = window.setTimeout(() => setCloseIn(closeIn - 1), 1000);
+    return () => window.clearTimeout(timer);
+  }, [closeIn]);
+
+  return (
+    <main className="min-h-screen bg-console-bg p-6 text-console-primary">
+      <section className="mx-auto max-w-3xl">
+        <p className="text-sm uppercase tracking-wide text-console-muted">
+          LV1 debug smoke
+        </p>
+        <h1 className="mt-1 text-2xl font-semibold">{suiteStatus}</h1>
+        <p className="mt-2 text-sm text-console-muted">
+          Report: logs/debug-smoke-report.txt
+        </p>
+        {closeIn !== undefined && (
+          <>
+            <p className="mt-3 text-sm text-console-muted">
+              Closing in {closeIn}s
+            </p>
+            <button
+              id="close-now"
+              className="mt-3 rounded-console-control border border-console-line px-3 py-2 text-sm text-console-primary hover:bg-console-control-hover"
+              onClick={() => void invoke("debug_smoke_exit_app")}
+            >
+              Close now
+            </button>
+          </>
+        )}
+        <ol className="mt-6 space-y-2">
+          {tests.map((test) => (
+            <li
+              className="rounded-console-panel border border-console-line bg-console-panel p-3"
+              key={test.name}
+            >
+              <div className="flex items-center justify-between gap-4">
+                <span className="font-medium">{test.name}</span>
+                <span className={`text-sm ${statusClass(test.status)}`}>
+                  {test.status.toUpperCase()}
+                </span>
+              </div>
+              {test.detail && (
+                <p className="mt-1 text-sm text-console-muted">{test.detail}</p>
+              )}
+            </li>
+          ))}
+        </ol>
+      </section>
+    </main>
+  );
+}
+
+async function run({
+  stateRef,
+  setTests,
+  setSuiteStatus,
+}: {
+  stateRef: React.RefObject<AppViewState | undefined>;
+  setTests: React.Dispatch<React.SetStateAction<SmokeTest[]>>;
+  setSuiteStatus: React.Dispatch<React.SetStateAction<string>>;
+}) {
   let ok = true;
   await invoke("frontend_ready");
   try {
     await test("connection", async () => {
       await invoke("refresh_lv1_discovery", { timeoutMs: 5000 });
       const identity = await waitFor(
-        () => state?.discoveredLv1Systems[0]?.identity,
+        () => stateRef.current?.discoveredLv1Systems[0]?.identity,
         "LV1 discovery",
       );
       await invoke("connect_lv1_system", { identity });
-      await waitFor(() => state?.connection === "connected", "LV1 connected");
+      await waitFor(
+        () => stateRef.current?.connection === "connected",
+        "LV1 connected",
+      );
       await waitFor(
         () =>
-          state?.sceneConfigs.some((scene) => scene.sceneId === sceneA) &&
-          state.sceneConfigs.some((scene) => scene.sceneId === sceneB),
+          stateRef.current?.sceneConfigs.some(
+            (scene) => scene.sceneId === sceneA,
+          ) &&
+          stateRef.current.sceneConfigs.some(
+            (scene) => scene.sceneId === sceneB,
+          ),
         "smoke scene configs",
       );
       await log(`CONNECTED ${label(identity)}`);
@@ -62,7 +147,7 @@ async function run() {
     await sleep(2500);
     await test("scene-recall", async () => {
       await invoke("recall_scene", { sceneId: sceneA });
-      await waitScene("Smoke A");
+      await waitScene(stateRef, "Smoke A");
     });
     await test("fade-starts", async () => {
       await reset(sceneA, targetA);
@@ -82,9 +167,15 @@ async function run() {
         [1000, sceneB, targetB],
         [500, sceneA, targetA],
       ] as const) {
+        await log(
+          `STEP decreasing-xfade ${durationMs}ms ${sceneId} target=${target}`,
+        );
         await invoke("set_scene_duration_ms", { sceneId, durationMs });
         await invoke("recall_scene", { sceneId });
         await waitGain(target);
+        await log(
+          `STEP decreasing-xfade ${durationMs}ms PASS gain=${await gain()}`,
+        );
       }
     });
     await test("lockout-blocks-recall", async () => {
@@ -108,88 +199,45 @@ async function run() {
   } finally {
     await invoke("set_lockout", { enabled: false }).catch(() => undefined);
     await log(`SUITE ${ok ? "PASS" : "FAIL"}`);
-    suiteStatus = ok ? "PASS" : "FAIL";
-    render();
+    setSuiteStatus(ok ? "PASS" : "FAIL");
   }
   return ok;
 
   async function test(name: string, body: () => Promise<void>) {
     const started = Date.now();
-    setTest(name, "running", "running");
+    setTest(setTests, name, "running", "running");
     try {
       await body();
       const detail = `${Date.now() - started}ms`;
-      setTest(name, "pass", detail);
+      setTest(setTests, name, "pass", detail);
       await log(`TEST ${name} PASS ${detail}`);
     } catch (error) {
       ok = false;
-      setTest(name, "fail", String(error));
+      setTest(setTests, name, "fail", String(error));
       await log(`TEST ${name} FAIL ${String(error)}`);
       throw error;
     }
   }
 }
 
-function setTest(name: string, status: string, detail: string) {
-  const test = tests.find((entry) => entry.name === name);
-  if (!test) return;
-  test.status = status;
-  test.detail = detail;
-  render();
+function setTest(
+  setTests: React.Dispatch<React.SetStateAction<SmokeTest[]>>,
+  name: string,
+  status: TestStatus,
+  detail: string,
+) {
+  setTests((tests) =>
+    tests.map((test) =>
+      test.name === name ? { ...test, status, detail } : test,
+    ),
+  );
 }
 
-function startCloseCountdown(ok: boolean) {
-  suiteStatus = ok ? "PASS" : "FAIL";
-  closeIn = 30;
-  render();
-  const timer = window.setInterval(() => {
-    closeIn = (closeIn ?? 1) - 1;
-    render();
-    if (closeIn <= 0) {
-      window.clearInterval(timer);
-      void invoke("debug_smoke_exit_app");
-    }
-  }, 1000);
-}
-
-function render() {
-  document.body.innerHTML = `<main class="min-h-screen bg-console-bg p-6 text-console-primary">
-    <section class="mx-auto max-w-3xl">
-      <p class="text-sm uppercase tracking-wide text-console-muted">LV1 debug smoke</p>
-      <h1 class="mt-1 text-2xl font-semibold">${suiteStatus}</h1>
-      <p class="mt-2 text-sm text-console-muted">Report: logs/debug-smoke-report.txt</p>
-      ${closeIn === undefined ? "" : `<p class="mt-3 text-sm text-console-muted">Closing in ${closeIn}s</p><button id="close-now" class="mt-3 rounded-console-control border border-console-line px-3 py-2 text-sm text-console-primary hover:bg-console-control-hover">Close now</button>`}
-      <ol class="mt-6 space-y-2">
-        ${tests
-          .map(
-            (
-              test,
-            ) => `<li class="rounded-console-panel border border-console-line bg-console-panel p-3">
-              <div class="flex items-center justify-between gap-4">
-                <span class="font-medium">${test.name}</span>
-                <span class="text-sm ${statusClass(test.status)}">${test.status.toUpperCase()}</span>
-              </div>
-              ${test.detail ? `<p class="mt-1 text-sm text-console-muted">${escapeHtml(test.detail)}</p>` : ""}
-            </li>`,
-          )
-          .join("")}
-      </ol>
-    </section>
-  </main>`;
-}
-
-function statusClass(status: string) {
+function statusClass(status: TestStatus) {
   if (status === "pass") return "text-status-cued";
   if (status === "fail") return "text-status-danger";
   if (status === "running") return "text-status-warning";
   return "text-console-muted";
-}
-
-function escapeHtml(value: string) {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
 }
 
 async function setup() {
@@ -232,14 +280,24 @@ async function rawReset(sceneIndex: number, target: number) {
   await waitGain(target);
 }
 
-async function waitScene(name: string) {
-  await waitFor(() => state?.currentScene?.name === name, `scene ${name}`);
+async function waitScene(
+  stateRef: React.RefObject<AppViewState | undefined>,
+  name: string,
+) {
+  await waitFor(
+    () => stateRef.current?.currentScene?.name === name,
+    `scene ${name}`,
+  );
 }
 
 async function waitGain(target: number) {
+  let lastGain: number | undefined;
   await waitFor(
-    async () => Math.abs((await gain()) - target) <= tolerance,
-    `gain ${target}`,
+    async () => {
+      lastGain = await gain();
+      return Math.abs(lastGain - target) <= tolerance;
+    },
+    () => `gain ${target} last=${lastGain}`,
   );
 }
 
@@ -249,7 +307,7 @@ async function gain() {
 
 async function waitFor<T>(
   check: () => T | Promise<T>,
-  labelText: string,
+  labelText: string | (() => string),
 ): Promise<NonNullable<T>> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -257,7 +315,8 @@ async function waitFor<T>(
     if (value) return value as NonNullable<T>;
     await sleep(250);
   }
-  throw new Error(`timed out waiting for ${labelText}`);
+  const label = typeof labelText === "function" ? labelText() : labelText;
+  throw new Error(`timed out waiting for ${label}`);
 }
 
 function sleep(ms: number) {
@@ -272,3 +331,5 @@ function log(line: string) {
 function label(identity: Lv1SystemIdentity) {
   return `${identity.host ?? identity.address}:${identity.port}`;
 }
+
+createRoot(document.getElementById("root")!).render(<App />);
