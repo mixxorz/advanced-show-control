@@ -72,11 +72,38 @@ Read these files before substantial work:
 
 ## Verification Commands
 
-Use the smallest relevant command while developing, then run broader verification before completion.
+Use the smallest relevant `make` target while developing, then run broader verification before completion. The root `Makefile` is a thin command index over the Cargo and npm workflows below.
+
+Common root targets:
+
+```bash
+make help
+make fmt
+make lint
+make test
+make build
+make check
+```
+
+`make check` runs the standard non-visual CI-style verification: formatting, linting, tests, and builds. It does not run Docker visual checks or the hardware/debug smoke app.
+
+Debug smoke targets:
+
+```bash
+make debug-build
+make debug-smoke
+```
+
+`make debug-smoke` runs the dev-only Tauri hardware smoke app and requires an LV1-compatible target environment.
 
 Common Rust checks:
 
 ```bash
+make rust-fmt
+make rust-lint
+make rust-test
+make rust-build
+
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
@@ -85,9 +112,17 @@ cargo build --workspace
 
 Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks. Avoid `cargo test` unless you specifically need a test harness feature that nextest cannot provide.
 
-Common frontend checks, run from `ui/`:
+Common frontend checks:
 
 ```bash
+make ui-fmt
+make ui-lint
+make ui-typecheck
+make ui-build
+make ui-test
+make ui-storybook-test
+make visual-test
+
 npm run format:check
 npm run lint
 npm run typecheck
@@ -99,17 +134,17 @@ npm run test:visual:ci
 
 Frontend check meanings:
 
-- `npm run format:check` runs Prettier in check mode.
-- `npm run lint` runs ESLint.
-- `npm run typecheck` runs TypeScript with `tsc --noEmit`.
-- `npm run build` runs the Vite production build.
-- `npm run test` runs Vitest unit tests.
-- `npm run test:storybook` runs Storybook interaction/browser tests through Vitest.
-- `npm run test:visual:ci` runs Playwright visual regression tests in the Docker visual-test image for CI-compatible screenshots.
-- `npm run test:visual:update:ci` regenerates Playwright visual snapshots in the Docker visual-test image; use this when UI changes intentionally update screenshots.
+- `make ui-fmt` / `npm run format:check` runs Prettier in check mode.
+- `make ui-lint` / `npm run lint` runs ESLint.
+- `make ui-typecheck` / `npm run typecheck` runs TypeScript with `tsc --noEmit`.
+- `make ui-build` / `npm run build` runs the Vite production build.
+- `make ui-test` / `npm run test` runs Vitest unit tests.
+- `make ui-storybook-test` / `npm run test:storybook` runs Storybook interaction/browser tests through Vitest.
+- `make visual-test` / `npm run test:visual:ci` runs Playwright visual regression tests in the Docker visual-test image for CI-compatible screenshots.
+- `make visual-update` / `npm run test:visual:update:ci` regenerates Playwright visual snapshots in the Docker visual-test image; use this when UI changes intentionally update screenshots.
 - Prefer the `:ci` visual commands over local `npm run test:visual` / `npm run test:visual:update` so screenshot rendering matches CI more closely.
 
-CI runs the Rust checks above and the frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook` commands. CI also runs Docker-backed visual checks on manual workflow dispatch or when visual-relevant files change.
+CI runs the checks covered by `make check`: Rust formatting, linting, tests, and build, plus frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook`. CI also runs Docker-backed visual checks on manual workflow dispatch or when visual-relevant files change.
 
 Hook-only targeted checks may run at commit time for staged files. Do not run these manually; let the hooks run them at commit time:
 
