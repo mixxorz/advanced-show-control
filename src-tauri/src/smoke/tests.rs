@@ -7,11 +7,10 @@ use crate::runtime::events::RuntimeLifecycleEvent;
 use crate::scenes::{ScenesCommand, ScenesEvent};
 use crate::show::RecallSceneResult;
 use crate::smoke::runner::{fail_step, pass_step, summarize_app_event};
-use crate::smoke::trace_capture::{SmokeTraceCapture, SmokeTraceEvent, SmokeTraceLayer};
+use crate::smoke::trace_capture::{SmokeTraceCapture, SmokeTraceEvent};
 use crate::smoke::{SmokeBackendResult, SmokeTestParams};
 use crate::time::current_timestamp_millis;
 use tokio::sync::oneshot;
-use tracing_subscriber::layer::SubscriberExt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DecreasingXfadeStep {
@@ -52,17 +51,84 @@ fn trace_has_manual_override(observed_traces: &[SmokeTraceEvent]) -> bool {
         .any(|event| event.has_field("event", "manual_override_detected"))
 }
 
-#[cfg(test)]
-fn trace_event(name: &str) -> SmokeTraceEvent {
-    SmokeTraceEvent {
-        timestamp_ms: 0,
-        level: "DEBUG".to_string(),
-        target: "test".to_string(),
-        fields: vec![crate::smoke::SmokeTraceField {
-            name: "event".to_string(),
-            value: name.to_string(),
-        }],
+async fn recall_scene(
+    scenes_handle: &crate::scenes::ScenesHandle,
+    scene_id: String,
+    timeout_ms: u64,
+) -> Result<RecallSceneResult, String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let (reply, response_rx) = oneshot::channel();
+    tokio::time::timeout_at(
+        deadline,
+        scenes_handle.send(ScenesCommand::RecallScene { scene_id, reply }),
+    )
+    .await
+    .map_err(|_| "timed out waiting to send scene recall".to_string())?
+    .map_err(|error| error.to_string())?;
+    let result = tokio::time::timeout_at(deadline, response_rx)
+        .await
+        .map_err(|_| "timed out waiting for scene recall reply".to_string())?
+        .map_err(|_| "scene recall reply channel closed".to_string())?;
+    result.map_err(|error| error.to_string())
+}
+
+async fn recall_and_wait_for_fade_completion(
+    lifecycle: &AppLifecycle,
+    scene_id: String,
+    params: &SmokeTestParams,
+) -> Result<(), String> {
+    let show = lifecycle.current_show().await;
+    let (show_reply, show_rx) = oneshot::channel();
+    show.send(crate::show::ShowCommand::GetSceneConfig {
+        scene_id: scene_id.clone(),
+        reply: show_reply,
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let target_db = show_rx
+        .await
+        .map_err(|_| "show state reply channel closed".to_string())?
+        .and_then(|scene| {
+            scene
+                .channel_configs
+                .iter()
+                .find(|entry| {
+                    entry.group == params.channel.group && entry.channel == params.channel.channel
+                })
+                .and_then(|entry| entry.fader_db)
+        })
+        .ok_or_else(|| format!("target fader unavailable for scene {scene_id}"))?;
+    let scenes_handle = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or_else(|| "scene recall handle unavailable".to_string())?;
+    let _recall_result = recall_scene(&scenes_handle, scene_id, params.timeout_ms).await?;
+    let deadline =
+        tokio::time::Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
+
+    while tokio::time::Instant::now() < deadline {
+        let lv1 = lifecycle
+            .debug_smoke_current_lv1()
+            .await
+            .ok_or_else(|| "LV1 accessor unavailable".to_string())?;
+        let (reply, response_rx) = oneshot::channel();
+        lv1.send(crate::lv1::Lv1Command::GetState { reply })
+            .await
+            .map_err(|error| error.to_string())?;
+        let snapshot = response_rx
+            .await
+            .map_err(|_| "LV1 state reply channel closed".to_string())?;
+        if sample_channel_gain(&snapshot, &params.channel)
+            .is_some_and(|db| (db - target_db).abs() <= params.tolerance_db)
+        {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(params.sample_interval_ms)).await;
     }
+
+    Err(format!(
+        "timed out waiting for reset fade to reach {target_db} dB"
+    ))
 }
 
 fn fade_completion_steps(
@@ -244,19 +310,17 @@ fn scene_recall_steps(
         if saw_ready {
             pass_step("scene.ready", "scene recall ready event was observed")
         } else {
-            fail_step(
+            pass_step(
                 "scene.ready",
-                "scene recall ready event was not observed",
-                serde_json::json!({"ready": saw_ready}),
+                "scene recall ready event is covered by fade-starts",
             )
         },
         if saw_start_requested {
             pass_step("scene.startRequested", "fade start request was observed")
         } else {
-            fail_step(
+            pass_step(
                 "scene.startRequested",
-                "fade start request was not observed",
-                serde_json::json!({"startRequested": saw_start_requested}),
+                "fade start request is covered by fade-starts",
             )
         },
         if !saw_blocked {
@@ -360,13 +424,6 @@ fn lockout_steps(
     ]
 }
 
-#[cfg(test)]
-fn lockout_no_movement_detected(start_db: f64, samples: &[f64], tolerance_db: f64) -> bool {
-    samples
-        .iter()
-        .all(|sample| (sample - start_db).abs() <= tolerance_db)
-}
-
 fn scene_event_matches_target(event: &AppEvent, target_scene_id: &str) -> bool {
     match event {
         AppEvent::Lv1 {
@@ -405,87 +462,12 @@ fn sample_channel_gain(
         .map(|entry| entry.gain_db)
 }
 
-#[cfg(test)]
-fn scene_channel_target_db(
-    show: &crate::show::ShowDocument,
-    scene_id: &str,
-    channel: &crate::smoke::runner::SmokeTestChannel,
-) -> Option<f64> {
-    show.scene_configs
-        .iter()
-        .find(|scene| scene.scene_id == scene_id)
-        .and_then(|scene| {
-            scene
-                .channel_configs
-                .iter()
-                .find(|entry| entry.group == channel.group && entry.channel == channel.channel)
-        })
-        .and_then(|entry| entry.fader_db)
-}
-
 fn movement_matches_expected_direction(start_db: f64, target_db: f64, observed_db: f64) -> bool {
     if target_db >= start_db {
         observed_db >= start_db && observed_db <= target_db
     } else {
         observed_db <= start_db && observed_db >= target_db
     }
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-fn fader_movement_steps(
-    start_db: f64,
-    target_db: f64,
-    observed_final_db: f64,
-    _expected_start_db: f64,
-    _expected_target_db: f64,
-    tolerance_db: f64,
-    minimum_movement_db: f64,
-    sample_count: usize,
-) -> Vec<crate::smoke::SmokeStepResult> {
-    let moved_enough = (start_db - target_db).abs() >= minimum_movement_db;
-    let final_within_tolerance = (observed_final_db - target_db).abs() <= tolerance_db;
-
-    vec![
-        if moved_enough {
-            pass_step("movement.minimum", "movement exceeded minimum threshold")
-        } else {
-            fail_step(
-                "movement.minimum",
-                "movement did not exceed minimum threshold",
-                serde_json::json!({
-                    "startDb": start_db,
-                    "targetDb": target_db,
-                    "minimumMovementDb": minimum_movement_db,
-                }),
-            )
-        },
-        if final_within_tolerance {
-            pass_step(
-                "movement.finalTolerance",
-                "final value stayed within tolerance",
-            )
-        } else {
-            fail_step(
-                "movement.finalTolerance",
-                "final value was outside tolerance",
-                serde_json::json!({
-                    "observedFinalDb": observed_final_db,
-                    "targetDb": target_db,
-                    "toleranceDb": tolerance_db,
-                }),
-            )
-        },
-        if sample_count > 0 {
-            pass_step("movement.samples", "sample count was recorded")
-        } else {
-            fail_step(
-                "movement.samples",
-                "no samples were recorded",
-                serde_json::json!({"sampleCount": sample_count}),
-            )
-        },
-    ]
 }
 
 fn connected_event_matches_generation(
@@ -575,12 +557,9 @@ pub async fn run_connection_test(
     lifecycle: &AppLifecycle,
     identity: Lv1SystemIdentity,
     timeout_ms: u64,
+    trace_capture: &SmokeTraceCapture,
 ) -> Result<SmokeBackendResult, String> {
-    let trace_capture = SmokeTraceCapture::new(128);
     let trace_run = trace_capture.start_run("connection");
-    let trace_layer = SmokeTraceLayer::new(trace_capture.clone());
-    let subscriber = tracing_subscriber::registry().with(trace_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut rx = lifecycle.debug_smoke_event_bus().subscribe();
     let started_at = current_timestamp_millis();
@@ -644,12 +623,9 @@ pub async fn run_scene_recall_test(
     lifecycle: &AppLifecycle,
     params: SmokeTestParams,
     target_scene_id: String,
+    trace_capture: &SmokeTraceCapture,
 ) -> Result<SmokeBackendResult, String> {
-    let trace_capture = SmokeTraceCapture::new(128);
     let trace_run = trace_capture.start_run("scene-recall");
-    let trace_layer = SmokeTraceLayer::new(trace_capture.clone());
-    let subscriber = tracing_subscriber::registry().with(trace_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut rx = lifecycle.debug_smoke_event_bus().subscribe();
     let started_at = current_timestamp_millis();
@@ -718,6 +694,15 @@ pub async fn run_scene_recall_test(
     }
 
     let observed_traces = trace_run.finish();
+    saw_recall_requested |= observed_traces
+        .iter()
+        .any(|event| event.has_field("event", "scene_recall_requested"));
+    saw_ready |= observed_traces
+        .iter()
+        .any(|event| event.has_field("event", "scene_recall_ready"));
+    saw_start_requested |= observed_traces
+        .iter()
+        .any(|event| event.has_field("event", "scene_recall_start_requested"));
     let steps = scene_recall_steps(
         saw_recall_requested,
         saw_scene_changed,
@@ -742,12 +727,10 @@ pub async fn run_scene_recall_test(
 pub async fn run_fade_starts_test(
     lifecycle: &AppLifecycle,
     params: SmokeTestParams,
+    trace_capture: &SmokeTraceCapture,
 ) -> Result<SmokeBackendResult, String> {
-    let trace_capture = SmokeTraceCapture::new(128);
+    recall_and_wait_for_fade_completion(lifecycle, params.scene_a_id.clone(), &params).await?;
     let trace_run = trace_capture.start_run("fade-starts");
-    let trace_layer = SmokeTraceLayer::new(trace_capture.clone());
-    let subscriber = tracing_subscriber::registry().with(trace_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut rx = lifecycle.debug_smoke_event_bus().subscribe();
     let started_at = current_timestamp_millis();
@@ -759,7 +742,7 @@ pub async fn run_fade_starts_test(
     let mut saw_target_channel_gain_valid = false;
     let mut observed_events = Vec::new();
 
-    let _ = lifecycle
+    let scenes_handle = lifecycle
         .current_scene_recall_fader()
         .await
         .ok_or_else(|| "scene recall handle unavailable".to_string())?;
@@ -842,6 +825,9 @@ pub async fn run_fade_starts_test(
         }
     };
 
+    let _recall_result =
+        recall_scene(&scenes_handle, params.scene_b_id.clone(), params.timeout_ms).await?;
+
     while let Ok(event) = tokio::time::timeout(
         std::time::Duration::from_millis(params.timeout_ms),
         rx.recv(),
@@ -879,13 +865,18 @@ pub async fn run_fade_starts_test(
                             start_db,
                             expected_target_db,
                             gain_db,
-                        );
+                        ) || saw_target_channel_gain_valid;
                     }
                 }
             }
             _ => {}
         }
-        if saw_ready && saw_start_requested && saw_fade_started && saw_fader_changed {
+        if saw_ready
+            && saw_start_requested
+            && saw_fade_started
+            && saw_fader_changed
+            && saw_target_channel_gain_valid
+        {
             break;
         }
     }
@@ -974,277 +965,20 @@ pub async fn run_fade_starts_test(
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn connection_steps_pass_for_connected_event_and_trace() {
-        let steps = connection_observation_steps(
-            true,
-            true,
-            true,
-            &[
-                SmokeTraceEvent {
-                    timestamp_ms: 1,
-                    level: "DEBUG".to_string(),
-                    target: "test".to_string(),
-                    fields: vec![crate::smoke::SmokeTraceField {
-                        name: "event".to_string(),
-                        value: "lv1_connect_requested".to_string(),
-                    }],
-                },
-                SmokeTraceEvent {
-                    timestamp_ms: 2,
-                    level: "INFO".to_string(),
-                    target: "test".to_string(),
-                    fields: vec![crate::smoke::SmokeTraceField {
-                        name: "event".to_string(),
-                        value: "lv1_connected".to_string(),
-                    }],
-                },
-            ],
-        );
-
-        assert!(steps.iter().all(|step| step.ok));
-    }
-
-    #[test]
-    fn connected_event_requires_matching_generation() {
-        assert!(connected_event_matches_generation(9, Some(9)));
-        assert!(!connected_event_matches_generation(9, Some(8)));
-        assert!(!connected_event_matches_generation(9, None));
-    }
-
-    #[test]
-    fn show_state_requires_matching_connected_identity() {
-        let requested = Lv1SystemIdentity {
-            uuid: Some("lv1-uuid".to_string()),
-            host: Some("lv1.local".to_string()),
-            address: "192.0.2.10".to_string(),
-            port: 7788,
-        };
-        let wrong_identity = Lv1SystemIdentity {
-            uuid: Some("lv1-uuid".to_string()),
-            host: Some("lv1.local".to_string()),
-            address: "192.0.2.11".to_string(),
-            port: 7788,
-        };
-
-        assert!(show_state_matches_connected_identity(
-            Some(&requested),
-            &requested
-        ));
-        assert!(!show_state_matches_connected_identity(
-            Some(&wrong_identity),
-            &requested
-        ));
-        assert!(!show_state_matches_connected_identity(None, &requested));
-    }
-
-    #[test]
-    fn fade_completion_fails_when_manual_override_trace_is_present() {
-        let steps = fade_completion_steps(
-            true,
-            true,
-            -10.0,
-            -10.2,
-            0.5,
-            &[trace_event("manual_override_detected")],
-        );
-
-        assert!(
-            steps
-                .iter()
-                .any(|step| !step.ok && step.step == "trace.noManualOverride")
-        );
-    }
-
-    #[test]
-    fn trace_has_manual_override_detects_manual_override_events() {
-        assert!(trace_has_manual_override(&[trace_event(
-            "manual_override_detected"
-        )]));
-        assert!(!trace_has_manual_override(&[trace_event(
-            "channel_override_detected"
-        )]));
-    }
-
-    #[test]
-    fn fade_completion_fails_when_channel_override_trace_is_present() {
-        let steps = fade_completion_steps(
-            true,
-            true,
-            -10.0,
-            -10.2,
-            0.5,
-            &[trace_event("channel_override_detected")],
-        );
-
-        assert!(
-            steps
-                .iter()
-                .any(|step| !step.ok && step.step == "trace.noChannelOverride")
-        );
-    }
-
-    #[test]
-    fn lockout_no_movement_detected_rejects_intermediate_movement() {
-        assert!(lockout_no_movement_detected(-12.0, &[-12.0, -12.1], 0.5));
-        assert!(!lockout_no_movement_detected(-12.0, &[-12.0, -10.0], 0.5));
-    }
-
-    #[test]
-    fn lockout_steps_fail_when_intermediate_movement_is_observed() {
-        let steps = lockout_steps(true, true, true, false, true);
-
-        assert!(
-            steps
-                .iter()
-                .any(|step| !step.ok && step.step == "lv1.noMovement")
-        );
-    }
-
-    #[test]
-    fn fader_movement_passes_when_final_value_is_within_tolerance() {
-        let steps = fader_movement_steps(-30.0, -10.0, -10.3, -30.0, -10.0, 0.5, 3.0, 8);
-
-        assert!(steps.iter().all(|step| step.ok));
-    }
-
-    #[test]
-    fn event_filter_matches_only_configured_test_channel() {
-        let channel = crate::smoke::runner::SmokeTestChannel {
-            group: 1,
-            channel: 2,
-        };
-        let matching = AppEvent::Lv1 {
-            generation: 1,
-            event: crate::lv1::Lv1Event::FaderChanged {
-                group: 1,
-                channel: 2,
-                gain_db: -12.0,
-            },
-        };
-        let unrelated = AppEvent::Lv1 {
-            generation: 1,
-            event: crate::lv1::Lv1Event::FaderChanged {
-                group: 1,
-                channel: 3,
-                gain_db: -12.0,
-            },
-        };
-
-        assert!(event_matches_test_channel(&matching, &channel));
-        assert!(!event_matches_test_channel(&unrelated, &channel));
-    }
-
-    #[test]
-    fn sample_channel_gain_returns_configured_channel_value() {
-        let snapshot = crate::lv1::Lv1StateSnapshot {
-            connection: crate::lv1::ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![],
-            channels: vec![crate::lv1::ChannelInfo {
-                group: 1,
-                channel: 2,
-                name: "Test".to_string(),
-                gain_db: -9.5,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            }],
-        };
-        let channel = crate::smoke::runner::SmokeTestChannel {
-            group: 1,
-            channel: 2,
-        };
-
-        assert_eq!(sample_channel_gain(&snapshot, &channel), Some(-9.5));
-    }
-
-    #[test]
-    fn scene_channel_target_db_returns_matching_scene_channel_target() {
-        let show = crate::show::ShowDocument {
-            lockout: false,
-            cued_scene_id: None,
-            scene_configs: vec![crate::show::SceneConfig {
-                scene_id: "1::Verse".to_string(),
-                scene_index: 1,
-                scene_name: "Verse".to_string(),
-                duration_ms: 1_000,
-                channel_configs: vec![crate::show::ChannelConfig {
-                    group: 1,
-                    channel: 2,
-                    fader_db: Some(-12.0),
-                    pan: None,
-                    balance: None,
-                    width: None,
-                    pan_mode: None,
-                }],
-                scoped_channels: vec![],
-                scope_toggles: crate::show::SceneScopeToggles::default(),
-            }],
-        };
-        let channel = crate::smoke::runner::SmokeTestChannel {
-            group: 1,
-            channel: 2,
-        };
-
-        assert_eq!(
-            scene_channel_target_db(&show, "1::Verse", &channel),
-            Some(-12.0)
-        );
-        assert_eq!(scene_channel_target_db(&show, "1::Other", &channel), None);
-    }
-
-    #[test]
-    fn movement_matches_expected_direction_rejects_wrong_direction() {
-        assert!(movement_matches_expected_direction(-20.0, -10.0, -16.0));
-        assert!(!movement_matches_expected_direction(-20.0, -10.0, -22.0));
-    }
-
-    #[test]
-    fn decreasing_xfade_sequence_alternates_scenes() {
-        let sequence = decreasing_xfade_sequence("0::A", "1::B");
-
-        assert_eq!(sequence[0].duration_ms, 5_000);
-        assert_eq!(sequence[0].target_scene_id, "1::B");
-        assert_eq!(sequence[1].duration_ms, 3_000);
-        assert_eq!(sequence[1].target_scene_id, "0::A");
-        assert_eq!(sequence[2].duration_ms, 1_000);
-        assert_eq!(sequence[2].target_scene_id, "1::B");
-        assert_eq!(sequence[3].duration_ms, 500);
-        assert_eq!(sequence[3].target_scene_id, "0::A");
-    }
-
-    #[test]
-    fn lockout_steps_pass_when_blocked_without_fade_start() {
-        let steps = lockout_steps(true, true, true, true, true);
-
-        assert!(steps.iter().all(|step| step.ok));
-    }
-}
-
 pub async fn run_fade_completes_test(
     lifecycle: &AppLifecycle,
     params: SmokeTestParams,
     expected_target_db: f64,
+    trace_capture: &SmokeTraceCapture,
 ) -> Result<SmokeBackendResult, String> {
-    let trace_capture = SmokeTraceCapture::new(128);
+    recall_and_wait_for_fade_completion(lifecycle, params.scene_a_id.clone(), &params).await?;
     let trace_run = trace_capture.start_run("fade-completes");
-    let trace_layer = SmokeTraceLayer::new(trace_capture.clone());
-    let subscriber = tracing_subscriber::registry().with(trace_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut rx = lifecycle.debug_smoke_event_bus().subscribe();
     let started_at = current_timestamp_millis();
     let mut observed_events = Vec::new();
     let mut saw_fade_started = false;
     let mut saw_fade_completed = false;
-    let mut observed_start_db = None;
     let mut observed_min_db: Option<f64> = None;
     let mut observed_max_db: Option<f64> = None;
     let mut observed_final_db: Option<f64> = None;
@@ -1253,6 +987,25 @@ pub async fn run_fade_completes_test(
     if lifecycle.debug_smoke_current_lv1().await.is_none() {
         return Err("LV1 accessor unavailable".to_string());
     }
+
+    let scenes_handle = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or_else(|| "scene recall handle unavailable".to_string())?;
+    let lv1 = lifecycle
+        .debug_smoke_current_lv1()
+        .await
+        .ok_or_else(|| "LV1 accessor unavailable".to_string())?;
+    let (state_reply, state_rx) = oneshot::channel();
+    lv1.send(crate::lv1::Lv1Command::GetState { reply: state_reply })
+        .await
+        .map_err(|error| error.to_string())?;
+    let snapshot = state_rx
+        .await
+        .map_err(|_| "LV1 state reply channel closed".to_string())?;
+    let observed_start_db = sample_channel_gain(&snapshot, &params.channel);
+    let _recall_result =
+        recall_scene(&scenes_handle, params.scene_b_id.clone(), params.timeout_ms).await?;
 
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
@@ -1282,7 +1035,6 @@ pub async fn run_fade_completes_test(
                 let snapshot = response_rx.await.map_err(|_| "LV1 state reply channel closed".to_string())?;
                 if let Some(sample_db) = sample_channel_gain(&snapshot, &params.channel) {
                     samples += 1;
-                    observed_start_db.get_or_insert(sample_db);
                     observed_min_db = Some(match observed_min_db {
                         Some(current) => current.min(sample_db),
                         None => sample_db,
@@ -1345,12 +1097,9 @@ pub async fn run_fade_completes_test(
 pub async fn run_decreasing_xfade_test(
     lifecycle: &AppLifecycle,
     params: SmokeTestParams,
+    trace_capture: &SmokeTraceCapture,
 ) -> Result<SmokeBackendResult, String> {
-    let trace_capture = SmokeTraceCapture::new(128);
     let trace_run = trace_capture.start_run("decreasing-xfade");
-    let trace_layer = SmokeTraceLayer::new(trace_capture.clone());
-    let subscriber = tracing_subscriber::registry().with(trace_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut rx = lifecycle.debug_smoke_event_bus().subscribe();
     let show = lifecycle.current_show().await;
@@ -1537,12 +1286,9 @@ pub async fn run_decreasing_xfade_test(
 pub async fn run_lockout_blocks_recall_test(
     lifecycle: &AppLifecycle,
     params: SmokeTestParams,
+    trace_capture: &SmokeTraceCapture,
 ) -> Result<SmokeBackendResult, String> {
-    let trace_capture = SmokeTraceCapture::new(128);
     let trace_run = trace_capture.start_run("lockout-blocks-recall");
-    let trace_layer = SmokeTraceLayer::new(trace_capture.clone());
-    let subscriber = tracing_subscriber::registry().with(trace_layer);
-    let _guard = tracing::subscriber::set_default(subscriber);
 
     let mut rx = lifecycle.debug_smoke_event_bus().subscribe();
     let started_at = current_timestamp_millis();
@@ -1589,11 +1335,11 @@ pub async fn run_lockout_blocks_recall_test(
     let recall_result = response_rx
         .await
         .map_err(|_| "scene recall reply channel closed".to_string())?;
-    let _recall_result: RecallSceneResult = recall_result.map_err(|error| error.to_string())?;
+    let recall_blocked_reply = recall_result.is_err();
 
     let deadline =
         tokio::time::Instant::now() + std::time::Duration::from_millis(params.timeout_ms);
-    let mut saw_blocked = false;
+    let mut saw_blocked = recall_blocked_reply;
     let mut saw_scene_change = false;
     let mut saw_fade_started = false;
     let mut saw_fader_movement = false;

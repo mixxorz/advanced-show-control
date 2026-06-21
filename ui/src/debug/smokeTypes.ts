@@ -7,8 +7,12 @@ export type SmokeStepResult = {
 
 export type SmokeBackendResult = {
   ok: boolean;
-  message: string;
+  testId: string;
+  startedAt: string;
+  finishedAt: string;
   steps: SmokeStepResult[];
+  observedEvents: string[];
+  observedTraces: unknown[];
 };
 
 export type SmokeProjectorStepResult = SmokeStepResult;

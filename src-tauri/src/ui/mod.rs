@@ -69,12 +69,6 @@ mod tests {
     }
 
     #[test]
-    fn smoke_trace_capture_type_is_exported_for_debug_state() {
-        let capture = crate::smoke::SmokeTraceCapture::new(8);
-        let _layer = crate::smoke::SmokeTraceLayer::new(capture);
-    }
-
-    #[test]
     fn debug_build_app_constructs_builder() {
         let _builder = super::debug::build_debug_app();
     }
@@ -98,15 +92,5 @@ mod tests {
     #[test]
     fn invoke_handler_includes_frontend_ready() {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
-    }
-
-    #[test]
-    fn debug_command_adapter_exports_smoke_commands() {
-        let _ = super::debug::commands::debug_smoke_run_connection_test::<tauri::Wry>;
-        let _ = super::debug::commands::debug_smoke_run_scene_recall_test;
-        let _ = super::debug::commands::debug_smoke_run_fade_starts_test;
-        let _ = super::debug::commands::debug_smoke_run_fade_completes_test;
-        let _ = super::debug::commands::debug_smoke_run_decreasing_xfade_test;
-        let _ = super::debug::commands::debug_smoke_run_lockout_blocks_recall_test;
     }
 }

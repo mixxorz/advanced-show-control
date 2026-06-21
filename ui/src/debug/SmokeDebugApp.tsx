@@ -3,27 +3,39 @@ import type { AppStatusListener } from "../AppRuntime";
 import { disconnectedAppViewState, type AppViewState } from "../types";
 import { SmokeTestPanel } from "./SmokeTestPanel";
 import {
+  exitSmokeApp,
+  finishSmokeSuite,
+  recallScene,
+  reportSmokeSetup,
   runConnectionTest,
   runDecreasingXFadeTest,
   runFadeCompletesTest,
   runFadeStartsTest,
   runLockoutBlocksRecallTest,
+  newShowFile,
   refreshLv1Discovery,
   runSceneRecallTest,
+  setChannelScoped,
+  setSceneDurationMs,
+  setSmokeChannelGain,
+  storeSceneConfig,
   type SmokeBackendResult,
   type SmokeTestParams,
 } from "./commands";
 import type { SmokeResult, SmokeStepResult } from "./smokeTypes";
 
 const automatedSmokeParams: SmokeTestParams = {
-  sceneAId: "1: Smoke A",
-  sceneBId: "2: Smoke B",
+  sceneAId: "0::Smoke A",
+  sceneBId: "1::Smoke B",
   channel: { group: 0, channel: 1 },
   toleranceDb: 0.5,
   minimumMovementDb: 3,
   timeoutMs: 15000,
   sampleIntervalMs: 250,
 };
+
+const smokeSceneATargetDb = -10;
+const smokeSceneBTargetDb = 0;
 
 export type SmokeDebugServices = {
   frontendReady: () => Promise<void>;
@@ -63,22 +75,68 @@ export function SmokeDebugApp(props: { services: SmokeDebugServices }) {
     async (
       identity: AppViewState["discoveredLv1Systems"][number]["identity"],
     ) => {
-      await runSmokeCommand("connection", () => runConnectionTest(identity));
-      await runSmokeCommand("scene-recall", () =>
-        runSceneRecallTest(automatedSmokeParams),
-      );
-      await runSmokeCommand("fade-starts", () =>
-        runFadeStartsTest(automatedSmokeParams),
-      );
-      await runSmokeCommand("fade-completes", () =>
-        runFadeCompletesTest(automatedSmokeParams),
-      );
-      await runSmokeCommand("decreasing-xfade", () =>
-        runDecreasingXFadeTest(automatedSmokeParams),
-      );
-      await runSmokeCommand("lockout-blocks-recall", () =>
-        runLockoutBlocksRecallTest(automatedSmokeParams),
-      );
+      const results: SmokeBackendResult[] = [];
+      try {
+        results.push(
+          await runSmokeCommand("connection", () =>
+            runConnectionTest(identity),
+          ),
+        );
+        await newShowFile();
+        await recallScene(automatedSmokeParams.sceneAId);
+        await setSmokeChannelGain(automatedSmokeParams, smokeSceneATargetDb);
+        await storeSceneConfig(automatedSmokeParams.sceneAId);
+        await recallScene(automatedSmokeParams.sceneBId);
+        await setSmokeChannelGain(automatedSmokeParams, smokeSceneBTargetDb);
+        await storeSceneConfig(automatedSmokeParams.sceneBId);
+        await setChannelScoped(
+          automatedSmokeParams.sceneAId,
+          automatedSmokeParams.channel,
+          true,
+        );
+        await setChannelScoped(
+          automatedSmokeParams.sceneBId,
+          automatedSmokeParams.channel,
+          true,
+        );
+        await setSceneDurationMs(automatedSmokeParams.sceneAId, 1000);
+        await setSceneDurationMs(automatedSmokeParams.sceneBId, 1000);
+        await reportSmokeSetup(automatedSmokeParams);
+        results.push(
+          await runSmokeCommand("scene-recall", () =>
+            runSceneRecallTest(automatedSmokeParams),
+          ),
+        );
+        results.push(
+          await runSmokeCommand("fade-starts", () =>
+            runFadeStartsTest(automatedSmokeParams),
+          ),
+        );
+        results.push(
+          await runSmokeCommand("fade-completes", () =>
+            runFadeCompletesTest(automatedSmokeParams, smokeSceneBTargetDb),
+          ),
+        );
+        results.push(
+          await runSmokeCommand("decreasing-xfade", () =>
+            runDecreasingXFadeTest(automatedSmokeParams),
+          ),
+        );
+        results.push(
+          await runSmokeCommand("lockout-blocks-recall", () =>
+            runLockoutBlocksRecallTest(automatedSmokeParams),
+          ),
+        );
+        const failed = results.filter((result) => !result.ok);
+        await finishSmokeSuite(
+          failed.length === 0,
+          failed.map((result) => result.testId).join(", "),
+        );
+      } catch (error) {
+        await finishSmokeSuite(false, String(error));
+      } finally {
+        await exitSmokeApp();
+      }
     },
   );
 
@@ -110,9 +168,10 @@ export function SmokeDebugApp(props: { services: SmokeDebugServices }) {
   async function runSmokeCommand(
     testId: string,
     command: () => Promise<SmokeBackendResult>,
-  ) {
+  ): Promise<SmokeBackendResult> {
     const backend = await command();
     setSmokeResult({ backend, projector: projectorStepsFor(testId, appState) });
+    return backend;
   }
 
   return (
@@ -125,7 +184,7 @@ export function SmokeDebugApp(props: { services: SmokeDebugServices }) {
         {smokeResult?.backend ? (
           <p className="mt-2 text-sm text-console-muted">
             Latest smoke test: {smokeResult.backend.ok ? "ok" : "failed"} (
-            {smokeResult.backend.message})
+            {smokeResult.backend.testId})
           </p>
         ) : null}
         <SmokeTestPanel

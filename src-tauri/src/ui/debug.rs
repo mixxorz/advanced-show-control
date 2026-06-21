@@ -11,6 +11,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
         .setup(|app| {
             let capture = SmokeTraceCapture::new(2048);
             app.manage(capture.clone());
+            app.manage(commands::SmokeReport::new());
             setup_shared_runtime(app, Some(capture))
         })
         .invoke_handler(tauri::generate_handler![
@@ -42,5 +43,9 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             commands::debug_smoke_run_fade_completes_test,
             commands::debug_smoke_run_decreasing_xfade_test,
             commands::debug_smoke_run_lockout_blocks_recall_test,
+            commands::debug_smoke_finish_suite,
+            commands::debug_smoke_exit_app,
+            commands::debug_smoke_report_setup,
+            commands::debug_smoke_set_channel_gain,
         ])
 }

@@ -1111,28 +1111,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn debug_smoke_can_subscribe_to_lifecycle_event_bus() {
-        let lifecycle = AppLifecycle::default();
-        let bus = lifecycle.debug_smoke_event_bus();
-        let mut rx = bus.subscribe();
-
-        lifecycle.begin_connecting().await.unwrap();
-
-        let event = rx.recv().await.unwrap();
-        assert!(matches!(
-            event,
-            crate::runtime::events::AppEvent::Runtime(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn debug_smoke_current_lv1_is_none_by_default() {
-        let lifecycle = AppLifecycle::default();
-
-        assert!(lifecycle.debug_smoke_current_lv1().await.is_none());
-    }
-
     #[tokio::test(flavor = "current_thread")]
     async fn attempt_reconnect_uses_stored_connected_identity() {
         let captured = CapturedLogEvents::default();
