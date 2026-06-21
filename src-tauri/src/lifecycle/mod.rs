@@ -455,21 +455,13 @@ impl AppLifecycle {
         self.show.clone()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, debug_assertions))]
     pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
-        self.inner.lock().await.handles.lv1.clone()
-    }
-
-    pub async fn debug_smoke_current_lv1(&self) -> Option<Lv1ActorHandle> {
         self.inner.lock().await.handles.lv1.clone()
     }
 
     pub async fn current_fade(&self) -> Option<FadeEngineHandle> {
         self.inner.lock().await.handles.fade.clone()
-    }
-
-    pub fn debug_smoke_event_bus(&self) -> AppEventBus {
-        self.event_bus.clone()
     }
 
     pub async fn current_scene_recall_fader(&self) -> Option<ScenesHandle> {

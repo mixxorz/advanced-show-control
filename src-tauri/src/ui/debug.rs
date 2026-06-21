@@ -1,7 +1,9 @@
 //! Debug-only Tauri app builder for hardware smoke tests.
 
-use super::setup_shared_runtime;
-use crate::smoke::SmokeTraceCapture;
+use crate::lifecycle::AppLifecycle;
+use crate::logging;
+use crate::runtime::events::AppEventBus;
+use crate::show::build_show_actor;
 use tauri::Manager;
 
 pub(crate) mod commands;
@@ -9,10 +11,21 @@ pub(crate) mod commands;
 pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
-            let capture = SmokeTraceCapture::new(2048);
-            app.manage(capture.clone());
+            let event_bus = AppEventBus::default();
+            let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
+            let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
+            show_task.spawn();
+            let logging_runtime = logging::init_logging(app.handle())?;
+            app.manage(show);
+            app.manage(lifecycle);
+            app.manage(logging_runtime.guard);
+            app.manage(logging_runtime.ui_logs);
             app.manage(commands::SmokeReport::new());
-            setup_shared_runtime(app, Some(capture))
+            tracing::info!(
+                event = "app_started",
+                "Starting Advanced Show Control debug smoke"
+            );
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             crate::ui::commands::lifecycle::frontend_ready,
@@ -37,15 +50,10 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::show::set_scene_scope_faders_enabled,
             crate::ui::commands::show::set_scene_scope_pan_enabled,
             crate::ui::commands::show::set_lockout,
-            commands::debug_smoke_run_connection_test,
-            commands::debug_smoke_run_scene_recall_test,
-            commands::debug_smoke_run_fade_starts_test,
-            commands::debug_smoke_run_fade_completes_test,
-            commands::debug_smoke_run_decreasing_xfade_test,
-            commands::debug_smoke_run_lockout_blocks_recall_test,
-            commands::debug_smoke_finish_suite,
+            commands::debug_smoke_log,
             commands::debug_smoke_exit_app,
-            commands::debug_smoke_report_setup,
             commands::debug_smoke_set_channel_gain,
+            commands::debug_smoke_recall_lv1_scene,
+            commands::debug_smoke_get_channel_gain,
         ])
 }

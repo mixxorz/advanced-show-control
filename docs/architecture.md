@@ -176,10 +176,6 @@ Actors and projector consumers compare event generations against the active gene
 
 Tauri commands reside under `src-tauri/src/ui/commands/`.
 
-### Debug Smoke-Test App
-
-The repository includes a development-only Tauri debug app for LV1 hardware smoke testing. It shares the production runtime setup and production command/actor paths, but registers additional debug smoke-test commands. Those commands observe `AppEventBus` facts and DEBUG-level `tracing` events; they do not emit `app-status-changed` or bypass production safety checks.
-
 Tauri command modules are adapters. They are not business logic modules.
 
 A Tauri command adapter shall perform the following functions:

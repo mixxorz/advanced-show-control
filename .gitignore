@@ -10,6 +10,7 @@ rustc-ice-*.txt
 node_modules/
 ui/node_modules/
 ui/dist/
+ui/dist-debug/
 ui/storybook-static/
 ui/test-results/
 ui/playwright-report/

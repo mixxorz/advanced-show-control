@@ -11,13 +11,26 @@ use tauri::Manager;
 use tokio::sync::broadcast;
 
 pub mod commands;
+#[cfg(debug_assertions)]
 pub mod debug;
 
 pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
-        .setup(|app| setup_shared_runtime(app, None))
+        .setup(|app| {
+            let event_bus = AppEventBus::default();
+            let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
+            let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
+            show_task.spawn();
+            let logging_runtime = logging::init_logging(app.handle())?;
+            app.manage(show);
+            app.manage(lifecycle);
+            app.manage(logging_runtime.guard);
+            app.manage(logging_runtime.ui_logs);
+            tracing::info!(event = "app_started", "Starting Advanced Show Control");
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::lifecycle::frontend_ready,
             commands::show::refresh_lv1_discovery,
@@ -44,23 +57,6 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
         ])
 }
 
-pub(super) fn setup_shared_runtime<R: tauri::Runtime>(
-    app: &mut tauri::App<R>,
-    smoke_trace_capture: Option<crate::smoke::SmokeTraceCapture>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let event_bus = AppEventBus::default();
-    let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
-    let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
-    show_task.spawn();
-    let logging_runtime = logging::init_logging(app.handle(), smoke_trace_capture)?;
-    app.manage(show);
-    app.manage(lifecycle);
-    app.manage(logging_runtime.guard);
-    app.manage(logging_runtime.ui_logs);
-    tracing::info!(event = "app_started", "Starting Advanced Show Control");
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     #[test]
@@ -69,24 +65,11 @@ mod tests {
     }
 
     #[test]
-    fn debug_build_app_constructs_builder() {
-        let _builder = super::debug::build_debug_app();
-    }
-
-    #[test]
     fn command_adapter_exports_existing_command_names() {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
         let _ = super::commands::scenes::recall_scene;
         let _ = super::commands::show::set_lockout;
-    }
-
-    #[test]
-    fn production_builder_keeps_existing_command_exports() {
-        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
-        let _ = super::commands::show::set_lockout;
-        let _ = super::commands::scenes::recall_scene;
-        let _ = super::commands::fade::abort_all_fades;
     }
 
     #[test]

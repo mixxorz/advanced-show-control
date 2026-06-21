@@ -10,7 +10,6 @@ pub mod runtime;
 pub mod scenes;
 pub mod show;
 pub mod show_file;
-pub mod smoke;
 pub mod time;
 pub mod ui;
 pub mod vegas;

@@ -47,7 +47,6 @@ pub struct LoggingRuntime {
 
 pub fn init_logging<R: Runtime>(
     app: &tauri::AppHandle<R>,
-    smoke_trace_capture: Option<crate::smoke::SmokeTraceCapture>,
 ) -> Result<LoggingRuntime, Box<dyn Error>> {
     let log_path = diagnostic_log_path(app);
     if let Some(parent) = log_path.parent() {
@@ -77,16 +76,12 @@ pub fn init_logging<R: Runtime>(
     let (ui_tx, _ui_rx) = broadcast::channel(64);
     // UI logs are routed separately from the projector's app-status snapshots.
     let ui_layer = UiLogLayer { tx: ui_tx.clone() }.with_filter(LevelFilter::INFO);
-    let smoke_layer = smoke_trace_capture
-        .map(crate::smoke::SmokeTraceLayer::new)
-        .with_filter(LevelFilter::DEBUG);
 
     tracing_subscriber::registry()
         .with(filter)
         .with(file_layer)
         .with(stdout_layer)
         .with(ui_layer)
-        .with(smoke_layer)
         .try_init()?;
 
     Ok(LoggingRuntime {
