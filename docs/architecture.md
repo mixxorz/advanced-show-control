@@ -199,13 +199,29 @@ The projector is the sole backend owner of `app-status-changed`.
 
 ## 11.0 Debug Smoke Test
 
-The repository includes a development-only Tauri debug binary for LV1 hardware smoke testing. The debug binary is not part of the release production binary.
+The repository includes a development-only Tauri debug binary for LV1 hardware smoke testing.
 
-The smoke runner resides in `ui/src/debug/main.tsx`. It drives the workflow from JavaScript by invoking production Tauri commands for discovery, connection, show creation, scene configuration storage, channel scoping, duration changes, scene recall, and lockout. This preserves the frontend-to-command-to-actor path under test.
+The debug smoke test shall satisfy the following boundary requirements:
 
-Debug-only Tauri commands are limited to setup or observation that production commands do not expose. These commands may write the smoke report, exit the debug app, recall a raw LV1 scene before application scene configs exist, set the test-channel gain for deterministic setup, and read the live test-channel gain.
+1. The debug smoke binary shall not be part of the release production binary.
+2. The smoke runner shall reside in `ui/src/debug/main.tsx`.
+3. The smoke runner shall drive the workflow from JavaScript.
+4. The smoke runner shall use production Tauri commands for discovery, connection, show creation, scene configuration storage, channel scoping, duration changes, scene recall, and lockout.
+5. Debug-only Tauri commands shall be limited to setup and observation that production commands do not expose.
+6. Debug-only Tauri commands shall not replace production commands for the application workflow under test.
+7. The smoke report shall be written under `logs/`.
 
-The smoke suite asserts behavior through production command results, `app-status-changed` snapshots, and live LV1 fader values. It currently validates the following workflow:
+Debug-only commands may perform the following functions:
+
+1. Append smoke report lines.
+2. Exit the debug application after suite completion.
+3. Recall a raw LV1 scene before application scene configurations exist.
+4. Set the test-channel gain for deterministic setup.
+5. Read the live test-channel gain for assertions.
+
+The smoke suite shall assert behavior through production command results, `app-status-changed` snapshots, and live LV1 fader values.
+
+The smoke suite shall validate the following paths:
 
 1. LV1 discovery and connection.
 2. New show creation from the connected LV1.
@@ -216,12 +232,6 @@ The smoke suite asserts behavior through production command results, `app-status
 7. Recall fade reaches the stored target within tolerance.
 8. Alternating scene recalls with decreasing fade durations complete at the expected targets.
 9. Lockout blocks recall and prevents fader movement.
-
-The smoke report is written to `logs/debug-smoke-report.txt`. The debug app is launched with:
-
-```bash
-npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug
-```
 
 ## 12.0 Projector Cache and Frontend Emission
 
