@@ -460,8 +460,16 @@ impl AppLifecycle {
         self.inner.lock().await.handles.lv1.clone()
     }
 
+    pub async fn debug_smoke_current_lv1(&self) -> Option<Lv1ActorHandle> {
+        self.inner.lock().await.handles.lv1.clone()
+    }
+
     pub async fn current_fade(&self) -> Option<FadeEngineHandle> {
         self.inner.lock().await.handles.fade.clone()
+    }
+
+    pub fn debug_smoke_event_bus(&self) -> AppEventBus {
+        self.event_bus.clone()
     }
 
     pub async fn current_scene_recall_fader(&self) -> Option<ScenesHandle> {
@@ -1101,6 +1109,28 @@ mod tests {
             logs.iter()
                 .any(|log| log.event.as_deref() == Some("lv1_connect_failed"))
         );
+    }
+
+    #[tokio::test]
+    async fn debug_smoke_can_subscribe_to_lifecycle_event_bus() {
+        let lifecycle = AppLifecycle::default();
+        let bus = lifecycle.debug_smoke_event_bus();
+        let mut rx = bus.subscribe();
+
+        lifecycle.begin_connecting().await.unwrap();
+
+        let event = rx.recv().await.unwrap();
+        assert!(matches!(
+            event,
+            crate::runtime::events::AppEvent::Runtime(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn debug_smoke_current_lv1_is_none_by_default() {
+        let lifecycle = AppLifecycle::default();
+
+        assert!(lifecycle.debug_smoke_current_lv1().await.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,0 +1,169 @@
+import { useEffect, useEffectEvent, useRef, useState } from "react";
+import type { AppStatusListener } from "../AppRuntime";
+import { disconnectedAppViewState, type AppViewState } from "../types";
+import { SmokeTestPanel } from "./SmokeTestPanel";
+import {
+  runConnectionTest,
+  runDecreasingXFadeTest,
+  runFadeCompletesTest,
+  runFadeStartsTest,
+  runLockoutBlocksRecallTest,
+  refreshLv1Discovery,
+  runSceneRecallTest,
+  type SmokeBackendResult,
+  type SmokeTestParams,
+} from "./commands";
+import type { SmokeResult, SmokeStepResult } from "./smokeTypes";
+
+const automatedSmokeParams: SmokeTestParams = {
+  sceneAId: "1: Smoke A",
+  sceneBId: "2: Smoke B",
+  channel: { group: 0, channel: 1 },
+  toleranceDb: 0.5,
+  minimumMovementDb: 3,
+  timeoutMs: 15000,
+  sampleIntervalMs: 250,
+};
+
+export type SmokeDebugServices = {
+  frontendReady: () => Promise<void>;
+  listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
+};
+
+export function SmokeDebugApp(props: { services: SmokeDebugServices }) {
+  const [appState, setAppState] = useState<AppViewState>(
+    disconnectedAppViewState,
+  );
+  const [smokeResult, setSmokeResult] = useState<SmokeResult | null>(null);
+  const automatedRunStarted = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: undefined | (() => void);
+
+    async function start() {
+      unlisten = await props.services.listenForAppStatus((snapshot) => {
+        if (!cancelled) setAppState(snapshot);
+      });
+      await props.services.frontendReady();
+    }
+
+    void start();
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [props.services]);
+
+  useEffect(() => {
+    void refreshLv1Discovery();
+  }, []);
+
+  const runAutomatedSmokeSuite = useEffectEvent(
+    async (
+      identity: AppViewState["discoveredLv1Systems"][number]["identity"],
+    ) => {
+      await runSmokeCommand("connection", () => runConnectionTest(identity));
+      await runSmokeCommand("scene-recall", () =>
+        runSceneRecallTest(automatedSmokeParams),
+      );
+      await runSmokeCommand("fade-starts", () =>
+        runFadeStartsTest(automatedSmokeParams),
+      );
+      await runSmokeCommand("fade-completes", () =>
+        runFadeCompletesTest(automatedSmokeParams),
+      );
+      await runSmokeCommand("decreasing-xfade", () =>
+        runDecreasingXFadeTest(automatedSmokeParams),
+      );
+      await runSmokeCommand("lockout-blocks-recall", () =>
+        runLockoutBlocksRecallTest(automatedSmokeParams),
+      );
+    },
+  );
+
+  useEffect(() => {
+    const identity = appState.discoveredLv1Systems[0]?.identity;
+    if (!identity || automatedRunStarted.current) return;
+    automatedRunStarted.current = true;
+    void runAutomatedSmokeSuite(identity);
+  }, [appState.discoveredLv1Systems]);
+
+  function projectorStepsFor(
+    testId: string,
+    snapshot: AppViewState,
+  ): SmokeStepResult[] {
+    return [
+      {
+        ok: true,
+        step: "app-status-changed",
+        message: `${testId} projected from state version ${snapshot.stateVersion}`,
+      },
+      {
+        ok: true,
+        step: "projected-logs",
+        message: `${snapshot.logs.length} projected log entries available`,
+      },
+    ];
+  }
+
+  async function runSmokeCommand(
+    testId: string,
+    command: () => Promise<SmokeBackendResult>,
+  ) {
+    const backend = await command();
+    setSmokeResult({ backend, projector: projectorStepsFor(testId, appState) });
+  }
+
+  return (
+    <main className="min-h-screen bg-console-bg text-console-primary">
+      <section className="mx-auto max-w-6xl p-6">
+        <h1 className="text-2xl font-semibold">LV1 Hardware Smoke Tests</h1>
+        <p className="mt-2 text-sm text-console-muted">
+          Connection: {appState.connection}
+        </p>
+        {smokeResult?.backend ? (
+          <p className="mt-2 text-sm text-console-muted">
+            Latest smoke test: {smokeResult.backend.ok ? "ok" : "failed"} (
+            {smokeResult.backend.message})
+          </p>
+        ) : null}
+        <SmokeTestPanel
+          appState={appState}
+          onRefreshLv1Discovery={refreshLv1Discovery}
+          onRunConnectionTest={async (identity) => {
+            await runSmokeCommand("connection", () =>
+              runConnectionTest(identity),
+            );
+          }}
+          onRunSceneRecallTest={async (params: SmokeTestParams) => {
+            await runSmokeCommand("scene-recall", () =>
+              runSceneRecallTest(params),
+            );
+          }}
+          onRunFadeStartsTest={async (params: SmokeTestParams) => {
+            await runSmokeCommand("fade-starts", () =>
+              runFadeStartsTest(params),
+            );
+          }}
+          onRunFadeCompletesTest={async (params: SmokeTestParams) => {
+            await runSmokeCommand("fade-completes", () =>
+              runFadeCompletesTest(params),
+            );
+          }}
+          onRunDecreasingXFadeTest={async (params: SmokeTestParams) => {
+            await runSmokeCommand("decreasing-xfade", () =>
+              runDecreasingXFadeTest(params),
+            );
+          }}
+          onRunLockoutBlocksRecallTest={async (params: SmokeTestParams) => {
+            await runSmokeCommand("lockout-blocks-recall", () =>
+              runLockoutBlocksRecallTest(params),
+            );
+          }}
+          smokeResult={smokeResult}
+        />
+      </section>
+    </main>
+  );
+}

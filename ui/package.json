@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
+    "dev:debug": "vite --host 127.0.0.1 --port 1421 --strictPort",
     "build": "vite build",
+    "build:debug": "VITE_DEBUG_ENTRY=1 vite build --outDir dist-debug",
     "build-storybook": "storybook build",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

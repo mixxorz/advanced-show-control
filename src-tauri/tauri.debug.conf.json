@@ -1,0 +1,34 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Advanced Show Control Debug",
+  "version": "0.1.0",
+  "identifier": "com.advancedshowcontrol.debug",
+  "build": {
+    "beforeDevCommand": "npm --prefix ui run dev:debug",
+    "beforeBuildCommand": "npm --prefix ui run build:debug",
+    "devUrl": "http://127.0.0.1:1421/debug.html",
+    "frontendDist": "../ui/dist-debug"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Advanced Show Control Debug",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 1040,
+        "minHeight": 700
+      }
+    ]
+  },
+  "bundle": {
+    "active": false,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ]
+  }
+}
