@@ -28,66 +28,45 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - `SceneRecallFader` validates LV1 scene recall events, blocks unsafe recalls, skips disabled fader scope, starts validated scene-owned fades, and moves duration `0` scenes immediately.
 - Runtime architecture is actor-oriented with `Lv1Actor`, `FadeEngine`, `ShowState`, `SceneRecallFader`, `AppLifecycle`, `AppEventBus`, `AppCommandBus`, and `projector` as the main ownership boundaries.
 - The projector remains the only backend `app-status-changed` emitter; logging stays on the separate UI log path, and the React app listens to that event for state updates.
+- Diagnostics use `tracing`, with debug-level diagnostic file/stdout output and info-level frontend-facing operational logs.
+- Projector state emission is bounded by dirty-state batching and a fixed projection interval so routine LV1 updates do not flood the frontend.
+- Balance and width reports no longer cancel pan-family fades directly, reducing known false-positive manual override reports while preserving pan override cancellation behavior.
+- Frontend testing is in place with Vitest unit tests, Storybook interaction/browser tests, and Playwright visual checks.
+- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, and Settings remains a placeholder until the auto-session recall setting is built.
+- The Scenes tab supports scene status, current/cued/selected scene display, duplicate-name warnings, scene recall navigation, scope editing, duration editing, stored target review, and channel-scope controls.
+- Connection controls are implemented through the connection modal, including discovery results, connect selection, disconnect, connected/unavailable states, and reconnect overlay behavior.
+- The Logs tab shows projected frontend-facing operational logs.
+- Session file management is handled through the native File menu using `.ascs` files, `Untitled.ascs` defaults, `.ascs` backup naming, and window-title session/dirty-state updates.
+- Loading a session prunes scene configs whose exact LV1 scene identity is missing, marks the session dirty, and logs visible skipped-scene warnings.
 
 ## MVP Roadmap
 
 The immediate goal is to reach a live-viable MVP. This scope is intentionally larger than a prototype because the app is not useful in a live setting unless session handling, safety visibility, logging, frontend structure, and bundling are all trustworthy enough for rehearsal use. Historical phase planning is retired; this ordered list is the current build path.
 
-1. Replace custom diagnostics logging with `tracing`.
-   - Use more debug-level logging for log files.
-   - Send info-level operational logging to the frontend as well.
-   - Preserve user-visible safety blocks and operational events.
-2. Make projector emission more efficient.
-   - Limit how often runtime state updates are sent to the frontend.
-   - Keep safety-critical changes visible without flooding the UI.
-3. Reduce false-positive manual override reports for balance/rotation fades.
-   - Revisit pan-family override ownership, possibly limiting override authority to pan control instead of pan, balance, and width together.
-   - Preserve clear manual override logs and cancellation behavior for safety-relevant moves.
-4. Evaluate forbidding dead code for the MVP crate.
+1. Evaluate forbidding dead code for the MVP crate.
    - Remove or refactor current dead-code suppressions instead of replacing them with broader lint allowances.
    - Decide whether `#![forbid(dead_code)]` should apply to normal builds only or to test targets as well.
    - Enable the lint only after the Rust crate and preserved CLI/probe binary can pass without suppressions.
-5. Add session scene reconciliation/remapping.
+2. Add session scene reconciliation/remapping.
    - Handle loaded sessions whose stored scene references no longer match the current LV1 scene list.
-   - Make mismatches and any skipped or unresolved mappings visible to the user.
-6. Rename session extension and default filename.
-   - Choose the final app-owned show/session file extension and default saved filename before frontend Sessions work.
-   - Update open/save dialogs, backup naming, tests, and user-facing copy to use the final name consistently.
-   - Decide whether old session files need migration support before adding compatibility code.
-7. Set up frontend testing.
-   - Add the test tooling needed for UI behavior and component coverage.
-8. Build the frontend app shell.
-   - Replace the test-bed layout with the real application frame.
-   - Keep global safety controls prominent.
-9. Build the frontend Scenes tab.
-   - Support scene status, stored scene config review, scope editing, duration editing, and clear mismatch or safety warnings.
-10. Build the frontend connection controls.
-   - Support discovery, connect/disconnect, current LV1 status, and startup/reconnect clarity.
-11. Build the frontend Settings tab.
+   - Preserve app-managed fade configuration where a safe remap can be made.
+   - Make mismatches, remap decisions, skipped configs, and unresolved mappings visible to the user.
+3. Build the frontend Settings tab.
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
-12. Use native session file management.
-    - Manage app session files through the native File menu.
-    - Use `.ascs` as the app-owned session file extension.
-    - Show the current session and dirty state in the window title.
-13. Show skipped-scene warnings when loading sessions.
-   - Show a warning on load when saved scene configs are skipped because they are not found in the current scene list.
-   - Include enough scene identity detail for engineers to understand what was skipped without opening diagnostic logs.
-14. Add auto-session recall.
+4. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
-15. Build the frontend Logs tab.
-   - Show frontend-facing info logs, safety blocks, recalls, fade starts, fade completions, manual overrides, and connection events.
-16. Sort out bundling.
+5. Sort out bundling.
    - Produce a practical app package for MVP testing.
    - Document the packaging path and any platform limitations.
 
 ## MVP Exit Criteria
 
 - A live engineer can connect to LV1, open or create a session, store scoped fader targets for scenes, recall LV1 scenes, observe app-managed fades, abort safely, and understand the current app state without using a debug console.
-- The UI is no longer a test bed and has clear app shell, Scenes, Sessions, Connection, Settings, and Logs areas.
+- The UI is no longer a test bed and has a clear app shell, Scenes, Connection, Settings, Logs, native session-file commands, and visible session state.
 - Engineers can manage app session files through the native File menu.
 - App session files use the `.ascs` extension.
 - The window title shows the current session and dirty state.
@@ -95,7 +74,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 - Auto-session recall safely reloads the last session only when the saved console identity matches the current LV1 console.
 - Manual session handling remains the fallback when auto-session recall is disabled, skipped, blocked, or fails.
 - Logging is split appropriately between diagnostic files and frontend-facing operational events.
-- Show-file scene mismatches can be reconciled or remapped without silently dropping app-managed fade configuration.
+- Show-file scene mismatches can be reconciled or remapped without silently dropping app-managed fade configuration; exact-missing scenes are already pruned with visible skipped-scene warnings.
 - Balance/rotation fades do not produce known false-positive manual override reports during normal timed fades.
 - The MVP crate has a settled dead-code policy, with dead-code suppressions removed or justified before enabling any strict lint.
 - Frontend development has Storybook and test coverage in place for continued iteration.
