@@ -67,11 +67,10 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session/show file when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
-12. Build the frontend Sessions tab.
-   - Support session management for app show/session files.
-   - Provide clear import/export flows for engineers moving sessions between systems.
-   - Surface save/load state, dirty state, current file location, and any import/export warnings.
-   - Preserve manual session import/export as the explicit fallback path for automatic session handling.
+12. Use native session file management.
+    - Manage app session files through the native File menu.
+    - Use `.adsc` as the app-owned session file extension.
+    - Show the current session and dirty state in the window title.
 13. Show skipped-scene warnings when loading show files.
    - Show a warning on load when saved scene configs are skipped because they are not found in the current scene list.
    - Include enough scene identity detail for engineers to understand what was skipped without opening diagnostic logs.
@@ -89,7 +88,9 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 
 - A live engineer can connect to LV1, open or create a show file, store scoped fader targets for scenes, recall LV1 scenes, observe app-managed fades, abort safely, and understand the current app state without using a debug console.
 - The UI is no longer a test bed and has clear app shell, Scenes, Sessions, Connection, Settings, and Logs areas.
-- Engineers can manage sessions, including import/export, from the Sessions tab.
+- Engineers can manage app session files through the native File menu.
+- App session files use the `.adsc` extension.
+- The window title shows the current session and dirty state.
 - Engineers can enable or disable auto-session recall from Settings.
 - Auto-session recall safely reloads the last session/show file only when the saved console identity matches the current LV1 console.
 - Manual session handling remains the fallback when auto-session recall is disabled, skipped, blocked, or fails.
