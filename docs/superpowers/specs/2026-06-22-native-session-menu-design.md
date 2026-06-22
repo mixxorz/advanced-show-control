@@ -52,9 +52,33 @@ Save and open behavior remains otherwise unchanged:
 
 The React shell should remove `sessions` from the main tab type, tab list, shell rendering, and tests/stories that expect the Sessions tab. The existing `SessionsTab` component and related stories can be deleted if unused after the tab removal.
 
-The Tauri app menu should dispatch the same commands used by the existing React command adapter layer. Menu-triggered commands must not duplicate business logic. They should route through the same Tauri command or command-bus path as UI-triggered session operations.
+The Tauri app menu should be implemented in the backend Tauri adapter layer during `build_app` setup. Add a small menu module under `src-tauri/src/ui/` that builds the native `File` menu and handles menu events by command ID.
 
-The window title should update when the projected session file name, current path, or dirty state changes. The title update can live on the frontend side if it can call the Tauri window API from projected app state, or on the backend/projector side if that fits the existing Tauri setup better. The key requirement is that the title remains projection-driven and does not invent separate session state.
+Menu-triggered commands should not go through React. Instead, extract the existing show-file command adapter bodies into shared async helper functions in `src-tauri/src/ui/commands/show.rs` or a sibling adapter module. Both `#[tauri::command]` functions and native menu event handlers should call those helpers. The helpers should continue to route through `ShowCommand` mailboxes and use the same `rfd` native dialogs. This avoids duplicating business logic while keeping native menu actions available even when focus is not inside the webview.
+
+Native menu command IDs should be stable constants, for example:
+
+- `session:new`
+- `session:open`
+- `session:save`
+- `session:save-as`
+
+Menu event handlers should spawn async work on the Tauri async runtime and log failures through tracing. They do not need to return errors to the menu system. User-visible command failures should still become visible through the existing app log/projection path where the underlying show command already emits state or logs. If a command only fails before reaching show state, such as dialog creation failure, log it with enough context for diagnosis.
+
+The window title should be updated from the React runtime. `AppRuntime` already receives the projected `showFileName`, `showFilePath`, and `showFileDirty` values through `AppViewState`, so it can derive the title without creating a second state source. Add a small title-formatting helper and call the Tauri window API from an effect when those projection fields change. Tests can cover the pure formatting helper without requiring a Tauri window.
+
+If `sessions` appears anywhere in initial tab state, tests, stories, or future persisted UI state, the shell should fall back to `scenes`. The current runtime initializes `activeTab` in memory, so implementation should mainly remove `sessions` from the type and test data.
+
+## Technical Decisions
+
+- Native `File` menu is the canonical location for session actions.
+- No in-app session dropdown or top-bar session control will be added.
+- React owns title formatting because it already observes projected session state.
+- Backend menu handlers own native menu events because Tauri menu events are backend events.
+- Shared Rust adapter helpers prevent duplicate show/session command behavior.
+- Menu actions and React commands use the same show actor mailbox commands.
+- Existing `rfd` dialogs remain the file picker implementation for both menu and command paths.
+- `.adsc` is the only preferred extension. `.lv1show` compatibility is out of scope.
 
 ## Testing
 
@@ -64,7 +88,8 @@ Add or update tests for:
 - Shell tab typing and fallback behavior after removing `sessions`.
 - `.adsc` dialog filters/default filenames and backup filename behavior.
 - Window title formatting for untitled, saved, and dirty sessions.
-- Menu command dispatch if the app menu logic is testable in the current Tauri setup.
+- Menu command IDs and menu construction if the app menu logic is testable without launching the full Tauri app.
+- Shared show/session command helpers remain used by both Tauri commands and native menu handlers.
 
 Run the relevant frontend and Rust checks after implementation.
 
