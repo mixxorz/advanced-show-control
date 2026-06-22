@@ -3,6 +3,8 @@ use crate::runtime::errors::AppCommandError;
 use crate::show::{LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult};
 use crate::show_file::default_show_folder;
 use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use tauri::menu::PredefinedMenuItem;
 use tauri::menu::{Menu, MenuEvent, MenuItem, Submenu};
 use tauri::{App, AppHandle, Manager};
 use tokio::sync::oneshot;
@@ -12,9 +14,33 @@ pub const MENU_NEW_SESSION: &str = "session:new";
 pub const MENU_OPEN_SESSION: &str = "session:open";
 pub const MENU_SAVE_SESSION: &str = "session:save";
 pub const MENU_SAVE_SESSION_AS: &str = "session:save-as";
+#[cfg(target_os = "macos")]
+const APP_DISPLAY_NAME: &str = "Advanced Show Control";
+#[cfg(target_os = "macos")]
+const MENU_ABOUT_APP: &str = "About Advanced Show Control";
+#[cfg(target_os = "macos")]
+const MENU_HIDE_APP: &str = "Hide Advanced Show Control";
+#[cfg(target_os = "macos")]
+const MENU_QUIT_APP: &str = "Quit Advanced Show Control";
 
 pub fn install_session_menu(app: &mut App<tauri::Wry>) -> tauri::Result<()> {
     let handle = app.handle();
+    #[cfg(target_os = "macos")]
+    let app_menu = Submenu::with_items(
+        handle,
+        APP_DISPLAY_NAME,
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, Some(MENU_ABOUT_APP), None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::services(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::hide(handle, Some(MENU_HIDE_APP))?,
+            &PredefinedMenuItem::hide_others(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::quit(handle, Some(MENU_QUIT_APP))?,
+        ],
+    )?;
     let file_menu = Submenu::with_items(
         handle,
         "File",
@@ -44,7 +70,14 @@ pub fn install_session_menu(app: &mut App<tauri::Wry>) -> tauri::Result<()> {
             )?,
         ],
     )?;
-    let menu = Menu::with_items(handle, &[&file_menu])?;
+    let menu = Menu::with_items(
+        handle,
+        &[
+            #[cfg(target_os = "macos")]
+            &app_menu,
+            &file_menu,
+        ],
+    )?;
     app.set_menu(menu)?;
     Ok(())
 }
@@ -194,5 +227,24 @@ mod tests {
         assert_eq!(MENU_OPEN_SESSION, "session:open");
         assert_eq!(MENU_SAVE_SESSION, "session:save");
         assert_eq!(MENU_SAVE_SESSION_AS, "session:save-as");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_menu_keeps_file_after_application_menu() {
+        let source = include_str!("menu.rs");
+        let app_menu = source.find("let app_menu = Submenu::with_items").unwrap();
+        let file_menu = source.find("let file_menu = Submenu::with_items").unwrap();
+
+        assert!(app_menu < file_menu);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_app_menu_uses_display_name() {
+        let source = include_str!("menu.rs");
+
+        assert!(source.contains("Advanced Show Control"));
+        assert!(!source.contains(&format!("{}.{}", "package_info()", "name")));
     }
 }
