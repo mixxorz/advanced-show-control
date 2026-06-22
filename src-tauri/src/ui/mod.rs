@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 pub mod commands;
 #[cfg(debug_assertions)]
 pub mod debug;
+pub mod menu;
 
 pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
@@ -55,6 +56,9 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::set_scene_scope_pan_enabled,
             commands::show::set_lockout,
         ])
+        .on_menu_event(|app, event| {
+            menu::handle_session_menu_event(app, event);
+        })
 }
 
 #[cfg(test)]
