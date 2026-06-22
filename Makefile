@@ -1,7 +1,7 @@
 .PHONY: help fmt lint test build check \
 	rust-fmt rust-lint rust-test rust-build \
 	ui-fmt ui-lint ui-typecheck ui-build ui-test ui-storybook-test \
-	visual-test visual-update debug-build debug-smoke
+	visual-test visual-update dev debug-build debug-smoke
 
 help:
 	@printf '%s\n' \
@@ -29,6 +29,9 @@ help:
 	  'Visual targets:' \
 	  '  make visual-test          npm run test:visual:ci' \
 	  '  make visual-update        npm run test:visual:update:ci' \
+	  '' \
+	  'Development targets:' \
+	  '  make dev                  Start Tauri dev server and app' \
 	  '' \
 	  'Debug smoke targets:' \
 	  '  make debug-build          npm run build:debug' \
@@ -79,6 +82,9 @@ visual-test:
 
 visual-update:
 	npm --prefix ui run test:visual:update:ci
+
+dev:
+	npm run tauri -- dev
 
 debug-build:
 	npm --prefix ui run build:debug
