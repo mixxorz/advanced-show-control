@@ -239,7 +239,6 @@ impl ShowState {
         self.show_file_dirty = true;
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_discovered_lv1_systems(&mut self, systems: Vec<DiscoveredLv1System>) -> bool {
         if self.discovered_lv1_systems == systems {
             false
@@ -249,7 +248,6 @@ impl ShowState {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_pending_lv1_identity(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
         if self.pending_lv1_identity == identity {
             false
@@ -259,7 +257,6 @@ impl ShowState {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn establish_connected_lv1_identity(&mut self, identity: Lv1SystemIdentity) -> bool {
         let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
             || self.pending_lv1_identity.is_some();
@@ -270,7 +267,6 @@ impl ShowState {
         changed
     }
 
-    #[allow(dead_code)]
     pub(crate) fn clear_connected_lv1_identity(&mut self) -> bool {
         if self.connected_lv1_identity.is_none() {
             false
@@ -280,7 +276,6 @@ impl ShowState {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn set_reconnect_state(&mut self, reconnect: ReconnectState) -> bool {
         if self.reconnect == reconnect {
             false
@@ -290,7 +285,6 @@ impl ShowState {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn handle_runtime_disconnected(&mut self, _reason: String) -> bool {
         let mut changed = false;
         if self.connected_lv1_identity.take().is_some() {
@@ -323,7 +317,6 @@ impl ShowState {
         self.show_file_path.clone()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn export_show_file(&self, saved_at: String) -> ShowFile {
         export_show_file(self.snapshot(), saved_at)
     }

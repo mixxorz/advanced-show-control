@@ -297,7 +297,8 @@ impl AppLifecycle {
         Ok(connect_result)
     }
 
-    #[allow(clippy::too_many_arguments, dead_code)]
+    #[cfg(test)]
+    #[allow(clippy::too_many_arguments)]
     async fn finish_connect_transaction_inner<R: Runtime>(
         &self,
         app: AppHandle<R>,
