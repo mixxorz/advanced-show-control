@@ -1,5 +1,6 @@
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
 import type { AppViewState } from "./types";
 import {
@@ -49,6 +50,7 @@ const services: AppRuntimeServices = {
     }),
   setSceneScopePanEnabled: (sceneId, enabled) =>
     invoke<void>("set_scene_scope_pan_enabled", { sceneId, enabled }),
+  setWindowTitle: (title) => getCurrentWindow().setTitle(title),
   startupAutoConnectLv1,
   storeSceneConfig: (sceneId) =>
     invoke<void>("store_scene_config", { sceneId }),
