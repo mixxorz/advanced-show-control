@@ -54,7 +54,7 @@ The React shell should remove `sessions` from the main tab type, tab list, shell
 
 The Tauri app menu should be implemented in the backend Tauri adapter layer during `build_app` setup. Add a small menu module under `src-tauri/src/ui/` that builds the native `File` menu and handles menu events by command ID.
 
-Menu-triggered commands should not go through React. Menu handlers should obtain `AppLifecycle` from Tauri managed state, open the same `rfd` dialogs where needed, and send the same `ShowCommand` mailbox messages used by the existing Tauri command adapters. Do not add generic helper wrappers if they only hide mailbox sends. Extract shared functions only for concrete duplication such as `.adsc` dialog construction, default session filename/filter constants, or title/session-name formatting.
+Menu-triggered commands should not go through React. Menu handlers should obtain `AppLifecycle` from Tauri managed state, open the same `rfd` dialogs where needed, and send the same `ShowCommand` mailbox messages used by the existing Tauri command adapters. Do not extract shared functions for this work; a small amount of repeated adapter code is preferable to extra indirection here.
 
 Native menu command IDs should be stable constants, for example:
 
@@ -75,7 +75,7 @@ The current runtime initializes `activeTab` in memory and does not persist selec
 - No in-app session dropdown or top-bar session control will be added.
 - React owns title formatting because it already observes projected session state.
 - Backend menu handlers own native menu events because Tauri menu events are backend events.
-- Menu actions and React commands use the same show actor mailbox commands, but do not need a shared helper layer when the operation is only a simple mailbox send.
+- Menu actions and React commands use the same show actor mailbox commands without adding a shared helper layer.
 - Existing `rfd` dialogs remain the file picker implementation for both menu and command paths.
 - `.adsc` is the only preferred extension. `.lv1show` compatibility is out of scope.
 
@@ -88,7 +88,7 @@ Add or update tests for:
 - `.adsc` dialog filters/default filenames and backup filename behavior.
 - Window title formatting for untitled, saved, and dirty sessions.
 - Menu command IDs and menu construction if the app menu logic is testable without launching the full Tauri app.
-- Menu handlers send the intended `ShowCommand` variants and use `.adsc` dialog construction.
+- Menu handlers send the intended `ShowCommand` variants and use `.adsc` dialogs.
 
 Run the relevant frontend and Rust checks after implementation.
 
