@@ -1,7 +1,7 @@
 .PHONY: help fmt lint test build check \
 	rust-fmt rust-lint rust-test rust-build \
 	ui-fmt ui-lint ui-typecheck ui-build ui-test ui-storybook-test \
-	visual-test visual-update dev debug-build debug-smoke
+	visual-test visual-update dev storybook probe smoke
 
 help:
 	@printf '%s\n' \
@@ -32,10 +32,9 @@ help:
 	  '' \
 	  'Development targets:' \
 	  '  make dev                  Start Tauri dev server and app' \
-	  '' \
-	  'Debug smoke targets:' \
-	  '  make debug-build          npm run build:debug' \
-	  '  make debug-smoke          Run debug Tauri hardware smoke app'
+	  '  make storybook            Start Storybook dev server' \
+	  '  make probe                Run LV1 probe CLI (pass ARGS="...")' \
+	  '  make smoke                Run debug Tauri hardware smoke app'
 
 fmt: rust-fmt ui-fmt
 
@@ -86,8 +85,11 @@ visual-update:
 dev:
 	npm run tauri -- dev
 
-debug-build:
-	npm --prefix ui run build:debug
+storybook:
+	npm --prefix ui run storybook
 
-debug-smoke:
+probe:
+	cargo run --bin lv1-probe -- $(ARGS)
+
+smoke:
 	npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug
