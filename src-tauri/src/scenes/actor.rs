@@ -567,6 +567,8 @@ mod tests {
         yield_to_actor().await;
         tokio::time::advance(Duration::from_millis(2_050)).await;
         yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(550)).await;
+        yield_to_actor().await;
     }
 
     async fn yield_to_actor() {
@@ -866,10 +868,7 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
 
-        let fade_command = tokio::time::timeout(Duration::from_secs(1), fade_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let fade_command = next_fade_command(&mut fade_rx).await;
         assert_eq!(
             fade_command.scene,
             FadeSceneIdentity {
@@ -1101,10 +1100,7 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
 
-        let fade_command = tokio::time::timeout(Duration::from_secs(1), fade_rx.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        let fade_command = next_fade_command(&mut fade_rx).await;
         assert_eq!(
             fade_command.scene,
             FadeSceneIdentity {
@@ -1371,6 +1367,24 @@ mod tests {
             }
         }
         false
+    }
+
+    async fn next_fade_command(
+        fade_rx: &mut tokio::sync::mpsc::Receiver<FadeConfig>,
+    ) -> FadeConfig {
+        for _ in 0..1_000 {
+            match fade_rx.try_recv() {
+                Ok(command) => return command,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    yield_to_actor().await;
+                    tokio::time::advance(Duration::from_millis(1)).await;
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    panic!("fade command channel disconnected")
+                }
+            }
+        }
+        panic!("timed out waiting for fade command")
     }
 
     async fn spawn_fake_lv1_with_intro(
