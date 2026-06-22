@@ -25,4 +25,21 @@ describe("AppShell", () => {
 
     expect(onOpenConnection).toHaveBeenCalledTimes(1);
   });
+
+  it("does not render the Sessions tab in the shell navigation", () => {
+    renderWithAppProviders(
+      <AppShell
+        activeTab="scenes"
+        onOpenConnection={vi.fn()}
+        onResume={vi.fn()}
+        onSelectTab={vi.fn()}
+        showConnection={false}
+      />,
+      { appState: connectedAppState },
+    );
+
+    expect(
+      screen.queryByRole("button", { name: "Sessions" }),
+    ).not.toBeInTheDocument();
+  });
 });

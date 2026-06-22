@@ -309,7 +309,7 @@ impl ProjectionCache {
                 .and_then(|path| path.file_name())
                 .and_then(|name| name.to_str())
                 .map(|name| name.to_string())
-                .unwrap_or_else(|| "Untitled Show".to_string()),
+                .unwrap_or_else(|| "Untitled Session".to_string()),
             show_file_path: self
                 .show_file_path
                 .as_ref()
@@ -357,7 +357,7 @@ mod tests {
         let second = cache.build_snapshot();
 
         assert_eq!(first.connection, AppConnectionState::Disconnected);
-        assert_eq!(first.show_file_name, "Untitled Show");
+        assert_eq!(first.show_file_name, "Untitled Session");
         assert_eq!(first.state_version, 1);
         assert_eq!(second.state_version, 2);
     }
@@ -422,7 +422,7 @@ mod tests {
             scene_configs: Vec::new(),
             cued_scene_id: None,
             selected_scene_id: None,
-            show_file_name: "Untitled Show".to_string(),
+            show_file_name: "Untitled Session".to_string(),
             show_file_path: None,
             show_file_dirty: false,
             show_file_last_saved_at: None,
@@ -511,7 +511,7 @@ mod tests {
             cued_scene_id: None,
             selected_scene_id: None,
             show_file_path: None,
-            show_file_name: "Untitled Show".to_string(),
+            show_file_name: "Untitled Session".to_string(),
             show_file_dirty: false,
             show_file_last_saved_at: None,
             discovered_lv1_systems: Vec::new(),

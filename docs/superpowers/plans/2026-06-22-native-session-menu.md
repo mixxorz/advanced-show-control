@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move session file actions to the native File menu, remove the Sessions tab, show session state in the window title, and rename saved session files to `.adsc` without changing the JSON schema.
+**Goal:** Move session file actions to the native File menu, remove the Sessions tab, show session state in the window title, and rename saved session files to `.ascs` without changing the JSON schema.
 
 **Architecture:** Keep LV1 connection controls in the React app. Add native menu handling in the Tauri adapter layer and have menu handlers send the same `ShowCommand` mailbox messages as the existing command adapters. Update the React runtime title from projected `AppViewState` using Tauri's window API.
 
@@ -12,11 +12,11 @@
 
 - Do not add an in-app session dropdown or top-bar session control.
 - Do not change the show/session JSON schema.
-- Do not add `.lv1show` migration or compatibility support.
+- Do not add old extension migration or compatibility support.
 - Do not extract shared functions for this work; small repeated adapter code is preferred over extra indirection.
 - Native File menu actions must use: `New Session`, `Open Session...`, `Save Session`, `Save As...`.
-- `.adsc` is the preferred extension for dialogs, defaults, backups, and tests.
-- Window title format is `Advanced Show Control - <session name>` plus ` *` when dirty.
+- `.ascs` is the preferred extension for dialogs, defaults, backups, and tests.
+- Window title format is `Advanced Show Control - <session name without extension>` plus ` *` when dirty.
 - The React title update API is `getCurrentWindow().setTitle(title)` from `@tauri-apps/api/window`.
 - Preserve existing safety behavior, actor mailbox boundaries, and projector-owned `AppViewState` projection.
 
@@ -31,8 +31,8 @@
 - Create `ui/src/sessionTitle.ts`: pure title formatter for testing.
 - Modify `ui/src/AppRuntime.tsx`: accept an optional title setter service and update the window title from projected show/session fields.
 - Modify `ui/src/App.tsx`: wire `getCurrentWindow().setTitle(title)` into `AppRuntimeServices`.
-- Modify `src-tauri/src/show_file.rs`: rename extension-sensitive backup matching and backup filenames from `.lv1show` to `.adsc`.
-- Modify `src-tauri/src/ui/commands/show.rs`: update dialog filters, default filenames, and user-facing cancellation strings to session terminology and `.adsc`.
+- Modify `src-tauri/src/show_file.rs`: rename extension-sensitive backup matching and backup filenames to `.ascs`.
+- Modify `src-tauri/src/ui/commands/show.rs`: update dialog filters, default filenames, and user-facing cancellation strings to session terminology and `.ascs`.
 - Create `src-tauri/src/ui/menu.rs`: native File menu construction and menu event handling.
 - Modify `src-tauri/src/ui/mod.rs`: register the native menu and handler in `build_app`.
 - Modify `docs/roadmap.md`: remove completed/obsolete Sessions-tab roadmap language and mark the extension rename direction as settled if needed.
@@ -133,7 +133,7 @@ git commit -m "feat: remove sessions tab"
 
 ---
 
-### Task 2: Rename Session File Extension To `.adsc`
+### Task 2: Rename Session File Extension To `.ascs`
 
 **Files:**
 - Modify: `src-tauri/src/show_file.rs`
@@ -141,25 +141,25 @@ git commit -m "feat: remove sessions tab"
 
 **Interfaces:**
 - Consumes: existing `read_show_file`, `write_show_file`, backup helpers, and Tauri show commands.
-- Produces: `.adsc` dialog filters/default filenames and `.adsc` backup filenames.
+- Produces: `.ascs` dialog filters/default filenames and `.ascs` backup filenames.
 
-- [ ] **Step 1: Write failing Rust expectations for `.adsc` backups**
+- [ ] **Step 1: Write failing Rust expectations for `.ascs` backups**
 
-In `src-tauri/src/show_file.rs`, update extension-sensitive tests to expect `.adsc`. Example replacements:
+In `src-tauri/src/show_file.rs`, update extension-sensitive tests to expect `.ascs`. Example replacements:
 
 ```rust
-let show_path = temp_dir.join("test.adsc");
-let candidate = backup_dir.join("123-test.adsc");
-reserve_unique_backup_file(&backup_dir, Path::new("test.adsc"), "123").unwrap();
-Some("123-test__backup1.adsc")
+let show_path = temp_dir.join("test.ascs");
+let candidate = backup_dir.join("123-test.ascs");
+reserve_unique_backup_file(&backup_dir, Path::new("test.ascs"), "123").unwrap();
+Some("123-test__backup1.ascs")
 ```
 
-For pruning tests, replace `.lv1show` filenames with `.adsc`, including assertions such as:
+For pruning tests, replace `.lv1show` filenames with `.ascs`, including assertions such as:
 
 ```rust
-assert!(is_backup_for_show_file("100-mix.adsc", "mix"));
-assert!(!is_backup_for_show_file("101-mix-1.adsc", "mix"));
-assert!(is_backup_for_show_file("101-mix-1.adsc", "mix-1"));
+assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
+assert!(!is_backup_for_show_file("101-mix-1.ascs", "mix"));
+assert!(is_backup_for_show_file("101-mix-1.ascs", "mix-1"));
 ```
 
 Keep JSON serialization tests unchanged; the schema is not changing.
@@ -176,7 +176,7 @@ In `src-tauri/src/show_file.rs`, change extension-specific backup code:
 
 ```rust
 fn is_backup_for_show_file(name: &str, stem: &str) -> bool {
-    let Some(prefix) = name.strip_suffix(".adsc") else {
+    let Some(prefix) = name.strip_suffix(".ascs") else {
         return false;
     };
 
@@ -193,9 +193,9 @@ And:
 ```rust
 reserve_unique_file(backup_dir, |suffix| {
     if suffix == 0 {
-        format!("{timestamp}-{stem}.adsc")
+        format!("{timestamp}-{stem}.ascs")
     } else {
-        format!("{timestamp}-{stem}__backup{suffix}.adsc")
+        format!("{timestamp}-{stem}__backup{suffix}.ascs")
     }
 })
 ```
@@ -209,7 +209,7 @@ In `src-tauri/src/ui/commands/show.rs`, change dialog filters/defaults:
 ```
 
 ```rust
-.set_file_name("Untitled.adsc")
+.set_file_name("Untitled.ascs")
 ```
 
 Change cancellation strings:
@@ -268,8 +268,8 @@ describe("formatSessionWindowTitle", () => {
   });
 
   it("adds a dirty marker", () => {
-    expect(formatSessionWindowTitle("Tour Prep.adsc", true)).toBe(
-      "Advanced Show Control - Tour Prep.adsc *",
+    expect(formatSessionWindowTitle("Tour Prep.ascs", true)).toBe(
+      "Advanced Show Control - Tour Prep.ascs *",
     );
   });
 });
@@ -498,7 +498,7 @@ pub fn handle_session_menu_event(app: &AppHandle<tauri::Wry>, event: MenuEvent) 
 }
 ```
 
-Implement each async function explicitly, using the same pattern as `src-tauri/src/ui/commands/show.rs`: obtain `AppLifecycle` with `app.state::<AppLifecycle>()`, get `current_show().await`, create a oneshot reply, send the matching `ShowCommand`, and await the reply. For `Open Session...`, `Save Session`, and `Save As...`, use `rfd::FileDialog` with `.add_filter("Advanced Show Control Session", &["adsc"])` and `.set_file_name("Untitled.adsc")` where saving requires a default.
+Implement each async function explicitly, using the same pattern as `src-tauri/src/ui/commands/show.rs`: obtain `AppLifecycle` with `app.state::<AppLifecycle>()`, get `current_show().await`, create a oneshot reply, send the matching `ShowCommand`, and await the reply. For `Open Session...`, `Save Session`, and `Save As...`, use `rfd::FileDialog` with `.add_filter("Advanced Show Control Session", &["ascs"])` and `.set_file_name("Untitled.ascs")` where saving requires a default.
 
 - [ ] **Step 5: Wire menu events in Tauri builder**
 
@@ -550,7 +550,7 @@ In `docs/roadmap.md`, update MVP roadmap items that still describe a future Sess
 ```md
 12. Use native session file management.
     - Manage app session files through the native File menu.
-    - Use `.adsc` as the app-owned session file extension.
+    - Use `.ascs` as the app-owned session file extension.
     - Show current session and dirty state in the window title.
 ```
 
@@ -598,6 +598,6 @@ Skip the commit if there are no changes after verification.
 
 ## Self-Review
 
-- Spec coverage: Tasks cover Sessions tab removal, native File menu, title bar updates, `.adsc` extension rename, no schema change, no compatibility layer, and no in-app dropdown.
+- Spec coverage: Tasks cover Sessions tab removal, native File menu, title bar updates, `.ascs` extension rename, no schema change, no compatibility layer, and no in-app dropdown.
 - Placeholder scan: No `TBD`, `TODO`, or unspecified edge handling remains.
 - Type consistency: `MainTab`, `formatSessionWindowTitle`, `setWindowTitle`, and menu command IDs are named consistently across tasks.

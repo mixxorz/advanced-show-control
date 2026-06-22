@@ -117,7 +117,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     //                         the dust to settle before evaluating recall policy.
     //
     // - 500 ms edit suppression: After the scene list is modified, suppress recall to avoid
-    //                         triggering fades against a partially-edited show file.
+    //                         triggering fades against a partially-edited session.
     //
     // - 2 s arming delay:     The first scene seen after arming is treated as the baseline
     //                         (current scene at arm time), not a scene change to recall.

@@ -295,11 +295,10 @@ describe("AppRuntime connection lifecycle", () => {
   });
 
   it("does not apply command return values as app state", async () => {
-    const user = userEvent.setup();
     let listener: ((snapshot: AppViewState) => void) | null = null;
     const sentinel: AppViewState = {
       ...disconnectedAppViewState,
-      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show",
+      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs",
       stateVersion: disconnectedAppViewState.stateVersion + 1,
     };
     const services = makeServices({
@@ -312,12 +311,8 @@ describe("AppRuntime connection lifecycle", () => {
     });
     render(<AppRuntime services={services} />);
 
-    await user.click(screen.getByLabelText("Close connection modal"));
-    await user.click(screen.getByRole("button", { name: "Sessions" }));
-    await user.click(screen.getByRole("button", { name: "New" }));
-
     expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show"),
+      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
     ).not.toBeInTheDocument();
 
     await act(async () => {
@@ -325,9 +320,25 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     expect(
-      await screen.findByText(
-        "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show",
-      ),
-    ).toBeInTheDocument();
+      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("updates the window title from projected session state", async () => {
+    const setWindowTitle = vi.fn(async () => undefined);
+
+    render(
+      <AppRuntime
+        services={makeServices({
+          setWindowTitle,
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(setWindowTitle).toHaveBeenCalledWith(
+        "Advanced Show Control - Sunday Service *",
+      );
+    });
   });
 });

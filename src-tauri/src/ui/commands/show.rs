@@ -53,12 +53,12 @@ pub async fn open_show_file_dialog(
         let folder = default_show_folder();
         Ok(rfd::FileDialog::new()
             .set_directory(folder)
-            .add_filter("LV1 Show", &["lv1show"])
+            .add_filter("Advanced Show Control Session", &["ascs"])
             .pick_file())
     })
     .await
     .map_err(|err| format!("Failed to open file dialog: {err}"))??
-    .ok_or_else(|| "Open show file cancelled".to_string())?;
+    .ok_or_else(|| "Open session cancelled".to_string())?;
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::LoadShowFileFromPath {
@@ -93,13 +93,13 @@ pub async fn save_show_file(
             let folder = default_show_folder();
             Ok(rfd::FileDialog::new()
                 .set_directory(folder)
-                .set_file_name("Untitled.lv1show")
-                .add_filter("LV1 Show", &["lv1show"])
+                .set_file_name("Untitled.ascs")
+                .add_filter("Advanced Show Control Session", &["ascs"])
                 .save_file())
         })
         .await
         .map_err(|err| format!("Failed to open save dialog: {err}"))??
-        .ok_or_else(|| "Save show file cancelled".to_string())?,
+        .ok_or_else(|| "Save session cancelled".to_string())?,
     };
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SaveShowFileAs {
@@ -122,13 +122,13 @@ pub async fn save_show_file_as_dialog(
         let folder = default_show_folder();
         Ok(rfd::FileDialog::new()
             .set_directory(folder)
-            .set_file_name("Untitled.lv1show")
-            .add_filter("LV1 Show", &["lv1show"])
+            .set_file_name("Untitled.ascs")
+            .add_filter("Advanced Show Control Session", &["ascs"])
             .save_file())
     })
     .await
     .map_err(|err| format!("Failed to open save dialog: {err}"))??
-    .ok_or_else(|| "Save show file cancelled".to_string())?;
+    .ok_or_else(|| "Save session cancelled".to_string())?;
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SaveShowFileAs {

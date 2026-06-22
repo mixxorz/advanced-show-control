@@ -13,6 +13,7 @@ use tokio::sync::broadcast;
 pub mod commands;
 #[cfg(debug_assertions)]
 pub mod debug;
+pub mod menu;
 
 pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
@@ -28,6 +29,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             app.manage(lifecycle);
             app.manage(logging_runtime.guard);
             app.manage(logging_runtime.ui_logs);
+            menu::install_session_menu(app)?;
             tracing::info!(event = "app_started", "Starting Advanced Show Control");
             Ok(())
         })
@@ -55,6 +57,9 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::set_scene_scope_pan_enabled,
             commands::show::set_lockout,
         ])
+        .on_menu_event(|app, event| {
+            menu::handle_session_menu_event(app, event);
+        })
 }
 
 #[cfg(test)]
@@ -62,6 +67,21 @@ mod tests {
     #[test]
     fn build_app_constructs_builder() {
         let _builder = super::build_app();
+    }
+
+    #[test]
+    fn build_app_installs_session_menu_during_setup() {
+        let source = include_str!("mod.rs");
+        let expected = concat!("menu::", "install_session_menu", "(app)?;");
+
+        assert!(source.contains(expected));
+    }
+
+    #[test]
+    fn default_capability_allows_window_title_updates() {
+        let capability = include_str!("../../capabilities/default.json");
+
+        assert!(capability.contains("core:window:allow-set-title"));
     }
 
     #[test]

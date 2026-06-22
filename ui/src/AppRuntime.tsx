@@ -6,6 +6,7 @@ import {
   type AppCommands,
 } from "./appContext";
 import { AppShell, type MainTab } from "./components/AppShell";
+import { formatSessionWindowTitle } from "./sessionTitle";
 import {
   disconnectedAppViewState,
   type AppViewState,
@@ -47,6 +48,7 @@ export type AppRuntimeServices = {
     sceneId: string,
     enabled: boolean,
   ) => Promise<unknown>;
+  setWindowTitle?: (title: string) => Promise<unknown> | void;
   startupAutoConnectLv1: () => Promise<unknown>;
   storeSceneConfig: (sceneId: string) => Promise<unknown>;
 };
@@ -252,6 +254,16 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     toggleLockout: () =>
       runCommand(() => services.setLockout(!appState.lockout)),
   };
+
+  useEffect(() => {
+    const title = formatSessionWindowTitle(
+      appState.showFileName,
+      appState.showFileDirty,
+    );
+    void Promise.resolve(services.setWindowTitle?.(title)).catch((error) => {
+      setCommandError(String(error));
+    });
+  }, [appState.showFileDirty, appState.showFileName, services]);
 
   return (
     <AppStateProvider appState={appState} commandError={commandError}>

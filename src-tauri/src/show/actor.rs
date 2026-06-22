@@ -283,7 +283,7 @@ async fn handle_command(
             let lv1 = current_lv1_snapshot(peers).await.ok();
             let selected_scene_id = state.reset_for_new_show(lv1.as_ref());
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-            tracing::info!(event = "show_file_created", "New show file created");
+            tracing::info!(event = "session_created", "New session created");
             if let Some(reply) = reply {
                 let _ = reply.send(Ok(NewShowFileResult { selected_scene_id }));
             }
@@ -476,7 +476,7 @@ fn save_show_file_to_path(
     write_show_file(&path, &file, &backup_folder())?;
     state.mark_saved(path, saved_at);
     publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-    tracing::info!(event = "show_file_saved", "Show file saved");
+    tracing::info!(event = "session_saved", "Session saved");
     Ok(ShowCommandResult { changed: true })
 }
 
@@ -500,9 +500,9 @@ fn load_show_file_from_dto(
     }
     publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
     for scene in report.removed_scenes.iter() {
-        tracing::warn!(event = "show_file_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
+        tracing::warn!(event = "session_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
     }
-    tracing::info!(event = "show_file_opened", "Show file loaded");
+    tracing::info!(event = "session_opened", "Session loaded");
     Ok(LoadShowFileResult {
         selected_scene_id,
         saved_at,

@@ -56,6 +56,14 @@ describe("TopTabBar", () => {
     expect(screen.getByRole("button", { name: "SAFE" })).toBeInTheDocument();
   });
 
+  it("does not render a Sessions tab", () => {
+    renderTopBar(connectedAppState);
+
+    expect(
+      screen.queryByRole("button", { name: "Sessions" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("toggles lockout from the SAFE button", async () => {
     const user = userEvent.setup();
     const toggleLockout = vi.fn();
