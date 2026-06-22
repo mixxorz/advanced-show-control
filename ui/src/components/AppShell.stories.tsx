@@ -284,7 +284,7 @@ export const SettingsPlaceholder: Story = {
 
 export const CommandError: Story = {
   args: {
-    commandError: "Unable to save show file: permission denied.",
+    commandError: "Unable to save session: permission denied.",
   },
 };
 

@@ -2,7 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ShowFileControls } from "./ShowFileControls";
 
 const meta: Meta<typeof ShowFileControls> = {
-  title: "Show Files/ShowFileControls",
+  title: "Sessions/ShowFileControls",
   component: ShowFileControls,
   decorators: [
     (Story) => (
@@ -13,8 +13,8 @@ const meta: Meta<typeof ShowFileControls> = {
   ],
   args: {
     dirty: false,
-    fileName: "Sunday Service.ascshow",
-    filePath: "/Users/engineer/Shows/Sunday Service.ascshow",
+    fileName: "Sunday Service.ascs",
+    filePath: "/Users/engineer/Sessions/Sunday Service.ascs",
     onNew: () => {},
     onOpen: () => {},
     onSave: () => {},
@@ -31,7 +31,7 @@ export const Saved: Story = {};
 export const DirtyUntitled: Story = {
   args: {
     dirty: true,
-    fileName: "Untitled Show",
+    fileName: "Untitled Session",
     filePath: null,
   },
 };

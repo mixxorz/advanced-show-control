@@ -13,10 +13,10 @@ const MAX_BACKUPS_PER_SHOW_FILE: usize = 10;
 
 pub fn read_show_file(path: &Path) -> Result<ShowFile, String> {
     let json = fs::read_to_string(path)
-        .map_err(|err| format!("Failed to read show file {}: {err}", path.display()))?;
+        .map_err(|err| format!("Failed to read session {}: {err}", path.display()))?;
 
     serde_json::from_str(&json)
-        .map_err(|err| format!("Failed to parse show file {}: {err}", path.display()))
+        .map_err(|err| format!("Failed to parse session {}: {err}", path.display()))
 }
 
 pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Result<(), String> {
@@ -34,11 +34,11 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
     }
 
     let json = serde_json::to_string_pretty(file)
-        .map_err(|err| format!("Failed to serialize show file {}: {err}", path.display()))?;
+        .map_err(|err| format!("Failed to serialize session {}: {err}", path.display()))?;
 
     let parent = path
         .parent()
-        .ok_or_else(|| format!("Show file path has no parent: {}", path.display()))?;
+        .ok_or_else(|| format!("Session path has no parent: {}", path.display()))?;
     let timestamp = crate::time::current_timestamp_millis();
     let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("show");
     let (temp_path, mut temp_file) = reserve_unique_temp_file(parent, file_name, &timestamp)?;
@@ -49,14 +49,14 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
             .and_then(|_| temp_file.sync_all())
             .map_err(|err| {
                 format!(
-                    "Failed to write temp show file {}: {err}",
+                    "Failed to write temp session {}: {err}",
                     temp_path.display()
                 )
             })?;
         drop(temp_file);
         fs::rename(&temp_path, path).map_err(|err| {
             format!(
-                "Failed to replace show file {} from {}: {err}",
+                "Failed to replace session {} from {}: {err}",
                 path.display(),
                 temp_path.display()
             )
@@ -110,7 +110,7 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
     let timestamp = crate::time::current_timestamp_millis();
     let (candidate, mut dest) = reserve_unique_backup_file(backup_dir, path, &timestamp)?;
     let mut source = fs::File::open(path)
-        .map_err(|err| format!("Failed to open source show file {}: {err}", path.display()))?;
+        .map_err(|err| format!("Failed to open source session {}: {err}", path.display()))?;
 
     io::copy(&mut source, &mut dest).map_err(|err| {
         format!(
@@ -171,7 +171,7 @@ fn prune_old_backups(
 }
 
 fn is_backup_for_show_file(name: &str, stem: &str) -> bool {
-    let Some(prefix) = name.strip_suffix(".adsc") else {
+    let Some(prefix) = name.strip_suffix(".ascs") else {
         return false;
     };
 
@@ -201,9 +201,9 @@ fn reserve_unique_backup_file(
 
     reserve_unique_file(backup_dir, |suffix| {
         if suffix == 0 {
-            format!("{timestamp}-{stem}.adsc")
+            format!("{timestamp}-{stem}.ascs")
         } else {
-            format!("{timestamp}-{stem}__backup{suffix}.adsc")
+            format!("{timestamp}-{stem}__backup{suffix}.ascs")
         }
     })
 }
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn save_show_file_writes_json_and_creates_backup_on_overwrite() {
         let temp_dir = temp_test_dir("write");
-        let show_path = temp_dir.join("test.adsc");
+        let show_path = temp_dir.join("test.ascs");
         let backup_dir = temp_dir.join("backups");
         let file = show_file();
 
@@ -398,15 +398,15 @@ mod tests {
     #[test]
     fn reserve_unique_backup_file_adds_suffix_when_candidate_exists() {
         let backup_dir = temp_test_dir("backup-path");
-        let candidate = backup_dir.join("123-test.adsc");
+        let candidate = backup_dir.join("123-test.ascs");
         fs::write(&candidate, "taken").unwrap();
 
         let (path, _file) =
-            reserve_unique_backup_file(&backup_dir, Path::new("test.adsc"), "123").unwrap();
+            reserve_unique_backup_file(&backup_dir, Path::new("test.ascs"), "123").unwrap();
 
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
-            Some("123-test__backup1.adsc")
+            Some("123-test__backup1.ascs")
         );
 
         let _ = fs::remove_dir_all(&backup_dir);
@@ -415,14 +415,14 @@ mod tests {
     #[test]
     fn reserve_unique_temp_file_adds_suffix_when_candidate_exists() {
         let temp_dir = temp_test_dir("temp-path");
-        let candidate = temp_dir.join(".test.adsc.tmp-123");
+        let candidate = temp_dir.join(".test.ascs.tmp-123");
         fs::write(&candidate, "taken").unwrap();
 
-        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.adsc", "123").unwrap();
+        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.ascs", "123").unwrap();
 
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
-            Some(".test.adsc.tmp-123-1")
+            Some(".test.ascs.tmp-123-1")
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn read_show_file_parses_json() {
         let temp_dir = temp_test_dir("read");
-        let show_path = temp_dir.join("test.adsc");
+        let show_path = temp_dir.join("test.ascs");
         let json = serde_json::to_string_pretty(&show_file()).unwrap();
 
         fs::write(&show_path, json).unwrap();
@@ -569,24 +569,24 @@ mod tests {
 
         assert_eq!(
             prune_show_file_to_lv1_scenes(&mut file, &snapshot).unwrap_err(),
-            "Open a show file after LV1 scenes are loaded"
+            "Open a session after LV1 scenes are loaded"
         );
     }
 
     #[test]
     fn create_backup_prunes_old_backups_for_same_show_file() {
         let backup_dir = temp_test_dir("backup-prune");
-        let source = backup_dir.join("show.adsc");
+        let source = backup_dir.join("show.ascs");
         fs::write(&source, "current").unwrap();
 
         for index in 0..11 {
             fs::write(
-                backup_dir.join(format!("100{index}-show.adsc")),
+                backup_dir.join(format!("100{index}-show.ascs")),
                 format!("old-{index}"),
             )
             .unwrap();
         }
-        fs::write(backup_dir.join("1000-other.adsc"), "keep").unwrap();
+        fs::write(backup_dir.join("1000-other.ascs"), "keep").unwrap();
 
         create_backup(&source, &backup_dir).unwrap();
 
@@ -599,13 +599,13 @@ mod tests {
         let show_backups: Vec<_> = entries
             .iter()
             .filter(|name| {
-                name.strip_suffix(".adsc")
+                name.strip_suffix(".ascs")
                     .and_then(|prefix| prefix.split_once('-'))
                     .is_some_and(|(_, source)| source == "show")
             })
             .collect();
 
-        assert!(entries.iter().any(|name| name == "1000-other.adsc"));
+        assert!(entries.iter().any(|name| name == "1000-other.ascs"));
         assert_eq!(show_backups.len(), 10);
 
         let _ = fs::remove_dir_all(&backup_dir);
@@ -614,10 +614,10 @@ mod tests {
     #[test]
     fn prune_old_backups_does_not_match_hyphenated_neighbor_show_files() {
         let backup_dir = temp_test_dir("backup-boundary");
-        let source = backup_dir.join("foo.adsc");
+        let source = backup_dir.join("foo.ascs");
 
-        fs::write(backup_dir.join("100-foo.adsc"), "foo-old").unwrap();
-        fs::write(backup_dir.join("101-foo-bar.adsc"), "foo-bar-old").unwrap();
+        fs::write(backup_dir.join("100-foo.ascs"), "foo-old").unwrap();
+        fs::write(backup_dir.join("101-foo-bar.ascs"), "foo-bar-old").unwrap();
         fs::write(&source, "current").unwrap();
 
         prune_old_backups(&backup_dir, &source, 0).unwrap();
@@ -627,7 +627,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
 
-        assert!(entries.contains(&"101-foo-bar.adsc".to_string()));
+        assert!(entries.contains(&"101-foo-bar.ascs".to_string()));
 
         let _ = fs::remove_dir_all(&backup_dir);
     }
@@ -643,20 +643,20 @@ mod tests {
         let backups = vec![
             (
                 middle,
-                "10-foo.adsc".to_string(),
-                PathBuf::from("10-foo.adsc"),
+                "10-foo.ascs".to_string(),
+                PathBuf::from("10-foo.ascs"),
             ),
-            (older, "2-foo.adsc".to_string(), PathBuf::from("2-foo.adsc")),
+            (older, "2-foo.ascs".to_string(), PathBuf::from("2-foo.ascs")),
             (
                 newer,
-                "11-foo.adsc".to_string(),
-                PathBuf::from("11-foo.adsc"),
+                "11-foo.ascs".to_string(),
+                PathBuf::from("11-foo.ascs"),
             ),
         ];
 
         let pruned = prune_backup_entries(backups, 2);
 
-        assert_eq!(pruned, vec![PathBuf::from("2-foo.adsc")]);
+        assert_eq!(pruned, vec![PathBuf::from("2-foo.ascs")]);
     }
 
     #[test]
@@ -667,23 +667,23 @@ mod tests {
         let newer = UNIX_EPOCH + Duration::from_secs(2);
 
         let backup_dir = temp_test_dir("backup-mix-boundary");
-        let exact = backup_dir.join("100-mix.adsc");
-        let hyphenated = backup_dir.join("101-mix-1.adsc");
+        let exact = backup_dir.join("100-mix.ascs");
+        let hyphenated = backup_dir.join("101-mix-1.ascs");
         fs::write(&exact, "mix").unwrap();
         fs::write(&hyphenated, "mix-1").unwrap();
 
         let exact_entries = vec![
-            (older, "100-mix.adsc".to_string(), exact.clone()),
-            (newer, "101-mix-1.adsc".to_string(), hyphenated.clone()),
+            (older, "100-mix.ascs".to_string(), exact.clone()),
+            (newer, "101-mix-1.ascs".to_string(), hyphenated.clone()),
         ];
 
         assert_eq!(
             prune_backup_entries(exact_entries, 0),
             vec![exact.clone(), hyphenated.clone()]
         );
-        assert!(is_backup_for_show_file("100-mix.adsc", "mix"));
-        assert!(!is_backup_for_show_file("101-mix-1.adsc", "mix"));
-        assert!(is_backup_for_show_file("101-mix-1.adsc", "mix-1"));
+        assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
+        assert!(!is_backup_for_show_file("101-mix-1.ascs", "mix"));
+        assert!(is_backup_for_show_file("101-mix-1.ascs", "mix-1"));
 
         let _ = fs::remove_dir_all(&backup_dir);
     }
@@ -691,17 +691,17 @@ mod tests {
     #[test]
     fn create_backup_keeps_unrelated_backups() {
         let backup_dir = temp_test_dir("backup-unrelated");
-        let source = backup_dir.join("setlist.adsc");
+        let source = backup_dir.join("setlist.ascs");
         fs::write(&source, "current").unwrap();
 
         for index in 0..2 {
             fs::write(
-                backup_dir.join(format!("100{index}-setlist.adsc")),
+                backup_dir.join(format!("100{index}-setlist.ascs")),
                 format!("old-{index}"),
             )
             .unwrap();
         }
-        fs::write(backup_dir.join("1000-other.adsc"), "keep").unwrap();
+        fs::write(backup_dir.join("1000-other.ascs"), "keep").unwrap();
 
         create_backup(&source, &backup_dir).unwrap();
 
@@ -710,7 +710,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
 
-        assert!(entries.iter().any(|name| name == "1000-other.adsc"));
+        assert!(entries.iter().any(|name| name == "1000-other.ascs"));
 
         let _ = fs::remove_dir_all(&backup_dir);
     }

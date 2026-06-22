@@ -8,9 +8,9 @@ describe("formatSessionWindowTitle", () => {
     );
   });
 
-  it("adds a dirty marker", () => {
-    expect(formatSessionWindowTitle("Tour Prep.adsc", true)).toBe(
-      "Advanced Show Control - Tour Prep.adsc *",
+  it("adds a dirty marker without displaying the file extension", () => {
+    expect(formatSessionWindowTitle("Tour Prep.ascs", true)).toBe(
+      "Advanced Show Control - Tour Prep *",
     );
   });
 });

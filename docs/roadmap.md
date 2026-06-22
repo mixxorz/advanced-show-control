@@ -22,7 +22,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - LV1 discovery, TCP connection, MyFOH-style handshake, keepalive, message logging, fader set commands, and basic hardware protocol findings are implemented.
 - `Lv1Actor` mirrors connection state, current scene, scene list, channel topology, fader values, mute values, reconnect behavior, and snapshots.
 - `FadeEngine` supports timed fades, curves, measured fader law, 25 Hz scheduling, minimum send delta, exact final sends, abort, scene-owned overlap behavior, same-scene repeat handling, and manual override detection.
-- `ShowState` owns show data, selected scene editing, stored channel configs, scoped channel lists, scene toggles, duration, dirty state, and JSON `.lv1show` save/load.
+- `ShowState` owns session data, selected scene editing, stored channel configs, scoped channel lists, scene toggles, duration, dirty state, and JSON `.ascs` save/load.
 - The Tauri shell exposes a working test-bed UI with connection, scene, and logs tabs, global lockout/abort controls, show-file controls, store workflow, duration editing, and scoped-channel controls.
 - Storybook is configured for frontend component development outside the live Tauri runtime, with typed app-state fixtures and representative stories for the current test-bed components.
 - `SceneRecallFader` validates LV1 scene recall events, blocks unsafe recalls, skips disabled fader scope, starts validated scene-owned fades, and moves duration `0` scenes immediately.
@@ -47,13 +47,13 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Remove or refactor current dead-code suppressions instead of replacing them with broader lint allowances.
    - Decide whether `#![forbid(dead_code)]` should apply to normal builds only or to test targets as well.
    - Enable the lint only after the Rust crate and preserved CLI/probe binary can pass without suppressions.
-5. Add show-file scene reconciliation/remapping.
-   - Handle loaded show files whose stored scene references no longer match the current LV1 scene list.
+5. Add session scene reconciliation/remapping.
+   - Handle loaded sessions whose stored scene references no longer match the current LV1 scene list.
    - Make mismatches and any skipped or unresolved mappings visible to the user.
-6. Rename show-file extension and default filename.
+6. Rename session extension and default filename.
    - Choose the final app-owned show/session file extension and default saved filename before frontend Sessions work.
    - Update open/save dialogs, backup naming, tests, and user-facing copy to use the final name consistently.
-   - Decide whether existing `.lv1show` files need migration support before adding compatibility code.
+   - Decide whether old session files need migration support before adding compatibility code.
 7. Set up frontend testing.
    - Add the test tooling needed for UI behavior and component coverage.
 8. Build the frontend app shell.
@@ -65,18 +65,18 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Support discovery, connect/disconnect, current LV1 status, and startup/reconnect clarity.
 11. Build the frontend Settings tab.
    - Add the first app setting: auto-session recall.
-   - Let engineers enable or disable automatic reload of the last session/show file when reconnecting to the same LV1 console.
+   - Let engineers enable or disable automatic reload of the last session when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
 12. Use native session file management.
     - Manage app session files through the native File menu.
-    - Use `.adsc` as the app-owned session file extension.
+    - Use `.ascs` as the app-owned session file extension.
     - Show the current session and dirty state in the window title.
-13. Show skipped-scene warnings when loading show files.
+13. Show skipped-scene warnings when loading sessions.
    - Show a warning on load when saved scene configs are skipped because they are not found in the current scene list.
    - Include enough scene identity detail for engineers to understand what was skipped without opening diagnostic logs.
 14. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
-   - Auto-reload the last session/show file only when the setting is enabled and the console identity matches safely.
+   - Auto-reload the last session only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
 15. Build the frontend Logs tab.
    - Show frontend-facing info logs, safety blocks, recalls, fade starts, fade completions, manual overrides, and connection events.
@@ -86,13 +86,13 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 
 ## MVP Exit Criteria
 
-- A live engineer can connect to LV1, open or create a show file, store scoped fader targets for scenes, recall LV1 scenes, observe app-managed fades, abort safely, and understand the current app state without using a debug console.
+- A live engineer can connect to LV1, open or create a session, store scoped fader targets for scenes, recall LV1 scenes, observe app-managed fades, abort safely, and understand the current app state without using a debug console.
 - The UI is no longer a test bed and has clear app shell, Scenes, Sessions, Connection, Settings, and Logs areas.
 - Engineers can manage app session files through the native File menu.
-- App session files use the `.adsc` extension.
+- App session files use the `.ascs` extension.
 - The window title shows the current session and dirty state.
 - Engineers can enable or disable auto-session recall from Settings.
-- Auto-session recall safely reloads the last session/show file only when the saved console identity matches the current LV1 console.
+- Auto-session recall safely reloads the last session only when the saved console identity matches the current LV1 console.
 - Manual session handling remains the fallback when auto-session recall is disabled, skipped, blocked, or fails.
 - Logging is split appropriately between diagnostic files and frontend-facing operational events.
 - Show-file scene mismatches can be reconciled or remapped without silently dropping app-managed fade configuration.
@@ -109,7 +109,7 @@ After the scene-fading MVP, the next major release is cue list support. Cue list
 
 Core goals:
 
-- Create, edit, save, and load cue lists as part of the app show file.
+- Create, edit, save, and load cue lists as part of the app session.
 - Add LV1 scenes from the scene library to a cue list in any order.
 - Allow the same LV1 scene to appear multiple times in the same cue list.
 - Recall the selected cue through the app while preserving all existing scene recall and fade safety behavior.
@@ -134,7 +134,7 @@ The third major release adds event automation. Engineers can create events with 
 
 Core goals:
 
-- Create, edit, enable, disable, save, and load event automations as part of the app show file.
+- Create, edit, enable, disable, save, and load event automations as part of the app session.
 - Define trigger conditions from app and LV1 state, such as scene recalls, connection state, fade state, cue list state, or other supported runtime events.
 - Define one or more actions for each event, such as recalling scenes or cue list entries, starting app-managed fades, toggling lockout, aborting fades, or other supported app actions.
 - Evaluate trigger conditions predictably and make fired, skipped, blocked, or failed actions visible in the UI and logs.

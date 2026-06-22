@@ -53,7 +53,7 @@ pub async fn open_show_file_dialog(
         let folder = default_show_folder();
         Ok(rfd::FileDialog::new()
             .set_directory(folder)
-            .add_filter("Advanced Show Control Session", &["adsc"])
+            .add_filter("Advanced Show Control Session", &["ascs"])
             .pick_file())
     })
     .await
@@ -93,8 +93,8 @@ pub async fn save_show_file(
             let folder = default_show_folder();
             Ok(rfd::FileDialog::new()
                 .set_directory(folder)
-                .set_file_name("Untitled.adsc")
-                .add_filter("Advanced Show Control Session", &["adsc"])
+                .set_file_name("Untitled.ascs")
+                .add_filter("Advanced Show Control Session", &["ascs"])
                 .save_file())
         })
         .await
@@ -122,8 +122,8 @@ pub async fn save_show_file_as_dialog(
         let folder = default_show_folder();
         Ok(rfd::FileDialog::new()
             .set_directory(folder)
-            .set_file_name("Untitled.adsc")
-            .add_filter("Advanced Show Control Session", &["adsc"])
+            .set_file_name("Untitled.ascs")
+            .add_filter("Advanced Show Control Session", &["ascs"])
             .save_file())
     })
     .await

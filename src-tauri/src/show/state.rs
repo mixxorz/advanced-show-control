@@ -347,7 +347,7 @@ impl ShowState {
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .map(str::to_string)
-            .unwrap_or_else(|| "Untitled Show".to_string());
+            .unwrap_or_else(|| "Untitled Session".to_string());
 
         super::events::ShowProjectionState {
             lockout: self.lockout,

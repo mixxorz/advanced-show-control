@@ -298,7 +298,7 @@ describe("AppRuntime connection lifecycle", () => {
     let listener: ((snapshot: AppViewState) => void) | null = null;
     const sentinel: AppViewState = {
       ...disconnectedAppViewState,
-      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show",
+      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs",
       stateVersion: disconnectedAppViewState.stateVersion + 1,
     };
     const services = makeServices({
@@ -312,7 +312,7 @@ describe("AppRuntime connection lifecycle", () => {
     render(<AppRuntime services={services} />);
 
     expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show"),
+      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
     ).not.toBeInTheDocument();
 
     await act(async () => {
@@ -320,7 +320,7 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.lv1show"),
+      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
     ).not.toBeInTheDocument();
   });
 
@@ -337,7 +337,7 @@ describe("AppRuntime connection lifecycle", () => {
 
     await waitFor(() => {
       expect(setWindowTitle).toHaveBeenCalledWith(
-        "Advanced Show Control - Sunday Service.ascshow *",
+        "Advanced Show Control - Sunday Service *",
       );
     });
   });

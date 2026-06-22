@@ -118,7 +118,7 @@ export const disconnectedAppViewState: AppViewState = {
   sceneConfigs: [],
   cuedSceneId: null,
   selectedSceneId: null,
-  showFileName: "Untitled Show",
+  showFileName: "Untitled Session",
   showFilePath: null,
   showFileDirty: false,
   showFileLastSavedAt: null,

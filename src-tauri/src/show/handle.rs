@@ -112,7 +112,7 @@ mod tests {
             AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
                 assert_eq!(reason, ShowProjectionReason::ShowState);
                 assert!(state.lockout);
-                assert_eq!(state.show_file_name, "Untitled Show");
+                assert_eq!(state.show_file_name, "Untitled Session");
                 assert!(!state.show_file_dirty);
             }
             other => panic!("unexpected event: {other:?}"),

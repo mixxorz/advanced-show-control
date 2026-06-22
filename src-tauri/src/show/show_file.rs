@@ -148,12 +148,12 @@ pub fn prune_show_file_to_lv1_scenes(
     lv1: &Lv1StateSnapshot,
 ) -> Result<LoadValidationReport, String> {
     if lv1.scene_list.is_empty() {
-        return Err("Open a show file after LV1 scenes are loaded".to_string());
+        return Err("Open a session after LV1 scenes are loaded".to_string());
     }
 
     if file.schema_version != SHOW_FILE_SCHEMA_VERSION {
         return Err(format!(
-            "Unsupported show file schema version {}",
+            "Unsupported session schema version {}",
             file.schema_version
         ));
     }

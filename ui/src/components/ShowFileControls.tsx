@@ -14,7 +14,7 @@ export function ShowFileControls(props: {
         {props.dirty ? " *" : ""}
       </div>
       <div className="mt-1 text-xs text-slate-400">
-        {props.filePath ?? "No show file saved"}
+        {props.filePath ?? "No session saved"}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
