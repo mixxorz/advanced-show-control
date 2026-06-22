@@ -171,7 +171,7 @@ fn prune_old_backups(
 }
 
 fn is_backup_for_show_file(name: &str, stem: &str) -> bool {
-    let Some(prefix) = name.strip_suffix(".lv1show") else {
+    let Some(prefix) = name.strip_suffix(".adsc") else {
         return false;
     };
 
@@ -201,9 +201,9 @@ fn reserve_unique_backup_file(
 
     reserve_unique_file(backup_dir, |suffix| {
         if suffix == 0 {
-            format!("{timestamp}-{stem}.lv1show")
+            format!("{timestamp}-{stem}.adsc")
         } else {
-            format!("{timestamp}-{stem}__backup{suffix}.lv1show")
+            format!("{timestamp}-{stem}__backup{suffix}.adsc")
         }
     })
 }
@@ -379,7 +379,7 @@ mod tests {
     #[test]
     fn save_show_file_writes_json_and_creates_backup_on_overwrite() {
         let temp_dir = temp_test_dir("write");
-        let show_path = temp_dir.join("test.lv1show");
+        let show_path = temp_dir.join("test.adsc");
         let backup_dir = temp_dir.join("backups");
         let file = show_file();
 
@@ -398,15 +398,15 @@ mod tests {
     #[test]
     fn reserve_unique_backup_file_adds_suffix_when_candidate_exists() {
         let backup_dir = temp_test_dir("backup-path");
-        let candidate = backup_dir.join("123-test.lv1show");
+        let candidate = backup_dir.join("123-test.adsc");
         fs::write(&candidate, "taken").unwrap();
 
         let (path, _file) =
-            reserve_unique_backup_file(&backup_dir, Path::new("test.lv1show"), "123").unwrap();
+            reserve_unique_backup_file(&backup_dir, Path::new("test.adsc"), "123").unwrap();
 
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
-            Some("123-test__backup1.lv1show")
+            Some("123-test__backup1.adsc")
         );
 
         let _ = fs::remove_dir_all(&backup_dir);
@@ -415,14 +415,14 @@ mod tests {
     #[test]
     fn reserve_unique_temp_file_adds_suffix_when_candidate_exists() {
         let temp_dir = temp_test_dir("temp-path");
-        let candidate = temp_dir.join(".test.lv1show.tmp-123");
+        let candidate = temp_dir.join(".test.adsc.tmp-123");
         fs::write(&candidate, "taken").unwrap();
 
-        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.lv1show", "123").unwrap();
+        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.adsc", "123").unwrap();
 
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
-            Some(".test.lv1show.tmp-123-1")
+            Some(".test.adsc.tmp-123-1")
         );
 
         let _ = fs::remove_dir_all(&temp_dir);
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn read_show_file_parses_json() {
         let temp_dir = temp_test_dir("read");
-        let show_path = temp_dir.join("test.lv1show");
+        let show_path = temp_dir.join("test.adsc");
         let json = serde_json::to_string_pretty(&show_file()).unwrap();
 
         fs::write(&show_path, json).unwrap();
@@ -576,17 +576,17 @@ mod tests {
     #[test]
     fn create_backup_prunes_old_backups_for_same_show_file() {
         let backup_dir = temp_test_dir("backup-prune");
-        let source = backup_dir.join("show.lv1show");
+        let source = backup_dir.join("show.adsc");
         fs::write(&source, "current").unwrap();
 
         for index in 0..11 {
             fs::write(
-                backup_dir.join(format!("100{index}-show.lv1show")),
+                backup_dir.join(format!("100{index}-show.adsc")),
                 format!("old-{index}"),
             )
             .unwrap();
         }
-        fs::write(backup_dir.join("1000-other.lv1show"), "keep").unwrap();
+        fs::write(backup_dir.join("1000-other.adsc"), "keep").unwrap();
 
         create_backup(&source, &backup_dir).unwrap();
 
@@ -599,13 +599,13 @@ mod tests {
         let show_backups: Vec<_> = entries
             .iter()
             .filter(|name| {
-                name.strip_suffix(".lv1show")
+                name.strip_suffix(".adsc")
                     .and_then(|prefix| prefix.split_once('-'))
                     .is_some_and(|(_, source)| source == "show")
             })
             .collect();
 
-        assert!(entries.iter().any(|name| name == "1000-other.lv1show"));
+        assert!(entries.iter().any(|name| name == "1000-other.adsc"));
         assert_eq!(show_backups.len(), 10);
 
         let _ = fs::remove_dir_all(&backup_dir);
@@ -614,10 +614,10 @@ mod tests {
     #[test]
     fn prune_old_backups_does_not_match_hyphenated_neighbor_show_files() {
         let backup_dir = temp_test_dir("backup-boundary");
-        let source = backup_dir.join("foo.lv1show");
+        let source = backup_dir.join("foo.adsc");
 
-        fs::write(backup_dir.join("100-foo.lv1show"), "foo-old").unwrap();
-        fs::write(backup_dir.join("101-foo-bar.lv1show"), "foo-bar-old").unwrap();
+        fs::write(backup_dir.join("100-foo.adsc"), "foo-old").unwrap();
+        fs::write(backup_dir.join("101-foo-bar.adsc"), "foo-bar-old").unwrap();
         fs::write(&source, "current").unwrap();
 
         prune_old_backups(&backup_dir, &source, 0).unwrap();
@@ -627,7 +627,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
 
-        assert!(entries.contains(&"101-foo-bar.lv1show".to_string()));
+        assert!(entries.contains(&"101-foo-bar.adsc".to_string()));
 
         let _ = fs::remove_dir_all(&backup_dir);
     }
@@ -643,24 +643,20 @@ mod tests {
         let backups = vec![
             (
                 middle,
-                "10-foo.lv1show".to_string(),
-                PathBuf::from("10-foo.lv1show"),
+                "10-foo.adsc".to_string(),
+                PathBuf::from("10-foo.adsc"),
             ),
-            (
-                older,
-                "2-foo.lv1show".to_string(),
-                PathBuf::from("2-foo.lv1show"),
-            ),
+            (older, "2-foo.adsc".to_string(), PathBuf::from("2-foo.adsc")),
             (
                 newer,
-                "11-foo.lv1show".to_string(),
-                PathBuf::from("11-foo.lv1show"),
+                "11-foo.adsc".to_string(),
+                PathBuf::from("11-foo.adsc"),
             ),
         ];
 
         let pruned = prune_backup_entries(backups, 2);
 
-        assert_eq!(pruned, vec![PathBuf::from("2-foo.lv1show")]);
+        assert_eq!(pruned, vec![PathBuf::from("2-foo.adsc")]);
     }
 
     #[test]
@@ -671,23 +667,23 @@ mod tests {
         let newer = UNIX_EPOCH + Duration::from_secs(2);
 
         let backup_dir = temp_test_dir("backup-mix-boundary");
-        let exact = backup_dir.join("100-mix.lv1show");
-        let hyphenated = backup_dir.join("101-mix-1.lv1show");
+        let exact = backup_dir.join("100-mix.adsc");
+        let hyphenated = backup_dir.join("101-mix-1.adsc");
         fs::write(&exact, "mix").unwrap();
         fs::write(&hyphenated, "mix-1").unwrap();
 
         let exact_entries = vec![
-            (older, "100-mix.lv1show".to_string(), exact.clone()),
-            (newer, "101-mix-1.lv1show".to_string(), hyphenated.clone()),
+            (older, "100-mix.adsc".to_string(), exact.clone()),
+            (newer, "101-mix-1.adsc".to_string(), hyphenated.clone()),
         ];
 
         assert_eq!(
             prune_backup_entries(exact_entries, 0),
             vec![exact.clone(), hyphenated.clone()]
         );
-        assert!(is_backup_for_show_file("100-mix.lv1show", "mix"));
-        assert!(!is_backup_for_show_file("101-mix-1.lv1show", "mix"));
-        assert!(is_backup_for_show_file("101-mix-1.lv1show", "mix-1"));
+        assert!(is_backup_for_show_file("100-mix.adsc", "mix"));
+        assert!(!is_backup_for_show_file("101-mix-1.adsc", "mix"));
+        assert!(is_backup_for_show_file("101-mix-1.adsc", "mix-1"));
 
         let _ = fs::remove_dir_all(&backup_dir);
     }
@@ -695,17 +691,17 @@ mod tests {
     #[test]
     fn create_backup_keeps_unrelated_backups() {
         let backup_dir = temp_test_dir("backup-unrelated");
-        let source = backup_dir.join("setlist.lv1show");
+        let source = backup_dir.join("setlist.adsc");
         fs::write(&source, "current").unwrap();
 
         for index in 0..2 {
             fs::write(
-                backup_dir.join(format!("100{index}-setlist.lv1show")),
+                backup_dir.join(format!("100{index}-setlist.adsc")),
                 format!("old-{index}"),
             )
             .unwrap();
         }
-        fs::write(backup_dir.join("1000-other.lv1show"), "keep").unwrap();
+        fs::write(backup_dir.join("1000-other.adsc"), "keep").unwrap();
 
         create_backup(&source, &backup_dir).unwrap();
 
@@ -714,7 +710,7 @@ mod tests {
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
             .collect();
 
-        assert!(entries.iter().any(|name| name == "1000-other.lv1show"));
+        assert!(entries.iter().any(|name| name == "1000-other.adsc"));
 
         let _ = fs::remove_dir_all(&backup_dir);
     }
