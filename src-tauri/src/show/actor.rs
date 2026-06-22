@@ -117,6 +117,14 @@ fn handle_app_event(
                 changed,
             );
         }
+        AppEvent::Lv1 {
+            generation,
+            event: Lv1Event::SceneListChanged(scenes),
+        } if generation == *active_generation => {
+            let _ = state.scene_reconciliation_diagnostic(&scenes);
+            let changed = state.reconcile_scene_fade_configs(&scenes);
+            publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
+        }
         _ => {}
     }
 }
@@ -378,14 +386,6 @@ async fn handle_command(
                 });
             if let Some(reply) = reply {
                 let _ = reply.send(result);
-            }
-        }
-        ShowCommand::ReconcileSceneList { scenes, reply } => {
-            let _ = state.scene_reconciliation_diagnostic(&scenes);
-            let changed = state.reconcile_scene_fade_configs(&scenes);
-            publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-            if let Some(reply) = reply {
-                let _ = reply.send(changed);
             }
         }
         #[cfg(test)]

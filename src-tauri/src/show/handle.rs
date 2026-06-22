@@ -1,7 +1,6 @@
 use tokio::sync::mpsc;
 
-use crate::lv1::Lv1Event;
-use crate::runtime::events::{AppEvent, AppEventBus};
+use crate::runtime::events::AppEventBus;
 
 use super::commands::ShowCommand;
 
@@ -27,34 +26,6 @@ impl ShowStateHandle {
     ) -> Result<(), mpsc::error::SendError<ShowCommand>> {
         self.tx.send(command).await
     }
-}
-
-pub fn spawn_lv1_scene_list_monitor(
-    show: ShowStateHandle,
-    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        loop {
-            match events.recv().await {
-                Ok(AppEvent::Lv1 {
-                    event: Lv1Event::SceneListChanged(scenes),
-                    ..
-                }) => {
-                    let _ = show
-                        .send(ShowCommand::ReconcileSceneList {
-                            scenes,
-                            reply: None,
-                        })
-                        .await;
-                }
-                Ok(_) => {}
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                    crate::runtime::events::log_lagged_subscriber("show-scene-list-monitor", count);
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-            }
-        }
-    })
 }
 
 #[cfg(test)]
@@ -210,7 +181,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lv1_scene_list_monitor_reconciles_show_state() {
+    async fn show_actor_reconciles_active_generation_scene_list_events() {
         let event_bus = AppEventBus::default();
         let mut show_events = event_bus.subscribe();
         let show = ShowStateHandle::new_empty(event_bus.clone());
@@ -234,9 +205,11 @@ mod tests {
         .unwrap();
         recv_show_event(&mut show_events, ShowProjectionReason::ShowState).await;
 
-        let monitor = spawn_lv1_scene_list_monitor(show.clone(), event_bus.subscribe());
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 7 },
+        ));
         event_bus.publish(AppEvent::Lv1 {
-            generation: 0,
+            generation: 7,
             event: Lv1Event::SceneListChanged(vec![SceneListEntry {
                 index: 1,
                 name: "Verse Big".to_string(),
@@ -251,7 +224,52 @@ mod tests {
         let snapshot = rx.await.unwrap();
         assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse Big");
         assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
-        monitor.abort();
+    }
+
+    #[tokio::test]
+    async fn show_actor_ignores_stale_generation_scene_list_events() {
+        let event_bus = AppEventBus::default();
+        let mut show_events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus.clone());
+        show.send(ShowCommand::ReplaceSnapshotForTest {
+            snapshot: ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    scene_id: "1::Verse".to_string(),
+                    scene_index: 1,
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 1_500,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                }],
+                cued_scene_id: None,
+            },
+            reply: None,
+        })
+        .await
+        .unwrap();
+        recv_show_event(&mut show_events, ShowProjectionReason::ShowState).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 7 },
+        ));
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 6,
+            event: Lv1Event::SceneListChanged(vec![SceneListEntry {
+                index: 1,
+                name: "Verse Big".to_string(),
+            }]),
+        });
+
+        tokio::task::yield_now().await;
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::GetShowDocument { reply })
+            .await
+            .unwrap();
+        let snapshot = rx.await.unwrap();
+        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse");
+        assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
     }
 
     #[tokio::test]

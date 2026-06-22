@@ -15,7 +15,6 @@ use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::{ScenesHandle, build_scenes_actor};
 use crate::show::{
     ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowStateHandle,
-    spawn_lv1_scene_list_monitor,
 };
 
 #[derive(Default)]
@@ -23,7 +22,6 @@ pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
     pub scene_recall_fader: Option<ScenesHandle>,
-    pub show_scene_list_monitor: Option<JoinHandle<()>>,
 }
 
 impl RuntimeHandles {
@@ -37,9 +35,6 @@ impl RuntimeHandles {
 
     pub fn abort_all(&mut self) {
         self.scene_recall_fader = None;
-        if let Some(handle) = self.show_scene_list_monitor.take() {
-            handle.abort();
-        }
         self.lv1 = None;
         self.fade = None;
     }
@@ -192,11 +187,6 @@ impl AppLifecycle {
         }
 
         inner.runtime_generation.set(generation).await;
-        let mut handles = handles;
-        handles.show_scene_list_monitor = Some(spawn_lv1_scene_list_monitor(
-            self.show.clone(),
-            self.event_bus.subscribe(),
-        ));
         inner.handles = handles;
         inner.connecting = false;
         Ok(())
@@ -643,7 +633,7 @@ mod tests {
     use crate::connection_state::Lv1SystemIdentity;
     use crate::connection_state::ReconnectState;
     use crate::fade::FadeEngineHandle;
-    use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
+    use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::show::{ShowEvent, ShowProjectionReason};
     use std::sync::{Arc, Mutex as StdMutex};
@@ -1019,48 +1009,6 @@ mod tests {
                 .scene_recall_fader
                 .is_some()
         );
-    }
-
-    #[tokio::test]
-    async fn runtime_install_starts_show_scene_list_monitor() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let lv1 = fake_lv1_handle(connected_snapshot());
-        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
-
-        assert!(
-            lifecycle
-                .install_runtime_transaction(
-                    generation,
-                    RuntimeHandles::with_runtime_targets(lv1, fade)
-                )
-                .await
-                .is_ok()
-        );
-        event_bus.publish_lv1(
-            generation,
-            Lv1Event::SceneListChanged(vec![SceneListEntry {
-                index: 1,
-                name: "Intro".to_string(),
-            }]),
-        );
-
-        let mut saw_scene_config = false;
-        for _ in 0..8 {
-            if let Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) = events.recv().await
-                && state
-                    .scene_configs
-                    .iter()
-                    .any(|scene| scene.scene_name == "Intro")
-            {
-                saw_scene_config = true;
-                break;
-            }
-        }
-        assert!(saw_scene_config);
     }
 
     #[tokio::test(flavor = "current_thread")]

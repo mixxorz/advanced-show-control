@@ -13,7 +13,7 @@ pub use commands::{
     SelectedSceneResult, ShowCommand, ShowCommandResult, validate_recall_scene_request,
 };
 pub use events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
-pub use handle::{ShowStateHandle, spawn_lv1_scene_list_monitor};
+pub use handle::ShowStateHandle;
 pub use show_file::{
     ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
     ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,

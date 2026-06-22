@@ -102,10 +102,6 @@ pub enum ShowCommand {
         scene_id: String,
         reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
     },
-    ReconcileSceneList {
-        scenes: Vec<crate::lv1::SceneListEntry>,
-        reply: Option<oneshot::Sender<bool>>,
-    },
     #[cfg(test)]
     ReplaceSnapshotForTest {
         snapshot: ShowDocument,
