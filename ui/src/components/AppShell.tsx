@@ -4,7 +4,6 @@ import { ConnectionModal } from "./ConnectionModal";
 import { ConsoleLogsTab } from "./ConsoleLogsTab";
 import { PlaceholderTab } from "./PlaceholderTab";
 import { SceneTab } from "./SceneTab";
-import { SessionsTab } from "./SessionsTab";
 import { type MainTab, TopTabBar } from "./TopTabBar";
 
 export type { MainTab } from "./TopTabBar";
@@ -32,7 +31,6 @@ export function AppShell(props: {
             <PlaceholderTab name="Cue Lists" />
           )}
           {props.activeTab === "events" && <PlaceholderTab name="Events" />}
-          {props.activeTab === "sessions" && <SessionsTab />}
           {props.activeTab === "logs" && <ConsoleLogsTab />}
           {props.activeTab === "settings" && <PlaceholderTab name="Settings" />}
         </section>
