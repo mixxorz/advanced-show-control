@@ -3,5 +3,5 @@
   "identifier": "default",
   "description": "Default app capability",
   "windows": ["main"],
-  "permissions": ["core:default", "core:event:default"]
+  "permissions": ["core:default", "core:event:default", "core:window:allow-set-title"]
 }
