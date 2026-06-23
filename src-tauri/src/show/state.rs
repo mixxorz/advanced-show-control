@@ -456,6 +456,11 @@ impl ShowState {
     fn reconcile_scene_fade_configs_by_name_fifo(&mut self, entries: &[SceneEntry]) -> bool {
         let mut old_by_name = HashMap::<String, VecDeque<SceneConfig>>::new();
         let old_configs = std::mem::take(&mut self.scene_configs);
+        let unlinked_configs = old_configs
+            .iter()
+            .filter(|scene| scene.scene_index.is_none())
+            .cloned()
+            .collect::<Vec<_>>();
         for scene in old_configs
             .iter()
             .filter(|scene| scene.scene_index.is_some())
@@ -476,6 +481,7 @@ impl ShowState {
             update_scene_locator(&mut scene, entry);
             next.push(scene);
         }
+        next.extend(unlinked_configs);
 
         let changed = next != old_configs;
         self.scene_configs = next;

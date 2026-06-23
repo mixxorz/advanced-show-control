@@ -149,9 +149,13 @@ pub fn prune_show_file_to_lv1_scenes(
 
     let mut report = LoadValidationReport::default();
     file.scene_configs.retain(|config| {
-        let scene_matches = lv1.scene_list.iter().any(|scene| {
-            config.scene_index == Some(scene.index) && scene.name == config.scene_name
-        });
+        let scene_matches = match config.scene_index {
+            Some(scene_index) => lv1
+                .scene_list
+                .iter()
+                .any(|scene| scene.index == scene_index && scene.name == config.scene_name),
+            None => true,
+        };
         if !scene_matches {
             report.removed_scenes.push(format!(
                 "{}: {}",
@@ -203,7 +207,7 @@ fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
 
 fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
     SceneConfig {
-        internal_scene_id: uuid::Uuid::new_v4(),
+        internal_scene_id: config.internal_scene_id,
         scene_index: config.scene_index,
         scene_name: config.scene_name.clone(),
         duration_ms: config.duration_ms,
