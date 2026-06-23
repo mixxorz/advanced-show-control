@@ -8,6 +8,12 @@ export type AppCommands = {
   disconnect: () => void | Promise<void>;
   newShowFile: () => void;
   openShowFile: () => void;
+  linkSceneConfig?: (
+    sourceInternalSceneId: string,
+    targetSceneIndex: number,
+    overwriteExisting: boolean,
+  ) => void | Promise<void>;
+  deleteSceneConfig?: (internalSceneId: string) => void | Promise<void>;
   saveShowFile: () => void;
   saveShowFileAs: () => void;
   selectScene: (internalSceneId: string) => void;

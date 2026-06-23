@@ -7,18 +7,21 @@ import { SelectedSceneActions } from "./SelectedSceneActions";
 
 export function SelectedSceneHeader(props: { scene: SceneConfig }) {
   const commands = useAppCommands();
+  const unlinked = props.scene.sceneIndex === null;
 
   return (
     <Panel className="p-4">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between xl:gap-8">
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap">
           <ConsoleButton
+            disabled={unlinked}
             onClick={() => commands.recallScene?.(props.scene.internalSceneId)}
             variant="ghost-primary"
           >
             Recall
           </ConsoleButton>
           <ConsoleButton
+            disabled={unlinked}
             onClick={() => commands.cueScene?.(props.scene.internalSceneId)}
             variant="ghost-secondary"
           >
@@ -26,7 +29,7 @@ export function SelectedSceneHeader(props: { scene: SceneConfig }) {
           </ConsoleButton>
         </div>
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap">
-          <SelectedSceneActions sceneId={props.scene.internalSceneId} />
+          <SelectedSceneActions scene={props.scene} />
         </div>
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap xl:justify-end">
           <DurationInput

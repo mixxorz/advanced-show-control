@@ -1,13 +1,16 @@
+import type { SceneConfig } from "../types";
 import { useAppCommands } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
 
-export function SelectedSceneActions(props: { sceneId: string }) {
+export function SelectedSceneActions(props: { scene: SceneConfig }) {
   const commands = useAppCommands();
+  const unlinked = props.scene.sceneIndex === null;
 
   return (
     <div className="flex items-center gap-2">
       <ConsoleButton
-        onClick={() => commands.storeSceneConfig(props.sceneId)}
+        disabled={unlinked}
+        onClick={() => commands.storeSceneConfig(props.scene.internalSceneId)}
         variant="secondary"
       >
         Store

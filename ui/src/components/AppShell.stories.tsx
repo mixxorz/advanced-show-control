@@ -120,7 +120,7 @@ function StatefulAppShellStory(props: {
         const scene = state.sceneConfigs.find(
           (entry) => entry.internalSceneId === internalSceneId,
         );
-        if (!scene) return state;
+        if (!scene || scene.sceneIndex == null) return state;
 
         return {
           ...state,

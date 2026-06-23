@@ -235,6 +235,16 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     },
     newShowFile: () => runCommand(() => services.newShowFile()),
     openShowFile: () => runCommand(() => services.openShowFile()),
+    linkSceneConfig: (sourceInternalSceneId, targetSceneIndex, overwrite) =>
+      void runCommand(() =>
+        services.linkSceneConfig(
+          sourceInternalSceneId,
+          targetSceneIndex,
+          overwrite,
+        ),
+      ),
+    deleteSceneConfig: (internalSceneId) =>
+      void runCommand(() => services.deleteSceneConfig(internalSceneId)),
     cueScene: (internalSceneId) =>
       runCommand(() => services.cueScene(internalSceneId)),
     recallScene: (internalSceneId) =>
