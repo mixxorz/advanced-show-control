@@ -165,6 +165,48 @@ pub async fn set_scene_duration_ms(
 }
 
 #[tauri::command]
+pub async fn link_scene_config(
+    lifecycle: State<'_, AppLifecycle>,
+    source_internal_scene_id: uuid::Uuid,
+    target_scene_index: i32,
+    overwrite_existing: bool,
+) -> Result<ShowCommandResult, String> {
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::LinkSceneConfig {
+        source_internal_scene_id,
+        target_scene_index,
+        overwrite_existing,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
+pub async fn delete_scene_config(
+    lifecycle: State<'_, AppLifecycle>,
+    internal_scene_id: uuid::Uuid,
+) -> Result<ShowCommandResult, String> {
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::DeleteSceneConfig {
+        internal_scene_id,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|_| AppCommandError::ShowUnavailable)
+    .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
 pub async fn select_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,

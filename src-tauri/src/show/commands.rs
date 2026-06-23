@@ -45,6 +45,16 @@ pub enum ShowCommand {
         enabled: bool,
         reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
     },
+    LinkSceneConfig {
+        source_internal_scene_id: Uuid,
+        target_scene_index: i32,
+        overwrite_existing: bool,
+        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
+    },
+    DeleteSceneConfig {
+        internal_scene_id: Uuid,
+        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
+    },
     SetChannelScoped {
         internal_scene_id: Uuid,
         group: i32,

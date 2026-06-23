@@ -256,6 +256,55 @@ async fn handle_command(
                 let _ = reply.send(result);
             }
         }
+        ShowCommand::LinkSceneConfig {
+            source_internal_scene_id,
+            target_scene_index,
+            overwrite_existing,
+            reply,
+        } => {
+            let result = current_lv1_snapshot(peers)
+                .await
+                .map_err(|_| "Link blocked: LV1 state is unavailable".to_string())
+                .and_then(|lv1| {
+                    let target = lv1
+                        .scene_list
+                        .iter()
+                        .find(|scene| scene.index == target_scene_index)
+                        .ok_or_else(|| "Link blocked: target scene not found".to_string())?;
+                    state
+                        .link_scene_config(source_internal_scene_id, target, overwrite_existing)
+                        .map(|changed| {
+                            if changed {
+                                state.mark_dirty();
+                            }
+                            publish_if_changed(
+                                event_bus,
+                                ShowProjectionReason::ShowState,
+                                state,
+                                changed,
+                            );
+                            ShowCommandResult { changed }
+                        })
+                });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+        ShowCommand::DeleteSceneConfig {
+            internal_scene_id,
+            reply,
+        } => {
+            let result = state.delete_scene_config(internal_scene_id).map(|changed| {
+                if changed {
+                    state.mark_dirty();
+                }
+                publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
+                ShowCommandResult { changed }
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
         ShowCommand::SetAllChannelsScoped {
             internal_scene_id,
             scoped,

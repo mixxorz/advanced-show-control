@@ -41,6 +41,8 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::save_show_file,
             commands::show::save_show_file_as_dialog,
             commands::show::set_scene_duration_ms,
+            commands::show::link_scene_config,
+            commands::show::delete_scene_config,
             commands::show::select_scene_config,
             commands::show::cue_scene,
             commands::scenes::recall_scene,

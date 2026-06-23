@@ -35,6 +35,8 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::show::save_show_file,
             crate::ui::commands::show::save_show_file_as_dialog,
             crate::ui::commands::show::set_scene_duration_ms,
+            crate::ui::commands::show::link_scene_config,
+            crate::ui::commands::show::delete_scene_config,
             crate::ui::commands::show::select_scene_config,
             crate::ui::commands::show::cue_scene,
             crate::ui::commands::scenes::recall_scene,

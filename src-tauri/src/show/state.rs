@@ -212,6 +212,66 @@ impl ShowState {
         Ok(true)
     }
 
+    pub fn link_scene_config(
+        &mut self,
+        source_internal_scene_id: Uuid,
+        target: &crate::lv1::SceneListEntry,
+        overwrite_existing: bool,
+    ) -> Result<bool, String> {
+        let source_index = self
+            .scene_configs
+            .iter()
+            .position(|scene| scene.internal_scene_id == source_internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        if self.scene_configs[source_index].scene_index.is_some() {
+            return Err("Link blocked: source scene is already linked".to_string());
+        }
+        let target_index = self
+            .scene_configs
+            .iter()
+            .position(|scene| scene.scene_index == Some(target.index));
+        if let Some(target_index) = target_index {
+            if self.scene_configs[target_index].internal_scene_id == source_internal_scene_id {
+                return Ok(false);
+            }
+            if !overwrite_existing {
+                return Err("Link blocked: target scene already has a config".to_string());
+            }
+            self.scene_configs.remove(target_index);
+            let adjusted_source_index = if target_index < source_index {
+                source_index - 1
+            } else {
+                source_index
+            };
+            let source = &mut self.scene_configs[adjusted_source_index];
+            source.scene_index = Some(target.index);
+            source.scene_name = target.name.clone();
+            return Ok(true);
+        }
+        let source = &mut self.scene_configs[source_index];
+        source.scene_index = Some(target.index);
+        source.scene_name = target.name.clone();
+        Ok(true)
+    }
+
+    pub fn delete_scene_config(&mut self, internal_scene_id: Uuid) -> Result<bool, String> {
+        let Some(index) = self
+            .scene_configs
+            .iter()
+            .position(|scene| scene.internal_scene_id == internal_scene_id)
+        else {
+            return Err("Scene config not found".to_string());
+        };
+        self.scene_configs.remove(index);
+        if self.selected_scene_id.as_deref() == Some(&internal_scene_id.to_string()) {
+            self.selected_scene_id = None;
+        }
+        if self.cued_scene_internal_id == Some(internal_scene_id) {
+            self.cued_scene_internal_id = None;
+        }
+        Ok(true)
+    }
+
     pub fn replace_snapshot(&mut self, snapshot: ShowDocument) {
         self.lockout = snapshot.lockout;
         self.scene_configs = snapshot.scene_configs;
@@ -685,5 +745,167 @@ mod tests {
 
         assert!(state.set_scene_duration_ms(scene_id, 0).unwrap());
         assert_eq!(state.scene_configs[0].duration_ms, 0);
+    }
+
+    #[test]
+    fn link_unlinked_config_to_empty_lv1_scene_preserves_fade_data() {
+        let source_id = test_uuid(0x11111111111141118111111111111111);
+        let target_scene = crate::lv1::SceneListEntry {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![SceneConfig {
+                internal_scene_id: source_id,
+                scene_index: None,
+                scene_name: "Old Verse".to_string(),
+                duration_ms: 4_200,
+                channel_configs: vec![ChannelConfig {
+                    group: 0,
+                    channel: 1,
+                    fader_db: Some(-6.5),
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }],
+                scoped_channels: vec![crate::show::types::ChannelRef {
+                    group: 0,
+                    channel: 1,
+                }],
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            ..Default::default()
+        };
+
+        let changed = state
+            .link_scene_config(source_id, &target_scene, false)
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(state.scene_configs[0].internal_scene_id, source_id);
+        assert_eq!(state.scene_configs[0].scene_index, Some(2));
+        assert_eq!(state.scene_configs[0].scene_name, "Verse");
+        assert_eq!(state.scene_configs[0].duration_ms, 4_200);
+        assert_eq!(
+            state.scene_configs[0].channel_configs[0].fader_db,
+            Some(-6.5)
+        );
+    }
+
+    #[test]
+    fn link_requires_overwrite_when_target_has_existing_config() {
+        let source_id = test_uuid(0x22222222222242228222222222222222);
+        let target_id = test_uuid(0x33333333333343338333333333333333);
+        let target_scene = crate::lv1::SceneListEntry {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                SceneConfig {
+                    internal_scene_id: target_id,
+                    scene_index: Some(2),
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 1_000,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+                SceneConfig {
+                    internal_scene_id: source_id,
+                    scene_index: None,
+                    scene_name: "Old Verse".to_string(),
+                    duration_ms: 4_200,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let err = state
+            .link_scene_config(source_id, &target_scene, false)
+            .unwrap_err();
+
+        assert_eq!(err, "Link blocked: target scene already has a config");
+        assert_eq!(state.scene_configs.len(), 2);
+    }
+
+    #[test]
+    fn link_with_overwrite_deletes_existing_target_and_links_source() {
+        let source_id = test_uuid(0x44444444444444448444444444444444);
+        let target_id = test_uuid(0x55555555555545558555555555555555);
+        let target_scene = crate::lv1::SceneListEntry {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                SceneConfig {
+                    internal_scene_id: target_id,
+                    scene_index: Some(2),
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 1_000,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+                SceneConfig {
+                    internal_scene_id: source_id,
+                    scene_index: None,
+                    scene_name: "Old Verse".to_string(),
+                    duration_ms: 4_200,
+                    channel_configs: vec![ChannelConfig {
+                        group: 0,
+                        channel: 1,
+                        fader_db: Some(-6.5),
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    }],
+                    scoped_channels: vec![crate::show::types::ChannelRef {
+                        group: 0,
+                        channel: 1,
+                    }],
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        let changed = state
+            .link_scene_config(source_id, &target_scene, true)
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(state.scene_configs.len(), 1);
+        assert_eq!(state.scene_configs[0].internal_scene_id, source_id);
+        assert_eq!(state.scene_configs[0].scene_index, Some(2));
+        assert_eq!(state.scene_configs[0].scene_name, "Verse");
+    }
+
+    #[test]
+    fn delete_scene_config_removes_config_and_clears_selected_and_cued() {
+        let scene_id = test_uuid(0x66666666666646668666666666666666);
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(1, "scene-1", 1_000, vec![], scene_id)],
+            cued_scene_internal_id: Some(scene_id),
+            selected_scene_id: Some(scene_id.to_string()),
+            ..Default::default()
+        };
+
+        let changed = state.delete_scene_config(scene_id).unwrap();
+
+        assert!(changed);
+        assert!(state.scene_configs.is_empty());
+        assert_eq!(state.cued_scene_internal_id, None);
+        assert_eq!(state.selected_scene_id, None);
     }
 }
