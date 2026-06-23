@@ -1,7 +1,7 @@
 pub use crate::show::{
     ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
     ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
-    ShowFileSceneScopeToggles, export_show_file, import_show_file, prune_show_file_to_lv1_scenes,
+    ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
 
 use std::fs;
@@ -267,50 +267,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn lv1_snapshot() -> Lv1StateSnapshot {
-        Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: None,
-            scene_list: vec![
-                SceneListEntry {
-                    index: 1,
-                    name: "Intro".to_string(),
-                },
-                SceneListEntry {
-                    index: 2,
-                    name: "Verse".to_string(),
-                },
-            ],
-            channels: vec![
-                ChannelInfo {
-                    group: 0,
-                    channel: 1,
-                    name: "Kick".to_string(),
-                    gain_db: -5.0,
-                    muted: false,
-                    pan: None,
-                    balance: None,
-                    width: None,
-                    pan_mode: None,
-                },
-                ChannelInfo {
-                    group: 0,
-                    channel: 2,
-                    name: "Lead".to_string(),
-                    gain_db: -8.0,
-                    muted: false,
-                    pan: None,
-                    balance: None,
-                    width: None,
-                    pan_mode: None,
-                },
-            ],
-        }
-    }
 
     fn show_file() -> ShowFile {
         ShowFile {
@@ -520,60 +478,6 @@ mod tests {
 
         assert!(file.scene_configs[0].scope_toggles.faders);
         assert!(file.scene_configs[0].scope_toggles.pan);
-    }
-
-    #[test]
-    fn pruning_keeps_exact_scene_matches() {
-        let report = prune_show_file_to_lv1_scenes(&mut show_file(), &lv1_snapshot()).unwrap();
-
-        assert_eq!(report.removed_scenes.len(), 0);
-    }
-
-    #[test]
-    fn pruning_deletes_scene_when_name_differs() {
-        let mut file = show_file();
-        file.scene_configs[0].scene_name = "Renamed Intro".to_string();
-
-        let report = prune_show_file_to_lv1_scenes(&mut file, &lv1_snapshot()).unwrap();
-
-        assert!(file.scene_configs.is_empty());
-        assert_eq!(report.removed_scenes, vec!["1: Renamed Intro".to_string()]);
-    }
-
-    #[test]
-    fn pruning_does_not_remove_channel_configs_or_scope() {
-        let mut file = show_file();
-        file.scene_configs[0].channel_configs[0].group = 99;
-        file.scene_configs[0].scoped_channels[0].group = 99;
-
-        let report = prune_show_file_to_lv1_scenes(&mut file, &lv1_snapshot()).unwrap();
-
-        assert!(!report.removed_anything());
-        assert_eq!(file.scene_configs[0].channel_configs.len(), 1);
-        assert_eq!(file.scene_configs[0].scoped_channels.len(), 1);
-    }
-
-    #[test]
-    fn pruning_requires_scene_list_but_allows_empty_channels() {
-        let mut file = show_file();
-        let mut snapshot = lv1_snapshot();
-        snapshot.channels.clear();
-
-        let report = prune_show_file_to_lv1_scenes(&mut file, &snapshot).unwrap();
-
-        assert_eq!(report.removed_scenes.len(), 0);
-    }
-
-    #[test]
-    fn pruning_still_requires_scene_list() {
-        let mut file = show_file();
-        let mut snapshot = lv1_snapshot();
-        snapshot.scene_list.clear();
-
-        assert_eq!(
-            prune_show_file_to_lv1_scenes(&mut file, &snapshot).unwrap_err(),
-            "Open a session after LV1 scenes are loaded"
-        );
     }
 
     #[test]

@@ -17,7 +17,7 @@ pub use handle::ShowStateHandle;
 pub use show_file::{
     ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
     ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
-    ShowFileSceneScopeToggles, export_show_file, import_show_file, prune_show_file_to_lv1_scenes,
+    ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
 pub use state::ShowState;
 pub use types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument};

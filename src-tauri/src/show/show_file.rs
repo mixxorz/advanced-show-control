@@ -112,38 +112,37 @@ pub fn import_show_file(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
 ) -> Result<ImportedShowFile, String> {
-    let report = prune_show_file_to_lv1_scenes(file, lv1)?;
+    validate_show_file_for_lv1_scenes(file, lv1)?;
     let generated_internal_scene_ids = file
         .scene_configs
         .iter()
         .any(|config| config.internal_scene_id.is_none());
-    let selected_scene_id = file
+    let scene_configs = file
         .scene_configs
+        .iter()
+        .map(file_scene_to_show_scene)
+        .collect::<Vec<_>>();
+    let selected_scene_id = scene_configs
         .first()
-        .and_then(|config| config.internal_scene_id)
-        .map(|id| id.to_string());
+        .map(|config| config.internal_scene_id.to_string());
     let snapshot = ShowDocument {
         lockout: file.safety.lockout,
-        scene_configs: file
-            .scene_configs
-            .iter()
-            .map(file_scene_to_show_scene)
-            .collect(),
+        scene_configs,
         cued_scene_internal_id: file.cued_scene_internal_id,
     };
 
     Ok(ImportedShowFile {
         snapshot,
         selected_scene_id,
-        report,
+        report: LoadValidationReport::default(),
         generated_internal_scene_ids,
     })
 }
 
-pub fn prune_show_file_to_lv1_scenes(
-    file: &mut ShowFile,
+fn validate_show_file_for_lv1_scenes(
+    file: &ShowFile,
     lv1: &Lv1StateSnapshot,
-) -> Result<LoadValidationReport, String> {
+) -> Result<(), String> {
     if lv1.scene_list.is_empty() {
         return Err("Open a session after LV1 scenes are loaded".to_string());
     }
@@ -155,28 +154,7 @@ pub fn prune_show_file_to_lv1_scenes(
         ));
     }
 
-    let mut report = LoadValidationReport::default();
-    file.scene_configs.retain(|config| {
-        let scene_matches = match config.scene_index {
-            Some(scene_index) => lv1
-                .scene_list
-                .iter()
-                .any(|scene| scene.index == scene_index && scene.name == config.scene_name),
-            None => true,
-        };
-        if !scene_matches {
-            report.removed_scenes.push(format!(
-                "{}: {}",
-                config
-                    .scene_index
-                    .map(|v| v.to_string())
-                    .unwrap_or_else(|| "unlinked".to_string()),
-                config.scene_name
-            ));
-        }
-        scene_matches
-    });
-    Ok(report)
+    Ok(())
 }
 
 fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
@@ -304,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn import_show_file_prunes_missing_scenes_and_filters_cue() {
+    fn import_show_file_preserves_missing_and_unlinked_scenes() {
         let cued_scene_internal_id = uuid::Uuid::from_u128(0x66666666666646668666666666666666);
         let intro_internal_scene_id = uuid::Uuid::from_u128(0x22222222222242228222222222222222);
         let missing_internal_scene_id = uuid::Uuid::from_u128(0x33333333333343338333333333333333);
@@ -347,14 +325,12 @@ mod tests {
 
         let imported = import_show_file(&mut file, &lv1).unwrap();
 
-        assert!(imported.report.removed_anything());
-        assert_eq!(
-            imported.report.removed_scenes,
-            vec!["2: Missing".to_string()]
-        );
-        assert_eq!(imported.snapshot.scene_configs.len(), 1);
+        assert!(!imported.report.removed_anything());
+        assert_eq!(imported.snapshot.scene_configs.len(), 2);
         assert_eq!(imported.snapshot.scene_configs[0].scene_index, Some(1));
         assert_eq!(imported.snapshot.scene_configs[0].scene_name, "Intro");
+        assert_eq!(imported.snapshot.scene_configs[1].scene_index, Some(2));
+        assert_eq!(imported.snapshot.scene_configs[1].scene_name, "Missing");
         assert_eq!(
             imported.snapshot.cued_scene_internal_id,
             Some(cued_scene_internal_id)
@@ -394,6 +370,14 @@ mod tests {
         assert_ne!(
             imported.snapshot.scene_configs[0].internal_scene_id,
             uuid::Uuid::nil()
+        );
+        assert_eq!(
+            imported.selected_scene_id,
+            Some(
+                imported.snapshot.scene_configs[0]
+                    .internal_scene_id
+                    .to_string()
+            )
         );
         assert!(imported.generated_internal_scene_ids);
     }
