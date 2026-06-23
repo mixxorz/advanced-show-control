@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::lv1::SceneListEntry;
 use uuid::Uuid;
@@ -209,29 +209,33 @@ fn apply_position_mapping(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> 
 
 fn align_by_name_fifo(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> Vec<SceneConfig> {
     let mut old_by_name = HashMap::<String, VecDeque<SceneConfig>>::new();
+    let mut old_linked = Vec::new();
     let mut leftovers = Vec::new();
     for scene in configs {
         if scene.scene_index.is_some() {
             old_by_name
                 .entry(scene.scene_name.clone())
                 .or_default()
-                .push_back(scene);
+                .push_back(scene.clone());
+            old_linked.push(scene);
         } else {
             leftovers.push(scene);
         }
     }
 
     let mut next = Vec::with_capacity(entries.len() + leftovers.len());
+    let mut consumed = HashSet::new();
     for entry in entries {
         let mut scene = old_by_name
             .get_mut(&entry.name)
             .and_then(VecDeque::pop_front)
             .unwrap_or_else(|| default_scene_config(entry));
         update_scene_locator(&mut scene, entry);
+        consumed.insert(scene.internal_scene_id);
         next.push(scene);
     }
-    for mut queue in old_by_name.into_values() {
-        while let Some(mut scene) = queue.pop_front() {
+    for mut scene in old_linked {
+        if !consumed.contains(&scene.internal_scene_id) {
             scene.scene_index = None;
             next.push(scene);
         }
@@ -383,6 +387,24 @@ mod tests {
         assert_eq!(aligned[0].scene_index, Some(1));
         assert_eq!(aligned[1].scene_index, None);
         assert_eq!(aligned[1].scene_name, "Verse");
+    }
+
+    #[test]
+    fn deleted_configs_are_preserved_in_original_order() {
+        let old = vec![
+            scene(1, Some(1), "Intro", 1_000),
+            scene(2, Some(2), "Bridge", 2_000),
+            scene(3, Some(3), "Verse", 3_000),
+            scene(4, Some(4), "Chorus", 4_000),
+        ];
+        let new = vec![lv1_scene(1, "Intro")];
+
+        let aligned = align_scene_configs(old, &new);
+
+        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(3));
+        assert_eq!(aligned[3].internal_scene_id, Uuid::from_u128(4));
+        assert!(aligned[1..].iter().all(|scene| scene.scene_index.is_none()));
     }
 
     #[test]
