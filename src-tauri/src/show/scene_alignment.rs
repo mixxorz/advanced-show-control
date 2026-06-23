@@ -247,6 +247,28 @@ fn align_by_name_fifo(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> Vec<
     next
 }
 
+fn align_by_exact_match_only(
+    configs: Vec<SceneConfig>,
+    entries: &[SceneEntry],
+) -> Vec<SceneConfig> {
+    let mut remaining = configs;
+    let mut next = Vec::with_capacity(entries.len() + remaining.len());
+    for entry in entries {
+        if let Some(position) = remaining.iter().position(|scene| {
+            scene.scene_index == Some(entry.index) && scene.scene_name == entry.name
+        }) {
+            next.push(remaining.remove(position));
+        } else {
+            next.push(default_scene_config(entry));
+        }
+    }
+    for mut scene in remaining {
+        scene.scene_index = None;
+        next.push(scene);
+    }
+    next
+}
+
 pub(crate) fn align_scene_configs(
     configs: Vec<SceneConfig>,
     lv1_scenes: &[SceneListEntry],
@@ -258,8 +280,8 @@ pub(crate) fn align_scene_configs(
         SceneListChange::Rename => apply_position_mapping(configs, &new_entries),
         SceneListChange::Move { .. }
         | SceneListChange::Insert { .. }
-        | SceneListChange::Delete { .. }
-        | SceneListChange::Ambiguous => align_by_name_fifo(configs, &new_entries),
+        | SceneListChange::Delete { .. } => align_by_name_fifo(configs, &new_entries),
+        SceneListChange::Ambiguous => align_by_exact_match_only(configs, &new_entries),
     }
 }
 
@@ -286,6 +308,8 @@ pub(crate) fn scene_alignment_diagnostic(
         name_counts(&lv1_entries).join(","),
         if matches!(change, SceneListChange::Rename | SceneListChange::Noop) {
             "classified"
+        } else if matches!(change, SceneListChange::Ambiguous) {
+            "exact-match-only"
         } else {
             "name-keyed-fifo"
         },
@@ -414,10 +438,38 @@ mod tests {
 
         let aligned = align_scene_configs(old, &new);
 
+        assert_eq!(aligned.len(), 4);
+        assert_ne!(aligned[0].internal_scene_id, Uuid::from_u128(1));
+        assert_ne!(aligned[1].internal_scene_id, Uuid::from_u128(2));
         assert_eq!(aligned[0].scene_index, Some(1));
         assert_eq!(aligned[0].scene_name, "A2");
         assert_eq!(aligned[1].scene_index, Some(2));
         assert_eq!(aligned[1].scene_name, "B2");
+        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(1));
+        assert_eq!(aligned[2].scene_index, None);
+        assert_eq!(aligned[2].scene_name, "A");
+        assert_eq!(aligned[3].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[3].scene_index, None);
+        assert_eq!(aligned[3].scene_name, "B");
+    }
+
+    #[test]
+    fn ambiguous_duplicate_names_do_not_fifo_guess() {
+        let old = vec![
+            scene(1, Some(1), "Intro", 1_000),
+            scene(2, Some(2), "Intro", 2_000),
+        ];
+        let new = vec![lv1_scene(1, "Intro"), lv1_scene(3, "Intro")];
+
+        let aligned = align_scene_configs(old, &new);
+
+        assert_eq!(aligned.len(), 3);
+        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(1));
+        assert_eq!(aligned[0].scene_index, Some(1));
+        assert_ne!(aligned[1].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[1].scene_index, Some(3));
+        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[2].scene_index, None);
     }
 
     #[test]
@@ -453,17 +505,23 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_names_keep_fifo_for_classified_move() {
+    fn duplicate_names_keep_fifo_for_classified_insert() {
         let old = vec![
             scene(1, Some(1), "Intro", 1_000),
             scene(2, Some(2), "Intro", 2_000),
         ];
-        let new = vec![lv1_scene(2, "Intro"), lv1_scene(1, "Intro")];
+        let new = vec![
+            lv1_scene(1, "Intro"),
+            lv1_scene(2, "Intro"),
+            lv1_scene(3, "Verse"),
+        ];
 
         let aligned = align_scene_configs(old, &new);
 
         assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(1));
         assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[2].scene_name, "Verse");
+        assert_eq!(aligned[2].duration_ms, 0);
     }
 
     #[test]
