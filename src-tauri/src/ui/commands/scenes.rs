@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 #[tauri::command]
 pub async fn recall_scene(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
 ) -> Result<RecallSceneResult, String> {
     let scene_recall = lifecycle
         .current_scene_recall_fader()
@@ -18,7 +18,10 @@ pub async fn recall_scene(
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scene_recall
-        .send(ScenesCommand::RecallScene { scene_id, reply })
+        .send(ScenesCommand::RecallScene {
+            internal_scene_id,
+            reply,
+        })
         .await
         .map_err(|_| AppCommandError::Lv1Unavailable)
         .map_err(map_app_command_error)?;

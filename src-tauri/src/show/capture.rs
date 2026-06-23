@@ -7,12 +7,18 @@ use uuid::Uuid;
 impl ShowState {
     pub fn store_scene_config(
         &mut self,
-        scene_id: &str,
+        internal_scene_id: Uuid,
         channels: &[ChannelInfo],
     ) -> Result<bool, String> {
         if channels.is_empty() {
             return Err("LV1 channel list is empty".to_string());
         }
+        let previous = self
+            .get_scene_config(internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        let Some(scene_index) = previous.scene_index else {
+            return Err("Store blocked: scene is unlinked".to_string());
+        };
         let current_refs: Vec<ChannelRef> = channels
             .iter()
             .map(|channel| ChannelRef {
@@ -21,7 +27,7 @@ impl ShowState {
             })
             .collect();
         let scoped_channels = self
-            .get_scene_config(scene_id)
+            .get_scene_config(internal_scene_id)
             .map(|scene| {
                 if scene.scoped_channels.is_empty() {
                     current_refs.clone()
@@ -34,28 +40,19 @@ impl ShowState {
                 }
             })
             .unwrap_or_else(|| current_refs.clone());
-        let previous = self.get_scene_config(scene_id);
         let snapshot = SceneConfig {
-            internal_scene_id: previous
-                .as_ref()
-                .map(|scene| scene.internal_scene_id)
-                .unwrap_or_else(Uuid::new_v4),
-            scene_index: previous.as_ref().and_then(|scene| scene.scene_index),
-            scene_name: previous
-                .as_ref()
-                .map(|scene| scene.scene_name.clone())
-                .unwrap_or_else(|| scene_id.to_string()),
+            internal_scene_id,
+            scene_index: Some(scene_index),
+            scene_name: previous.scene_name.clone(),
             duration_ms: self
-                .get_scene_config(scene_id)
+                .get_scene_config(internal_scene_id)
                 .map(|scene| scene.duration_ms)
                 .unwrap_or(1_000),
             channel_configs: channels
                 .iter()
                 .map(|channel| {
-                    let previous_channel = previous.as_ref().and_then(|scene| {
-                        scene.channel_configs.iter().find(|entry| {
-                            entry.group == channel.group && entry.channel == channel.channel
-                        })
+                    let previous_channel = previous.channel_configs.iter().find(|entry| {
+                        entry.group == channel.group && entry.channel == channel.channel
                     });
                     ChannelConfig {
                         group: channel.group,
@@ -79,14 +76,14 @@ impl ShowState {
                 .collect(),
             scoped_channels,
             scope_toggles: self
-                .get_scene_config(scene_id)
+                .get_scene_config(internal_scene_id)
                 .map(|scene| scene.scope_toggles)
                 .unwrap_or_default(),
         };
         match self
             .scene_configs_mut()
             .iter_mut()
-            .find(|scene| scene.internal_scene_id.to_string() == scene_id)
+            .find(|scene| scene.internal_scene_id == internal_scene_id)
         {
             Some(existing) => {
                 if *existing == snapshot {
@@ -105,14 +102,14 @@ impl ShowState {
 
     pub fn set_scene_duration_ms(
         &mut self,
-        scene_id: &str,
+        internal_scene_id: Uuid,
         duration_ms: u64,
     ) -> Result<bool, String> {
         if duration_ms != 0 && !(100..=120_000).contains(&duration_ms) {
             return Err("Fade duration must be 0 or between 100 ms and 120000 ms".to_string());
         }
         let scene = self
-            .get_scene_config_mut(scene_id)
+            .get_scene_config_mut(internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
         if scene.duration_ms == duration_ms {
             Ok(false)
@@ -124,13 +121,13 @@ impl ShowState {
 
     pub fn set_channel_scoped(
         &mut self,
-        scene_id: &str,
+        internal_scene_id: Uuid,
         group: i32,
         channel: i32,
         scoped: bool,
     ) -> Result<bool, String> {
         let scene = self
-            .get_scene_config_mut(scene_id)
+            .get_scene_config_mut(internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
         let channel_exists = scene
             .channel_configs
@@ -160,11 +157,11 @@ impl ShowState {
 
     pub fn set_all_channels_scoped(
         &mut self,
-        scene_id: &str,
+        internal_scene_id: Uuid,
         scoped: bool,
     ) -> Result<bool, String> {
         let scene = self
-            .get_scene_config_mut(scene_id)
+            .get_scene_config_mut(internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
         let mut changed = false;
         let refs: Vec<ChannelRef> = scene
@@ -197,11 +194,11 @@ impl ShowState {
 
     pub fn set_scene_scope_faders_enabled(
         &mut self,
-        scene_id: &str,
+        internal_scene_id: Uuid,
         enabled: bool,
     ) -> Result<bool, String> {
         let scene = self
-            .get_scene_config_mut(scene_id)
+            .get_scene_config_mut(internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
         if scene.scope_toggles.faders == enabled {
             Ok(false)
@@ -213,11 +210,11 @@ impl ShowState {
 
     pub fn set_scene_scope_pan_enabled(
         &mut self,
-        scene_id: &str,
+        internal_scene_id: Uuid,
         enabled: bool,
     ) -> Result<bool, String> {
         let scene = self
-            .get_scene_config_mut(scene_id)
+            .get_scene_config_mut(internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
         if scene.scope_toggles.pan == enabled {
             Ok(false)

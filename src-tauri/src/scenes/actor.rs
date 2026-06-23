@@ -129,9 +129,9 @@ async fn run_scenes_actor(task: ScenesTask) {
             tokio::select! {
                 command = command_rx.recv() => {
                     match command {
-                        Some(ScenesCommand::RecallScene { scene_id, reply }) => {
+                        Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => {
                             let peer_handles = peers.handles();
-                            let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, scene_id).await);
+                            let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, internal_scene_id).await);
                         }
                         Some(ScenesCommand::Shutdown) | None => break,
                     }
@@ -173,9 +173,9 @@ async fn run_scenes_actor(task: ScenesTask) {
         tokio::select! {
             command = command_rx.recv() => {
                 match command {
-                    Some(ScenesCommand::RecallScene { scene_id, reply }) => {
+                    Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => {
                         let peer_handles = peers.handles();
-                        let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, scene_id).await);
+                        let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, internal_scene_id).await);
                     }
                     Some(ScenesCommand::Shutdown) | None => break,
                 }
@@ -262,10 +262,7 @@ async fn process_scene_observation(
 
     let (reply, rx) = oneshot::channel();
     if show
-        .send(ShowCommand::GetSceneConfig {
-            scene_id: format!("{}::{}", observation.scene.index, observation.scene.name),
-            reply,
-        })
+        .send(ShowCommand::GetShowDocument { reply })
         .await
         .is_err()
     {
@@ -276,13 +273,13 @@ async fn process_scene_observation(
             generation,
             ScenesEvent::Blocked {
                 scene_label: scene_label(&observation.scene),
-                reason: "failed to fetch scene config: show state is unavailable".to_string(),
+                reason: "failed to fetch show document: show state is unavailable".to_string(),
             },
         );
         return;
     }
-    let scene_config = match rx.await {
-        Ok(scene_config) => scene_config,
+    let show_document = match rx.await {
+        Ok(show_document) => show_document,
         Err(_) => {
             if !is_generation_current(generation, runtime_generation).await {
                 return;
@@ -291,43 +288,17 @@ async fn process_scene_observation(
                 generation,
                 ScenesEvent::Blocked {
                     scene_label: scene_label(&observation.scene),
-                    reason: "failed to fetch scene config: reply channel closed".to_string(),
+                    reason: "failed to fetch show document: reply channel closed".to_string(),
                 },
             );
             return;
         }
     };
-
-    let (reply, rx) = oneshot::channel();
-    if show.send(ShowCommand::GetLockout { reply }).await.is_err() {
-        if !is_generation_current(generation, runtime_generation).await {
-            return;
-        }
-        event_bus.publish_scenes(
-            generation,
-            ScenesEvent::Blocked {
-                scene_label: scene_label(&observation.scene),
-                reason: "failed to fetch lockout: show state is unavailable".to_string(),
-            },
-        );
-        return;
-    }
-    let lockout = match rx.await {
-        Ok(lockout) => lockout,
-        Err(_) => {
-            if !is_generation_current(generation, runtime_generation).await {
-                return;
-            }
-            event_bus.publish_scenes(
-                generation,
-                ScenesEvent::Blocked {
-                    scene_label: scene_label(&observation.scene),
-                    reason: "failed to fetch lockout: reply channel closed".to_string(),
-                },
-            );
-            return;
-        }
-    };
+    let lockout = show_document.lockout;
+    let scene_config = show_document.scene_configs.into_iter().find(|scene| {
+        scene.scene_index == Some(observation.scene.index)
+            && scene.scene_name == observation.scene.name
+    });
 
     match decide_scene_recall(RecallPolicyInput {
         recalled_scene: observation.scene.clone(),
@@ -428,11 +399,11 @@ fn scene_label(scene: &SceneState) -> String {
 async fn handle_explicit_recall_scene(
     show: &ShowStateHandle,
     lv1: &Lv1ActorHandle,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
 ) -> Result<RecallSceneResult, AppCommandError> {
     tracing::debug!(
         event = "scene_recall_requested",
-        scene_id = %scene_id,
+        internal_scene_id = %internal_scene_id,
         "Scene recall requested"
     );
 
@@ -448,7 +419,7 @@ async fn handle_explicit_recall_scene(
         .map_err(|error| {
             tracing::warn!(
                 event = "scene_recall_blocked",
-                scene_id = %scene_id,
+                internal_scene_id = %internal_scene_id,
                 reason = %error,
                 "Scene recall blocked: {error}"
             );
@@ -460,7 +431,7 @@ async fn handle_explicit_recall_scene(
         .map_err(|error| {
             tracing::warn!(
                 event = "scene_recall_blocked",
-                scene_id = %scene_id,
+                internal_scene_id = %internal_scene_id,
                 reason = %error,
                 "Scene recall blocked: {error}"
             );
@@ -471,17 +442,20 @@ async fn handle_explicit_recall_scene(
         .await
         .map_err(|_| AppCommandError::ShowUnavailable)?;
     let show_document = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-    let result =
-        crate::show::validate_recall_scene_request(&show_document, &lv1_snapshot, &scene_id)
-            .map_err(|message| {
-                tracing::warn!(
-                    event = "scene_recall_blocked",
-                    scene_id = %scene_id,
-                    reason = %message,
-                    "Scene recall blocked: {message}"
-                );
-                AppCommandError::CommandFailed(message)
-            })?;
+    let result = crate::show::validate_recall_scene_request(
+        &show_document,
+        &lv1_snapshot,
+        internal_scene_id,
+    )
+    .map_err(|message| {
+        tracing::warn!(
+            event = "scene_recall_blocked",
+            internal_scene_id = %internal_scene_id,
+            reason = %message,
+            "Scene recall blocked: {message}"
+        );
+        AppCommandError::CommandFailed(message)
+    })?;
 
     let (reply, rx) = oneshot::channel();
     lv1.send(Lv1Command::RecallScene {
@@ -1270,7 +1244,7 @@ mod tests {
         seed_show_with_duration(&show, 0).await;
         let (reply, rx) = oneshot::channel();
         show.send(ShowCommand::SetSceneScopeFadersEnabled {
-            scene_id: "1::Intro".to_string(),
+            internal_scene_id: intro_internal_scene_id(),
             enabled: false,
             reply: Some(reply),
         })
@@ -1522,7 +1496,7 @@ mod tests {
         let snapshot = ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
-                internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+                internal_scene_id: intro_internal_scene_id(),
                 scene_index: Some(1),
                 scene_name: "Intro".to_string(),
                 duration_ms,
@@ -1552,6 +1526,10 @@ mod tests {
             .await
             .unwrap();
         let _ = rx.await;
+    }
+
+    fn intro_internal_scene_id() -> uuid::Uuid {
+        uuid::Uuid::from_u128(0x11111111111141118111111111111111)
     }
 
     fn fake_fade_handle() -> (

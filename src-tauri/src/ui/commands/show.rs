@@ -146,13 +146,13 @@ pub async fn save_show_file_as_dialog(
 #[tauri::command]
 pub async fn set_scene_duration_ms(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
     duration_ms: u64,
 ) -> Result<ShowCommandResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SetSceneDuration {
-        scene_id,
+        internal_scene_id,
         duration_ms,
         reply: Some(reply),
     })
@@ -167,12 +167,12 @@ pub async fn set_scene_duration_ms(
 #[tauri::command]
 pub async fn select_scene_config(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
 ) -> Result<SelectedSceneResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SelectSceneConfig {
-        scene_id,
+        internal_scene_id,
         reply: Some(reply),
     })
     .await
@@ -186,12 +186,12 @@ pub async fn select_scene_config(
 #[tauri::command]
 pub async fn cue_scene(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
 ) -> Result<CueSceneResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::CueScene {
-        scene_id,
+        internal_scene_id,
         reply: Some(reply),
     })
     .await
@@ -205,12 +205,12 @@ pub async fn cue_scene(
 #[tauri::command]
 pub async fn store_scene_config(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
 ) -> Result<ShowCommandResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::StoreSceneConfigFromCurrentLv1 {
-        scene_id,
+        internal_scene_id,
         reply: Some(reply),
     })
     .await
@@ -224,7 +224,7 @@ pub async fn store_scene_config(
 #[tauri::command]
 pub async fn set_channel_scoped(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
     group: i32,
     channel: i32,
     scoped: bool,
@@ -232,7 +232,7 @@ pub async fn set_channel_scoped(
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SetChannelScoped {
-        scene_id,
+        internal_scene_id,
         group,
         channel,
         scoped,
@@ -249,13 +249,13 @@ pub async fn set_channel_scoped(
 #[tauri::command]
 pub async fn set_all_channels_scoped(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
     scoped: bool,
 ) -> Result<ShowCommandResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SetAllChannelsScoped {
-        scene_id,
+        internal_scene_id,
         scoped,
         reply: Some(reply),
     })
@@ -270,13 +270,13 @@ pub async fn set_all_channels_scoped(
 #[tauri::command]
 pub async fn set_scene_scope_faders_enabled(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SetSceneScopeFadersEnabled {
-        scene_id,
+        internal_scene_id,
         enabled,
         reply: Some(reply),
     })
@@ -291,13 +291,13 @@ pub async fn set_scene_scope_faders_enabled(
 #[tauri::command]
 pub async fn set_scene_scope_pan_enabled(
     lifecycle: State<'_, AppLifecycle>,
-    scene_id: String,
+    internal_scene_id: uuid::Uuid,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
     let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SetSceneScopePanEnabled {
-        scene_id,
+        internal_scene_id,
         enabled,
         reply: Some(reply),
     })
