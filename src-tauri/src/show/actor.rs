@@ -121,8 +121,20 @@ fn handle_app_event(
             generation,
             event: Lv1Event::SceneListChanged(scenes),
         } if generation == *active_generation => {
-            let _ = state.scene_reconciliation_diagnostic(&scenes);
-            let changed = state.reconcile_scene_fade_configs(&scenes);
+            let before = state.scene_configs().to_vec();
+            let after = crate::show::scene_alignment::align_scene_configs(before.clone(), &scenes);
+            let changed = state.replace_scene_configs_if_changed(after);
+            if changed {
+                tracing::info!(
+                    event = "session_scene_alignment",
+                    "{}",
+                    crate::show::scene_alignment::scene_alignment_diagnostic(
+                        &before,
+                        state.scene_configs(),
+                        &scenes
+                    )
+                );
+            }
             publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
         }
         _ => {}
