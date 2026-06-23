@@ -320,7 +320,7 @@ mod tests {
             safety: ShowFileSafety { lockout: true },
             cued_scene_internal_id: None,
             scene_configs: vec![ShowFileSceneConfig {
-                internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+                internal_scene_id: Some(uuid::Uuid::from_u128(0x11111111111141118111111111111111)),
                 scene_index: Some(1),
                 scene_name: "Intro".to_string(),
                 duration_ms: 4000,

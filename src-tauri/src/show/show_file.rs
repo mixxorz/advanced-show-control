@@ -26,7 +26,8 @@ pub struct ShowFileSafety {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowFileSceneConfig {
-    pub internal_scene_id: uuid::Uuid,
+    #[serde(default)]
+    pub internal_scene_id: Option<uuid::Uuid>,
     pub scene_index: Option<i32>,
     pub scene_name: String,
     pub duration_ms: u64,
@@ -87,6 +88,7 @@ pub struct ImportedShowFile {
     pub snapshot: ShowDocument,
     pub selected_scene_id: Option<String>,
     pub report: LoadValidationReport,
+    pub generated_internal_scene_ids: bool,
 }
 
 pub fn export_show_file(snapshot: ShowDocument, saved_at: String) -> ShowFile {
@@ -111,10 +113,15 @@ pub fn import_show_file(
     lv1: &Lv1StateSnapshot,
 ) -> Result<ImportedShowFile, String> {
     let report = prune_show_file_to_lv1_scenes(file, lv1)?;
+    let generated_internal_scene_ids = file
+        .scene_configs
+        .iter()
+        .any(|config| config.internal_scene_id.is_none());
     let selected_scene_id = file
         .scene_configs
         .first()
-        .map(|config| config.internal_scene_id.to_string());
+        .and_then(|config| config.internal_scene_id)
+        .map(|id| id.to_string());
     let snapshot = ShowDocument {
         lockout: file.safety.lockout,
         scene_configs: file
@@ -129,6 +136,7 @@ pub fn import_show_file(
         snapshot,
         selected_scene_id,
         report,
+        generated_internal_scene_ids,
     })
 }
 
@@ -173,7 +181,7 @@ pub fn prune_show_file_to_lv1_scenes(
 
 fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
     ShowFileSceneConfig {
-        internal_scene_id: config.internal_scene_id,
+        internal_scene_id: Some(config.internal_scene_id),
         scene_index: config.scene_index,
         scene_name: config.scene_name,
         duration_ms: config.duration_ms,
@@ -207,7 +215,7 @@ fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
 
 fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
     SceneConfig {
-        internal_scene_id: config.internal_scene_id,
+        internal_scene_id: config.internal_scene_id.unwrap_or_else(uuid::Uuid::new_v4),
         scene_index: config.scene_index,
         scene_name: config.scene_name.clone(),
         duration_ms: config.duration_ms,
@@ -282,7 +290,10 @@ mod tests {
         assert_eq!(file.saved_at, "saved");
         assert!(file.safety.lockout);
         assert_eq!(file.cued_scene_internal_id, Some(cued_scene_internal_id));
-        assert_eq!(file.scene_configs[0].internal_scene_id, internal_scene_id);
+        assert_eq!(
+            file.scene_configs[0].internal_scene_id,
+            Some(internal_scene_id)
+        );
         assert_eq!(file.scene_configs[0].scene_index, Some(1));
         assert_eq!(
             file.scene_configs[0].channel_configs[0].fader_db,
@@ -305,7 +316,7 @@ mod tests {
             cued_scene_internal_id: Some(cued_scene_internal_id),
             scene_configs: vec![
                 ShowFileSceneConfig {
-                    internal_scene_id: intro_internal_scene_id,
+                    internal_scene_id: Some(intro_internal_scene_id),
                     scene_index: Some(1),
                     scene_name: "Intro".to_string(),
                     duration_ms: 5_000,
@@ -314,7 +325,7 @@ mod tests {
                     scope_toggles: ShowFileSceneScopeToggles::default(),
                 },
                 ShowFileSceneConfig {
-                    internal_scene_id: missing_internal_scene_id,
+                    internal_scene_id: Some(missing_internal_scene_id),
                     scene_index: Some(2),
                     scene_name: "Missing".to_string(),
                     duration_ms: 5_000,
@@ -348,5 +359,42 @@ mod tests {
             imported.snapshot.cued_scene_internal_id,
             Some(cued_scene_internal_id)
         );
+    }
+
+    #[test]
+    fn import_legacy_show_file_generates_internal_scene_ids() {
+        let mut file = ShowFile {
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
+            app_version: "0.1.0".to_string(),
+            saved_at: "123".to_string(),
+            safety: ShowFileSafety { lockout: false },
+            cued_scene_internal_id: None,
+            scene_configs: vec![ShowFileSceneConfig {
+                internal_scene_id: None,
+                scene_index: Some(1),
+                scene_name: "Intro".to_string(),
+                duration_ms: 1_000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
+            }],
+        };
+        let lv1 = Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+
+        let imported = import_show_file(&mut file, &lv1).unwrap();
+
+        assert_ne!(
+            imported.snapshot.scene_configs[0].internal_scene_id,
+            uuid::Uuid::nil()
+        );
+        assert!(imported.generated_internal_scene_ids);
     }
 }
