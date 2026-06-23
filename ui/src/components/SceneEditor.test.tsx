@@ -95,14 +95,41 @@ describe("SceneEditor", () => {
           connectedAppState.sceneConfigs[0].internalSceneId,
         sceneConfigs: [
           { ...connectedAppState.sceneConfigs[0], sceneIndex: null },
-          connectedAppState.sceneConfigs[1],
+          { ...connectedAppState.sceneConfigs[1], sceneIndex: 0 },
         ],
       },
       { linkSceneConfig: vi.fn(), storeSceneConfig: store },
     );
 
+    await user.selectOptions(screen.getByLabelText("LV1 Scene"), "0");
     await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
 
     expect(confirmSpy).toHaveBeenCalled();
+  });
+
+  it("links an unlinked scene to the first available LV1 scene by default", async () => {
+    const user = userEvent.setup();
+    const linkSceneConfig = vi.fn();
+
+    renderEditor(
+      {
+        ...connectedAppState,
+        selectedSceneInternalId:
+          connectedAppState.sceneConfigs[0].internalSceneId,
+        sceneConfigs: [
+          { ...connectedAppState.sceneConfigs[0], sceneIndex: null },
+          { ...connectedAppState.sceneConfigs[1], sceneIndex: 0 },
+        ],
+      },
+      { linkSceneConfig },
+    );
+
+    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+
+    expect(linkSceneConfig).toHaveBeenCalledWith(
+      connectedAppState.sceneConfigs[0].internalSceneId,
+      1,
+      false,
+    );
   });
 });

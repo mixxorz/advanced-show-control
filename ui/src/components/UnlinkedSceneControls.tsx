@@ -13,9 +13,14 @@ export function UnlinkedSceneControls(props: {
   existingConfigs: SceneConfig[];
 }) {
   const commands = useAppCommands();
+  const linkedSceneIndexes = new Set(
+    props.existingConfigs
+      .map((scene) => scene.sceneIndex)
+      .filter((index) => index !== null),
+  );
   const initialTargetIndex =
-    props.existingConfigs.find((scene) => scene.sceneIndex !== null)
-      ?.sceneIndex ??
+    props.lv1Scenes.find((scene) => !linkedSceneIndexes.has(scene.index))
+      ?.index ??
     props.lv1Scenes[0]?.index ??
     null;
   const [selectedTargetIndex, setSelectedTargetIndex] = useState(
