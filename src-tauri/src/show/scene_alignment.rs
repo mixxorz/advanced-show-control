@@ -188,11 +188,23 @@ fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneLi
 }
 
 fn apply_position_mapping(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> Vec<SceneConfig> {
-    let mut configs = configs;
-    for (config, entry) in configs.iter_mut().zip(entries.iter()) {
+    let mut linked = configs
+        .iter()
+        .filter(|scene| scene.scene_index.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut unlinked = configs
+        .into_iter()
+        .filter(|scene| scene.scene_index.is_none())
+        .collect::<Vec<_>>();
+    for (config, entry) in linked.iter_mut().zip(entries.iter()) {
         update_scene_locator(config, entry);
     }
-    configs
+    for scene in unlinked.iter_mut() {
+        scene.scene_index = None;
+    }
+    linked.extend(unlinked);
+    linked
 }
 
 fn align_by_name_fifo(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> Vec<SceneConfig> {
@@ -398,6 +410,24 @@ mod tests {
 
         assert_eq!(aligned[0].scene_index, Some(1));
         assert_eq!(aligned[1].scene_index, None);
+    }
+
+    #[test]
+    fn unlinked_config_before_rename_remains_unlinked() {
+        let old = vec![
+            scene(1, None, "Draft", 2_000),
+            scene(2, Some(1), "Verse", 1_000),
+        ];
+        let new = vec![lv1_scene(1, "Verse Big")];
+
+        let aligned = align_scene_configs(old, &new);
+
+        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[0].scene_index, Some(1));
+        assert_eq!(aligned[0].scene_name, "Verse Big");
+        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(1));
+        assert_eq!(aligned[1].scene_index, None);
+        assert_eq!(aligned[1].scene_name, "Draft");
     }
 
     #[test]
