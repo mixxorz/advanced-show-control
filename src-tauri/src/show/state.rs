@@ -375,17 +375,16 @@ impl ShowState {
             return Err("Scene config not found".to_string());
         }
 
-        let next = Some(scene_id.to_string());
-        if self.selected_scene_id == next {
-            return Ok(false);
-        }
-
-        self.cued_scene_internal_id = self
+        let next = self
             .scene_configs
             .iter()
             .find(|scene| scene.internal_scene_id.to_string() == scene_id)
-            .map(|scene| scene.internal_scene_id)
-            .or_else(|| Some(scene_internal_id(scene_id)));
+            .map(|scene| scene.internal_scene_id);
+        if self.cued_scene_internal_id == next {
+            return Ok(false);
+        }
+
+        self.cued_scene_internal_id = next.or_else(|| Some(scene_internal_id(scene_id)));
         Ok(true)
     }
 
@@ -755,6 +754,21 @@ mod tests {
             index: 1,
             name: "scene-1".to_string(),
         }]));
+    }
+
+    #[test]
+    fn cue_scene_reports_noop_when_recued_scene_matches_internal_id() {
+        let scene_id = test_uuid(0x55555555555545558555555555555555);
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![scene_config(1, "scene-1", 1_500, vec![], scene_id)],
+            cued_scene_internal_id: Some(scene_id),
+            selected_scene_id: Some(test_uuid(0x44444444444444448444444444444444).to_string()),
+            ..Default::default()
+        };
+
+        assert!(!state.cue_scene(&scene_id.to_string()).unwrap());
+        assert_eq!(state.cued_scene_internal_id, Some(scene_id));
     }
 
     #[test]
