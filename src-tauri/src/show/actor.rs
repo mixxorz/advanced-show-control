@@ -575,8 +575,30 @@ fn load_show_file_from_dto(
     let saved_at = file.saved_at.clone();
     let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
     let report = imported.report.clone();
-    let should_mark_dirty = report.removed_anything();
-    state.replace_snapshot(imported.snapshot);
+    let imported_scene_configs = imported.snapshot.scene_configs;
+    let aligned_scene_configs = crate::show::scene_alignment::align_scene_configs(
+        imported_scene_configs.clone(),
+        &lv1.scene_list,
+    );
+    let alignment_changed = aligned_scene_configs != imported_scene_configs;
+    let should_mark_dirty =
+        report.removed_anything() || imported.generated_internal_scene_ids || alignment_changed;
+    let selected_scene_internal_id = selected_scene_internal_id
+        .filter(|selected| {
+            aligned_scene_configs
+                .iter()
+                .any(|scene| scene.internal_scene_id.to_string() == *selected)
+        })
+        .or_else(|| {
+            aligned_scene_configs
+                .first()
+                .map(|scene| scene.internal_scene_id.to_string())
+        });
+    state.replace_snapshot(crate::show::types::ShowDocument {
+        lockout: imported.snapshot.lockout,
+        scene_configs: aligned_scene_configs.clone(),
+        cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
+    });
     state.set_selected_scene_internal_id(selected_scene_internal_id.clone());
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
@@ -585,6 +607,17 @@ fn load_show_file_from_dto(
     publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
     for scene in report.removed_scenes.iter() {
         tracing::warn!(event = "session_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
+    }
+    if alignment_changed {
+        tracing::info!(
+            event = "session_scene_alignment",
+            "{}",
+            crate::show::scene_alignment::scene_alignment_diagnostic(
+                &imported_scene_configs,
+                &aligned_scene_configs,
+                &lv1.scene_list
+            )
+        );
     }
     tracing::info!(event = "session_opened", "Session loaded");
     Ok(LoadShowFileResult {
@@ -609,4 +642,181 @@ fn store_scene_config_from_channels(
             publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
             ShowCommandResult { changed }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use uuid::Uuid;
+
+    use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
+    use crate::runtime::events::AppEventBus;
+
+    use super::load_show_file_from_dto;
+    use crate::show::{
+        SceneConfig, SceneScopeToggles, ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowState,
+    };
+
+    fn lv1_snapshot(scenes: Vec<SceneListEntry>) -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: scenes,
+            channels: Vec::new(),
+        }
+    }
+
+    fn show_file(scenes: Vec<ShowFileSceneConfig>) -> ShowFile {
+        ShowFile {
+            schema_version: crate::show::SHOW_FILE_SCHEMA_VERSION,
+            app_version: "test".to_string(),
+            saved_at: "123".to_string(),
+            safety: ShowFileSafety { lockout: false },
+            scene_configs: scenes,
+            cued_scene_internal_id: None,
+        }
+    }
+
+    fn scene_config(id: u128, index: Option<i32>, name: &str, duration_ms: u64) -> SceneConfig {
+        SceneConfig {
+            internal_scene_id: Uuid::from_u128(id),
+            scene_index: index,
+            scene_name: name.to_string(),
+            duration_ms,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: SceneScopeToggles::default(),
+        }
+    }
+
+    fn file_scene(config: SceneConfig) -> ShowFileSceneConfig {
+        ShowFileSceneConfig {
+            internal_scene_id: Some(config.internal_scene_id),
+            scene_index: config.scene_index,
+            scene_name: config.scene_name,
+            duration_ms: config.duration_ms,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: Default::default(),
+        }
+    }
+
+    #[test]
+    fn connected_load_aligns_imported_configs_and_adds_default_linked_configs_for_extra_lv1_scenes()
+    {
+        let event_bus = AppEventBus::default();
+        let mut state = ShowState::default();
+        let path = std::path::PathBuf::from("session.show");
+        let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
+
+        let result = load_show_file_from_dto(
+            &mut state,
+            &event_bus,
+            path,
+            &mut file,
+            &lv1_snapshot(vec![
+                SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
+                SceneListEntry {
+                    index: 2,
+                    name: "Verse".to_string(),
+                },
+            ]),
+        )
+        .expect("load should succeed");
+
+        assert_eq!(state.scene_configs().len(), 2);
+        assert_eq!(state.scene_configs()[0].scene_index, Some(1));
+        assert_eq!(state.scene_configs()[0].duration_ms, 1_000);
+        assert_eq!(state.scene_configs()[1].scene_index, Some(2));
+        assert_eq!(state.scene_configs()[1].scene_name, "Verse");
+        assert_eq!(state.scene_configs()[1].duration_ms, 0);
+        assert_eq!(
+            result.selected_scene_internal_id,
+            Some(Uuid::from_u128(1).to_string())
+        );
+    }
+
+    #[test]
+    fn connected_load_marks_dirty_when_alignment_changes_imported_configs() {
+        let event_bus = AppEventBus::default();
+        let mut state = ShowState::default();
+        let path = std::path::PathBuf::from("session.show");
+        let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
+
+        load_show_file_from_dto(
+            &mut state,
+            &event_bus,
+            path,
+            &mut file,
+            &lv1_snapshot(vec![
+                SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                },
+                SceneListEntry {
+                    index: 2,
+                    name: "Verse".to_string(),
+                },
+            ]),
+        )
+        .expect("load should succeed");
+
+        assert!(state.projection_state().show_file_dirty);
+    }
+
+    #[test]
+    fn connected_load_preserves_existing_imported_fade_data_for_matched_scenes() {
+        let event_bus = AppEventBus::default();
+        let mut state = ShowState::default();
+        let path = std::path::PathBuf::from("session.show");
+        let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_500))]);
+
+        load_show_file_from_dto(
+            &mut state,
+            &event_bus,
+            path,
+            &mut file,
+            &lv1_snapshot(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+        )
+        .expect("load should succeed");
+
+        assert_eq!(state.scene_configs()[0].duration_ms, 1_500);
+        assert_eq!(
+            state.scene_configs()[0].internal_scene_id,
+            Uuid::from_u128(1)
+        );
+    }
+
+    #[test]
+    fn connected_load_preserves_missing_imported_config_as_unlinked() {
+        let event_bus = AppEventBus::default();
+        let mut state = ShowState::default();
+        let path = std::path::PathBuf::from("session.show");
+        let mut file = show_file(vec![
+            file_scene(scene_config(1, Some(1), "Intro", 1_000)),
+            file_scene(scene_config(2, Some(2), "Verse", 2_000)),
+        ]);
+
+        load_show_file_from_dto(
+            &mut state,
+            &event_bus,
+            path,
+            &mut file,
+            &lv1_snapshot(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+        )
+        .expect("load should succeed");
+
+        assert_eq!(state.scene_configs().len(), 2);
+        assert_eq!(state.scene_configs()[0].scene_index, Some(1));
+        assert_eq!(state.scene_configs()[1].scene_index, None);
+        assert_eq!(state.scene_configs()[1].scene_name, "Verse");
+    }
 }
