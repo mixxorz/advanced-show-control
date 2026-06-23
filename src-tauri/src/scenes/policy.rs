@@ -179,8 +179,8 @@ mod tests {
         pan_mode: Option<PanMode>,
     ) -> SceneConfig {
         SceneConfig {
-            scene_id: "1::Intro".to_string(),
-            scene_index: 1,
+            internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+            scene_index: Some(1),
             scene_name: "Intro".to_string(),
             duration_ms,
             channel_configs: vec![ChannelConfig {

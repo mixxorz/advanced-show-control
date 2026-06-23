@@ -318,9 +318,10 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             scene_configs: vec![ShowFileSceneConfig {
-                scene_index: 1,
+                internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+                scene_index: Some(1),
                 scene_name: "Intro".to_string(),
                 duration_ms: 4000,
                 channel_configs: vec![ShowFileChannelConfig {
@@ -440,7 +441,7 @@ mod tests {
 
         let file: ShowFile = serde_json::from_str(json).unwrap();
 
-        assert_eq!(file.cued_scene_id, None);
+        assert_eq!(file.cued_scene_internal_id, None);
     }
 
     #[test]
@@ -480,6 +481,7 @@ mod tests {
           "savedAt": "2026-06-09T00:00:00Z",
           "safety": { "lockout": false },
           "sceneConfigs": [{
+            "internalSceneId": "11111111-1111-4111-8111-111111111111",
             "sceneIndex": 1,
             "sceneName": "Intro",
             "durationMs": 0,
@@ -503,6 +505,7 @@ mod tests {
           "savedAt": "2026-06-09T00:00:00Z",
           "safety": { "lockout": false },
           "sceneConfigs": [{
+            "internalSceneId": "11111111-1111-4111-8111-111111111111",
             "sceneIndex": 1,
             "sceneName": "Intro",
             "durationMs": 0,

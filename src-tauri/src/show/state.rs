@@ -4,7 +4,8 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 use crate::lv1::{Lv1StateSnapshot, SceneListEntry};
 use crate::show::show_file::{ShowFile, export_show_file};
 
-use super::types::{SceneConfig, SceneScopeToggles, ShowDocument, scene_id};
+use super::types::{SceneConfig, SceneScopeToggles, ShowDocument};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SceneEntry {
@@ -16,7 +17,9 @@ fn entries_from_configs(configs: &[SceneConfig]) -> Vec<SceneEntry> {
     configs
         .iter()
         .map(|scene| SceneEntry {
-            index: scene.scene_index,
+            index: scene
+                .scene_index
+                .expect("scene_index missing in reconciled config"),
             name: scene.scene_name.clone(),
         })
         .collect()
@@ -34,8 +37,8 @@ fn entries_from_scene_list(scenes: &[SceneListEntry]) -> Vec<SceneEntry> {
 
 fn default_scene_config(entry: &SceneEntry) -> SceneConfig {
     SceneConfig {
-        scene_id: scene_id(entry.index, &entry.name),
-        scene_index: entry.index,
+        internal_scene_id: Uuid::new_v4(),
+        scene_index: Some(entry.index),
         scene_name: entry.name.clone(),
         duration_ms: 0,
         channel_configs: Vec::new(),
@@ -45,9 +48,13 @@ fn default_scene_config(entry: &SceneEntry) -> SceneConfig {
 }
 
 fn update_scene_locator(config: &mut SceneConfig, entry: &SceneEntry) {
-    config.scene_id = scene_id(entry.index, &entry.name);
-    config.scene_index = entry.index;
+    config.scene_index = Some(entry.index);
     config.scene_name = entry.name.clone();
+}
+
+fn scene_internal_id(scene_id: &str) -> Uuid {
+    let _ = scene_id;
+    Uuid::new_v4()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +198,7 @@ fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneLi
 pub struct ShowState {
     lockout: bool,
     scene_configs: Vec<SceneConfig>,
-    cued_scene_id: Option<String>,
+    cued_scene_internal_id: Option<Uuid>,
     selected_scene_id: Option<String>,
     show_file_path: Option<std::path::PathBuf>,
     show_file_dirty: bool,
@@ -214,7 +221,7 @@ impl ShowState {
         self.selected_scene_id = self
             .scene_configs
             .first()
-            .map(|scene| scene.scene_id.clone());
+            .map(|scene| scene.internal_scene_id.to_string());
         self.show_file_path = None;
         self.show_file_dirty = false;
         self.show_file_last_saved_at = None;
@@ -329,7 +336,7 @@ impl ShowState {
         ShowDocument {
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
-            cued_scene_id: self.cued_scene_id.clone(),
+            cued_scene_internal_id: self.cued_scene_internal_id,
         }
     }
 
@@ -345,7 +352,7 @@ impl ShowState {
         super::events::ShowProjectionState {
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
-            cued_scene_id: self.cued_scene_id.clone(),
+            cued_scene_id: self.cued_scene_internal_id.map(|id| id.to_string()),
             selected_scene_id: self.selected_scene_id.clone(),
             show_file_path: self.show_file_path.clone(),
             show_file_name,
@@ -363,17 +370,22 @@ impl ShowState {
         if !self
             .scene_configs
             .iter()
-            .any(|scene| scene.scene_id == scene_id)
+            .any(|scene| scene.internal_scene_id.to_string() == scene_id)
         {
             return Err("Scene config not found".to_string());
         }
 
         let next = Some(scene_id.to_string());
-        if self.cued_scene_id == next {
+        if self.selected_scene_id == next {
             return Ok(false);
         }
 
-        self.cued_scene_id = next;
+        self.cued_scene_internal_id = self
+            .scene_configs
+            .iter()
+            .find(|scene| scene.internal_scene_id.to_string() == scene_id)
+            .map(|scene| scene.internal_scene_id)
+            .or_else(|| Some(scene_internal_id(scene_id)));
         Ok(true)
     }
 
@@ -444,7 +456,11 @@ impl ShowState {
     fn reconcile_scene_fade_configs_by_name_fifo(&mut self, entries: &[SceneEntry]) -> bool {
         let mut old_by_name = HashMap::<String, VecDeque<SceneConfig>>::new();
         let old_configs = std::mem::take(&mut self.scene_configs);
-        for scene in old_configs.iter().cloned() {
+        for scene in old_configs
+            .iter()
+            .filter(|scene| scene.scene_index.is_some())
+            .cloned()
+        {
             old_by_name
                 .entry(scene.scene_name.clone())
                 .or_default()
@@ -469,30 +485,30 @@ impl ShowState {
     pub fn replace_snapshot(&mut self, snapshot: ShowDocument) {
         self.lockout = snapshot.lockout;
         self.scene_configs = snapshot.scene_configs;
-        self.cued_scene_id = snapshot.cued_scene_id;
+        self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
     }
 
     pub fn clear(&mut self) {
         self.lockout = false;
         self.scene_configs.clear();
-        self.cued_scene_id = None;
+        self.cued_scene_internal_id = None;
     }
 
     fn clear_missing_cue(&mut self) {
-        if let Some(cued_scene_id) = &self.cued_scene_id
+        if let Some(cued_scene_internal_id) = self.cued_scene_internal_id
             && !self
                 .scene_configs
                 .iter()
-                .any(|scene| &scene.scene_id == cued_scene_id)
+                .any(|scene| scene.internal_scene_id == cued_scene_internal_id)
         {
-            self.cued_scene_id = None;
+            self.cued_scene_internal_id = None;
         }
     }
 
     pub fn get_scene_config(&self, scene_id: &str) -> Option<SceneConfig> {
         self.scene_configs
             .iter()
-            .find(|scene| scene.scene_id == scene_id)
+            .find(|scene| scene.internal_scene_id.to_string() == scene_id)
             .cloned()
     }
 
@@ -508,16 +524,16 @@ impl ShowState {
     pub(crate) fn get_scene_config_mut(&mut self, scene_id: &str) -> Option<&mut SceneConfig> {
         self.scene_configs
             .iter_mut()
-            .find(|scene| scene.scene_id == scene_id)
+            .find(|scene| scene.internal_scene_id.to_string() == scene_id)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::super::types::parse_scene_id;
     use super::*;
     use crate::lv1::{ChannelInfo, PanMode};
     use crate::show::ChannelConfig;
+    use uuid::Uuid;
 
     fn channel(group: i32, channel: i32, name: &str, gain_db: f64) -> ChannelInfo {
         ChannelInfo {
@@ -533,13 +549,21 @@ mod tests {
         }
     }
 
-    fn scene_config(scene_id: &str, duration_ms: u64, channels: Vec<ChannelConfig>) -> SceneConfig {
-        let (scene_index, scene_name) =
-            parse_scene_id(scene_id).expect("test scene_id must be valid");
+    fn test_uuid(n: u128) -> Uuid {
+        Uuid::from_u128(n)
+    }
+
+    fn scene_config(
+        scene_index: i32,
+        scene_name: &str,
+        duration_ms: u64,
+        channels: Vec<ChannelConfig>,
+        internal_scene_id: Uuid,
+    ) -> SceneConfig {
         SceneConfig {
-            scene_id: scene_id.to_string(),
-            scene_index,
-            scene_name,
+            internal_scene_id,
+            scene_index: Some(scene_index),
+            scene_name: scene_name.to_string(),
             duration_ms,
             channel_configs: channels,
             scoped_channels: vec![],
@@ -549,7 +573,8 @@ mod tests {
 
     fn named_scene_config(index: i32, name: &str, duration_ms: u64) -> SceneConfig {
         scene_config(
-            &scene_id(index, name),
+            index,
+            name,
             duration_ms,
             vec![ChannelConfig {
                 group: 0,
@@ -560,6 +585,7 @@ mod tests {
                 width: None,
                 pan_mode: None,
             }],
+            Uuid::from_u128((index as u128) + 1),
         )
     }
 
@@ -575,7 +601,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::Verse",
+                1,
+                "Verse",
                 1_500,
                 vec![ChannelConfig {
                     group: 0,
@@ -586,8 +613,9 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                Uuid::from_u128(0x11111111111141118111111111111111),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -597,8 +625,7 @@ mod tests {
         }]));
 
         assert_eq!(state.scene_configs.len(), 1);
-        assert_eq!(state.scene_configs[0].scene_id, "1::Verse Big");
-        assert_eq!(state.scene_configs[0].scene_index, 1);
+        assert_eq!(state.scene_configs[0].scene_index, Some(1));
         assert_eq!(state.scene_configs[0].scene_name, "Verse Big");
         assert_eq!(state.scene_configs[0].duration_ms, 1_500);
         assert_eq!(
@@ -612,7 +639,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_500,
                 vec![ChannelConfig {
                     group: 0,
@@ -623,8 +651,9 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                Uuid::from_u128(0x22222222222242228222222222222222),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -634,7 +663,7 @@ mod tests {
         }]));
 
         assert_eq!(state.scene_configs[0].duration_ms, 1_500);
-        assert_eq!(state.scene_configs[0].scene_index, 1);
+        assert_eq!(state.scene_configs[0].scene_index, Some(1));
         assert_eq!(state.scene_configs[0].scene_name, "scene-1");
         assert_eq!(
             state.scene_configs[0].channel_configs[0].fader_db,
@@ -647,11 +676,29 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![
-                scene_config("2::Chorus", 300, vec![]),
-                scene_config("0::Intro", 100, vec![]),
-                scene_config("1::Verse", 200, vec![]),
+                scene_config(
+                    2,
+                    "Chorus",
+                    300,
+                    vec![],
+                    Uuid::from_u128(0x33333333333343338333333333333333),
+                ),
+                scene_config(
+                    0,
+                    "Intro",
+                    100,
+                    vec![],
+                    Uuid::from_u128(0x44444444444444448444444444444444),
+                ),
+                scene_config(
+                    1,
+                    "Verse",
+                    200,
+                    vec![],
+                    Uuid::from_u128(0x55555555555545558555555555555555),
+                ),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -670,9 +717,9 @@ mod tests {
             },
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "1::Verse");
-        assert_eq!(state.scene_configs[1].scene_id, "0::Intro");
-        assert_eq!(state.scene_configs[2].scene_id, "2::Chorus");
+        assert_eq!(state.scene_configs[0].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_index, Some(0));
+        assert_eq!(state.scene_configs[2].scene_index, Some(2));
     }
 
     #[test]
@@ -680,7 +727,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_500,
                 vec![ChannelConfig {
                     group: 0,
@@ -691,8 +739,9 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                Uuid::from_u128(0x66666666666646668666666666666666),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -707,7 +756,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_500,
                 vec![ChannelConfig {
                     group: 0,
@@ -718,8 +768,9 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                Uuid::from_u128(0xdddddddddddddddddddddddddddddddd),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -728,8 +779,7 @@ mod tests {
             name: "scene-1".to_string(),
         }]));
         assert_eq!(state.scene_configs.len(), 1);
-        assert_eq!(state.scene_configs[0].scene_id, "2::scene-1");
-        assert_eq!(state.scene_configs[0].scene_index, 2);
+        assert_eq!(state.scene_configs[0].scene_index, Some(2));
         assert_eq!(state.scene_configs[0].scene_name, "scene-1");
         assert_eq!(state.scene_configs[0].duration_ms, 1_500);
         assert_eq!(
@@ -747,7 +797,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -757,11 +807,14 @@ mod tests {
             scene_entry(2, "Intro"),
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "0::Verse");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Verse");
         assert_eq!(state.scene_configs[0].duration_ms, 200);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Chorus");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Chorus");
         assert_eq!(state.scene_configs[1].duration_ms, 300);
-        assert_eq!(state.scene_configs[2].scene_id, "2::Intro");
+        assert_eq!(state.scene_configs[2].scene_index, Some(2));
+        assert_eq!(state.scene_configs[2].scene_name, "Intro");
         assert_eq!(state.scene_configs[2].duration_ms, 100);
     }
 
@@ -774,7 +827,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -784,11 +837,14 @@ mod tests {
             scene_entry(2, "Verse"),
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "0::Chorus");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Chorus");
         assert_eq!(state.scene_configs[0].duration_ms, 300);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Intro");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Intro");
         assert_eq!(state.scene_configs[1].duration_ms, 100);
-        assert_eq!(state.scene_configs[2].scene_id, "2::Verse");
+        assert_eq!(state.scene_configs[2].scene_index, Some(2));
+        assert_eq!(state.scene_configs[2].scene_name, "Verse");
         assert_eq!(state.scene_configs[2].duration_ms, 200);
     }
 
@@ -800,7 +856,7 @@ mod tests {
                 named_scene_config(0, "Intro", 100),
                 named_scene_config(1, "Chorus", 300),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -810,12 +866,15 @@ mod tests {
             scene_entry(2, "Chorus"),
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "0::Intro");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Intro");
         assert_eq!(state.scene_configs[0].duration_ms, 100);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Verse");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Verse");
         assert_eq!(state.scene_configs[1].duration_ms, 0);
         assert!(state.scene_configs[1].channel_configs.is_empty());
-        assert_eq!(state.scene_configs[2].scene_id, "2::Chorus");
+        assert_eq!(state.scene_configs[2].scene_index, Some(2));
+        assert_eq!(state.scene_configs[2].scene_name, "Chorus");
         assert_eq!(state.scene_configs[2].duration_ms, 300);
     }
 
@@ -828,7 +887,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -838,9 +897,11 @@ mod tests {
         );
 
         assert_eq!(state.scene_configs.len(), 2);
-        assert_eq!(state.scene_configs[0].scene_id, "0::Intro");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Intro");
         assert_eq!(state.scene_configs[0].duration_ms, 100);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Chorus");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Chorus");
         assert_eq!(state.scene_configs[1].duration_ms, 300);
     }
 
@@ -852,13 +913,13 @@ mod tests {
                 named_scene_config(0, "Intro", 100),
                 named_scene_config(1, "Verse", 200),
             ],
-            cued_scene_id: Some("1::Verse".to_string()),
+            cued_scene_internal_id: Some(Uuid::from_u128(0x77777777777747778777777777777777)),
             ..Default::default()
         };
 
         assert!(state.reconcile_scene_fade_configs(&[scene_entry(0, "Intro")]));
 
-        assert_eq!(state.cued_scene_id, None);
+        assert_eq!(state.cued_scene_internal_id, None);
     }
 
     #[test]
@@ -869,7 +930,7 @@ mod tests {
                 named_scene_config(0, "Intro", 100),
                 named_scene_config(1, "Verse", 200),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -878,9 +939,11 @@ mod tests {
             scene_entry(1, "Verse New")
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "0::Intro New");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Intro New");
         assert_eq!(state.scene_configs[0].duration_ms, 0);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Verse New");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Verse New");
         assert_eq!(state.scene_configs[1].duration_ms, 0);
     }
 
@@ -893,7 +956,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -918,7 +981,7 @@ mod tests {
                 named_scene_config(1, "Verse", 200),
                 named_scene_config(2, "Chorus", 300),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -928,11 +991,14 @@ mod tests {
             scene_entry(2, "Chorus"),
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "0::Verse");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Verse");
         assert_eq!(state.scene_configs[0].duration_ms, 200);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Intro");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Intro");
         assert_eq!(state.scene_configs[1].duration_ms, 100);
-        assert_eq!(state.scene_configs[2].scene_id, "2::Chorus");
+        assert_eq!(state.scene_configs[2].scene_index, Some(2));
+        assert_eq!(state.scene_configs[2].scene_name, "Chorus");
         assert_eq!(state.scene_configs[2].duration_ms, 300);
     }
 
@@ -946,7 +1012,7 @@ mod tests {
                 named_scene_config(2, "Dupe", 300),
                 named_scene_config(3, "Chorus", 400),
             ],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -957,13 +1023,17 @@ mod tests {
             scene_entry(3, "Chorus"),
         ]));
 
-        assert_eq!(state.scene_configs[0].scene_id, "0::Dupe");
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Dupe");
         assert_eq!(state.scene_configs[0].duration_ms, 200);
-        assert_eq!(state.scene_configs[1].scene_id, "1::Intro");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Intro");
         assert_eq!(state.scene_configs[1].duration_ms, 100);
-        assert_eq!(state.scene_configs[2].scene_id, "2::Dupe");
+        assert_eq!(state.scene_configs[2].scene_index, Some(2));
+        assert_eq!(state.scene_configs[2].scene_name, "Dupe");
         assert_eq!(state.scene_configs[2].duration_ms, 300);
-        assert_eq!(state.scene_configs[3].scene_id, "3::Chorus");
+        assert_eq!(state.scene_configs[3].scene_index, Some(3));
+        assert_eq!(state.scene_configs[3].scene_name, "Chorus");
         assert_eq!(state.scene_configs[3].duration_ms, 400);
     }
 
@@ -971,8 +1041,14 @@ mod tests {
     fn invalid_duration_rejected() {
         let mut state = ShowState {
             lockout: false,
-            scene_configs: vec![scene_config("1::scene-1", 1_000, vec![])],
-            cued_scene_id: None,
+            scene_configs: vec![scene_config(
+                1,
+                "scene-1",
+                1_000,
+                vec![],
+                Uuid::from_u128(0x88888888888848888888888888888888),
+            )],
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
@@ -989,7 +1065,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_000,
                 vec![ChannelConfig {
                     group: 0,
@@ -1000,13 +1077,16 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                test_uuid(0x99999999999949999999999999999999),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
-        assert!(state.set_channel_scoped("1::scene-1", 0, 1, true).unwrap());
-        assert!(!state.set_channel_scoped("1::scene-1", 0, 1, true).unwrap());
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
+
+        assert!(state.set_channel_scoped(&scene_id, 0, 1, true).unwrap());
+        assert!(!state.set_channel_scoped(&scene_id, 0, 1, true).unwrap());
     }
 
     #[test]
@@ -1014,7 +1094,7 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
         let channels = vec![ChannelInfo {
@@ -1029,12 +1109,14 @@ mod tests {
             pan_mode: None,
         }];
 
-        assert!(state.store_scene_config("1::scene-1", &channels).unwrap());
+        let scene_id = test_uuid(0x11111111111141118111111111111111).to_string();
+
+        assert!(state.store_scene_config(&scene_id, &channels).unwrap());
 
         let snapshot = state.snapshot();
         assert_eq!(snapshot.scene_configs.len(), 1);
-        assert_eq!(snapshot.scene_configs[0].scene_index, 1);
-        assert_eq!(snapshot.scene_configs[0].scene_name, "scene-1");
+        assert_eq!(snapshot.scene_configs[0].scene_index, None);
+        assert_eq!(snapshot.scene_configs[0].scene_name, scene_id);
         assert_eq!(snapshot.scene_configs[0].channel_configs[0].group, 0);
         assert_eq!(snapshot.scene_configs[0].channel_configs[0].channel, 1);
         assert_eq!(
@@ -1046,37 +1128,40 @@ mod tests {
     }
 
     #[test]
-    fn store_scene_config_rejects_invalid_scene_id() {
+    fn store_scene_config_creates_missing_uuid_scene_config() {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
         let channels = vec![channel(0, 1, "Lead", -7.5)];
 
-        let err = state
-            .store_scene_config("not-a-scene-id", &channels)
-            .unwrap_err();
+        let scene_id = test_uuid(0xabcabcabcabc4abc8abcabcabcabcabc).to_string();
 
-        assert!(err.contains("Invalid scene id"), "unexpected error: {err}");
-        assert!(state.get_scene_config("not-a-scene-id").is_none());
+        assert!(state.store_scene_config(&scene_id, &channels).unwrap());
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_name, scene_id);
+        assert_eq!(snapshot.scene_configs[0].scene_index, None);
     }
 
     #[test]
-    fn store_scene_config_rejects_empty_scene_name() {
+    fn store_scene_config_keeps_scene_name_for_missing_uuid() {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
         let channels = vec![channel(0, 1, "Lead", -7.5)];
 
-        let err = state.store_scene_config("0::", &channels).unwrap_err();
+        let scene_id = test_uuid(0xdefdefdefdef4def8defdefdefdefdef).to_string();
 
-        assert!(err.contains("Invalid scene id"), "unexpected error: {err}");
-        assert!(state.get_scene_config("0::").is_none());
+        assert!(state.store_scene_config(&scene_id, &channels).unwrap());
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.scene_configs[0].scene_name, scene_id);
     }
 
     #[test]
@@ -1084,7 +1169,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_000,
                 vec![ChannelConfig {
                     group: 0,
@@ -1095,14 +1181,17 @@ mod tests {
                     width: Some(1.2),
                     pan_mode: Some(PanMode::Stereo),
                 }],
+                test_uuid(0xaaaaaaaaaaaa4aaaaaaaaaaaaaaaaaaa),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
 
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
+
         assert!(
             state
-                .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+                .store_scene_config(&scene_id, &[channel(0, 1, "Lead", -6.0)])
                 .unwrap()
         );
 
@@ -1119,7 +1208,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_000,
                 vec![ChannelConfig {
                     group: 0,
@@ -1130,15 +1220,18 @@ mod tests {
                     width: Some(1.2),
                     pan_mode: Some(PanMode::Stereo),
                 }],
+                test_uuid(0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
+
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
 
         assert!(
             state
                 .store_scene_config(
-                    "1::scene-1",
+                    &scene_id,
                     &[ChannelInfo {
                         group: 0,
                         channel: 1,
@@ -1167,7 +1260,8 @@ mod tests {
         let mut state = ShowState {
             lockout: false,
             scene_configs: vec![scene_config(
-                "1::scene-1",
+                1,
+                "scene-1",
                 1_000,
                 vec![ChannelConfig {
                     group: 0,
@@ -1178,15 +1272,18 @@ mod tests {
                     width: Some(1.2),
                     pan_mode: Some(PanMode::Stereo),
                 }],
+                test_uuid(0xcccccccccccccccccccccccccccccccc),
             )],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             ..Default::default()
         };
+
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
 
         assert!(
             state
                 .store_scene_config(
-                    "1::scene-1",
+                    &scene_id,
                     &[ChannelInfo {
                         group: 0,
                         channel: 1,
@@ -1224,17 +1321,20 @@ mod tests {
     #[test]
     fn store_scene_config_preserves_fader_scope_toggle() {
         let mut state = ShowState::default();
+        let scene_id = test_uuid(0xdddddddddddd4ddddddddddddddddddd).to_string();
         state
-            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .store_scene_config(&scene_id, &[channel(0, 1, "Lead", -6.0)])
             .unwrap();
+
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
         assert!(
             state
-                .set_scene_scope_faders_enabled("1::scene-1", false)
+                .set_scene_scope_faders_enabled(&scene_id, false)
                 .unwrap()
         );
 
         state
-            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -3.0)])
+            .store_scene_config(&scene_id, &[channel(0, 1, "Lead", -3.0)])
             .unwrap();
 
         assert!(!state.scene_configs[0].scope_toggles.faders);
@@ -1243,18 +1343,21 @@ mod tests {
     #[test]
     fn scene_scope_fader_toggle_mutation_reports_noop() {
         let mut state = ShowState::default();
+        let scene_id = test_uuid(0xeeeeeeeeeeee4eeeeeeeeeeeeeeeeeee).to_string();
         state
-            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .store_scene_config(&scene_id, &[channel(0, 1, "Lead", -6.0)])
             .unwrap();
+
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
 
         assert!(
             state
-                .set_scene_scope_faders_enabled("1::scene-1", false)
+                .set_scene_scope_faders_enabled(&scene_id, false)
                 .unwrap()
         );
         assert!(
             !state
-                .set_scene_scope_faders_enabled("1::scene-1", false)
+                .set_scene_scope_faders_enabled(&scene_id, false)
                 .unwrap()
         );
         assert!(!state.scene_configs[0].scope_toggles.faders);
@@ -1263,20 +1366,15 @@ mod tests {
     #[test]
     fn scene_scope_pan_toggle_mutation_reports_noop() {
         let mut state = ShowState::default();
+        let scene_id = test_uuid(0xffffffffffff4fffffffffffffffffff).to_string();
         state
-            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .store_scene_config(&scene_id, &[channel(0, 1, "Lead", -6.0)])
             .unwrap();
 
-        assert!(
-            state
-                .set_scene_scope_pan_enabled("1::scene-1", true)
-                .unwrap()
-        );
-        assert!(
-            !state
-                .set_scene_scope_pan_enabled("1::scene-1", true)
-                .unwrap()
-        );
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
+
+        assert!(state.set_scene_scope_pan_enabled(&scene_id, true).unwrap());
+        assert!(!state.set_scene_scope_pan_enabled(&scene_id, true).unwrap());
         assert!(state.scene_configs[0].scope_toggles.pan);
     }
 
@@ -1305,11 +1403,14 @@ mod tests {
     #[test]
     fn scene_duration_allows_zero_for_immediate_movement() {
         let mut state = ShowState::default();
+        let scene_id = test_uuid(0xabababababab4abababababababababa).to_string();
         state
-            .store_scene_config("1::scene-1", &[channel(0, 1, "Lead", -6.0)])
+            .store_scene_config(&scene_id, &[channel(0, 1, "Lead", -6.0)])
             .unwrap();
 
-        assert!(state.set_scene_duration_ms("1::scene-1", 0).unwrap());
+        let scene_id = state.scene_configs[0].internal_scene_id.to_string();
+
+        assert!(state.set_scene_duration_ms(&scene_id, 0).unwrap());
         assert_eq!(state.scene_configs[0].duration_ms, 0);
     }
 }

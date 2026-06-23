@@ -165,7 +165,7 @@ pub fn validate_recall_scene_request(
     let scene = show
         .scene_configs
         .iter()
-        .find(|scene| scene.scene_id == scene_id)
+        .find(|scene| scene.internal_scene_id.to_string() == scene_id)
         .cloned()
         .ok_or_else(|| "Scene config not found".to_string())?;
 
@@ -177,7 +177,12 @@ pub fn validate_recall_scene_request(
         .scene_list
         .iter()
         .find(|candidate| {
-            candidate.index == scene.scene_index && candidate.name == scene.scene_name
+            scene
+                .scene_index
+                .map(|scene_index| {
+                    candidate.index == scene_index && candidate.name == scene.scene_name
+                })
+                .unwrap_or(false)
         })
         .ok_or_else(|| "Recall blocked: scene identity mismatch".to_string())?;
 

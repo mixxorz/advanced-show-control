@@ -20,7 +20,4 @@ pub use show_file::{
     ShowFileSceneScopeToggles, export_show_file, import_show_file, prune_show_file_to_lv1_scenes,
 };
 pub use state::ShowState;
-pub use types::{
-    ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument, parse_scene_id,
-    scene_id,
-};
+pub use types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument};

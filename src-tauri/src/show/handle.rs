@@ -37,12 +37,13 @@ mod tests {
     use crate::show::ShowCommand;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::types::{SceneConfig, SceneScopeToggles, ShowDocument};
+    use uuid::Uuid;
 
-    fn scene_config() -> SceneConfig {
+    fn scene_config(index: Option<i32>, name: &str, internal_scene_id: Uuid) -> SceneConfig {
         SceneConfig {
-            scene_id: "1:Intro".to_string(),
-            scene_index: 1,
-            scene_name: "Intro".to_string(),
+            internal_scene_id,
+            scene_index: index,
+            scene_name: name.to_string(),
             duration_ms: 0,
             channel_configs: Vec::new(),
             scoped_channels: Vec::new(),
@@ -135,8 +136,12 @@ mod tests {
         show.send(ShowCommand::ReplaceSnapshotForTest {
             snapshot: ShowDocument {
                 lockout: true,
-                scene_configs: vec![scene_config()],
-                cued_scene_id: None,
+                scene_configs: vec![scene_config(
+                    Some(1),
+                    "Intro",
+                    Uuid::from_u128(0x11111111111141118111111111111111),
+                )],
+                cued_scene_internal_id: None,
             },
             reply: None,
         })
@@ -189,15 +194,15 @@ mod tests {
             snapshot: ShowDocument {
                 lockout: false,
                 scene_configs: vec![SceneConfig {
-                    scene_id: "1::Verse".to_string(),
-                    scene_index: 1,
+                    internal_scene_id: Uuid::from_u128(0x22222222222242228222222222222222),
+                    scene_index: Some(1),
                     scene_name: "Verse".to_string(),
                     duration_ms: 1_500,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
                     scope_toggles: SceneScopeToggles::default(),
                 }],
-                cued_scene_id: None,
+                cued_scene_internal_id: None,
             },
             reply: None,
         })
@@ -222,7 +227,8 @@ mod tests {
             .await
             .unwrap();
         let snapshot = rx.await.unwrap();
-        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse Big");
+        assert_eq!(snapshot.scene_configs[0].scene_index, Some(1));
+        assert_eq!(snapshot.scene_configs[0].scene_name, "Verse Big");
         assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
     }
 
@@ -235,15 +241,15 @@ mod tests {
             snapshot: ShowDocument {
                 lockout: false,
                 scene_configs: vec![SceneConfig {
-                    scene_id: "1::Verse".to_string(),
-                    scene_index: 1,
+                    internal_scene_id: Uuid::from_u128(0x33333333333343338333333333333333),
+                    scene_index: Some(1),
                     scene_name: "Verse".to_string(),
                     duration_ms: 1_500,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
                     scope_toggles: SceneScopeToggles::default(),
                 }],
-                cued_scene_id: None,
+                cued_scene_internal_id: None,
             },
             reply: None,
         })
@@ -268,7 +274,8 @@ mod tests {
             .await
             .unwrap();
         let snapshot = rx.await.unwrap();
-        assert_eq!(snapshot.scene_configs[0].scene_id, "1::Verse");
+        assert_eq!(snapshot.scene_configs[0].scene_index, Some(1));
+        assert_eq!(snapshot.scene_configs[0].scene_name, "Verse");
         assert_eq!(snapshot.scene_configs[0].duration_ms, 1_500);
     }
 

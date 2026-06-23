@@ -267,7 +267,7 @@ async fn handle_command(
                 .and_then(|scene| {
                     let changed = state.cue_scene(&scene_id)?;
                     publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    tracing::info!(event = "scene_cued", scene_id = %scene.scene_id, scene_index = scene.scene_index, scene_name = %scene.scene_name, "Scene cued: {}", scene.scene_name);
+                    tracing::info!(event = "scene_cued", internal_scene_id = %scene.internal_scene_id, scene_index = scene.scene_index, scene_name = %scene.scene_name, "Scene cued: {}", scene.scene_name);
                     Ok(super::commands::CueSceneResult { changed, scene })
                 });
             if let Some(reply) = reply {
@@ -279,7 +279,8 @@ async fn handle_command(
                 .get_scene_config(&scene_id)
                 .ok_or_else(|| "Scene config not found".to_string())
                 .map(|scene| {
-                    let changed = state.set_selected_scene_id(Some(scene.scene_id.clone()));
+                    let changed =
+                        state.set_selected_scene_id(Some(scene.internal_scene_id.to_string()));
                     publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
                     super::commands::SelectedSceneResult { scene }
                 });

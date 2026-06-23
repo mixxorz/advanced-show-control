@@ -1,7 +1,8 @@
 use crate::lv1::ChannelInfo;
 
 use super::state::ShowState;
-use super::types::{ChannelConfig, ChannelRef, SceneConfig, parse_scene_id};
+use super::types::{ChannelConfig, ChannelRef, SceneConfig};
+use uuid::Uuid;
 
 impl ShowState {
     pub fn store_scene_config(
@@ -34,12 +35,16 @@ impl ShowState {
             })
             .unwrap_or_else(|| current_refs.clone());
         let previous = self.get_scene_config(scene_id);
-        let (scene_index, scene_name) =
-            parse_scene_id(scene_id).map_err(|err| format!("Invalid scene id: {err}"))?;
         let snapshot = SceneConfig {
-            scene_id: scene_id.to_string(),
-            scene_index,
-            scene_name,
+            internal_scene_id: previous
+                .as_ref()
+                .map(|scene| scene.internal_scene_id)
+                .unwrap_or_else(Uuid::new_v4),
+            scene_index: previous.as_ref().and_then(|scene| scene.scene_index),
+            scene_name: previous
+                .as_ref()
+                .map(|scene| scene.scene_name.clone())
+                .unwrap_or_else(|| scene_id.to_string()),
             duration_ms: self
                 .get_scene_config(scene_id)
                 .map(|scene| scene.duration_ms)
@@ -81,7 +86,7 @@ impl ShowState {
         match self
             .scene_configs_mut()
             .iter_mut()
-            .find(|scene| scene.scene_id == scene_id)
+            .find(|scene| scene.internal_scene_id.to_string() == scene_id)
         {
             Some(existing) => {
                 if *existing == snapshot {

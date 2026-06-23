@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,8 +40,8 @@ impl Default for SceneScopeToggles {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SceneConfig {
-    pub scene_id: String,
-    pub scene_index: i32,
+    pub internal_scene_id: Uuid,
+    pub scene_index: Option<i32>,
     pub scene_name: String,
     pub duration_ms: u64,
     pub channel_configs: Vec<ChannelConfig>,
@@ -53,7 +54,7 @@ pub struct SceneConfig {
 pub struct ShowDocument {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
-    pub cued_scene_id: Option<String>,
+    pub cued_scene_internal_id: Option<Uuid>,
 }
 
 impl ShowDocument {
@@ -61,26 +62,9 @@ impl ShowDocument {
         Self {
             lockout: false,
             scene_configs: Vec::new(),
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
         }
     }
-}
-
-pub fn scene_id(index: i32, name: &str) -> String {
-    format!("{index}::{name}")
-}
-
-pub fn parse_scene_id(s: &str) -> Result<(i32, String), String> {
-    let (index_str, name) = s
-        .split_once("::")
-        .ok_or_else(|| format!("invalid scene_id: {s}"))?;
-    if name.is_empty() {
-        return Err(format!("invalid scene_id name: {s}"));
-    }
-    let index = index_str
-        .parse::<i32>()
-        .map_err(|e| format!("invalid scene_id index: {e}"))?;
-    Ok((index, name.to_string()))
 }
 
 #[cfg(test)]
@@ -88,47 +72,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn scene_config_serializes_for_frontend_camel_case() {
+    fn scene_config_serializes_internal_id_and_nullable_scene_index() {
+        let internal_scene_id =
+            uuid::Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let config = SceneConfig {
-            scene_id: "0::Intro".to_string(),
-            scene_index: 0,
+            internal_scene_id,
+            scene_index: Some(0),
             scene_name: "Intro".to_string(),
             duration_ms: 1000,
-            channel_configs: vec![ChannelConfig {
-                group: 0,
-                channel: 1,
-                fader_db: Some(-6.0),
-                pan: Some(0.25),
-                balance: Some(-0.5),
-                width: Some(1.0),
-                pan_mode: Some(crate::lv1::PanMode::Stereo),
-            }],
-            scoped_channels: vec![ChannelRef {
-                group: 0,
-                channel: 1,
-            }],
-            scope_toggles: SceneScopeToggles {
-                faders: true,
-                pan: false,
-            },
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: SceneScopeToggles::default(),
         };
 
         let json = serde_json::to_value(config).unwrap();
 
-        assert_eq!(json["sceneId"], "0::Intro");
+        assert_eq!(json["internalSceneId"], internal_scene_id.to_string());
         assert_eq!(json["sceneIndex"], 0);
-        assert_eq!(json["sceneName"], "Intro");
-        assert_eq!(json["durationMs"], 1000);
-        assert_eq!(json["channelConfigs"][0]["faderDb"], -6.0);
-        assert_eq!(json["scopedChannels"][0]["channel"], 1);
-        assert_eq!(json["scopeToggles"]["faders"], true);
+        assert!(json.get("sceneId").is_none());
+    }
+
+    #[test]
+    fn scene_config_serializes_unlinked_scene_index_as_null() {
+        let config = SceneConfig {
+            internal_scene_id: uuid::Uuid::parse_str("22222222-2222-4222-8222-222222222222")
+                .unwrap(),
+            scene_index: None,
+            scene_name: "Deleted Verse".to_string(),
+            duration_ms: 1000,
+            channel_configs: Vec::new(),
+            scoped_channels: Vec::new(),
+            scope_toggles: SceneScopeToggles::default(),
+        };
+
+        let json = serde_json::to_value(config).unwrap();
+
+        assert_eq!(json["sceneIndex"], serde_json::Value::Null);
+        assert!(json.get("sceneId").is_none());
     }
 
     #[test]
     fn scene_config_serializes_pan_family_fields_for_frontend_camel_case() {
         let config = SceneConfig {
-            scene_id: "0::Intro".to_string(),
-            scene_index: 0,
+            internal_scene_id: Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),
+            scene_index: Some(0),
             scene_name: "Intro".to_string(),
             duration_ms: 1000,
             channel_configs: vec![ChannelConfig {
@@ -162,8 +149,8 @@ mod tests {
     #[test]
     fn scene_config_serializes_no_pan_mode_for_frontend_camel_case() {
         let config = SceneConfig {
-            scene_id: "0::Intro".to_string(),
-            scene_index: 0,
+            internal_scene_id: Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap(),
+            scene_index: Some(0),
             scene_name: "Intro".to_string(),
             duration_ms: 1000,
             channel_configs: vec![ChannelConfig {
@@ -191,23 +178,28 @@ mod tests {
     }
 
     #[test]
-    fn show_document_serializes_cued_scene_id_for_frontend_camel_case() {
+    fn show_document_serializes_cued_scene_internal_id_for_frontend_camel_case() {
         let snapshot = ShowDocument {
             lockout: false,
             scene_configs: Vec::new(),
-            cued_scene_id: Some("1::Verse".to_string()),
+            cued_scene_internal_id: Some(
+                Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+            ),
         };
 
         let json = serde_json::to_value(snapshot).unwrap();
 
-        assert_eq!(json["cuedSceneId"], "1::Verse");
+        assert_eq!(
+            json["cuedSceneInternalId"],
+            "55555555-5555-4555-8555-555555555555"
+        );
     }
 
     #[test]
     fn empty_show_document_has_no_cued_scene() {
         let snapshot = ShowDocument::empty();
 
-        assert_eq!(snapshot.cued_scene_id, None);
+        assert_eq!(snapshot.cued_scene_internal_id, None);
     }
 
     #[test]
@@ -232,15 +224,5 @@ mod tests {
 
         assert!(toggles.faders);
         assert!(toggles.pan);
-    }
-
-    #[test]
-    fn parse_scene_id_rejects_empty_name() {
-        let err = parse_scene_id("0::").unwrap_err();
-
-        assert!(
-            err.contains("invalid scene_id name"),
-            "unexpected error: {err}"
-        );
     }
 }

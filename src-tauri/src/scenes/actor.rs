@@ -501,7 +501,7 @@ async fn handle_explicit_recall_scene(
         })?;
     tracing::debug!(
         event = "scene_recall_command_sent",
-        scene_id = %result.scene.scene_id,
+        internal_scene_id = %result.scene.internal_scene_id,
         scene_index = result.scene.scene_index,
         scene_name = %result.scene.scene_name,
         "Scene recall command sent: {}",
@@ -1522,8 +1522,8 @@ mod tests {
         let snapshot = ShowDocument {
             lockout: false,
             scene_configs: vec![SceneConfig {
-                scene_id: "1::Intro".to_string(),
-                scene_index: 1,
+                internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+                scene_index: Some(1),
                 scene_name: "Intro".to_string(),
                 duration_ms,
                 channel_configs: vec![ChannelConfig {
@@ -1541,7 +1541,7 @@ mod tests {
                 }],
                 scope_toggles: SceneScopeToggles::default(),
             }],
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
         };
         let (reply, rx) = oneshot::channel();
         handle
