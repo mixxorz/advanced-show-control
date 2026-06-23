@@ -258,11 +258,13 @@ impl ShowState {
             let source = &mut self.scene_configs[adjusted_source_index];
             source.scene_index = Some(target.index);
             source.scene_name = target.name.clone();
+            self.sort_scene_configs();
             return Ok(true);
         }
         let source = &mut self.scene_configs[source_index];
         source.scene_index = Some(target.index);
         source.scene_name = target.name.clone();
+        self.sort_scene_configs();
         Ok(true)
     }
 
@@ -330,6 +332,15 @@ impl ShowState {
         self.scene_configs
             .iter_mut()
             .find(|scene| scene.internal_scene_id == internal_scene_id)
+    }
+
+    fn sort_scene_configs(&mut self) {
+        self.scene_configs.sort_by_key(|scene| {
+            (
+                scene.scene_index.is_none(),
+                scene.scene_index.unwrap_or(i32::MAX),
+            )
+        });
     }
 }
 
@@ -922,6 +933,43 @@ mod tests {
         assert_eq!(state.scene_configs[0].internal_scene_id, source_id);
         assert_eq!(state.scene_configs[0].scene_index, Some(2));
         assert_eq!(state.scene_configs[0].scene_name, "Verse");
+    }
+
+    #[test]
+    fn link_with_overwrite_keeps_linked_configs_sorted_by_scene_index() {
+        let replaced_id = test_uuid(0x10101010101040108101010101010101);
+        let second_id = test_uuid(0x20202020202040208202020202020202);
+        let source_id = test_uuid(0x30303030303040308303030303030303);
+        let target_scene = crate::lv1::SceneListEntry {
+            index: 0,
+            name: "Smoke A".to_string(),
+        };
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                scene_config(0, "Smoke A", 1_000, Vec::new(), replaced_id),
+                scene_config(1, "Smoke B", 1_000, Vec::new(), second_id),
+                SceneConfig {
+                    internal_scene_id: source_id,
+                    scene_index: None,
+                    scene_name: "Missing Smoke A".to_string(),
+                    duration_ms: 4_200,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        state
+            .link_scene_config(source_id, &target_scene, true)
+            .unwrap();
+
+        assert_eq!(state.scene_configs[0].internal_scene_id, source_id);
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[1].internal_scene_id, second_id);
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
     }
 
     #[test]
