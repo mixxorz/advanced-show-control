@@ -34,7 +34,8 @@ help:
 	  '  make dev                  Start Tauri dev server and app' \
 	  '  make storybook            Start Storybook dev server' \
 	  '  make probe                Run LV1 probe CLI (pass ARGS="...")' \
-	  '  make smoke                Run debug Tauri hardware smoke app'
+	  '  make smoke                Run debug Tauri hardware smoke app quietly' \
+	  '  make smoke VERBOSE=1      Run debug smoke with terminal logs'
 
 fmt: rust-fmt ui-fmt
 
@@ -92,4 +93,8 @@ probe:
 	cargo run --bin lv1-probe -- $(ARGS)
 
 smoke:
-	npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug
+	@if [ "$(VERBOSE)" = "1" ]; then \
+		npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug; \
+	else \
+		npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug >/dev/null 2>&1; \
+	fi
