@@ -147,6 +147,21 @@ function makeDuplicateVerseScene(): SceneConfig {
   };
 }
 
+function makeUnlinkedDraftScene(): SceneConfig {
+  return {
+    internalSceneId: "scene-draft-unlinked",
+    sceneIndex: null,
+    sceneName: "Deleted Draft Scene",
+    durationMs: 2000,
+    scopeToggles: { faders: true, pan: false },
+    scopedChannels: [
+      { group: 0, channel: 0 },
+      { group: 0, channel: 2 },
+    ],
+    channelConfigs: makeChannelConfigs(),
+  };
+}
+
 function makeDiscoveredSystems(): DiscoveredLv1System[] {
   return [
     {
@@ -237,6 +252,8 @@ export const storedChorusScene: SceneConfig = makeStoredChorusScene();
 
 export const duplicateVerseScene: SceneConfig = makeDuplicateVerseScene();
 
+export const unlinkedDraftScene: SceneConfig = makeUnlinkedDraftScene();
+
 export const connectedAppState: AppViewState = makeConnectedAppState();
 
 export const connectedWithDuplicateScenesAppState: AppViewState =
@@ -244,6 +261,13 @@ export const connectedWithDuplicateScenesAppState: AppViewState =
     makeStoredVerseScene(),
     makeStoredChorusScene(),
     makeDuplicateVerseScene(),
+  ]);
+
+export const connectedWithUnlinkedSceneAppState: AppViewState =
+  makeConnectedAppState([
+    makeStoredVerseScene(),
+    makeUnlinkedDraftScene(),
+    makeStoredChorusScene(),
   ]);
 
 export const discoveringAppState: AppViewState = makeBaseDisconnectedAppState();
