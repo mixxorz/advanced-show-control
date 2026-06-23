@@ -6,6 +6,8 @@ import type { AppViewState } from "./types";
 import {
   attemptReconnectLv1,
   connectLv1System,
+  deleteSceneConfig,
+  linkSceneConfig,
   reconnectTimedOut,
   refreshLv1Discovery,
   startupAutoConnectLv1,
@@ -23,37 +25,40 @@ const services: AppRuntimeServices = {
     ),
   newShowFile: () => invoke<void>("new_show_file"),
   openShowFile: () => invoke<void>("open_show_file_dialog"),
-  cueScene: (sceneId) => invoke<void>("cue_scene", { sceneId }),
-  recallScene: (sceneId) => invoke<void>("recall_scene", { sceneId }),
+  cueScene: (internalSceneId) => invoke<void>("cue_scene", { internalSceneId }),
+  recallScene: (internalSceneId) =>
+    invoke<void>("recall_scene", { internalSceneId }),
   reconnectTimedOut,
   refreshLv1Discovery,
   saveShowFile: () => invoke<void>("save_show_file"),
   saveShowFileAs: () => invoke<void>("save_show_file_as_dialog"),
-  selectSceneConfig: (sceneId) =>
-    invoke<void>("select_scene_config", { sceneId }),
-  setAllChannelsScoped: (sceneId, scoped) =>
-    invoke<void>("set_all_channels_scoped", { sceneId, scoped }),
-  setChannelScoped: (sceneId, group, channel, scoped) =>
+  selectSceneConfig: (internalSceneId) =>
+    invoke<void>("select_scene_config", { internalSceneId }),
+  setAllChannelsScoped: (internalSceneId, scoped) =>
+    invoke<void>("set_all_channels_scoped", { internalSceneId, scoped }),
+  setChannelScoped: (internalSceneId, group, channel, scoped) =>
     invoke<void>("set_channel_scoped", {
-      sceneId,
+      internalSceneId,
       group,
       channel,
       scoped,
     }),
   setLockout: (enabled) => invoke<void>("set_lockout", { enabled }),
-  setSceneDurationMs: (sceneId, durationMs) =>
-    invoke<void>("set_scene_duration_ms", { sceneId, durationMs }),
-  setSceneScopeFadersEnabled: (sceneId, enabled) =>
+  setSceneDurationMs: (internalSceneId, durationMs) =>
+    invoke<void>("set_scene_duration_ms", { internalSceneId, durationMs }),
+  setSceneScopeFadersEnabled: (internalSceneId, enabled) =>
     invoke<void>("set_scene_scope_faders_enabled", {
-      sceneId,
+      internalSceneId,
       enabled,
     }),
-  setSceneScopePanEnabled: (sceneId, enabled) =>
-    invoke<void>("set_scene_scope_pan_enabled", { sceneId, enabled }),
+  setSceneScopePanEnabled: (internalSceneId, enabled) =>
+    invoke<void>("set_scene_scope_pan_enabled", { internalSceneId, enabled }),
   setWindowTitle: (title) => getCurrentWindow().setTitle(title),
   startupAutoConnectLv1,
-  storeSceneConfig: (sceneId) =>
-    invoke<void>("store_scene_config", { sceneId }),
+  storeSceneConfig: (internalSceneId) =>
+    invoke<void>("store_scene_config", { internalSceneId }),
+  linkSceneConfig,
+  deleteSceneConfig,
 };
 
 export default function App() {

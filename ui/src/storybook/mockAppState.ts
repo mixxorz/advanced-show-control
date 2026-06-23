@@ -89,7 +89,7 @@ function makeConnectedIdentity() {
 
 function makeStoredVerseScene(): SceneConfig {
   return {
-    sceneId: "scene-verse",
+    internalSceneId: "scene-verse",
     sceneIndex: 3,
     sceneName: "S01: The Wonderful Blood",
     durationMs: 2500,
@@ -109,7 +109,7 @@ function makeStoredVerseScene(): SceneConfig {
 
 function makeStoredChorusScene(): SceneConfig {
   return {
-    sceneId: "scene-chorus",
+    internalSceneId: "scene-chorus",
     sceneIndex: 4,
     sceneName: "S02: Holy Forever",
     durationMs: 4000,
@@ -129,7 +129,7 @@ function makeStoredChorusScene(): SceneConfig {
 
 function makeDuplicateVerseScene(): SceneConfig {
   return {
-    sceneId: "scene-verse-duplicate",
+    internalSceneId: "scene-verse-duplicate",
     sceneIndex: 9,
     sceneName: "S01: The Wonderful Blood",
     durationMs: 1500,
@@ -191,8 +191,8 @@ function makeBaseDisconnectedAppState(
     logs: [],
     lastEventAt: null,
     sceneConfigs: [],
-    cuedSceneId: null,
-    selectedSceneId: null,
+    cuedSceneInternalId: null,
+    selectedSceneInternalId: null,
     showFileName: "Untitled Session",
     showFilePath: null,
     showFileDirty: false,
@@ -222,7 +222,7 @@ function makeConnectedAppState(
     logs,
     lastEventAt: "20:15:01",
     sceneConfigs,
-    selectedSceneId: sceneConfigs[0]?.sceneId ?? null,
+    selectedSceneInternalId: sceneConfigs[0]?.internalSceneId ?? null,
     showFileName: "Sunday Service.ascs",
     showFilePath: "/Users/engineer/Sessions/Sunday Service.ascs",
     showFileDirty: true,

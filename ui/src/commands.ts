@@ -22,8 +22,27 @@ export async function attemptReconnectLv1() {
 }
 
 export async function setSceneScopePanEnabled(
-  sceneId: string,
+  internalSceneId: string,
   enabled: boolean,
 ) {
-  return invoke<void>("set_scene_scope_pan_enabled", { sceneId, enabled });
+  return invoke<void>("set_scene_scope_pan_enabled", {
+    internalSceneId,
+    enabled,
+  });
+}
+
+export async function linkSceneConfig(
+  sourceInternalSceneId: string,
+  targetSceneIndex: number,
+  overwriteExisting: boolean,
+) {
+  return invoke<void>("link_scene_config", {
+    sourceInternalSceneId,
+    targetSceneIndex,
+    overwriteExisting,
+  });
+}
+
+export async function deleteSceneConfig(internalSceneId: string) {
+  return invoke<void>("delete_scene_config", { internalSceneId });
 }

@@ -35,6 +35,8 @@ function makeServices(
     setSceneDurationMs: vi.fn(async () => undefined),
     setSceneScopeFadersEnabled: vi.fn(async () => undefined),
     setSceneScopePanEnabled: vi.fn(async () => undefined),
+    linkSceneConfig: vi.fn(async () => undefined),
+    deleteSceneConfig: vi.fn(async () => undefined),
     storeSceneConfig: vi.fn(async () => undefined),
     startupAutoConnectLv1: vi.fn(async () => undefined),
     ...overrides,
@@ -269,8 +271,8 @@ describe("AppRuntime connection lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Recall" }));
     await user.click(screen.getByRole("button", { name: "GO" }));
 
-    expect(services.cueScene).toHaveBeenCalledWith(scene.sceneId);
-    expect(services.recallScene).toHaveBeenCalledWith(scene.sceneId);
+    expect(services.cueScene).toHaveBeenCalledWith(scene.internalSceneId);
+    expect(services.recallScene).toHaveBeenCalledWith(scene.internalSceneId);
     expect(services.recallScene).toHaveBeenCalledTimes(1);
   });
 

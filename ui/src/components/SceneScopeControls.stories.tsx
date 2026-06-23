@@ -16,7 +16,7 @@ const meta: Meta<typeof SceneScopeControls> = {
     ),
   ],
   args: {
-    sceneId: storedVerseScene.sceneId,
+    sceneId: storedVerseScene.internalSceneId,
     scopeToggles: { faders: true, pan: true },
   },
 };

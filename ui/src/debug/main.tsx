@@ -51,8 +51,10 @@ async function run() {
       await waitFor(() => state?.connection === "connected", "LV1 connected");
       await waitFor(
         () =>
-          state?.sceneConfigs.some((scene) => scene.sceneId === sceneA) &&
-          state.sceneConfigs.some((scene) => scene.sceneId === sceneB),
+          state?.sceneConfigs.some(
+            (scene) => scene.internalSceneId === sceneA,
+          ) &&
+          state.sceneConfigs.some((scene) => scene.internalSceneId === sceneB),
         "smoke scene configs",
       );
       await log(`CONNECTED ${label(identity)}`);

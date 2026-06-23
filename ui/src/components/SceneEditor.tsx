@@ -6,7 +6,7 @@ import { SelectedSceneHeader } from "./SelectedSceneHeader";
 export function SceneEditor() {
   const { appState } = useAppState();
   const selected = appState.sceneConfigs.find(
-    (scene) => scene.sceneId === appState.selectedSceneId,
+    (scene) => scene.internalSceneId === appState.selectedSceneInternalId,
   );
 
   if (!selected) {

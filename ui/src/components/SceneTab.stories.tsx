@@ -63,7 +63,7 @@ export const ChorusSelected: Story = {
   args: {
     appState: {
       ...connectedAppState,
-      selectedSceneId: storedChorusScene.sceneId,
+      selectedSceneInternalId: storedChorusScene.internalSceneId,
     },
   },
 };

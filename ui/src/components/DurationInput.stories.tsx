@@ -17,7 +17,7 @@ const meta: Meta<typeof DurationInput> = {
   ],
   args: {
     durationMs: storedVerseScene.durationMs,
-    sceneId: storedVerseScene.sceneId,
+    sceneId: storedVerseScene.internalSceneId,
   },
 };
 

@@ -13,25 +13,25 @@ export function SelectedSceneHeader(props: { scene: SceneConfig }) {
       <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between xl:gap-8">
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap">
           <ConsoleButton
-            onClick={() => commands.recallScene?.(props.scene.sceneId)}
+            onClick={() => commands.recallScene?.(props.scene.internalSceneId)}
             variant="ghost-primary"
           >
             Recall
           </ConsoleButton>
           <ConsoleButton
-            onClick={() => commands.cueScene?.(props.scene.sceneId)}
+            onClick={() => commands.cueScene?.(props.scene.internalSceneId)}
             variant="ghost-secondary"
           >
             Cue
           </ConsoleButton>
         </div>
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap">
-          <SelectedSceneActions sceneId={props.scene.sceneId} />
+          <SelectedSceneActions sceneId={props.scene.internalSceneId} />
         </div>
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap xl:justify-end">
           <DurationInput
             durationMs={props.scene.durationMs}
-            sceneId={props.scene.sceneId}
+            sceneId={props.scene.internalSceneId}
           />
         </div>
       </div>

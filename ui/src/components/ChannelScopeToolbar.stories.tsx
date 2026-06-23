@@ -18,7 +18,7 @@ const meta: Meta<typeof ChannelScopeToolbar> = {
   args: {
     allChannelsScoped: false,
     noChannelsScoped: false,
-    sceneId: storedVerseScene.sceneId,
+    sceneId: storedVerseScene.internalSceneId,
     scopeToggles: storedVerseScene.scopeToggles,
   },
 };

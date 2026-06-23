@@ -8,7 +8,8 @@ import { BottomStatusBar } from "./BottomStatusBar";
 
 const cuedConnectedAppState = {
   ...connectedAppState,
-  cuedSceneId: connectedAppState.sceneConfigs[1]?.sceneId ?? null,
+  cuedSceneInternalId:
+    connectedAppState.sceneConfigs[1]?.internalSceneId ?? null,
 };
 
 const safeAppState = {

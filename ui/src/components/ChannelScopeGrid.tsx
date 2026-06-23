@@ -34,7 +34,7 @@ export function ChannelScopeGrid(props: { scene: SceneConfig }) {
           scoped.size === props.scene.channelConfigs.length
         }
         noChannelsScoped={scoped.size === 0}
-        sceneId={props.scene.sceneId}
+        sceneId={props.scene.internalSceneId}
         scopeToggles={props.scene.scopeToggles}
       />
       <div className="mt-3 min-h-0 flex-1 space-y-3 overflow-auto">
@@ -43,7 +43,7 @@ export function ChannelScopeGrid(props: { scene: SceneConfig }) {
             configs={configs}
             groupName={groupName}
             key={groupName}
-            sceneId={props.scene.sceneId}
+            sceneId={props.scene.internalSceneId}
             scoped={scoped}
           />
         ))}

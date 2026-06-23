@@ -4,26 +4,32 @@ import { AppCommandsContext, AppStateContext } from "./appContextValues";
 
 export type AppCommands = {
   abortAll: () => void;
-  cueScene?: (sceneId: string) => void;
+  cueScene?: (internalSceneId: string) => void;
   disconnect: () => void | Promise<void>;
   newShowFile: () => void;
   openShowFile: () => void;
   saveShowFile: () => void;
   saveShowFileAs: () => void;
-  selectScene: (sceneId: string) => void;
-  recallScene?: (sceneId: string) => void;
+  selectScene: (internalSceneId: string) => void;
+  recallScene?: (internalSceneId: string) => void;
   selectSystem: (identity: Lv1SystemIdentity) => void | Promise<void>;
-  setAllChannelsScoped: (sceneId: string, scoped: boolean) => void;
+  setAllChannelsScoped: (internalSceneId: string, scoped: boolean) => void;
   setChannelScoped: (
-    sceneId: string,
+    internalSceneId: string,
     group: number,
     channel: number,
     scoped: boolean,
   ) => void;
-  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<boolean>;
-  setSceneScopeFadersEnabled: (sceneId: string, enabled: boolean) => void;
-  setSceneScopePanEnabled: (sceneId: string, enabled: boolean) => void;
-  storeSceneConfig: (sceneId: string) => Promise<boolean>;
+  setSceneDurationMs: (
+    internalSceneId: string,
+    durationMs: number,
+  ) => Promise<boolean>;
+  setSceneScopeFadersEnabled: (
+    internalSceneId: string,
+    enabled: boolean,
+  ) => void;
+  setSceneScopePanEnabled: (internalSceneId: string, enabled: boolean) => void;
+  storeSceneConfig: (internalSceneId: string) => Promise<boolean>;
   toggleLockout: () => void;
 };
 

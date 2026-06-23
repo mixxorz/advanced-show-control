@@ -16,11 +16,11 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
 
 export function SceneListView(props: {
   currentScene: SceneSummary | null;
-  cuedSceneId?: string | null;
+  cuedSceneInternalId?: string | null;
   scenes: SceneConfig[];
-  selectedSceneId: string | null;
-  onSelectScene: (sceneId: string) => void;
-  onRecallScene?: (sceneId: string) => void;
+  selectedSceneInternalId: string | null;
+  onSelectScene: (internalSceneId: string) => void;
+  onRecallScene?: (internalSceneId: string) => void;
 }) {
   const duplicateNames = duplicateSceneNames(props.scenes);
   const currentIndex = props.scenes.findIndex(
@@ -34,12 +34,12 @@ export function SceneListView(props: {
 
   function recallPreviousScene() {
     if (!canRecallPrevious) return;
-    props.onRecallScene?.(props.scenes[currentIndex - 1].sceneId);
+    props.onRecallScene?.(props.scenes[currentIndex - 1].internalSceneId);
   }
 
   function recallNextScene() {
     if (!canRecallNext) return;
-    props.onRecallScene?.(props.scenes[currentIndex + 1].sceneId);
+    props.onRecallScene?.(props.scenes[currentIndex + 1].internalSceneId);
   }
 
   return (
@@ -83,11 +83,11 @@ export function SceneListView(props: {
           props.scenes.map((scene) => (
             <SceneListRow
               currentScene={props.currentScene}
-              cued={scene.sceneId === props.cuedSceneId}
-              key={scene.sceneId}
-              onSelect={() => props.onSelectScene(scene.sceneId)}
+              cued={scene.internalSceneId === props.cuedSceneInternalId}
+              key={scene.internalSceneId}
+              onSelect={() => props.onSelectScene(scene.internalSceneId)}
               scene={scene}
-              selected={scene.sceneId === props.selectedSceneId}
+              selected={scene.internalSceneId === props.selectedSceneInternalId}
             />
           ))
         )}
@@ -103,11 +103,11 @@ export function SceneList() {
   return (
     <SceneListView
       currentScene={appState.currentScene}
-      cuedSceneId={appState.cuedSceneId ?? null}
+      cuedSceneInternalId={appState.cuedSceneInternalId ?? null}
       onRecallScene={commands.recallScene}
       onSelectScene={commands.selectScene}
       scenes={appState.sceneConfigs}
-      selectedSceneId={appState.selectedSceneId}
+      selectedSceneInternalId={appState.selectedSceneInternalId}
     />
   );
 }

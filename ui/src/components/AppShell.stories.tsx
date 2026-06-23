@@ -42,7 +42,7 @@ function makeShellSceneConfig(index: number, name: string): SceneConfig {
 
   return {
     ...source,
-    sceneId: `app-shell-scene-${index}`,
+    internalSceneId: `app-shell-scene-${index}`,
     sceneIndex: index,
     sceneName: name,
     durationMs: index === 0 ? 0 : (index % 6) * 500 + 1000,
@@ -55,10 +55,10 @@ const shellSceneConfigs = shellSceneNames.map((name, index) =>
 
 const sceneTabAppState: AppViewState = {
   ...connectedAppState,
-  cuedSceneId: shellSceneConfigs[5].sceneId,
+  cuedSceneInternalId: shellSceneConfigs[5].internalSceneId,
   currentScene: { index: 2, name: "S01: The Wonderful Blood" },
   sceneConfigs: shellSceneConfigs,
-  selectedSceneId: shellSceneConfigs[6].sceneId,
+  selectedSceneInternalId: shellSceneConfigs[6].internalSceneId,
 };
 
 const offlineSceneTabAppState: AppViewState = {
@@ -67,7 +67,7 @@ const offlineSceneTabAppState: AppViewState = {
   connectedLv1Identity: null,
   currentScene: null,
   discoveredLv1Systems: discoveredSystemsAppState.discoveredLv1Systems,
-  cuedSceneId: null,
+  cuedSceneInternalId: null,
 };
 
 const meta: Meta<AppShellStoryArgs> = {
@@ -110,31 +110,37 @@ function StatefulAppShellStory(props: {
 
   const commands: AppCommands = {
     ...mockAppCommands,
-    cueScene: (sceneId) =>
-      setAppState((state) => ({ ...state, cuedSceneId: sceneId })),
-    recallScene: (sceneId) =>
+    cueScene: (internalSceneId) =>
+      setAppState((state) => ({
+        ...state,
+        cuedSceneInternalId: internalSceneId,
+      })),
+    recallScene: (internalSceneId) =>
       setAppState((state) => {
         const scene = state.sceneConfigs.find(
-          (entry) => entry.sceneId === sceneId,
+          (entry) => entry.internalSceneId === internalSceneId,
         );
         if (!scene) return state;
 
         return {
           ...state,
-          currentScene: { index: scene.sceneIndex, name: scene.sceneName },
+          currentScene: { index: scene.sceneIndex ?? 0, name: scene.sceneName },
         };
       }),
-    selectScene: (sceneId) =>
-      setAppState((state) => ({ ...state, selectedSceneId: sceneId })),
+    selectScene: (internalSceneId) =>
+      setAppState((state) => ({
+        ...state,
+        selectedSceneInternalId: internalSceneId,
+      })),
     setAllChannelsScoped: (_sceneId, scoped) =>
       setAppState((state) => {
-        const selectedSceneId = state.selectedSceneId;
-        if (!selectedSceneId) return state;
+        const selectedSceneInternalId = state.selectedSceneInternalId;
+        if (!selectedSceneInternalId) return state;
 
         return {
           ...state,
           sceneConfigs: state.sceneConfigs.map((scene) =>
-            scene.sceneId === selectedSceneId
+            scene.internalSceneId === selectedSceneInternalId
               ? {
                   ...scene,
                   scopedChannels: scoped
@@ -150,13 +156,13 @@ function StatefulAppShellStory(props: {
       }),
     setChannelScoped: (_sceneId, group, channel, scoped) =>
       setAppState((state) => {
-        const selectedSceneId = state.selectedSceneId;
-        if (!selectedSceneId) return state;
+        const selectedSceneInternalId = state.selectedSceneInternalId;
+        if (!selectedSceneInternalId) return state;
 
         return {
           ...state,
           sceneConfigs: state.sceneConfigs.map((scene) => {
-            if (scene.sceneId !== selectedSceneId) return scene;
+            if (scene.internalSceneId !== selectedSceneInternalId) return scene;
 
             const nextScopedChannels = scoped
               ? [
@@ -176,13 +182,13 @@ function StatefulAppShellStory(props: {
       }),
     setSceneDurationMs: async (_sceneId, durationMs) => {
       setAppState((state) => {
-        const selectedSceneId = state.selectedSceneId;
-        if (!selectedSceneId) return state;
+        const selectedSceneInternalId = state.selectedSceneInternalId;
+        if (!selectedSceneInternalId) return state;
 
         return {
           ...state,
           sceneConfigs: state.sceneConfigs.map((scene) =>
-            scene.sceneId === selectedSceneId
+            scene.internalSceneId === selectedSceneInternalId
               ? { ...scene, durationMs }
               : scene,
           ),
@@ -217,13 +223,13 @@ function updateSelectedSceneToggle(
   toggle: "faders" | "pan",
   enabled: boolean,
 ): AppViewState {
-  const selectedSceneId = state.selectedSceneId;
-  if (!selectedSceneId) return state;
+  const selectedSceneInternalId = state.selectedSceneInternalId;
+  if (!selectedSceneInternalId) return state;
 
   return {
     ...state,
     sceneConfigs: state.sceneConfigs.map((scene) =>
-      scene.sceneId === selectedSceneId
+      scene.internalSceneId === selectedSceneInternalId
         ? {
             ...scene,
             scopeToggles: { ...scene.scopeToggles, [toggle]: enabled },

@@ -16,7 +16,7 @@ const meta: Meta<typeof SelectedSceneActions> = {
     ),
   ],
   args: {
-    sceneId: storedVerseScene.sceneId,
+    sceneId: storedVerseScene.internalSceneId,
   },
 };
 

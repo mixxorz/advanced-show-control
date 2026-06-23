@@ -28,29 +28,41 @@ export type AppRuntimeServices = {
   refreshLv1Discovery: () => Promise<unknown>;
   saveShowFile: () => Promise<unknown>;
   saveShowFileAs: () => Promise<unknown>;
-  cueScene: (sceneId: string) => Promise<unknown>;
-  recallScene: (sceneId: string) => Promise<unknown>;
-  selectSceneConfig: (sceneId: string) => Promise<unknown>;
-  setAllChannelsScoped: (sceneId: string, scoped: boolean) => Promise<unknown>;
+  cueScene: (internalSceneId: string) => Promise<unknown>;
+  recallScene: (internalSceneId: string) => Promise<unknown>;
+  selectSceneConfig: (internalSceneId: string) => Promise<unknown>;
+  setAllChannelsScoped: (
+    internalSceneId: string,
+    scoped: boolean,
+  ) => Promise<unknown>;
   setChannelScoped: (
-    sceneId: string,
+    internalSceneId: string,
     group: number,
     channel: number,
     scoped: boolean,
   ) => Promise<unknown>;
   setLockout: (enabled: boolean) => Promise<unknown>;
-  setSceneDurationMs: (sceneId: string, durationMs: number) => Promise<unknown>;
+  setSceneDurationMs: (
+    internalSceneId: string,
+    durationMs: number,
+  ) => Promise<unknown>;
   setSceneScopeFadersEnabled: (
-    sceneId: string,
+    internalSceneId: string,
     enabled: boolean,
   ) => Promise<unknown>;
   setSceneScopePanEnabled: (
-    sceneId: string,
+    internalSceneId: string,
     enabled: boolean,
   ) => Promise<unknown>;
   setWindowTitle?: (title: string) => Promise<unknown> | void;
   startupAutoConnectLv1: () => Promise<unknown>;
-  storeSceneConfig: (sceneId: string) => Promise<unknown>;
+  storeSceneConfig: (internalSceneId: string) => Promise<unknown>;
+  linkSceneConfig: (
+    sourceInternalSceneId: string,
+    targetSceneIndex: number,
+    overwriteExisting: boolean,
+  ) => Promise<unknown>;
+  deleteSceneConfig: (internalSceneId: string) => Promise<unknown>;
 };
 
 type ConnectionModalMode = "startup" | "manual" | null;
@@ -223,12 +235,14 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     },
     newShowFile: () => runCommand(() => services.newShowFile()),
     openShowFile: () => runCommand(() => services.openShowFile()),
-    cueScene: (sceneId) => runCommand(() => services.cueScene(sceneId)),
-    recallScene: (sceneId) => runCommand(() => services.recallScene(sceneId)),
+    cueScene: (internalSceneId) =>
+      runCommand(() => services.cueScene(internalSceneId)),
+    recallScene: (internalSceneId) =>
+      runCommand(() => services.recallScene(internalSceneId)),
     saveShowFile: () => runCommand(() => services.saveShowFile()),
     saveShowFileAs: () => runCommand(() => services.saveShowFileAs()),
-    selectScene: (sceneId: string) =>
-      runCommand(() => services.selectSceneConfig(sceneId)),
+    selectScene: (internalSceneId: string) =>
+      runCommand(() => services.selectSceneConfig(internalSceneId)),
     selectSystem: async (identity) => {
       setCommandError(null);
       try {
@@ -237,20 +251,26 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         setCommandError(String(error));
       }
     },
-    setAllChannelsScoped: (sceneId: string, scoped: boolean) =>
-      runCommand(() => services.setAllChannelsScoped(sceneId, scoped)),
-    setChannelScoped: (sceneId, group, channel, scoped) =>
+    setAllChannelsScoped: (internalSceneId: string, scoped: boolean) =>
+      runCommand(() => services.setAllChannelsScoped(internalSceneId, scoped)),
+    setChannelScoped: (internalSceneId, group, channel, scoped) =>
       runCommand(() =>
-        services.setChannelScoped(sceneId, group, channel, scoped),
+        services.setChannelScoped(internalSceneId, group, channel, scoped),
       ),
-    setSceneDurationMs: (sceneId, durationMs) =>
-      runCommand(() => services.setSceneDurationMs(sceneId, durationMs)),
-    setSceneScopeFadersEnabled: (sceneId, enabled) =>
-      runCommand(() => services.setSceneScopeFadersEnabled(sceneId, enabled)),
-    setSceneScopePanEnabled: (sceneId, enabled) =>
-      runCommand(() => services.setSceneScopePanEnabled(sceneId, enabled)),
-    storeSceneConfig: (sceneId) =>
-      runCommand(() => services.storeSceneConfig(sceneId)),
+    setSceneDurationMs: (internalSceneId, durationMs) =>
+      runCommand(() =>
+        services.setSceneDurationMs(internalSceneId, durationMs),
+      ),
+    setSceneScopeFadersEnabled: (internalSceneId, enabled) =>
+      runCommand(() =>
+        services.setSceneScopeFadersEnabled(internalSceneId, enabled),
+      ),
+    setSceneScopePanEnabled: (internalSceneId, enabled) =>
+      runCommand(() =>
+        services.setSceneScopePanEnabled(internalSceneId, enabled),
+      ),
+    storeSceneConfig: (internalSceneId) =>
+      runCommand(() => services.storeSceneConfig(internalSceneId)),
     toggleLockout: () =>
       runCommand(() => services.setLockout(!appState.lockout)),
   };

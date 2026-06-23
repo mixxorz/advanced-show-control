@@ -59,8 +59,8 @@ export type SceneScopeToggles = {
 };
 
 export type SceneConfig = {
-  sceneId: string;
-  sceneIndex: number;
+  internalSceneId: string;
+  sceneIndex: number | null;
   sceneName: string;
   durationMs: number;
   scopeToggles: SceneScopeToggles;
@@ -91,8 +91,8 @@ export type AppViewState = {
   logs: AppLogEntry[];
   lastEventAt: string | null;
   sceneConfigs: SceneConfig[];
-  cuedSceneId: string | null;
-  selectedSceneId: string | null;
+  cuedSceneInternalId: string | null;
+  selectedSceneInternalId: string | null;
   showFileName: string;
   showFilePath: string | null;
   showFileDirty: boolean;
@@ -116,8 +116,8 @@ export const disconnectedAppViewState: AppViewState = {
   logs: [],
   lastEventAt: null,
   sceneConfigs: [],
-  cuedSceneId: null,
-  selectedSceneId: null,
+  cuedSceneInternalId: null,
+  selectedSceneInternalId: null,
   showFileName: "Untitled Session",
   showFilePath: null,
   showFileDirty: false,

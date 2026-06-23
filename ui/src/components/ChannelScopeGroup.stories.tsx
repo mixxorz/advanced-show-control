@@ -20,7 +20,7 @@ const meta: Meta<typeof ChannelScopeGroup> = {
       (config) => config.group === 0,
     ),
     groupName: "Inputs",
-    sceneId: storedVerseScene.sceneId,
+    sceneId: storedVerseScene.internalSceneId,
     scoped: new Set(["0:0", "0:2"]),
   },
 };

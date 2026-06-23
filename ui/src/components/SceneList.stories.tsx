@@ -13,7 +13,7 @@ import { SceneListView } from "./SceneList";
 
 type SceneListStoryArgs = {
   appState?: AppViewState;
-  cuedSceneId?: string | null;
+  cuedSceneInternalId?: string | null;
 };
 
 const sceneNames = [
@@ -37,7 +37,7 @@ function makeSceneListConfig(index: number, name: string): SceneConfig {
 
   return {
     ...source,
-    sceneId: `scene-list-${index}`,
+    internalSceneId: `scene-list-${index}`,
     sceneIndex: index,
     sceneName: name,
     durationMs: index === 0 ? 0 : (index % 6) * 500 + 1000,
@@ -50,15 +50,15 @@ const manySceneConfigs = sceneNames.map((name, index) =>
 
 const manyScenesAppState: AppViewState = {
   ...connectedAppState,
-  cuedSceneId: manySceneConfigs[5].sceneId,
+  cuedSceneInternalId: manySceneConfigs[5].internalSceneId,
   currentScene: { index: 2, name: "S01: The Wonderful Blood" },
   sceneConfigs: manySceneConfigs,
-  selectedSceneId: manySceneConfigs[6].sceneId,
+  selectedSceneInternalId: manySceneConfigs[6].internalSceneId,
 };
 
 const manyScenesActiveSelectedAppState: AppViewState = {
   ...manyScenesAppState,
-  selectedSceneId: manySceneConfigs[2].sceneId,
+  selectedSceneInternalId: manySceneConfigs[2].internalSceneId,
 };
 
 const meta: Meta<SceneListStoryArgs> = {
@@ -72,17 +72,17 @@ const meta: Meta<SceneListStoryArgs> = {
   ],
   args: {
     appState: manyScenesAppState,
-    cuedSceneId: manyScenesAppState.cuedSceneId,
+    cuedSceneInternalId: manyScenesAppState.cuedSceneInternalId,
   },
   render: (args) => (
     <MockAppProviders appState={args.appState}>
       <SceneListView
         currentScene={args.appState?.currentScene ?? null}
-        cuedSceneId={args.cuedSceneId}
+        cuedSceneInternalId={args.cuedSceneInternalId}
         onRecallScene={() => {}}
         onSelectScene={() => {}}
         scenes={args.appState?.sceneConfigs ?? []}
-        selectedSceneId={args.appState?.selectedSceneId ?? null}
+        selectedSceneInternalId={args.appState?.selectedSceneInternalId ?? null}
       />
     </MockAppProviders>
   ),
@@ -102,7 +102,7 @@ export const ActiveSelected: Story = {
 
 export const CuedSelected: Story = {
   args: {
-    cuedSceneId: manySceneConfigs[6].sceneId,
+    cuedSceneInternalId: manySceneConfigs[6].internalSceneId,
   },
 };
 
