@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { AppViewState, Lv1SystemIdentity } from "../types";
+import { findSmokeSceneConfigs } from "./smokeScenes";
 import "../index.css";
 
-const sceneA = "0::Smoke A";
-const sceneB = "1::Smoke B";
+let sceneA = "";
+let sceneB = "";
 const group = 0;
 const channel = 1;
 const targetA = -10;
@@ -49,14 +50,11 @@ async function run() {
       );
       await invoke("connect_lv1_system", { identity });
       await waitFor(() => state?.connection === "connected", "LV1 connected");
-      await waitFor(
-        () =>
-          state?.sceneConfigs.some(
-            (scene) => scene.internalSceneId === sceneA,
-          ) &&
-          state.sceneConfigs.some((scene) => scene.internalSceneId === sceneB),
-        "smoke scene configs",
-      );
+      const scenes = await waitFor(() => {
+        return resolveSmokeSceneIds();
+      }, "smoke scene configs");
+      sceneA = scenes.sceneA;
+      sceneB = scenes.sceneB;
       await log(`CONNECTED ${label(identity)}`);
     });
 
@@ -198,7 +196,19 @@ function escapeHtml(value: string) {
 }
 
 async function setup() {
+  const previousSceneA = sceneA;
+  const previousSceneB = sceneB;
   await invoke("new_show_file");
+  const scenes = await waitFor(() => {
+    const next = resolveSmokeSceneIds();
+    if (!next) return undefined;
+    if (next.sceneA === previousSceneA || next.sceneB === previousSceneB) {
+      return undefined;
+    }
+    return next;
+  }, "smoke scene configs after new show");
+  sceneA = scenes.sceneA;
+  sceneB = scenes.sceneB;
   await rawReset(0, targetA);
   await invoke("store_scene_config", { internalSceneId: sceneA });
   await rawReset(1, targetB);
@@ -253,6 +263,16 @@ async function waitGain(target: number) {
 
 async function gain() {
   return invoke<number>("debug_smoke_get_channel_gain", { group, channel });
+}
+
+function resolveSmokeSceneIds() {
+  if (!state) return undefined;
+  const smokeScenes = findSmokeSceneConfigs(state.sceneConfigs);
+  if (!smokeScenes.sceneA || !smokeScenes.sceneB) return undefined;
+  return {
+    sceneA: smokeScenes.sceneA.internalSceneId,
+    sceneB: smokeScenes.sceneB.internalSceneId,
+  };
 }
 
 async function waitFor<T>(

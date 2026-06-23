@@ -96,6 +96,8 @@ make debug-smoke
 
 `make debug-smoke` runs the dev-only Tauri hardware smoke app and requires an LV1-compatible target environment.
 
+After running `make smoke` or `make debug-smoke`, always inspect `logs/debug-smoke-report.txt` for the authoritative suite result. The terminal output can be noisy or truncated; do not claim the smoke passed just because the shell command returned or no failure marker appeared in captured output.
+
 Common Rust checks:
 
 ```bash
