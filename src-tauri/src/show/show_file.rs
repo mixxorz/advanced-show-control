@@ -113,6 +113,8 @@ pub fn import_show_file(
     lv1: &Lv1StateSnapshot,
 ) -> Result<ImportedShowFile, String> {
     validate_show_file_for_lv1_scenes(file, lv1)?;
+    file.scene_configs
+        .retain(|config| !is_blank_scene_config(config));
     let generated_internal_scene_ids = file
         .scene_configs
         .iter()
@@ -223,6 +225,13 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
             pan: config.scope_toggles.pan,
         },
     }
+}
+
+fn is_blank_scene_config(config: &ShowFileSceneConfig) -> bool {
+    config.duration_ms == 0
+        && config.channel_configs.is_empty()
+        && config.scoped_channels.is_empty()
+        && config.scope_toggles == ShowFileSceneScopeToggles::default()
 }
 
 #[cfg(test)]

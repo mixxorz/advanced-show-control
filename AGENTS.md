@@ -98,6 +98,15 @@ make debug-smoke
 
 After running `make smoke` or `make debug-smoke`, always inspect `logs/debug-smoke-report.txt` for the authoritative suite result. The terminal output can be noisy or truncated; do not claim the smoke passed just because the shell command returned or no failure marker appeared in captured output.
 
+Runtime diagnostic logs are JSONL files written under Tauri's app config directory, not the repo `logs/` folder. On macOS, check:
+
+```bash
+~/Library/Application Support/com.advancedshowcontrol.app/logs/diagnostics-*.jsonl
+~/Library/Application Support/com.advancedshowcontrol.debug/logs/diagnostics-*.jsonl
+```
+
+The normal app uses `com.advancedshowcontrol.app`; the debug smoke app uses `com.advancedshowcontrol.debug`.
+
 Common Rust checks:
 
 ```bash

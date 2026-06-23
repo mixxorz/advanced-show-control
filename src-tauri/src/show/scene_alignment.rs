@@ -128,6 +128,14 @@ fn name_counts(entries: &[SceneEntry]) -> Vec<String> {
     duplicates
 }
 
+fn scene_entry_name_counts(entries: &[SceneEntry]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for entry in entries {
+        *counts.entry(entry.name.clone()).or_default() += 1;
+    }
+    counts
+}
+
 fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneListChange {
     if old == new {
         return SceneListChange::Noop;
@@ -252,12 +260,29 @@ fn align_by_exact_match_only(
     entries: &[SceneEntry],
 ) -> Vec<SceneConfig> {
     let mut remaining = configs;
+    let old_name_counts = name_counts_from_configs(&remaining);
+    let new_name_counts = scene_entry_name_counts(entries);
     let mut next = Vec::with_capacity(entries.len() + remaining.len());
     for entry in entries {
         if let Some(position) = remaining.iter().position(|scene| {
             scene.scene_index == Some(entry.index) && scene.scene_name == entry.name
         }) {
-            next.push(remaining.remove(position));
+            let mut scene = remaining.remove(position);
+            update_scene_locator(&mut scene, entry);
+            next.push(scene);
+        } else if old_name_counts.get(&entry.name) == Some(&1)
+            && new_name_counts.get(&entry.name) == Some(&1)
+        {
+            if let Some(position) = remaining
+                .iter()
+                .position(|scene| scene.scene_name == entry.name)
+            {
+                let mut scene = remaining.remove(position);
+                update_scene_locator(&mut scene, entry);
+                next.push(scene);
+            } else {
+                next.push(default_scene_config(entry));
+            }
         } else {
             next.push(default_scene_config(entry));
         }
@@ -267,6 +292,14 @@ fn align_by_exact_match_only(
         next.push(scene);
     }
     next
+}
+
+fn name_counts_from_configs(configs: &[SceneConfig]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for scene in configs {
+        *counts.entry(scene.scene_name.clone()).or_default() += 1;
+    }
+    counts
 }
 
 pub(crate) fn align_scene_configs(
@@ -381,6 +414,25 @@ mod tests {
         assert_eq!(aligned[0].scene_index, Some(2));
         assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(1));
         assert_eq!(aligned[1].scene_index, Some(1));
+    }
+
+    #[test]
+    fn block_move_preserves_configs_by_unique_names() {
+        let old = vec![
+            scene(1, Some(1), "Song 1", 1_000),
+            scene(2, Some(2), "Song 2", 2_000),
+        ];
+        let new = vec![lv1_scene(5, "Song 1"), lv1_scene(6, "Song 2")];
+
+        let aligned = align_scene_configs(old, &new);
+
+        assert_eq!(aligned.len(), 2);
+        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(1));
+        assert_eq!(aligned[0].scene_index, Some(5));
+        assert_eq!(aligned[0].duration_ms, 1_000);
+        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[1].scene_index, Some(6));
+        assert_eq!(aligned[1].duration_ms, 2_000);
     }
 
     #[test]
