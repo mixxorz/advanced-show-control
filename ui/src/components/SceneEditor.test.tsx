@@ -1,43 +1,56 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { AppCommandsProvider, AppStateProvider } from "../appContext";
+import {
+  AppCommandsProvider,
+  AppStateProvider,
+  type AppCommands,
+} from "../appContext";
 import { connectedAppState } from "../storybook/mockAppState";
 import type { AppViewState } from "../types";
 import { SceneEditor } from "./SceneEditor";
 
-function renderEditor(
-  appState: AppViewState = connectedAppState,
-  commands = {},
+function makeCommands(commands: Partial<AppCommands> = {}): AppCommands {
+  return {
+    abortAll: vi.fn(),
+    disconnect: vi.fn(),
+    newShowFile: vi.fn(),
+    openShowFile: vi.fn(),
+    saveShowFile: vi.fn(),
+    saveShowFileAs: vi.fn(),
+    selectScene: vi.fn(),
+    selectSystem: vi.fn(),
+    setAllChannelsScoped: vi.fn(),
+    setChannelScoped: vi.fn(),
+    setSceneDurationMs: vi.fn(),
+    setSceneScopeFadersEnabled: vi.fn(),
+    setSceneScopePanEnabled: vi.fn(),
+    storeSceneConfig: vi.fn(),
+    linkSceneConfig: vi.fn(),
+    deleteSceneConfig: vi.fn(),
+    toggleLockout: vi.fn(),
+    ...commands,
+  };
+}
+
+function editorTree(
+  appState: AppViewState,
+  commands: Partial<AppCommands> = {},
 ) {
-  return render(
+  return (
     <AppStateProvider appState={appState} commandError={null}>
-      <AppCommandsProvider
-        commands={{
-          abortAll: vi.fn(),
-          disconnect: vi.fn(),
-          newShowFile: vi.fn(),
-          openShowFile: vi.fn(),
-          saveShowFile: vi.fn(),
-          saveShowFileAs: vi.fn(),
-          selectScene: vi.fn(),
-          selectSystem: vi.fn(),
-          setAllChannelsScoped: vi.fn(),
-          setChannelScoped: vi.fn(),
-          setSceneDurationMs: vi.fn(),
-          setSceneScopeFadersEnabled: vi.fn(),
-          setSceneScopePanEnabled: vi.fn(),
-          storeSceneConfig: vi.fn(),
-          linkSceneConfig: vi.fn(),
-          deleteSceneConfig: vi.fn(),
-          toggleLockout: vi.fn(),
-          ...commands,
-        }}
-      >
+      <AppCommandsProvider commands={makeCommands(commands)}>
         <SceneEditor />
       </AppCommandsProvider>
-    </AppStateProvider>,
+    </AppStateProvider>
   );
+}
+
+function renderEditor(
+  appState: AppViewState = connectedAppState,
+  commands: Partial<AppCommands> = {},
+) {
+  return render(editorTree(appState, commands));
 }
 
 describe("SceneEditor", () => {
@@ -161,34 +174,10 @@ describe("SceneEditor", () => {
     const { rerender } = renderEditor(appState, { linkSceneConfig });
 
     rerender(
-      <AppStateProvider
-        appState={{ ...appState, scenes: connectedAppState.scenes }}
-        commandError={null}
-      >
-        <AppCommandsProvider
-          commands={{
-            abortAll: vi.fn(),
-            disconnect: vi.fn(),
-            newShowFile: vi.fn(),
-            openShowFile: vi.fn(),
-            saveShowFile: vi.fn(),
-            saveShowFileAs: vi.fn(),
-            selectScene: vi.fn(),
-            selectSystem: vi.fn(),
-            setAllChannelsScoped: vi.fn(),
-            setChannelScoped: vi.fn(),
-            setSceneDurationMs: vi.fn(),
-            setSceneScopeFadersEnabled: vi.fn(),
-            setSceneScopePanEnabled: vi.fn(),
-            storeSceneConfig: vi.fn(),
-            linkSceneConfig,
-            deleteSceneConfig: vi.fn(),
-            toggleLockout: vi.fn(),
-          }}
-        >
-          <SceneEditor />
-        </AppCommandsProvider>
-      </AppStateProvider>,
+      editorTree(
+        { ...appState, scenes: connectedAppState.scenes },
+        { linkSceneConfig },
+      ),
     );
 
     await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));

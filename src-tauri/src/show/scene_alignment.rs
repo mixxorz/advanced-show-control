@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 use crate::lv1::SceneListEntry;
 use uuid::Uuid;
@@ -50,69 +50,12 @@ fn update_scene_locator(config: &mut SceneConfig, entry: &SceneEntry) {
     config.scene_name = entry.name.clone();
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum SceneListChange {
-    Noop,
-    Rename,
-    Move { from: usize, to: usize },
-    Insert { at: usize },
-    Delete { at: usize },
-    Ambiguous,
-}
-
-impl SceneListChange {
-    fn diagnostic_label(&self) -> String {
-        match self {
-            Self::Noop => "noop".to_string(),
-            Self::Rename => "rename".to_string(),
-            Self::Move { from, to } => format!("move from={from} to={to}"),
-            Self::Insert { at } => format!("insert at={at}"),
-            Self::Delete { at } => format!("delete at={at}"),
-            Self::Ambiguous => "ambiguous safe-name-fallback".to_string(),
-        }
-    }
-}
-
-fn without_at(entries: &[SceneEntry], at: usize) -> Vec<SceneEntry> {
-    entries
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, entry)| if idx == at { None } else { Some(entry.clone()) })
-        .collect()
-}
-
-fn names(entries: &[SceneEntry]) -> Vec<&str> {
-    entries.iter().map(|entry| entry.name.as_str()).collect()
-}
-
 fn describe_entries(entries: &[SceneEntry]) -> String {
     entries
         .iter()
         .map(|entry| format!("{}:{:?}", entry.index, entry.name))
         .collect::<Vec<_>>()
         .join(" | ")
-}
-
-fn move_candidates(old: &[SceneEntry], new: &[SceneEntry]) -> Vec<(usize, usize)> {
-    if old.len() != new.len() {
-        return Vec::new();
-    }
-
-    let mut matches = Vec::new();
-    for from in 0..old.len() {
-        let remaining = without_at(old, from);
-        let moved = old[from].clone();
-        for to in 0..old.len() {
-            let mut candidate = remaining.clone();
-            candidate.insert(to, moved.clone());
-            if names(&candidate) == names(new) {
-                matches.push((from, to));
-            }
-        }
-    }
-    matches.sort_unstable();
-    matches.dedup();
-    matches
 }
 
 fn name_counts(entries: &[SceneEntry]) -> Vec<String> {
@@ -136,126 +79,7 @@ fn scene_entry_name_counts(entries: &[SceneEntry]) -> HashMap<String, usize> {
     counts
 }
 
-fn classify_scene_list_change(old: &[SceneEntry], new: &[SceneEntry]) -> SceneListChange {
-    if old == new {
-        return SceneListChange::Noop;
-    }
-
-    if old.len() == new.len() {
-        let changed_indexes: Vec<_> = old
-            .iter()
-            .zip(new.iter())
-            .enumerate()
-            .filter_map(|(idx, (old_entry, new_entry))| {
-                if old_entry == new_entry {
-                    None
-                } else {
-                    Some(idx)
-                }
-            })
-            .collect();
-
-        if changed_indexes.len() == 1 {
-            let idx = changed_indexes[0];
-            if old[idx].index == new[idx].index {
-                return SceneListChange::Rename;
-            }
-        }
-
-        let matches = move_candidates(old, new);
-        return match matches.as_slice() {
-            [(from, to)] if from != to => SceneListChange::Move {
-                from: *from,
-                to: *to,
-            },
-            _ => SceneListChange::Ambiguous,
-        };
-    }
-
-    if new.len() == old.len() + 1 {
-        let matches: Vec<_> = (0..new.len())
-            .filter(|at| names(&without_at(new, *at)) == names(old))
-            .collect();
-        return match matches.as_slice() {
-            [at] => SceneListChange::Insert { at: *at },
-            _ => SceneListChange::Ambiguous,
-        };
-    }
-
-    if old.len() == new.len() + 1 {
-        let matches: Vec<_> = (0..old.len())
-            .filter(|at| names(&without_at(old, *at)) == names(new))
-            .collect();
-        return match matches.as_slice() {
-            [at] => SceneListChange::Delete { at: *at },
-            _ => SceneListChange::Ambiguous,
-        };
-    }
-
-    SceneListChange::Ambiguous
-}
-
-fn apply_position_mapping(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> Vec<SceneConfig> {
-    let mut linked = configs
-        .iter()
-        .filter(|scene| scene.scene_index.is_some())
-        .cloned()
-        .collect::<Vec<_>>();
-    let mut unlinked = configs
-        .into_iter()
-        .filter(|scene| scene.scene_index.is_none())
-        .collect::<Vec<_>>();
-    for (config, entry) in linked.iter_mut().zip(entries.iter()) {
-        update_scene_locator(config, entry);
-    }
-    for scene in unlinked.iter_mut() {
-        scene.scene_index = None;
-    }
-    linked.extend(unlinked);
-    linked
-}
-
-fn align_by_name_fifo(configs: Vec<SceneConfig>, entries: &[SceneEntry]) -> Vec<SceneConfig> {
-    let mut old_by_name = HashMap::<String, VecDeque<SceneConfig>>::new();
-    let mut old_linked = Vec::new();
-    let mut leftovers = Vec::new();
-    for scene in configs {
-        if scene.scene_index.is_some() {
-            old_by_name
-                .entry(scene.scene_name.clone())
-                .or_default()
-                .push_back(scene.clone());
-            old_linked.push(scene);
-        } else {
-            leftovers.push(scene);
-        }
-    }
-
-    let mut next = Vec::with_capacity(entries.len() + leftovers.len());
-    let mut consumed = HashSet::new();
-    for entry in entries {
-        let mut scene = old_by_name
-            .get_mut(&entry.name)
-            .and_then(VecDeque::pop_front)
-            .unwrap_or_else(|| default_scene_config(entry));
-        update_scene_locator(&mut scene, entry);
-        consumed.insert(scene.internal_scene_id);
-        next.push(scene);
-    }
-    for mut scene in old_linked {
-        if !consumed.contains(&scene.internal_scene_id) {
-            scene.scene_index = None;
-            next.push(scene);
-        }
-    }
-    for mut scene in leftovers {
-        scene.scene_index = None;
-        next.push(scene);
-    }
-    next
-}
-
-fn align_by_exact_match_only(
+fn align_by_current_lv1_order(
     configs: Vec<SceneConfig>,
     entries: &[SceneEntry],
 ) -> Vec<SceneConfig> {
@@ -268,8 +92,9 @@ fn align_by_exact_match_only(
         .into_iter()
         .filter(|scene| scene.scene_index.is_none())
         .collect::<Vec<_>>();
-    let old_name_counts = name_counts_from_configs(&remaining);
+    let old_name_counts = scene_config_name_counts(&remaining);
     let new_name_counts = scene_entry_name_counts(entries);
+    let renamed_index = single_same_index_rename(&remaining, entries);
     let mut next = Vec::with_capacity(entries.len() + remaining.len());
     for entry in entries {
         if let Some(position) = remaining.iter().position(|scene| {
@@ -278,12 +103,16 @@ fn align_by_exact_match_only(
             let mut scene = remaining.remove(position);
             update_scene_locator(&mut scene, entry);
             next.push(scene);
-        } else if old_name_counts.get(&entry.name) == Some(&1)
-            && new_name_counts.get(&entry.name) == Some(&1)
+        } else if let Some(position) =
+            unique_name_match_position(&remaining, entry, &old_name_counts, &new_name_counts)
         {
+            let mut scene = remaining.remove(position);
+            update_scene_locator(&mut scene, entry);
+            next.push(scene);
+        } else if renamed_index == Some(entry.index) {
             if let Some(position) = remaining
                 .iter()
-                .position(|scene| scene.scene_name == entry.name)
+                .position(|scene| scene.scene_index == Some(entry.index))
             {
                 let mut scene = remaining.remove(position);
                 update_scene_locator(&mut scene, entry);
@@ -306,7 +135,42 @@ fn align_by_exact_match_only(
     next
 }
 
-fn name_counts_from_configs(configs: &[SceneConfig]) -> HashMap<String, usize> {
+fn unique_name_match_position(
+    remaining: &[SceneConfig],
+    entry: &SceneEntry,
+    old_name_counts: &HashMap<String, usize>,
+    new_name_counts: &HashMap<String, usize>,
+) -> Option<usize> {
+    if old_name_counts.get(&entry.name) == Some(&1) && new_name_counts.get(&entry.name) == Some(&1)
+    {
+        remaining
+            .iter()
+            .position(|scene| scene.scene_name == entry.name)
+    } else {
+        None
+    }
+}
+
+fn single_same_index_rename(configs: &[SceneConfig], entries: &[SceneEntry]) -> Option<i32> {
+    if configs.len() != entries.len() {
+        return None;
+    }
+    let mut renamed = None;
+    for scene in configs {
+        let entry = entries
+            .iter()
+            .find(|entry| scene.scene_index == Some(entry.index))?;
+        if scene.scene_name != entry.name {
+            if renamed.is_some() {
+                return None;
+            }
+            renamed = Some(entry.index);
+        }
+    }
+    renamed
+}
+
+fn scene_config_name_counts(configs: &[SceneConfig]) -> HashMap<String, usize> {
     let mut counts = HashMap::new();
     for scene in configs {
         *counts.entry(scene.scene_name.clone()).or_default() += 1;
@@ -318,16 +182,7 @@ pub(crate) fn align_scene_configs(
     configs: Vec<SceneConfig>,
     lv1_scenes: &[SceneListEntry],
 ) -> Vec<SceneConfig> {
-    let old_entries = entries_from_configs(&configs);
-    let new_entries = entries_from_scene_list(lv1_scenes);
-    match classify_scene_list_change(&old_entries, &new_entries) {
-        SceneListChange::Noop => configs,
-        SceneListChange::Rename => apply_position_mapping(configs, &new_entries),
-        SceneListChange::Move { .. }
-        | SceneListChange::Insert { .. }
-        | SceneListChange::Delete { .. } => align_by_name_fifo(configs, &new_entries),
-        SceneListChange::Ambiguous => align_by_exact_match_only(configs, &new_entries),
-    }
+    align_by_current_lv1_order(configs, &entries_from_scene_list(lv1_scenes))
 }
 
 pub(crate) fn scene_alignment_diagnostic(
@@ -338,26 +193,12 @@ pub(crate) fn scene_alignment_diagnostic(
     let old_entries = entries_from_configs(old);
     let new_entries = entries_from_configs(new);
     let lv1_entries = entries_from_scene_list(lv1_scenes);
-    let change = classify_scene_list_change(&old_entries, &lv1_entries);
-    let candidates = move_candidates(&old_entries, &lv1_entries)
-        .into_iter()
-        .map(|(from, to)| format!("{from}->{to}"))
-        .collect::<Vec<_>>()
-        .join(",");
     format!(
-        "scene alignment preview: change={} old=[{}] new=[{}] move_candidates=[{}] duplicate_names=[{}] strategy={}",
-        change.diagnostic_label(),
+        "scene alignment preview: old=[{}] new=[{}] lv1=[{}] duplicate_names=[{}] strategy=exact-unique-name-single-rename",
         describe_entries(&old_entries),
         describe_entries(&new_entries),
-        candidates,
+        describe_entries(&lv1_entries),
         name_counts(&lv1_entries).join(","),
-        if matches!(change, SceneListChange::Rename | SceneListChange::Noop) {
-            "classified"
-        } else if matches!(change, SceneListChange::Ambiguous) {
-            "exact-or-unique-name"
-        } else {
-            "name-keyed-fifo"
-        },
     )
 }
 
@@ -590,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_names_keep_fifo_for_classified_insert() {
+    fn duplicate_names_preserve_exact_matches_before_default_insert() {
         let old = vec![
             scene(1, Some(1), "Intro", 1_000),
             scene(2, Some(2), "Intro", 2_000),

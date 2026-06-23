@@ -7,33 +7,39 @@ function sceneIndexLabel(scene: SceneSummary) {
   return `${String(scene.index + 1).padStart(3, "0")} ${scene.name}`;
 }
 
+function defaultTargetIndex(
+  lv1Scenes: SceneSummary[],
+  existingConfigs: SceneConfig[],
+) {
+  return String(
+    lv1Scenes.find(
+      (scene) =>
+        !existingConfigs.some((config) => config.sceneIndex === scene.index),
+    )?.index ??
+      lv1Scenes[0]?.index ??
+      "",
+  );
+}
+
 export function UnlinkedSceneControls(props: {
   scene: SceneConfig;
   lv1Scenes: SceneSummary[];
   existingConfigs: SceneConfig[];
 }) {
   const commands = useAppCommands();
-  const linkedSceneIndexes = new Set(
-    props.existingConfigs
-      .map((scene) => scene.sceneIndex)
-      .filter((index) => index !== null),
+  const fallbackTargetIndex = defaultTargetIndex(
+    props.lv1Scenes,
+    props.existingConfigs,
   );
-  const initialTargetIndex =
-    props.lv1Scenes.find((scene) => !linkedSceneIndexes.has(scene.index))
-      ?.index ??
-    props.lv1Scenes[0]?.index ??
-    null;
-  const [selectedTargetIndex, setSelectedTargetIndex] = useState(
-    String(initialTargetIndex ?? ""),
-  );
+  const [selectedTargetIndex, setSelectedTargetIndex] =
+    useState(fallbackTargetIndex);
   const [pendingOverwriteTargetIndex, setPendingOverwriteTargetIndex] =
     useState<number | null>(null);
-  const targetExists = props.lv1Scenes.some(
+  const effectiveSelectedTargetIndex = props.lv1Scenes.some(
     (scene) => String(scene.index) === selectedTargetIndex,
-  );
-  const effectiveSelectedTargetIndex = targetExists
+  )
     ? selectedTargetIndex
-    : String(initialTargetIndex ?? "");
+    : fallbackTargetIndex;
 
   function linkSelectedTarget() {
     if (!effectiveSelectedTargetIndex) return;

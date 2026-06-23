@@ -221,19 +221,19 @@ impl ShowState {
         target: &crate::lv1::SceneListEntry,
         overwrite_existing: bool,
     ) -> Result<bool, String> {
-        let source_index = self
+        let source = self
             .scene_configs
             .iter()
-            .position(|scene| scene.internal_scene_id == source_internal_scene_id)
+            .find(|scene| scene.internal_scene_id == source_internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
-        if self.scene_configs[source_index].scene_index.is_some() {
+        if source.scene_index.is_some() {
             return Err("Link blocked: source scene is already linked".to_string());
         }
-        let target_index = self
+        if let Some(target_index) = self
             .scene_configs
             .iter()
-            .position(|scene| scene.scene_index == Some(target.index));
-        if let Some(target_index) = target_index {
+            .position(|scene| scene.scene_index == Some(target.index))
+        {
             if self.scene_configs[target_index].internal_scene_id == source_internal_scene_id {
                 return Ok(false);
             }
@@ -250,18 +250,12 @@ impl ShowState {
             if self.cued_scene_internal_id == Some(removed_internal_scene_id) {
                 self.cued_scene_internal_id = None;
             }
-            let adjusted_source_index = if target_index < source_index {
-                source_index - 1
-            } else {
-                source_index
-            };
-            let source = &mut self.scene_configs[adjusted_source_index];
-            source.scene_index = Some(target.index);
-            source.scene_name = target.name.clone();
-            self.sort_scene_configs();
-            return Ok(true);
         }
-        let source = &mut self.scene_configs[source_index];
+        let source = self
+            .scene_configs
+            .iter_mut()
+            .find(|scene| scene.internal_scene_id == source_internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
         source.scene_index = Some(target.index);
         source.scene_name = target.name.clone();
         self.sort_scene_configs();

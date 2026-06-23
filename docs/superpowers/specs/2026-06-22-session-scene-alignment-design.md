@@ -93,31 +93,20 @@ Definitions:
 - A scene name is unique in a list when it appears exactly once in that list.
 - A blank file scene config has no configured fade behavior: default duration, no stored channel targets, no scoped channels, and default scope toggles.
 
-First classify the transition from previous linked configs to the incoming LV1 scene list. Existing unlinked configs are excluded from classification and carried through unchanged.
-
-Classification rules match the current implementation:
-
-1. `Noop`: previous linked entries and LV1 entries are identical.
-2. `Rename`: list lengths are equal, exactly one position changed, and the changed entry kept the same LV1 index.
-3. `Move`: list lengths are equal and exactly one name-based move candidate transforms the previous linked list into the incoming LV1 list.
-4. `Insert`: incoming LV1 list has one additional entry and exactly one name-based insert candidate transforms the previous linked list into the incoming LV1 list.
-5. `Delete`: incoming LV1 list has one fewer entry and exactly one name-based delete candidate transforms the previous linked list into the incoming LV1 list.
-6. `Ambiguous`: every other transition.
+The reconciler processes the incoming LV1 scene list in LV1 order. Existing unlinked configs are excluded from matching and carried through unchanged.
 
 Application rules:
 
-1. Existing unlinked configs remain unlinked.
-2. `Noop` preserves linked configs unchanged.
-3. `Rename` applies positional mapping. The renamed config keeps its internal UUID and fade data; its `scene_name` is updated from the incoming LV1 scene. Other linked configs keep their UUIDs and fade data.
-4. `Move` uses the existing name-keyed FIFO matching strategy. Matched configs keep their internal UUIDs and fade data, and their LV1 locators are updated from the incoming LV1 scenes.
-5. `Insert` uses the existing name-keyed FIFO matching strategy for old configs and creates one default linked config with a new internal UUID for the inserted LV1 scene.
-6. `Delete` uses name-keyed FIFO matching for LV1 scenes that still exist. The deleted saved config is preserved as unlinked with `scene_index = None`.
-7. `Ambiguous` avoids FIFO guessing. First preserve exact current `(index, name)` matches. For remaining entries, if a scene name appears exactly once among previous linked configs and exactly once in the current LV1 scene list, treat it as the same LV1 scene even if the index changed. Previous linked configs that cannot be matched by exact identity or unique name become unlinked with `scene_index = None`. Current LV1 scenes that do not receive an existing config get default linked configs with new internal UUIDs.
-8. New default configs use default duration, empty stored targets, default scope toggles, and current LV1 locator fields.
-9. Sort the returned configs with linked configs in current LV1 scene-list order, followed by unlinked configs in their prior relative order.
-10. Never delete a saved config during alignment.
+1. Exact current `(scene_index, scene_name)` matches keep their internal UUID and fade data.
+2. If exact matching fails, a linked config can match by scene name only when that name appears exactly once among previous linked configs and exactly once in the incoming LV1 scene list.
+3. A single same-index rename keeps the existing config and updates its `scene_name`; multi-renames are not guessed.
+4. Incoming LV1 scenes that do not receive an existing config get a default linked config with a new internal UUID, default duration, empty stored targets, and default scope toggles.
+5. Previous linked configs that do not match an incoming LV1 scene are preserved as unlinked with `scene_index = None`.
+6. Existing unlinked configs remain unlinked.
+7. Returned configs are sorted with linked configs in current LV1 scene-list order, followed by unlinked configs in their prior relative order.
+8. Alignment never deletes a saved config.
 
-Duplicate scene names can make name-keyed FIFO matching semantically uncertain. The app should warn users when duplicate scene names exist, but the aligner remains deterministic and keeps the FIFO behavior for `Move`, `Insert`, and `Delete` classifications.
+Duplicate scene names can make name-based matching semantically uncertain. The app should warn users when duplicate scene names exist, and the reconciler avoids FIFO guessing for duplicate-name moves.
 
 When importing a session file, blank file scene configs are dropped before alignment. These rows do not carry app-managed fade behavior and must not participate as saved alignment evidence. If LV1 currently contains the same scene, the aligner may still create a fresh default linked config from the LV1 scene list.
 
