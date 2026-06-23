@@ -10,7 +10,7 @@ pub struct ShowState {
     lockout: bool,
     scene_configs: Vec<SceneConfig>,
     cued_scene_internal_id: Option<Uuid>,
-    selected_scene_id: Option<String>,
+    selected_scene_internal_id: Option<String>,
     show_file_path: Option<std::path::PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
@@ -32,14 +32,14 @@ impl ShowState {
                 &lv1.scene_list,
             );
         }
-        self.selected_scene_id = self
+        self.selected_scene_internal_id = self
             .scene_configs
             .first()
             .map(|scene| scene.internal_scene_id.to_string());
         self.show_file_path = None;
         self.show_file_dirty = false;
         self.show_file_last_saved_at = None;
-        self.selected_scene_id.clone()
+        self.selected_scene_internal_id.clone()
     }
 
     pub(crate) fn mark_saved(&mut self, path: std::path::PathBuf, saved_at: String) {
@@ -48,11 +48,14 @@ impl ShowState {
         self.show_file_dirty = false;
     }
 
-    pub(crate) fn set_selected_scene_id(&mut self, selected_scene_id: Option<String>) -> bool {
-        if self.selected_scene_id == selected_scene_id {
+    pub(crate) fn set_selected_scene_internal_id(
+        &mut self,
+        selected_scene_internal_id: Option<String>,
+    ) -> bool {
+        if self.selected_scene_internal_id == selected_scene_internal_id {
             return false;
         }
-        self.selected_scene_id = selected_scene_id;
+        self.selected_scene_internal_id = selected_scene_internal_id;
         true
     }
 
@@ -180,8 +183,8 @@ impl ShowState {
         super::events::ShowProjectionState {
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
-            cued_scene_id: self.cued_scene_internal_id.map(|id| id.to_string()),
-            selected_scene_id: self.selected_scene_id.clone(),
+            cued_scene_internal_id: self.cued_scene_internal_id.map(|id| id.to_string()),
+            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             show_file_path: self.show_file_path.clone(),
             show_file_name,
             show_file_dirty: self.show_file_dirty,
@@ -239,8 +242,10 @@ impl ShowState {
             }
             let removed_internal_scene_id = self.scene_configs[target_index].internal_scene_id;
             self.scene_configs.remove(target_index);
-            if self.selected_scene_id.as_deref() == Some(&removed_internal_scene_id.to_string()) {
-                self.selected_scene_id = None;
+            if self.selected_scene_internal_id.as_deref()
+                == Some(&removed_internal_scene_id.to_string())
+            {
+                self.selected_scene_internal_id = None;
             }
             if self.cued_scene_internal_id == Some(removed_internal_scene_id) {
                 self.cued_scene_internal_id = None;
@@ -270,8 +275,8 @@ impl ShowState {
             return Err("Scene config not found".to_string());
         };
         self.scene_configs.remove(index);
-        if self.selected_scene_id.as_deref() == Some(&internal_scene_id.to_string()) {
-            self.selected_scene_id = None;
+        if self.selected_scene_internal_id.as_deref() == Some(&internal_scene_id.to_string()) {
+            self.selected_scene_internal_id = None;
         }
         if self.cued_scene_internal_id == Some(internal_scene_id) {
             self.cued_scene_internal_id = None;
@@ -928,7 +933,7 @@ mod tests {
                 },
             ],
             cued_scene_internal_id: Some(target_id),
-            selected_scene_id: Some(target_id.to_string()),
+            selected_scene_internal_id: Some(target_id.to_string()),
             ..Default::default()
         };
 
@@ -937,7 +942,7 @@ mod tests {
             .unwrap();
 
         assert!(changed);
-        assert_eq!(state.selected_scene_id, None);
+        assert_eq!(state.selected_scene_internal_id, None);
         assert_eq!(state.cued_scene_internal_id, None);
     }
 
@@ -976,7 +981,7 @@ mod tests {
             lockout: false,
             scene_configs: vec![scene_config(1, "scene-1", 1_000, vec![], scene_id)],
             cued_scene_internal_id: Some(scene_id),
-            selected_scene_id: Some(scene_id.to_string()),
+            selected_scene_internal_id: Some(scene_id.to_string()),
             ..Default::default()
         };
 
@@ -985,6 +990,6 @@ mod tests {
         assert!(changed);
         assert!(state.scene_configs.is_empty());
         assert_eq!(state.cued_scene_internal_id, None);
-        assert_eq!(state.selected_scene_id, None);
+        assert_eq!(state.selected_scene_internal_id, None);
     }
 }

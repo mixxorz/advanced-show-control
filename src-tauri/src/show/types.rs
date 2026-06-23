@@ -89,7 +89,7 @@ mod tests {
 
         assert_eq!(json["internalSceneId"], internal_scene_id.to_string());
         assert_eq!(json["sceneIndex"], 0);
-        assert!(json.get("sceneId").is_none());
+        assert!(json.get("internalSceneId").is_some());
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
         let json = serde_json::to_value(config).unwrap();
 
         assert_eq!(json["sceneIndex"], serde_json::Value::Null);
-        assert!(json.get("sceneId").is_none());
+        assert!(json.get("internalSceneId").is_some());
     }
 
     #[test]

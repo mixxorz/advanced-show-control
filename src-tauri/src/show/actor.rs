@@ -352,8 +352,8 @@ async fn handle_command(
                 .get_scene_config(internal_scene_id)
                 .ok_or_else(|| "Scene config not found".to_string())
                 .map(|scene| {
-                    let changed =
-                        state.set_selected_scene_id(Some(scene.internal_scene_id.to_string()));
+                    let changed = state
+                        .set_selected_scene_internal_id(Some(scene.internal_scene_id.to_string()));
                     publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
                     super::commands::SelectedSceneResult { scene }
                 });
@@ -363,11 +363,13 @@ async fn handle_command(
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
             let lv1 = current_lv1_snapshot(peers).await.ok();
-            let selected_scene_id = state.reset_for_new_show(lv1.as_ref());
+            let selected_scene_internal_id = state.reset_for_new_show(lv1.as_ref());
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
             tracing::info!(event = "session_created", "New session created");
             if let Some(reply) = reply {
-                let _ = reply.send(Ok(NewShowFileResult { selected_scene_id }));
+                let _ = reply.send(Ok(NewShowFileResult {
+                    selected_scene_internal_id,
+                }));
             }
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
@@ -571,11 +573,11 @@ fn load_show_file_from_dto(
 ) -> Result<LoadShowFileResult, String> {
     let imported = import_show_file(file, lv1)?;
     let saved_at = file.saved_at.clone();
-    let selected_scene_id = imported.selected_scene_id.clone();
+    let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
     let report = imported.report.clone();
     let should_mark_dirty = report.removed_anything();
     state.replace_snapshot(imported.snapshot);
-    state.set_selected_scene_id(selected_scene_id.clone());
+    state.set_selected_scene_internal_id(selected_scene_internal_id.clone());
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
         state.mark_dirty();
@@ -586,7 +588,7 @@ fn load_show_file_from_dto(
     }
     tracing::info!(event = "session_opened", "Session loaded");
     Ok(LoadShowFileResult {
-        selected_scene_id,
+        selected_scene_internal_id,
         saved_at,
         report,
     })

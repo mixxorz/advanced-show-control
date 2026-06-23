@@ -6,16 +6,22 @@ function formatDurationDraft(durationMs: number) {
   return `${formatDurationSeconds(durationMs)}s`;
 }
 
-export function DurationInput(props: { sceneId: string; durationMs: number }) {
+export function DurationInput(props: {
+  internalSceneId: string;
+  durationMs: number;
+}) {
   return (
     <DurationInputDraft
-      key={`${props.sceneId}:${props.durationMs}`}
+      key={`${props.internalSceneId}:${props.durationMs}`}
       {...props}
     />
   );
 }
 
-function DurationInputDraft(props: { sceneId: string; durationMs: number }) {
+function DurationInputDraft(props: {
+  internalSceneId: string;
+  durationMs: number;
+}) {
   const commands = useAppCommands();
   const [draft, setDraft] = useState(formatDurationDraft(props.durationMs));
   const skipNextBlurCommit = useRef(false);
@@ -30,7 +36,10 @@ function DurationInputDraft(props: { sceneId: string; durationMs: number }) {
       return;
     }
 
-    const ok = await commands.setSceneDurationMs(props.sceneId, nextDurationMs);
+    const ok = await commands.setSceneDurationMs(
+      props.internalSceneId,
+      nextDurationMs,
+    );
     if (ok) {
       setDraft(formatDurationDraft(nextDurationMs));
     } else {

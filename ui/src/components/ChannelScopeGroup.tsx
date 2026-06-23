@@ -4,7 +4,7 @@ import { ChannelScopeButton } from "./ChannelScopeButton";
 export function ChannelScopeGroup(props: {
   configs: ChannelConfig[];
   groupName: string;
-  sceneId: string;
+  internalSceneId: string;
   scoped: Set<string>;
 }) {
   return (
@@ -23,7 +23,7 @@ export function ChannelScopeGroup(props: {
               <ChannelScopeButton
                 config={config}
                 key={key}
-                sceneId={props.sceneId}
+                internalSceneId={props.internalSceneId}
                 scoped={isScoped}
               />
             );

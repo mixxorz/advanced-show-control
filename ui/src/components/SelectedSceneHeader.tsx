@@ -34,7 +34,7 @@ export function SelectedSceneHeader(props: { scene: SceneConfig }) {
         <div className="flex flex-wrap items-end gap-3 xl:flex-nowrap xl:justify-end">
           <DurationInput
             durationMs={props.scene.durationMs}
-            sceneId={props.scene.internalSceneId}
+            internalSceneId={props.scene.internalSceneId}
           />
         </div>
       </div>

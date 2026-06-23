@@ -147,12 +147,12 @@ pub struct SelectedSceneResult {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NewShowFileResult {
-    pub selected_scene_id: Option<String>,
+    pub selected_scene_internal_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadShowFileResult {
-    pub selected_scene_id: Option<String>,
+    pub selected_scene_internal_id: Option<String>,
     pub saved_at: String,
     #[serde(skip)]
     pub report: LoadValidationReport,

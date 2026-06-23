@@ -10,7 +10,7 @@ import { ScopeButton } from "./ScopeButton";
 
 export function ChannelScopeButton(props: {
   config: ChannelConfig;
-  sceneId: string;
+  internalSceneId: string;
   scoped: boolean;
 }) {
   const { appState } = useAppState();
@@ -22,7 +22,7 @@ export function ChannelScopeButton(props: {
       label={channelButtonLabel(props.config.group, props.config.channel)}
       onClick={() =>
         commands.setChannelScoped(
-          props.sceneId,
+          props.internalSceneId,
           props.config.group,
           props.config.channel,
           !props.scoped,

@@ -24,10 +24,10 @@ pub struct ProjectionCache {
     pending_lv1_identity: Option<Lv1SystemIdentity>,
     reconnect_state: ReconnectState,
     fade_state: AppFadeState,
-    selected_scene_id: Option<String>,
+    selected_scene_internal_id: Option<String>,
     lockout: bool,
     scene_configs: Vec<crate::show::SceneConfig>,
-    cued_scene_id: Option<String>,
+    cued_scene_internal_id: Option<String>,
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
@@ -53,10 +53,10 @@ impl ProjectionCache {
             pending_lv1_identity: None,
             reconnect_state: ReconnectState::default(),
             fade_state: AppFadeState::Idle,
-            selected_scene_id: None,
+            selected_scene_internal_id: None,
             lockout: false,
             scene_configs: Vec::new(),
-            cued_scene_id: None,
+            cued_scene_internal_id: None,
             show_file_path: None,
             show_file_dirty: false,
             show_file_last_saved_at: None,
@@ -73,8 +73,8 @@ impl ProjectionCache {
     pub fn apply_show_state(&mut self, state: ShowProjectionState) {
         self.lockout = state.lockout;
         self.scene_configs = state.scene_configs;
-        self.cued_scene_id = state.cued_scene_id;
-        self.selected_scene_id = state.selected_scene_id;
+        self.cued_scene_internal_id = state.cued_scene_internal_id;
+        self.selected_scene_internal_id = state.selected_scene_internal_id;
         self.show_file_path = state.show_file_path;
         self.show_file_dirty = state.show_file_dirty;
         self.show_file_last_saved_at = state.show_file_last_saved_at;
@@ -229,7 +229,7 @@ impl ProjectionCache {
         self.pending_lv1_identity = snapshot.pending_lv1_identity.clone();
         self.reconnect_state = snapshot.reconnect.clone();
         self.fade_state = snapshot.fade_state.clone();
-        self.selected_scene_id = snapshot.selected_scene_id.clone();
+        self.selected_scene_internal_id = snapshot.selected_scene_internal_id.clone();
         self.show_file_path = snapshot.show_file_path.as_ref().map(PathBuf::from);
         self.show_file_dirty = snapshot.show_file_dirty;
         self.show_file_last_saved_at = snapshot.show_file_last_saved_at.clone();
@@ -301,8 +301,8 @@ impl ProjectionCache {
             fade_state: self.fade_state.clone(),
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
-            cued_scene_id: self.cued_scene_id.clone(),
-            selected_scene_id: self.selected_scene_id.clone(),
+            cued_scene_internal_id: self.cued_scene_internal_id.clone(),
+            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             show_file_name: self
                 .show_file_path
                 .as_ref()
@@ -420,8 +420,8 @@ mod tests {
             fade_state: AppFadeState::Idle,
             lockout: false,
             scene_configs: Vec::new(),
-            cued_scene_id: None,
-            selected_scene_id: None,
+            cued_scene_internal_id: None,
+            selected_scene_internal_id: None,
             show_file_name: "Untitled Session".to_string(),
             show_file_path: None,
             show_file_dirty: false,
@@ -508,8 +508,8 @@ mod tests {
         cache.apply_show_state(ShowProjectionState {
             lockout: false,
             scene_configs: Vec::new(),
-            cued_scene_id: None,
-            selected_scene_id: None,
+            cued_scene_internal_id: None,
+            selected_scene_internal_id: None,
             show_file_path: None,
             show_file_name: "Untitled Session".to_string(),
             show_file_dirty: false,

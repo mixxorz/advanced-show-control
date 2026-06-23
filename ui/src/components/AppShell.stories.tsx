@@ -132,7 +132,7 @@ function StatefulAppShellStory(props: {
         ...state,
         selectedSceneInternalId: internalSceneId,
       })),
-    setAllChannelsScoped: (_sceneId, scoped) =>
+    setAllChannelsScoped: (_internalSceneId, scoped) =>
       setAppState((state) => {
         const selectedSceneInternalId = state.selectedSceneInternalId;
         if (!selectedSceneInternalId) return state;
@@ -154,7 +154,7 @@ function StatefulAppShellStory(props: {
           ),
         };
       }),
-    setChannelScoped: (_sceneId, group, channel, scoped) =>
+    setChannelScoped: (_internalSceneId, group, channel, scoped) =>
       setAppState((state) => {
         const selectedSceneInternalId = state.selectedSceneInternalId;
         if (!selectedSceneInternalId) return state;
@@ -180,7 +180,7 @@ function StatefulAppShellStory(props: {
           }),
         };
       }),
-    setSceneDurationMs: async (_sceneId, durationMs) => {
+    setSceneDurationMs: async (_internalSceneId, durationMs) => {
       setAppState((state) => {
         const selectedSceneInternalId = state.selectedSceneInternalId;
         if (!selectedSceneInternalId) return state;
@@ -196,11 +196,11 @@ function StatefulAppShellStory(props: {
       });
       return true;
     },
-    setSceneScopeFadersEnabled: (_sceneId, enabled) =>
+    setSceneScopeFadersEnabled: (_internalSceneId, enabled) =>
       setAppState((state) =>
         updateSelectedSceneToggle(state, "faders", enabled),
       ),
-    setSceneScopePanEnabled: (_sceneId, enabled) =>
+    setSceneScopePanEnabled: (_internalSceneId, enabled) =>
       setAppState((state) => updateSelectedSceneToggle(state, "pan", enabled)),
     toggleLockout: () =>
       setAppState((state) => ({ ...state, lockout: !state.lockout })),

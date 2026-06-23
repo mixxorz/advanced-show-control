@@ -388,7 +388,7 @@ mod tests {
     }
 
     #[test]
-    fn show_file_deserializes_missing_cued_scene_id_as_none() {
+    fn show_file_deserializes_missing_cued_scene_internal_id_as_none() {
         let json = r#"{
             "schemaVersion": 1,
             "appVersion": "0.1.0",

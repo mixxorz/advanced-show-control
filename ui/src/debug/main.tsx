@@ -63,29 +63,32 @@ async function run() {
     await setup();
     await sleep(2500);
     await test("scene-recall", async () => {
-      await invoke("recall_scene", { sceneId: sceneA });
+      await invoke("recall_scene", { internalSceneId: sceneA });
       await waitScene("Smoke A");
     });
     await test("fade-starts", async () => {
       await reset(sceneA, targetA);
-      await invoke("recall_scene", { sceneId: sceneB });
+      await invoke("recall_scene", { internalSceneId: sceneB });
       await waitFor(async () => (await gain()) > targetA + 3, "fade movement");
     });
     await test("fade-completes", async () => {
       await reset(sceneA, targetA);
-      await invoke("recall_scene", { sceneId: sceneB });
+      await invoke("recall_scene", { internalSceneId: sceneB });
       await waitGain(targetB);
     });
     await test("decreasing-xfade", async () => {
       await reset(sceneA, targetA);
-      for (const [durationMs, sceneId, target] of [
+      for (const [durationMs, internalSceneId, target] of [
         [5000, sceneB, targetB],
         [3000, sceneA, targetA],
         [1000, sceneB, targetB],
         [500, sceneA, targetA],
       ] as const) {
-        await invoke("set_scene_duration_ms", { sceneId, durationMs });
-        await invoke("recall_scene", { sceneId });
+        await invoke("set_scene_duration_ms", {
+          internalSceneId,
+          durationMs,
+        });
+        await invoke("recall_scene", { internalSceneId });
         await waitGain(target);
       }
     });
@@ -94,7 +97,7 @@ async function run() {
       await invoke("set_lockout", { enabled: true });
       let blocked = false;
       try {
-        await invoke("recall_scene", { sceneId: sceneB });
+        await invoke("recall_scene", { internalSceneId: sceneB });
       } catch (error) {
         blocked = String(error).includes("blocked");
         if (!blocked) throw error;
@@ -197,25 +200,28 @@ function escapeHtml(value: string) {
 async function setup() {
   await invoke("new_show_file");
   await rawReset(0, targetA);
-  await invoke("store_scene_config", { sceneId: sceneA });
+  await invoke("store_scene_config", { internalSceneId: sceneA });
   await rawReset(1, targetB);
-  await invoke("store_scene_config", { sceneId: sceneB });
-  for (const sceneId of [sceneA, sceneB]) {
+  await invoke("store_scene_config", { internalSceneId: sceneB });
+  for (const internalSceneId of [sceneA, sceneB]) {
     await invoke("set_channel_scoped", {
-      sceneId,
+      internalSceneId,
       group,
       channel,
       scoped: true,
     });
-    await invoke("set_scene_duration_ms", { sceneId, durationMs: 1000 });
+    await invoke("set_scene_duration_ms", {
+      internalSceneId,
+      durationMs: 1000,
+    });
   }
   await log(
     `SETUP ${sceneA}=${targetA} ${sceneB}=${targetB} channel=${group}:${channel}`,
   );
 }
 
-async function reset(sceneId: string, target: number) {
-  await invoke("recall_scene", { sceneId });
+async function reset(internalSceneId: string, target: number) {
+  await invoke("recall_scene", { internalSceneId });
   await invoke("debug_smoke_set_channel_gain", {
     group,
     channel,

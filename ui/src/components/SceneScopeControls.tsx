@@ -3,7 +3,7 @@ import type { SceneConfig } from "../types";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
 
 export function SceneScopeControls(props: {
-  sceneId: string;
+  internalSceneId: string;
   scopeToggles: SceneConfig["scopeToggles"];
 }) {
   const commands = useAppCommands();
@@ -17,13 +17,13 @@ export function SceneScopeControls(props: {
         fadersEnabled={props.scopeToggles.faders}
         onToggleFaders={() =>
           commands.setSceneScopeFadersEnabled(
-            props.sceneId,
+            props.internalSceneId,
             !props.scopeToggles.faders,
           )
         }
         onTogglePan={() =>
           commands.setSceneScopePanEnabled(
-            props.sceneId,
+            props.internalSceneId,
             !props.scopeToggles.pan,
           )
         }

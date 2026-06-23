@@ -21,7 +21,7 @@ const meta: Meta<typeof ChannelScopeButton> = {
   ],
   args: {
     config: storedVerseScene.channelConfigs[0],
-    sceneId: storedVerseScene.internalSceneId,
+    internalSceneId: storedVerseScene.internalSceneId,
     scoped: true,
   },
 };
@@ -35,7 +35,7 @@ export const Scoped: Story = {};
 export const UnscopedStereo: Story = {
   args: {
     config: storedChorusScene.channelConfigs[2],
-    sceneId: storedChorusScene.internalSceneId,
+    internalSceneId: storedChorusScene.internalSceneId,
     scoped: false,
   },
 };

@@ -220,8 +220,8 @@ mod tests {
             state: crate::show::ShowProjectionState {
                 lockout: false,
                 scene_configs: vec![],
-                cued_scene_id: None,
-                selected_scene_id: None,
+                cued_scene_internal_id: None,
+                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,
@@ -253,8 +253,8 @@ mod tests {
             state: crate::show::ShowProjectionState {
                 lockout: false,
                 scene_configs: vec![],
-                cued_scene_id: None,
-                selected_scene_id: None,
+                cued_scene_internal_id: None,
+                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,

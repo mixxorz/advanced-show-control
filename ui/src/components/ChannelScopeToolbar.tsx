@@ -6,7 +6,7 @@ import { ScopeToggleGroup } from "./ScopeToggleGroup";
 export function ChannelScopeToolbar(props: {
   allChannelsScoped: boolean;
   noChannelsScoped: boolean;
-  sceneId: string;
+  internalSceneId: string;
   scopeToggles: SceneConfig["scopeToggles"];
 }) {
   const commands = useAppCommands();
@@ -21,13 +21,13 @@ export function ChannelScopeToolbar(props: {
           fadersEnabled={props.scopeToggles.faders}
           onToggleFaders={() =>
             commands.setSceneScopeFadersEnabled(
-              props.sceneId,
+              props.internalSceneId,
               !props.scopeToggles.faders,
             )
           }
           onTogglePan={() =>
             commands.setSceneScopePanEnabled(
-              props.sceneId,
+              props.internalSceneId,
               !props.scopeToggles.pan,
             )
           }
@@ -38,14 +38,18 @@ export function ChannelScopeToolbar(props: {
       <div className="flex gap-2">
         <ConsoleButton
           active={props.allChannelsScoped}
-          onClick={() => commands.setAllChannelsScoped(props.sceneId, true)}
+          onClick={() =>
+            commands.setAllChannelsScoped(props.internalSceneId, true)
+          }
           size="small"
         >
           All
         </ConsoleButton>
         <ConsoleButton
           active={props.noChannelsScoped}
-          onClick={() => commands.setAllChannelsScoped(props.sceneId, false)}
+          onClick={() =>
+            commands.setAllChannelsScoped(props.internalSceneId, false)
+          }
           size="small"
         >
           None

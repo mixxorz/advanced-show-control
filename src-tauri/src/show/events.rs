@@ -23,8 +23,8 @@ pub enum ShowProjectionReason {
 pub struct ShowProjectionState {
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
-    pub cued_scene_id: Option<String>,
-    pub selected_scene_id: Option<String>,
+    pub cued_scene_internal_id: Option<String>,
+    pub selected_scene_internal_id: Option<String>,
     pub show_file_path: Option<PathBuf>,
     pub show_file_name: String,
     pub show_file_dirty: bool,

@@ -86,7 +86,7 @@ impl LoadValidationReport {
 
 pub struct ImportedShowFile {
     pub snapshot: ShowDocument,
-    pub selected_scene_id: Option<String>,
+    pub selected_scene_internal_id: Option<String>,
     pub report: LoadValidationReport,
     pub generated_internal_scene_ids: bool,
 }
@@ -122,7 +122,7 @@ pub fn import_show_file(
         .iter()
         .map(file_scene_to_show_scene)
         .collect::<Vec<_>>();
-    let selected_scene_id = scene_configs
+    let selected_scene_internal_id = scene_configs
         .first()
         .map(|config| config.internal_scene_id.to_string());
     let snapshot = ShowDocument {
@@ -133,7 +133,7 @@ pub fn import_show_file(
 
     Ok(ImportedShowFile {
         snapshot,
-        selected_scene_id,
+        selected_scene_internal_id,
         report: LoadValidationReport::default(),
         generated_internal_scene_ids,
     })
@@ -372,7 +372,7 @@ mod tests {
             uuid::Uuid::nil()
         );
         assert_eq!(
-            imported.selected_scene_id,
+            imported.selected_scene_internal_id,
             Some(
                 imported.snapshot.scene_configs[0]
                     .internal_scene_id
