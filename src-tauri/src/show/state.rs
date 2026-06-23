@@ -237,7 +237,14 @@ impl ShowState {
             if !overwrite_existing {
                 return Err("Link blocked: target scene already has a config".to_string());
             }
+            let removed_internal_scene_id = self.scene_configs[target_index].internal_scene_id;
             self.scene_configs.remove(target_index);
+            if self.selected_scene_id.as_deref() == Some(&removed_internal_scene_id.to_string()) {
+                self.selected_scene_id = None;
+            }
+            if self.cued_scene_internal_id == Some(removed_internal_scene_id) {
+                self.cued_scene_internal_id = None;
+            }
             let adjusted_source_index = if target_index < source_index {
                 source_index - 1
             } else {
@@ -888,6 +895,78 @@ mod tests {
         assert_eq!(state.scene_configs[0].internal_scene_id, source_id);
         assert_eq!(state.scene_configs[0].scene_index, Some(2));
         assert_eq!(state.scene_configs[0].scene_name, "Verse");
+    }
+
+    #[test]
+    fn link_with_overwrite_clears_selected_and_cued_when_replacing_target() {
+        let source_id = test_uuid(0x77777777777747778777777777777777);
+        let target_id = test_uuid(0x88888888888848888888888888888888);
+        let target_scene = crate::lv1::SceneListEntry {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![
+                SceneConfig {
+                    internal_scene_id: target_id,
+                    scene_index: Some(2),
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 1_000,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+                SceneConfig {
+                    internal_scene_id: source_id,
+                    scene_index: None,
+                    scene_name: "Old Verse".to_string(),
+                    duration_ms: 4_200,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+            ],
+            cued_scene_internal_id: Some(target_id),
+            selected_scene_id: Some(target_id.to_string()),
+            ..Default::default()
+        };
+
+        let changed = state
+            .link_scene_config(source_id, &target_scene, true)
+            .unwrap();
+
+        assert!(changed);
+        assert_eq!(state.selected_scene_id, None);
+        assert_eq!(state.cued_scene_internal_id, None);
+    }
+
+    #[test]
+    fn link_rejects_already_linked_source_config() {
+        let source_id = test_uuid(0x99999999999949998999999999999999);
+        let target_scene = crate::lv1::SceneListEntry {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        let mut state = ShowState {
+            lockout: false,
+            scene_configs: vec![SceneConfig {
+                internal_scene_id: source_id,
+                scene_index: Some(1),
+                scene_name: "Intro".to_string(),
+                duration_ms: 1_000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            ..Default::default()
+        };
+
+        let err = state
+            .link_scene_config(source_id, &target_scene, false)
+            .unwrap_err();
+
+        assert_eq!(err, "Link blocked: source scene is already linked");
     }
 
     #[test]
