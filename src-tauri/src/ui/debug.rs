@@ -57,5 +57,6 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             commands::debug_smoke_set_channel_gain,
             commands::debug_smoke_recall_lv1_scene,
             commands::debug_smoke_get_channel_gain,
+            commands::debug_smoke_load_unlinked_scene_session,
         ])
 }

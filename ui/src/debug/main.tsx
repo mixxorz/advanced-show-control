@@ -18,6 +18,7 @@ const tests = [
   "fade-starts",
   "fade-completes",
   "decreasing-xfade",
+  "link-unlinked-scene",
   "lockout-blocks-recall",
 ].map((name) => ({ name, status: "pending", detail: "" }));
 let state: AppViewState | undefined;
@@ -89,6 +90,40 @@ async function run() {
         await invoke("recall_scene", { internalSceneId });
         await waitGain(target);
       }
+    });
+    await test("link-unlinked-scene", async () => {
+      const sourceInternalSceneId = await invoke<string>(
+        "debug_smoke_load_unlinked_scene_session",
+      );
+      await waitFor(
+        () =>
+          state?.sceneConfigs.some(
+            (scene) =>
+              scene.internalSceneId === sourceInternalSceneId &&
+              scene.sceneIndex === null,
+          ),
+        "unlinked smoke scene config",
+      );
+      await invoke("link_scene_config", {
+        sourceInternalSceneId,
+        targetSceneIndex: 0,
+        overwriteExisting: true,
+      });
+      await waitFor(
+        () =>
+          state?.sceneConfigs.some(
+            (scene) =>
+              scene.internalSceneId === sourceInternalSceneId &&
+              scene.sceneIndex === 0 &&
+              scene.sceneName === "Smoke A",
+          ),
+        "linked smoke scene config",
+      );
+      const smokeScenes = findSmokeSceneConfigs(state?.sceneConfigs ?? []);
+      if (smokeScenes.sceneA?.internalSceneId !== sourceInternalSceneId) {
+        throw new Error("linked smoke scene did not replace Smoke A config");
+      }
+      sceneA = sourceInternalSceneId;
     });
     await test("lockout-blocks-recall", async () => {
       await reset(sceneA, targetA);

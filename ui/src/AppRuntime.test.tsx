@@ -276,6 +276,55 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.recallScene).toHaveBeenCalledTimes(1);
   });
 
+  it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {
+    const user = userEvent.setup();
+    let listener: ((snapshot: AppViewState) => void) | null = null;
+    const source = { ...connectedAppState.sceneConfigs[0], sceneIndex: null };
+    const initialState: AppViewState = {
+      ...connectedAppState,
+      scenes: [],
+      sceneCount: 0,
+      sceneConfigs: [source],
+      selectedSceneInternalId: source.internalSceneId,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    const services = makeServices({
+      listenForAppStatus: vi.fn(async (next) => {
+        listener = next;
+        next(initialState);
+        return () => {};
+      }),
+      linkSceneConfig: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      listener?.({
+        ...initialState,
+        scenes: connectedAppState.scenes,
+        sceneCount: connectedAppState.scenes.length,
+        stateVersion: initialState.stateVersion + 1,
+      });
+    });
+
+    await user.selectOptions(screen.getByLabelText("LV1 Scene"), "1");
+    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+
+    expect(services.linkSceneConfig).toHaveBeenCalledWith(
+      source.internalSceneId,
+      1,
+      false,
+    );
+  });
+
   it("registers app-status listener before signaling frontend readiness", async () => {
     const calls: string[] = [];
     render(

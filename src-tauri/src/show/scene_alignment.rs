@@ -68,7 +68,7 @@ impl SceneListChange {
             Self::Move { from, to } => format!("move from={from} to={to}"),
             Self::Insert { at } => format!("insert at={at}"),
             Self::Delete { at } => format!("delete at={at}"),
-            Self::Ambiguous => "ambiguous exact-match-fallback".to_string(),
+            Self::Ambiguous => "ambiguous safe-name-fallback".to_string(),
         }
     }
 }
@@ -259,7 +259,15 @@ fn align_by_exact_match_only(
     configs: Vec<SceneConfig>,
     entries: &[SceneEntry],
 ) -> Vec<SceneConfig> {
-    let mut remaining = configs;
+    let mut remaining = configs
+        .iter()
+        .filter(|scene| scene.scene_index.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut unlinked = configs
+        .into_iter()
+        .filter(|scene| scene.scene_index.is_none())
+        .collect::<Vec<_>>();
     let old_name_counts = name_counts_from_configs(&remaining);
     let new_name_counts = scene_entry_name_counts(entries);
     let mut next = Vec::with_capacity(entries.len() + remaining.len());
@@ -291,6 +299,10 @@ fn align_by_exact_match_only(
         scene.scene_index = None;
         next.push(scene);
     }
+    for scene in unlinked.iter_mut() {
+        scene.scene_index = None;
+    }
+    next.extend(unlinked);
     next
 }
 
@@ -342,7 +354,7 @@ pub(crate) fn scene_alignment_diagnostic(
         if matches!(change, SceneListChange::Rename | SceneListChange::Noop) {
             "classified"
         } else if matches!(change, SceneListChange::Ambiguous) {
-            "exact-match-only"
+            "exact-or-unique-name"
         } else {
             "name-keyed-fifo"
         },
@@ -536,6 +548,27 @@ mod tests {
 
         assert_eq!(aligned[0].scene_index, Some(1));
         assert_eq!(aligned[1].scene_index, None);
+    }
+
+    #[test]
+    fn unlinked_config_with_unique_current_name_does_not_relink() {
+        let old = vec![
+            scene(1, None, "Song 1", 1_000),
+            scene(2, Some(2), "Song 2", 2_000),
+            scene(3, Some(3), "Song 3", 3_000),
+        ];
+        let new = vec![lv1_scene(5, "Song 1"), lv1_scene(6, "Song 2")];
+
+        let aligned = align_scene_configs(old, &new);
+
+        assert_ne!(aligned[0].internal_scene_id, Uuid::from_u128(1));
+        assert_eq!(aligned[0].scene_index, Some(5));
+        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
+        assert_eq!(aligned[1].scene_index, Some(6));
+        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(3));
+        assert_eq!(aligned[2].scene_index, None);
+        assert_eq!(aligned[3].internal_scene_id, Uuid::from_u128(1));
+        assert_eq!(aligned[3].scene_index, None);
     }
 
     #[test]

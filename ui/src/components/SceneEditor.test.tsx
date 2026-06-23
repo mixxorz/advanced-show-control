@@ -3,9 +3,13 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AppCommandsProvider, AppStateProvider } from "../appContext";
 import { connectedAppState } from "../storybook/mockAppState";
+import type { AppViewState } from "../types";
 import { SceneEditor } from "./SceneEditor";
 
-function renderEditor(appState = connectedAppState, commands = {}) {
+function renderEditor(
+  appState: AppViewState = connectedAppState,
+  commands = {},
+) {
   return render(
     <AppStateProvider appState={appState} commandError={null}>
       <AppCommandsProvider
@@ -82,11 +86,9 @@ describe("SceneEditor", () => {
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 
-  it("shows overwrite confirmation when linking to a scene with an existing config", async () => {
+  it("confirms overwrite in-app when linking to a scene with an existing config", async () => {
     const user = userEvent.setup();
-    const confirmSpy = vi.fn(() => true);
-    vi.stubGlobal("confirm", confirmSpy);
-    const store = vi.fn();
+    const linkSceneConfig = vi.fn();
 
     renderEditor(
       {
@@ -98,13 +100,23 @@ describe("SceneEditor", () => {
           { ...connectedAppState.sceneConfigs[1], sceneIndex: 0 },
         ],
       },
-      { linkSceneConfig: vi.fn(), storeSceneConfig: store },
+      { linkSceneConfig },
     );
 
     await user.selectOptions(screen.getByLabelText("LV1 Scene"), "0");
     await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
 
-    expect(confirmSpy).toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "Overwrite existing linked scene?",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    expect(linkSceneConfig).toHaveBeenCalledWith(
+      connectedAppState.sceneConfigs[0].internalSceneId,
+      0,
+      true,
+    );
   });
 
   it("links an unlinked scene to the first available LV1 scene by default", async () => {
@@ -129,6 +141,61 @@ describe("SceneEditor", () => {
     expect(linkSceneConfig).toHaveBeenCalledWith(
       connectedAppState.sceneConfigs[0].internalSceneId,
       1,
+      false,
+    );
+  });
+
+  it("links to an LV1 scene that appears after the unlinked controls mount", async () => {
+    const user = userEvent.setup();
+    const linkSceneConfig = vi.fn();
+    const appState = {
+      ...connectedAppState,
+      selectedSceneInternalId:
+        connectedAppState.sceneConfigs[0].internalSceneId,
+      scenes: [],
+      sceneConfigs: [
+        { ...connectedAppState.sceneConfigs[0], sceneIndex: null },
+      ],
+    };
+
+    const { rerender } = renderEditor(appState, { linkSceneConfig });
+
+    rerender(
+      <AppStateProvider
+        appState={{ ...appState, scenes: connectedAppState.scenes }}
+        commandError={null}
+      >
+        <AppCommandsProvider
+          commands={{
+            abortAll: vi.fn(),
+            disconnect: vi.fn(),
+            newShowFile: vi.fn(),
+            openShowFile: vi.fn(),
+            saveShowFile: vi.fn(),
+            saveShowFileAs: vi.fn(),
+            selectScene: vi.fn(),
+            selectSystem: vi.fn(),
+            setAllChannelsScoped: vi.fn(),
+            setChannelScoped: vi.fn(),
+            setSceneDurationMs: vi.fn(),
+            setSceneScopeFadersEnabled: vi.fn(),
+            setSceneScopePanEnabled: vi.fn(),
+            storeSceneConfig: vi.fn(),
+            linkSceneConfig,
+            deleteSceneConfig: vi.fn(),
+            toggleLockout: vi.fn(),
+          }}
+        >
+          <SceneEditor />
+        </AppCommandsProvider>
+      </AppStateProvider>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+
+    expect(linkSceneConfig).toHaveBeenCalledWith(
+      connectedAppState.sceneConfigs[0].internalSceneId,
+      0,
       false,
     );
   });
