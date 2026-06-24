@@ -51,12 +51,12 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Handle loaded sessions whose stored scene references no longer match the current LV1 scene list.
    - Preserve app-managed fade configuration where a safe remap can be made.
    - Make mismatches, remap decisions, skipped configs, and unresolved mappings visible to the user.
-3. Add auto-session recall behavior.
+3. Wire Settings behavior.
+   - The Settings tab and app-level settings infrastructure already exist with `settings.json` storage.
+   - Use focused follow-up slices to wire auto-save, keyboard shortcuts, auto-cue, time display, and fader override sensitivity behavior.
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
-   - Use the existing app-level settings infrastructure for auto-session recall behavior.
-   - Apply auto-save, keyboard shortcuts, auto-cue, time display, and fader override sensitivity behavior in focused follow-up slices.
 4. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session only when the setting is enabled and the console identity matches safely.
