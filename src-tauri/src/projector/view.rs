@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::settings::AppSettings;
 
 pub use crate::show::SceneConfig;
 
@@ -69,6 +70,7 @@ pub struct AppViewState {
     pub fade_state: AppFadeState,
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
+    pub settings: AppSettings,
     pub cued_scene_internal_id: Option<String>,
     pub selected_scene_internal_id: Option<String>,
     pub show_file_name: String,

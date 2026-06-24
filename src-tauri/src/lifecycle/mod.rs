@@ -13,6 +13,7 @@ use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus};
 use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::{ScenesHandle, build_scenes_actor};
+use crate::settings::{SettingsCommand, SettingsHandle};
 use crate::show::{
     ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowStateHandle,
 };
@@ -136,10 +137,16 @@ pub struct AppLifecycle {
     event_bus: AppEventBus,
     show: ShowStateHandle,
     show_peers: ShowActorPeers,
+    settings: SettingsHandle,
 }
 
 impl AppLifecycle {
-    pub fn new(event_bus: AppEventBus, show: ShowStateHandle, show_peers: ShowActorPeers) -> Self {
+    pub fn new(
+        event_bus: AppEventBus,
+        show: ShowStateHandle,
+        show_peers: ShowActorPeers,
+        settings: SettingsHandle,
+    ) -> Self {
         let runtime_generation = RuntimeGeneration::new();
 
         Self {
@@ -154,7 +161,12 @@ impl AppLifecycle {
             event_bus,
             show,
             show_peers,
+            settings,
         }
+    }
+
+    pub async fn current_settings(&self) -> SettingsHandle {
+        self.settings.clone()
     }
 
     pub async fn begin_connecting(&self) -> Option<u64> {
@@ -546,6 +558,15 @@ impl AppLifecycle {
         let initial_show_state = rx
             .await
             .map_err(|_| "Show state reply channel is closed".to_string())?;
+        let settings_handle = self.current_settings().await;
+        let (reply, rx) = oneshot::channel();
+        settings_handle
+            .send(SettingsCommand::GetSettings { reply })
+            .await
+            .map_err(|_| "Settings are unavailable".to_string())?;
+        let initial_settings = rx
+            .await
+            .map_err(|_| "Settings reply channel is closed".to_string())?;
         let mut inner = self.inner.lock().await;
         if inner.frontend_ready {
             return Ok(());
@@ -557,6 +578,7 @@ impl AppLifecycle {
                 app,
                 generation,
                 initial_show_state,
+                initial_settings,
                 events: self.event_bus.subscribe(),
                 logs,
             },
@@ -569,8 +591,11 @@ impl Default for AppLifecycle {
     fn default() -> Self {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        let (settings, settings_task) =
+            crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
-        Self::new(event_bus, show, show_peers)
+        settings_task.spawn();
+        Self::new(event_bus, show, show_peers, settings)
     }
 }
 
@@ -712,8 +737,11 @@ mod tests {
 
     fn lifecycle_for_test(event_bus: AppEventBus) -> AppLifecycle {
         let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        let (settings, settings_task) =
+            crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
-        AppLifecycle::new(event_bus, show, show_peers)
+        settings_task.spawn();
+        AppLifecycle::new(event_bus, show, show_peers, settings)
     }
 
     fn connected_snapshot() -> Lv1StateSnapshot {

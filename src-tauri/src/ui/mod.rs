@@ -6,6 +6,7 @@
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use crate::runtime::events::AppEventBus;
+use crate::settings::build_settings_actor;
 use crate::show::build_show_actor;
 use tauri::Manager;
 use tokio::sync::broadcast;
@@ -22,11 +23,16 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
         .setup(|app| {
             let event_bus = AppEventBus::default();
             let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
-            let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
+            let settings_dir = app.path().app_config_dir()?;
+            let (settings, settings_task) = build_settings_actor(settings_dir, event_bus.clone());
+            let lifecycle =
+                AppLifecycle::new(event_bus, show.clone(), show_peers, settings.clone());
             show_task.spawn();
+            settings_task.spawn();
             let logging_runtime = logging::init_logging(app.handle())?;
             app.manage(show);
             app.manage(lifecycle);
+            app.manage(settings);
             app.manage(logging_runtime.guard);
             app.manage(logging_runtime.ui_logs);
             menu::install_session_menu(app)?;
@@ -52,6 +58,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::lifecycle::disconnect_lv1,
             commands::lifecycle::reconnect_timed_out,
             commands::fade::abort_all_fades,
+            commands::settings::replace_app_settings,
             commands::show::store_scene_config,
             commands::show::set_channel_scoped,
             commands::show::set_all_channels_scoped,
@@ -91,6 +98,7 @@ mod tests {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
         let _ = super::commands::scenes::recall_scene;
+        let _ = super::commands::settings::replace_app_settings;
         let _ = super::commands::show::set_lockout;
     }
 

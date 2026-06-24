@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tokio::sync::oneshot;
 
 use super::AppSettings;
@@ -13,7 +14,7 @@ pub enum SettingsCommand {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SettingsCommandResult {
     pub changed: bool,
 }

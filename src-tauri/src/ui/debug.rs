@@ -3,6 +3,7 @@
 use crate::lifecycle::AppLifecycle;
 use crate::logging;
 use crate::runtime::events::AppEventBus;
+use crate::settings::build_settings_actor;
 use crate::show::build_show_actor;
 use tauri::Manager;
 
@@ -13,11 +14,16 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
         .setup(|app| {
             let event_bus = AppEventBus::default();
             let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
-            let lifecycle = AppLifecycle::new(event_bus, show.clone(), show_peers);
+            let settings_dir = app.path().app_config_dir()?;
+            let (settings, settings_task) = build_settings_actor(settings_dir, event_bus.clone());
+            let lifecycle =
+                AppLifecycle::new(event_bus, show.clone(), show_peers, settings.clone());
             show_task.spawn();
+            settings_task.spawn();
             let logging_runtime = logging::init_logging(app.handle())?;
             app.manage(show);
             app.manage(lifecycle);
+            app.manage(settings);
             app.manage(logging_runtime.guard);
             app.manage(logging_runtime.ui_logs);
             app.manage(commands::SmokeReport::new());

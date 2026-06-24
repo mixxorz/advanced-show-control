@@ -7,6 +7,7 @@ use crate::logging::UiLogEvent;
 use crate::projector::AppViewState;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
+use crate::settings::{AppSettings, SettingsEvent};
 use crate::show::{ShowEvent, ShowProjectionState};
 
 use super::ProjectionCache;
@@ -17,6 +18,7 @@ pub struct ProjectorInputs<R: Runtime> {
     pub app: AppHandle<R>,
     pub generation: u64,
     pub initial_show_state: ShowProjectionState,
+    pub initial_settings: AppSettings,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
 }
@@ -27,6 +29,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
             app,
             generation,
             initial_show_state,
+            initial_settings,
             mut events,
             mut logs,
         } = inputs;
@@ -40,6 +43,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         let mut cache = ProjectionCache::new();
         cache.set_active_generation(generation);
         cache.apply_show_state(initial_show_state);
+        cache.apply_settings(initial_settings);
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
@@ -108,7 +112,10 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
             cache.apply_show_state(state.clone());
             true
         }
-        AppEvent::Settings(_) => false,
+        AppEvent::Settings(SettingsEvent::StateChanged { settings }) => {
+            cache.apply_settings(settings.clone());
+            true
+        }
     }
 }
 
@@ -145,6 +152,7 @@ mod tests {
                 reconnect: Default::default(),
                 last_event_at: None,
             },
+            initial_settings: AppSettings::default(),
             events,
             logs,
         })
@@ -256,6 +264,7 @@ mod tests {
                 reconnect: Default::default(),
                 last_event_at: None,
             },
+            initial_settings: AppSettings::default(),
             events: event_bus.subscribe(),
             logs: log_rx,
         });
@@ -310,5 +319,38 @@ mod tests {
         projector.abort();
         let snapshots = received.lock().unwrap();
         assert_eq!(snapshots.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn settings_event_marks_cache_dirty_and_projects_settings() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let (_log_tx, log_rx) = broadcast::channel(8);
+        let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received_events = received.clone();
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            received_events.lock().unwrap().push(payload);
+        });
+
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
+
+        event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+            settings: AppSettings {
+                auto_save_sessions: true,
+                ..Default::default()
+            },
+        }));
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+
+        projector.abort();
+        let snapshots = received.lock().unwrap();
+        assert!(
+            snapshots
+                .iter()
+                .any(|snapshot| { snapshot["settings"]["autoSaveSessions"] == true })
+        );
     }
 }

@@ -10,6 +10,7 @@ use crate::lv1::{
 use crate::projector::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, SceneSummary,
 };
+use crate::settings::AppSettings;
 use crate::show::ShowProjectionState;
 
 pub const MAX_PROJECTOR_LOGS: usize = 200;
@@ -31,6 +32,7 @@ pub struct ProjectionCache {
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
+    settings: AppSettings,
     logs: VecDeque<AppLogEntry>,
     next_log_id: u64,
     last_event_at: Option<String>,
@@ -56,6 +58,7 @@ impl ProjectionCache {
             selected_scene_internal_id: None,
             lockout: false,
             scene_configs: Vec::new(),
+            settings: AppSettings::default(),
             cued_scene_internal_id: None,
             show_file_path: None,
             show_file_dirty: false,
@@ -64,6 +67,10 @@ impl ProjectionCache {
             next_log_id: 1,
             last_event_at: None,
         }
+    }
+
+    pub fn apply_settings(&mut self, settings: AppSettings) {
+        self.settings = settings;
     }
 
     pub fn set_active_generation(&mut self, generation: u64) {
@@ -233,6 +240,7 @@ impl ProjectionCache {
         self.show_file_path = snapshot.show_file_path.as_ref().map(PathBuf::from);
         self.show_file_dirty = snapshot.show_file_dirty;
         self.show_file_last_saved_at = snapshot.show_file_last_saved_at.clone();
+        self.settings = snapshot.settings.clone();
         self.logs = snapshot.logs.iter().cloned().collect();
         self.next_log_id = snapshot
             .logs
@@ -316,6 +324,7 @@ impl ProjectionCache {
                 .map(|path| path.to_string_lossy().into_owned()),
             show_file_dirty: self.show_file_dirty,
             show_file_last_saved_at: self.show_file_last_saved_at.clone(),
+            settings: self.settings.clone(),
             logs: self.logs.iter().cloned().collect(),
             last_event_at: self.last_event_at.clone(),
             state_version,
@@ -349,6 +358,7 @@ mod tests {
     use crate::fade::FadeParameter;
     use crate::lv1::{ChannelInfo, SceneState};
     use crate::projector::LogSeverity;
+    use crate::settings::AppSettings;
     #[test]
     fn cache_builds_initial_disconnected_snapshot_with_incrementing_versions() {
         let mut cache = ProjectionCache::new();
@@ -420,6 +430,7 @@ mod tests {
             fade_state: AppFadeState::Idle,
             lockout: false,
             scene_configs: Vec::new(),
+            settings: AppSettings::default(),
             cued_scene_internal_id: None,
             selected_scene_internal_id: None,
             show_file_name: "Untitled Session".to_string(),
