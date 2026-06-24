@@ -125,7 +125,7 @@ fn handle_app_event(
             let after = crate::show::scene_alignment::align_scene_configs(before.clone(), &scenes);
             let changed = state.replace_scene_configs_if_changed(after);
             if changed {
-                tracing::info!(
+                tracing::debug!(
                     event = "session_scene_alignment",
                     "{}",
                     crate::show::scene_alignment::scene_alignment_diagnostic(
@@ -609,7 +609,7 @@ fn load_show_file_from_dto(
         tracing::warn!(event = "session_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
     }
     if alignment_changed {
-        tracing::info!(
+        tracing::debug!(
             event = "session_scene_alignment",
             "{}",
             crate::show::scene_alignment::scene_alignment_diagnostic(

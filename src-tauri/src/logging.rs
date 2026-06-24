@@ -370,6 +370,11 @@ mod tests {
     }
 
     #[test]
+    fn debug_scene_alignment_diagnostics_do_not_reach_ui_logs() {
+        assert_eq!(ui_severity(&Level::DEBUG), None);
+    }
+
+    #[test]
     fn ui_severity_maps_info_warn_error() {
         assert_eq!(ui_severity(&Level::INFO), Some(LogSeverity::Info));
         assert_eq!(ui_severity(&Level::WARN), Some(LogSeverity::Warning));
