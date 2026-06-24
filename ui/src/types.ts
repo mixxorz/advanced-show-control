@@ -9,6 +9,34 @@ export type FadeState = "idle" | "running" | "blocked";
 export type LogSeverity = "info" | "warning" | "error";
 export type PanMode = "none" | "mono" | "stereo";
 
+export type TimeDisplayFormat = "twelveHour" | "twentyFourHour";
+
+export type KeyboardShortcutModifiers = {
+  shift: boolean;
+  control: boolean;
+  alt: boolean;
+  meta: boolean;
+};
+
+export type KeyboardShortcut = {
+  key: string;
+  modifiers: KeyboardShortcutModifiers;
+};
+
+export type KeyboardShortcutSettings = {
+  go: KeyboardShortcut;
+  cue: KeyboardShortcut;
+};
+
+export type AppSettings = {
+  autoLoadLastShowFile: boolean;
+  autoSaveSessions: boolean;
+  keyboardShortcuts: KeyboardShortcutSettings;
+  autoCueNextSceneOnGo: boolean;
+  timeDisplay: TimeDisplayFormat;
+  faderOverrideSensitivity: number;
+};
+
 export type Lv1SystemIdentity = {
   uuid: string | null;
   host: string | null;
@@ -76,6 +104,7 @@ export type AppLogEntry = {
 };
 
 export type AppViewState = {
+  settings: AppSettings;
   connection: ConnectionState;
   discoveredLv1Systems: DiscoveredLv1System[];
   connectedLv1Identity: Lv1SystemIdentity | null;
@@ -101,6 +130,23 @@ export type AppViewState = {
 };
 
 export const disconnectedAppViewState: AppViewState = {
+  settings: {
+    autoLoadLastShowFile: false,
+    autoSaveSessions: false,
+    keyboardShortcuts: {
+      go: {
+        key: "Space",
+        modifiers: { shift: false, control: false, alt: false, meta: false },
+      },
+      cue: {
+        key: "C",
+        modifiers: { shift: false, control: false, alt: false, meta: false },
+      },
+    },
+    autoCueNextSceneOnGo: false,
+    timeDisplay: "twentyFourHour",
+    faderOverrideSensitivity: 9,
+  },
   connection: "disconnected",
   discoveredLv1Systems: [],
   connectedLv1Identity: null,

@@ -1,4 +1,5 @@
 import {
+  disconnectedAppViewState,
   type AppLogEntry,
   type AppViewState,
   type ChannelConfig,
@@ -191,6 +192,7 @@ function makeBaseDisconnectedAppState(
   overrides: Partial<AppViewState> = {},
 ): AppViewState {
   return {
+    settings: disconnectedAppViewState.settings,
     connection: "disconnected",
     discoveredLv1Systems: [],
     connectedLv1Identity: null,
@@ -255,6 +257,8 @@ export const duplicateVerseScene: SceneConfig = makeDuplicateVerseScene();
 export const unlinkedDraftScene: SceneConfig = makeUnlinkedDraftScene();
 
 export const connectedAppState: AppViewState = makeConnectedAppState();
+
+export const mockAppState: AppViewState = connectedAppState;
 
 export const connectedWithDuplicateScenesAppState: AppViewState =
   makeConnectedAppState([

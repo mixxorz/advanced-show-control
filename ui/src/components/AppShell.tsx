@@ -3,6 +3,7 @@ import { BottomStatusBar } from "./BottomStatusBar";
 import { ConnectionModal } from "./ConnectionModal";
 import { ConsoleLogsTab } from "./ConsoleLogsTab";
 import { PlaceholderTab } from "./PlaceholderTab";
+import { SettingsTab } from "./SettingsTab";
 import { SceneTab } from "./SceneTab";
 import { type MainTab, TopTabBar } from "./TopTabBar";
 
@@ -32,7 +33,7 @@ export function AppShell(props: {
           )}
           {props.activeTab === "events" && <PlaceholderTab name="Events" />}
           {props.activeTab === "logs" && <ConsoleLogsTab />}
-          {props.activeTab === "settings" && <PlaceholderTab name="Settings" />}
+          {props.activeTab === "settings" && <SettingsTab />}
         </section>
         <BottomStatusBar appState={appState} />
       </main>

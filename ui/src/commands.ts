@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Lv1SystemIdentity } from "./types";
+import type { AppSettings, Lv1SystemIdentity } from "./types";
 
 export async function startupAutoConnectLv1() {
   return invoke<void>("startup_auto_connect_lv1");
@@ -45,4 +45,8 @@ export async function linkSceneConfig(
 
 export async function deleteSceneConfig(internalSceneId: string) {
   return invoke<void>("delete_scene_config", { internalSceneId });
+}
+
+export async function replaceAppSettings(settings: AppSettings) {
+  return invoke<void>("replace_app_settings", { settings });
 }
