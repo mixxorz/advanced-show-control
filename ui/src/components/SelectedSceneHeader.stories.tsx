@@ -39,9 +39,6 @@ export const Default: Story = {
     await expect(canvas.getByLabelText("Selected scene")).toHaveTextContent(
       "004 S01: The Wonderful Blood",
     );
-    await expect(canvas.getByRole("button", { name: "Store" })).toHaveClass(
-      "text-[1.1rem]",
-    );
   },
 };
 

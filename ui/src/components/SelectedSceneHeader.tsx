@@ -15,13 +15,11 @@ export function SelectedSceneHeader(props: {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-        <SelectedSceneIdentity
-          currentScene={props.currentScene}
-          cued={props.cued}
-          scene={props.scene}
-        />
-      </div>
+      <SelectedSceneIdentity
+        currentScene={props.currentScene}
+        cued={props.cued}
+        scene={props.scene}
+      />
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="flex flex-wrap items-end gap-3 md:flex-nowrap">
           <div className="flex flex-wrap items-end gap-3 md:flex-nowrap">
