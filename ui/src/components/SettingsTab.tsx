@@ -99,10 +99,30 @@ export function SettingsTab() {
           shortcut={settings.keyboardShortcuts.go}
           onChange={(shortcut) => updateShortcut("go", shortcut)}
         />
+        <ShortcutModifierControls
+          labelPrefix="GO"
+          shortcut={settings.keyboardShortcuts.go}
+          onChange={(modifiers) =>
+            updateShortcut("go", {
+              ...settings.keyboardShortcuts.go,
+              modifiers,
+            })
+          }
+        />
         <ShortcutInput
           label="Cue keyboard shortcut"
           shortcut={settings.keyboardShortcuts.cue}
           onChange={(shortcut) => updateShortcut("cue", shortcut)}
+        />
+        <ShortcutModifierControls
+          labelPrefix="Cue"
+          shortcut={settings.keyboardShortcuts.cue}
+          onChange={(modifiers) =>
+            updateShortcut("cue", {
+              ...settings.keyboardShortcuts.cue,
+              modifiers,
+            })
+          }
         />
       </Panel>
     </div>
@@ -144,4 +164,40 @@ function ShortcutInput(props: {
       />
     </label>
   );
+}
+
+function ShortcutModifierControls(props: {
+  labelPrefix: string;
+  shortcut: KeyboardShortcut;
+  onChange: (modifiers: KeyboardShortcut["modifiers"]) => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <span className="text-sm text-console-muted">
+        {props.labelPrefix} modifiers
+      </span>
+      <div className="flex flex-wrap gap-4 text-sm text-console-primary">
+        {(["shift", "control", "alt", "meta"] as const).map((modifier) => (
+          <label key={modifier} className="flex items-center gap-2">
+            <input
+              aria-label={`${props.labelPrefix} ${capitalize(modifier)}`}
+              type="checkbox"
+              checked={props.shortcut.modifiers[modifier]}
+              onChange={(event) =>
+                props.onChange({
+                  ...props.shortcut.modifiers,
+                  [modifier]: event.target.checked,
+                })
+              }
+            />
+            {capitalize(modifier)}
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function capitalize(value: string) {
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }

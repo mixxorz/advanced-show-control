@@ -67,4 +67,49 @@ describe("SettingsTab", () => {
       faderOverrideSensitivity: 10,
     });
   });
+
+  it("updates the GO shortcut modifier while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("GO Shift"));
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      keyboardShortcuts: {
+        ...disconnectedAppViewState.settings.keyboardShortcuts,
+        go: {
+          ...disconnectedAppViewState.settings.keyboardShortcuts.go,
+          modifiers: {
+            ...disconnectedAppViewState.settings.keyboardShortcuts.go.modifiers,
+            shift: true,
+          },
+        },
+      },
+    });
+  });
+
+  it("updates the Cue shortcut modifier while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Cue Control"));
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      keyboardShortcuts: {
+        ...disconnectedAppViewState.settings.keyboardShortcuts,
+        cue: {
+          ...disconnectedAppViewState.settings.keyboardShortcuts.cue,
+          modifiers: {
+            ...disconnectedAppViewState.settings.keyboardShortcuts.cue
+              .modifiers,
+            control: true,
+          },
+        },
+      },
+    });
+  });
 });
