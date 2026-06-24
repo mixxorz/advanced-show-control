@@ -8,7 +8,7 @@ import {
 import { LinkSceneControls } from "./LinkSceneControls";
 
 const meta: Meta<typeof LinkSceneControls> = {
-  title: "Scenes/LinkSceneControls",
+  title: "Scenes/Selected Scene/LinkSceneControls",
   component: LinkSceneControls,
   decorators: [
     (Story) => (

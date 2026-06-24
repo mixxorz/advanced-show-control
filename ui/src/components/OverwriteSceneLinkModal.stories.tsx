@@ -3,7 +3,7 @@ import { expect, within } from "storybook/test";
 import { OverwriteSceneLinkModal } from "./OverwriteSceneLinkModal";
 
 const meta: Meta<typeof OverwriteSceneLinkModal> = {
-  title: "Scenes/OverwriteSceneLinkModal",
+  title: "Scenes/Selected Scene/OverwriteSceneLinkModal",
   component: OverwriteSceneLinkModal,
   decorators: [
     (Story) => (
