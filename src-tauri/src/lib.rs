@@ -8,6 +8,7 @@ pub mod lv1;
 pub mod projector;
 pub mod runtime;
 pub mod scenes;
+pub mod settings;
 pub mod show;
 pub mod show_file;
 pub mod time;
