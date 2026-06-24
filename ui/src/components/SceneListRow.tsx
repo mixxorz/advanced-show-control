@@ -21,23 +21,23 @@ export function SceneListRow(props: {
         : props.selected
           ? "text-console-primary"
           : "text-console-secondary";
-  const stateClass = unlinked
-    ? "text-status-warning"
-    : current
-      ? "text-status-current"
-      : props.cued
-        ? "text-status-cued"
+  const stateClass = current
+    ? "text-status-current"
+    : props.cued
+      ? "text-status-cued"
+      : unlinked
+        ? "text-status-warning"
         : props.selected
           ? "text-accent-orange"
           : "text-console-secondary";
   const leftBorderClass = !props.selected
     ? "border-l-[3px] border-l-transparent"
-    : unlinked
-      ? "border-l-[3px] border-l-status-warning"
-      : current
-        ? "border-l-[3px] border-l-status-current"
-        : props.cued
-          ? "border-l-[3px] border-l-status-cued"
+    : current
+      ? "border-l-[3px] border-l-status-current"
+      : props.cued
+        ? "border-l-[3px] border-l-status-cued"
+        : unlinked
+          ? "border-l-[3px] border-l-status-warning"
           : "border-l-[3px] border-l-accent-orange";
   const durationClass = unlinked
     ? "text-right font-mono text-status-warning"
@@ -48,7 +48,7 @@ export function SceneListRow(props: {
         : props.selected
           ? "text-right font-mono text-console-primary"
           : "text-right font-mono text-console-secondary";
-  const showIndicator = current || props.cued || props.selected || unlinked;
+  const showIndicator = current || props.cued || props.selected;
 
   return (
     <button
@@ -61,19 +61,13 @@ export function SceneListRow(props: {
     >
       <span className="flex justify-start overflow-visible">
         {showIndicator ? (
-          unlinked ? (
-            <span aria-label="Unlinked scene" className="text-status-warning">
-              !
-            </span>
-          ) : (
-            <svg
-              aria-hidden="true"
-              className={`h-4 w-[0.7rem] fill-current ${stateClass}`}
-              viewBox="0 0 7 10"
-            >
-              <polygon points="0,0 7,5 0,10" />
-            </svg>
-          )
+          <svg
+            aria-hidden="true"
+            className={`h-4 w-[0.7rem] fill-current ${stateClass}`}
+            viewBox="0 0 7 10"
+          >
+            <polygon points="0,0 7,5 0,10" />
+          </svg>
         ) : null}
       </span>
       <span className={`font-mono text-base ${textClass}`}>

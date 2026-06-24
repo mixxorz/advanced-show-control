@@ -48,7 +48,7 @@ export function channelButtonLabel(group: number, channel: number) {
 
 export function formatSceneNumber(index: number | null | undefined): string {
   if (index === null || index === undefined) {
-    return "--";
+    return "---";
   }
 
   return String(index + 1).padStart(3, "0");

@@ -1,5 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { connectedAppState, storedVerseScene } from "../storybook/mockAppState";
+import {
+  storedVerseScene,
+  unlinkedDraftScene,
+} from "../storybook/mockAppState";
 import { SceneListRow } from "./SceneListRow";
 
 const meta: Meta<typeof SceneListRow> = {
@@ -27,9 +30,12 @@ type Story = StoryObj<typeof SceneListRow>;
 
 export const Idle: Story = {};
 
-export const Active: Story = {
+export const Current: Story = {
   args: {
-    currentScene: connectedAppState.currentScene,
+    currentScene: {
+      index: storedVerseScene.sceneIndex ?? 0,
+      name: storedVerseScene.sceneName,
+    },
   },
 };
 
@@ -39,8 +45,24 @@ export const Cued: Story = {
   },
 };
 
-export const Selected: Story = {
+export const Unlinked: Story = {
   args: {
+    scene: unlinkedDraftScene,
+  },
+};
+
+export const IdleSelected: Story = {
+  args: {
+    selected: true,
+  },
+};
+
+export const CurrentSelected: Story = {
+  args: {
+    currentScene: {
+      index: storedVerseScene.sceneIndex ?? 0,
+      name: storedVerseScene.sceneName,
+    },
     selected: true,
   },
 };
@@ -52,9 +74,9 @@ export const CuedSelected: Story = {
   },
 };
 
-export const ActiveSelected: Story = {
+export const UnlinkedSelected: Story = {
   args: {
-    currentScene: connectedAppState.currentScene,
+    scene: unlinkedDraftScene,
     selected: true,
   },
 };

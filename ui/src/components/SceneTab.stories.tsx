@@ -5,7 +5,6 @@ import { SceneTab } from "./SceneTab";
 import {
   connectedAppState,
   connectedWithDuplicateScenesAppState,
-  connectedWithUnlinkedSceneAppState,
   storedChorusScene,
   unlinkedDraftScene,
 } from "../storybook/mockAppState";
@@ -42,6 +41,13 @@ export default meta;
 
 type Story = StoryObj<SceneTabStoryArgs>;
 
+const unlinkedAlternateScene = {
+  ...unlinkedDraftScene,
+  internalSceneId: "scene-alternate-unlinked",
+  sceneName: "Deleted Alternate Scene",
+  durationMs: 3500,
+};
+
 export const StoredSceneSelected: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -73,7 +79,12 @@ export const ChorusSelected: Story = {
 export const LinkSceneControls: Story = {
   args: {
     appState: {
-      ...connectedWithUnlinkedSceneAppState,
+      ...connectedAppState,
+      sceneConfigs: [
+        ...connectedAppState.sceneConfigs,
+        unlinkedDraftScene,
+        unlinkedAlternateScene,
+      ],
       selectedSceneInternalId: unlinkedDraftScene.internalSceneId,
     },
   },
