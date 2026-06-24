@@ -120,7 +120,13 @@ describe("SceneEditor", () => {
     await user.click(screen.getByRole("button", { name: "Link to scene" }));
 
     expect(screen.getByRole("dialog")).toHaveTextContent(
-      "Overwrite existing linked scene?",
+      "Overwrite Existing Fade Settings?",
+    );
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "001 Service Start already has fade settings. If you continue, those settings will be replaced with the fade settings from S01: The Wonderful Blood.",
+    );
+    expect(screen.getByRole("dialog")).toHaveTextContent(
+      "This only changes the fade settings saved in Advanced Show Control. No changes are made to the actual scene in the console.",
     );
 
     await user.click(screen.getByRole("button", { name: "Overwrite" }));

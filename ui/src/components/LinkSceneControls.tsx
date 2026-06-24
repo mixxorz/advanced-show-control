@@ -2,10 +2,17 @@ import { useState } from "react";
 import type { SceneConfig, SceneSummary } from "../types";
 import { useAppCommands } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
+import { OverwriteSceneLinkModal } from "./OverwriteSceneLinkModal";
 import { Panel } from "./Panel";
 
 function sceneIndexLabel(scene: SceneSummary) {
   return `${String(scene.index + 1).padStart(3, "0")} ${scene.name}`;
+}
+
+function sceneNameForIndex(lv1Scenes: SceneSummary[], sceneIndex: number) {
+  return (
+    lv1Scenes.find((scene) => scene.index === sceneIndex)?.name ?? "Unknown"
+  );
 }
 
 function defaultTargetIndex(
@@ -130,38 +137,16 @@ export function LinkSceneControls(props: {
         </div>
       </Panel>
       {pendingOverwriteTargetIndex !== null ? (
-        <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6">
-          <section
-            aria-modal="true"
-            className="max-w-md rounded-console-panel border border-console-line bg-console-panel p-6 shadow-2xl"
-            role="dialog"
-          >
-            <h2 className="text-lg font-normal uppercase text-console-primary">
-              Overwrite existing linked scene?
-            </h2>
-            <p className="mt-3 text-sm text-console-secondary">
-              This will replace the current app config for LV1 scene{" "}
-              {pendingOverwriteTargetIndex + 1} with the selected unlinked
-              config.
-            </p>
-            <div className="mt-6 flex justify-end gap-3">
-              <ConsoleButton
-                onClick={() => setPendingOverwriteTargetIndex(null)}
-                size="small"
-                variant="ghost-secondary"
-              >
-                Cancel
-              </ConsoleButton>
-              <ConsoleButton
-                onClick={confirmOverwrite}
-                size="small"
-                variant="ghost-danger"
-              >
-                Overwrite
-              </ConsoleButton>
-            </div>
-          </section>
-        </div>
+        <OverwriteSceneLinkModal
+          onCancel={() => setPendingOverwriteTargetIndex(null)}
+          onOverwrite={confirmOverwrite}
+          sourceSceneName={props.scene.sceneName}
+          targetSceneIndex={pendingOverwriteTargetIndex}
+          targetSceneName={sceneNameForIndex(
+            props.lv1Scenes,
+            pendingOverwriteTargetIndex,
+          )}
+        />
       ) : null}
     </>
   );
