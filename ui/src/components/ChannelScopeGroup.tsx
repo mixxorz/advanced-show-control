@@ -9,7 +9,7 @@ export function ChannelScopeGroup(props: {
 }) {
   return (
     <section>
-      <h4 className="text-[11px] font-semibold uppercase tracking-[0.12em] text-console-secondary">
+      <h4 className="text-xs uppercase tracking-[0.08em] text-console-secondary">
         {props.groupName}
       </h4>
       <div className="mt-2 flex flex-wrap gap-1.5">
