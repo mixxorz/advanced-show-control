@@ -32,7 +32,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - Projector state emission is bounded by dirty-state batching and a fixed projection interval so routine LV1 updates do not flood the frontend.
 - Balance and width reports no longer cancel pan-family fades directly, reducing known false-positive manual override reports while preserving pan override cancellation behavior.
 - Frontend testing is in place with Vitest unit tests, Storybook interaction/browser tests, and Playwright visual checks.
-- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, while Settings now has completed app-level controls backed by startup-loaded app config `settings.json`, saved immediately on change, and projected through app state.
+- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, while Settings now has completed app-level controls backed by startup-loaded app config `settings.json`, saved immediately on change, and projected through `SettingsEvent::StateChanged` and the app-status projector.
 - The Scenes tab supports scene status, current/cued/selected scene display, duplicate-name warnings, scene recall navigation, scope editing, duration editing, stored target review, and channel-scope controls.
 - Connection controls are implemented through the connection modal, including discovery results, connect selection, disconnect, connected/unavailable states, and reconnect overlay behavior.
 - The Logs tab shows projected frontend-facing operational logs.
@@ -52,7 +52,6 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Preserve app-managed fade configuration where a safe remap can be made.
    - Make mismatches, remap decisions, skipped configs, and unresolved mappings visible to the user.
 3. Wire Settings behavior.
-   - The Settings tab and app-level settings infrastructure already exist with `settings.json` storage.
    - Use focused follow-up slices to wire auto-save, keyboard shortcuts, auto-cue, time display, and fader override sensitivity behavior.
 4. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
