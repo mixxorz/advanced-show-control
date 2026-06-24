@@ -94,7 +94,7 @@ describe("SceneEditor", () => {
     });
 
     expect(
-      screen.getByRole("button", { name: "Link to LV1 Scene" }),
+      screen.getByRole("button", { name: "Link to scene" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
@@ -117,7 +117,7 @@ describe("SceneEditor", () => {
     );
 
     await user.selectOptions(screen.getByLabelText("LV1 Scene"), "0");
-    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+    await user.click(screen.getByRole("button", { name: "Link to scene" }));
 
     expect(screen.getByRole("dialog")).toHaveTextContent(
       "Overwrite existing linked scene?",
@@ -149,7 +149,7 @@ describe("SceneEditor", () => {
       { linkSceneConfig },
     );
 
-    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+    await user.click(screen.getByRole("button", { name: "Link to scene" }));
 
     expect(linkSceneConfig).toHaveBeenCalledWith(
       connectedAppState.sceneConfigs[0].internalSceneId,
@@ -180,7 +180,7 @@ describe("SceneEditor", () => {
       ),
     );
 
-    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+    await user.click(screen.getByRole("button", { name: "Link to scene" }));
 
     expect(linkSceneConfig).toHaveBeenCalledWith(
       connectedAppState.sceneConfigs[0].internalSceneId,

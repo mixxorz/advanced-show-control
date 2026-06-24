@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { SceneConfig, SceneSummary } from "../types";
 import { useAppCommands } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
+import { Panel } from "./Panel";
 
 function sceneIndexLabel(scene: SceneSummary) {
   return `${String(scene.index + 1).padStart(3, "0")} ${scene.name}`;
@@ -21,7 +22,7 @@ function defaultTargetIndex(
   );
 }
 
-export function UnlinkedSceneControls(props: {
+export function LinkSceneControls(props: {
   scene: SceneConfig;
   lv1Scenes: SceneSummary[];
   existingConfigs: SceneConfig[];
@@ -74,29 +75,60 @@ export function UnlinkedSceneControls(props: {
 
   return (
     <>
-      <div className="flex flex-wrap items-end gap-3 rounded-console-panel border border-console-line bg-console-panel p-4">
-        <label className="flex flex-col gap-2 text-sm uppercase text-console-secondary">
-          <span>LV1 Scene</span>
-          <select
-            aria-label="LV1 Scene"
-            className="min-w-64 rounded-console-control border border-console-line bg-console-control px-3 py-2 text-console-primary outline-none"
-            onChange={(event) => setSelectedTargetIndex(event.target.value)}
-            value={effectiveSelectedTargetIndex}
+      <Panel
+        className="flex flex-wrap items-center justify-between gap-3 px-4 py-2"
+        variant="warning"
+      >
+        <p className="text-base font-normal text-status-warning">
+          Scene is currently unlinked
+        </p>
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-3">
+          <label className="flex shrink-0 items-center gap-3 text-sm font-normal uppercase text-console-secondary">
+            <span>Scene</span>
+            <div className="relative min-w-72">
+              <select
+                aria-label="LV1 Scene"
+                className="w-full appearance-none rounded-console-control border border-console-line bg-console-panel px-3 py-1 pr-9 font-mono text-sm text-accent-orange outline-none transition-colors focus:border-console-line-strong"
+                onChange={(event) => setSelectedTargetIndex(event.target.value)}
+                value={effectiveSelectedTargetIndex}
+              >
+                {props.lv1Scenes.map((scene) => (
+                  <option key={scene.index} value={scene.index}>
+                    {sceneIndexLabel(scene)}
+                  </option>
+                ))}
+              </select>
+              <svg
+                aria-hidden="true"
+                className="pointer-events-none absolute top-1/2 right-3 h-2.5 w-2.5 -translate-y-1/2 stroke-white"
+                fill="none"
+                viewBox="0 0 12 12"
+              >
+                <path
+                  d="M3 4.5 6 7.5l3-3"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth="2"
+                />
+              </svg>
+            </div>
+          </label>
+          <ConsoleButton
+            onClick={linkSelectedTarget}
+            size="small"
+            variant="primary"
           >
-            {props.lv1Scenes.map((scene) => (
-              <option key={scene.index} value={scene.index}>
-                {sceneIndexLabel(scene)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <ConsoleButton onClick={linkSelectedTarget} variant="ghost-primary">
-          Link to LV1 Scene
-        </ConsoleButton>
-        <ConsoleButton onClick={deleteUnlinkedScene} variant="ghost-danger">
-          Delete
-        </ConsoleButton>
-      </div>
+            Link to scene
+          </ConsoleButton>
+          <ConsoleButton
+            onClick={deleteUnlinkedScene}
+            size="small"
+            variant="danger"
+          >
+            Delete
+          </ConsoleButton>
+        </div>
+      </Panel>
       {pendingOverwriteTargetIndex !== null ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6">
           <section

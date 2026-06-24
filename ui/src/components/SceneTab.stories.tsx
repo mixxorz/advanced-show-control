@@ -5,7 +5,9 @@ import { SceneTab } from "./SceneTab";
 import {
   connectedAppState,
   connectedWithDuplicateScenesAppState,
+  connectedWithUnlinkedSceneAppState,
   storedChorusScene,
+  unlinkedDraftScene,
 } from "../storybook/mockAppState";
 import { disconnectedAppViewState, type AppViewState } from "../types";
 
@@ -65,6 +67,25 @@ export const ChorusSelected: Story = {
       ...connectedAppState,
       selectedSceneInternalId: storedChorusScene.internalSceneId,
     },
+  },
+};
+
+export const LinkSceneControls: Story = {
+  args: {
+    appState: {
+      ...connectedWithUnlinkedSceneAppState,
+      selectedSceneInternalId: unlinkedDraftScene.internalSceneId,
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(
+      canvas.getByRole("button", { name: "Link to scene" }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("button", { name: "Delete" }),
+    ).toBeInTheDocument();
   },
 };
 

@@ -28,3 +28,11 @@ export const Padded: Story = {
     children: "Padded panel content",
   },
 };
+
+export const Warning: Story = {
+  args: {
+    className: "px-4 py-2 text-status-warning",
+    variant: "warning",
+    children: "Scene is currently unlinked",
+  },
+};

@@ -108,6 +108,7 @@
   --color-status-cued: #52d62d;
   --color-status-warning: #f0b429;
   --color-status-danger: #ff5c5c;
+  --color-status-danger-active: #9f1f1f;
 
   --radius-console-panel: 0.25rem;
   --radius-console-control: 0.15625rem;

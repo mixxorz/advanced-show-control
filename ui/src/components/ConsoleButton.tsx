@@ -5,6 +5,7 @@ type ConsoleButtonVariant =
   | "secondary"
   | "ghost-primary"
   | "ghost-danger"
+  | "danger"
   | "ghost-secondary";
 type ConsoleButtonSize = "default" | "small" | "big";
 
@@ -32,6 +33,8 @@ export function ConsoleButton(props: {
     : {
         primary:
           "border-accent-orange bg-accent-orange-active text-white hover:bg-accent-orange disabled:border-console-line disabled:bg-console-control",
+        danger:
+          "border-status-danger bg-status-danger-active text-white hover:bg-status-danger disabled:border-console-line disabled:bg-console-control",
         secondary:
           "border-console-line bg-console-control text-console-primary hover:border-console-line-strong hover:bg-console-control-hover",
         "ghost-primary":

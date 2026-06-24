@@ -1,8 +1,8 @@
 import { useAppState } from "../appHooks";
 import { ChannelScopeGrid } from "./ChannelScopeGrid";
 import { EmptySceneSelection } from "./EmptySceneSelection";
+import { LinkSceneControls } from "./LinkSceneControls";
 import { SelectedSceneHeader } from "./SelectedSceneHeader";
-import { UnlinkedSceneControls } from "./UnlinkedSceneControls";
 
 export function SceneEditor() {
   const { appState } = useAppState();
@@ -16,14 +16,14 @@ export function SceneEditor() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
-      <SelectedSceneHeader scene={selected} />
       {selected.sceneIndex === null ? (
-        <UnlinkedSceneControls
+        <LinkSceneControls
           existingConfigs={appState.sceneConfigs}
           lv1Scenes={appState.scenes}
           scene={selected}
         />
       ) : null}
+      <SelectedSceneHeader scene={selected} />
       <ChannelScopeGrid scene={selected} />
     </div>
   );

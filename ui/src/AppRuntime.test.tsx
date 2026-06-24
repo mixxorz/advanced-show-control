@@ -316,7 +316,7 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     await user.selectOptions(screen.getByLabelText("LV1 Scene"), "1");
-    await user.click(screen.getByRole("button", { name: "Link to LV1 Scene" }));
+    await user.click(screen.getByRole("button", { name: "Link to scene" }));
 
     expect(services.linkSceneConfig).toHaveBeenCalledWith(
       source.internalSceneId,
