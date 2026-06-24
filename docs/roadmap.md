@@ -32,8 +32,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - Projector state emission is bounded by dirty-state batching and a fixed projection interval so routine LV1 updates do not flood the frontend.
 - Balance and width reports no longer cancel pan-family fades directly, reducing known false-positive manual override reports while preserving pan override cancellation behavior.
 - Frontend testing is in place with Vitest unit tests, Storybook interaction/browser tests, and Playwright visual checks.
-- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, and Settings remains a placeholder until the auto-session recall setting is built.
-- The Settings tab has app-level controls backed by a startup-loaded app config `settings.json`; settings are saved immediately on change and projected through app state.
+- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, while Settings now has completed app-level controls backed by a startup-loaded app config `settings.json`.
 - The Scenes tab supports scene status, current/cued/selected scene display, duplicate-name warnings, scene recall navigation, scope editing, duration editing, stored target review, and channel-scope controls.
 - Connection controls are implemented through the connection modal, including discovery results, connect selection, disconnect, connected/unavailable states, and reconnect overlay behavior.
 - The Logs tab shows projected frontend-facing operational logs.
@@ -52,7 +51,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Handle loaded sessions whose stored scene references no longer match the current LV1 scene list.
    - Preserve app-managed fade configuration where a safe remap can be made.
    - Make mismatches, remap decisions, skipped configs, and unresolved mappings visible to the user.
-3. Build the frontend Settings tab.
+3. Add auto-session recall behavior.
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
