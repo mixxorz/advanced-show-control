@@ -74,7 +74,7 @@ function DurationInputDraft(props: {
   }
 
   function stepDuration(direction: 1 | -1) {
-    const seconds = props.durationMs / 1000 + direction * 0.1;
+    const seconds = props.durationMs / 1000 + direction * 1;
     void setDurationMs(normalizeSeconds(Math.max(0, seconds)));
   }
 

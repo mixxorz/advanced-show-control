@@ -16,6 +16,11 @@ export function SceneEditor() {
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3">
+      <SelectedSceneHeader
+        currentScene={appState.currentScene}
+        cued={selected.internalSceneId === appState.cuedSceneInternalId}
+        scene={selected}
+      />
       {selected.sceneIndex === null ? (
         <LinkSceneControls
           existingConfigs={appState.sceneConfigs}
@@ -23,7 +28,6 @@ export function SceneEditor() {
           scene={selected}
         />
       ) : null}
-      <SelectedSceneHeader scene={selected} />
       <ChannelScopeGrid scene={selected} />
     </div>
   );
