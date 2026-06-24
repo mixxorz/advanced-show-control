@@ -5,10 +5,6 @@ import { ConsoleButton } from "./ConsoleButton";
 import { OverwriteSceneLinkModal } from "./OverwriteSceneLinkModal";
 import { Panel } from "./Panel";
 
-function sceneIndexLabel(scene: SceneSummary) {
-  return `${String(scene.index + 1).padStart(3, "0")} ${scene.name}`;
-}
-
 function defaultTargetIndex(
   lv1Scenes: SceneSummary[],
   existingConfigs: SceneConfig[],
@@ -95,7 +91,7 @@ export function LinkSceneControls(props: {
               >
                 {props.lv1Scenes.map((scene) => (
                   <option key={scene.index} value={scene.index}>
-                    {sceneIndexLabel(scene)}
+                    {String(scene.index + 1).padStart(3, "0")} {scene.name}
                   </option>
                 ))}
               </select>

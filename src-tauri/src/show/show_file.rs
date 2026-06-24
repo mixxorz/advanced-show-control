@@ -112,7 +112,17 @@ pub fn import_show_file(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
 ) -> Result<ImportedShowFile, String> {
-    validate_show_file_for_lv1_scenes(file, lv1)?;
+    if lv1.scene_list.is_empty() {
+        return Err("Open a session after LV1 scenes are loaded".to_string());
+    }
+
+    if file.schema_version != SHOW_FILE_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported session schema version {}",
+            file.schema_version
+        ));
+    }
+
     file.scene_configs
         .retain(|config| !is_blank_scene_config(config));
     let generated_internal_scene_ids = file
@@ -139,24 +149,6 @@ pub fn import_show_file(
         report: LoadValidationReport::default(),
         generated_internal_scene_ids,
     })
-}
-
-fn validate_show_file_for_lv1_scenes(
-    file: &ShowFile,
-    lv1: &Lv1StateSnapshot,
-) -> Result<(), String> {
-    if lv1.scene_list.is_empty() {
-        return Err("Open a session after LV1 scenes are loaded".to_string());
-    }
-
-    if file.schema_version != SHOW_FILE_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported session schema version {}",
-            file.schema_version
-        ));
-    }
-
-    Ok(())
 }
 
 fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {

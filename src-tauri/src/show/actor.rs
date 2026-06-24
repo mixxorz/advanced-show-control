@@ -373,7 +373,15 @@ async fn handle_command(
             }
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
-            let result = save_show_file_to_path(state, event_bus, path);
+            let result = (|| {
+                let saved_at = crate::time::current_timestamp_millis();
+                let file = state.export_show_file(saved_at.clone());
+                write_show_file(&path, &file, &backup_folder())?;
+                state.mark_saved(path, saved_at);
+                publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+                tracing::info!(event = "session_saved", "Session saved");
+                Ok(ShowCommandResult { changed: true })
+            })();
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
@@ -548,20 +556,6 @@ fn map_app_command_error(error: AppCommandError) -> String {
         AppCommandError::CommandFailed(message) => message,
         other => other.to_string(),
     }
-}
-
-fn save_show_file_to_path(
-    state: &mut ShowState,
-    event_bus: &AppEventBus,
-    path: std::path::PathBuf,
-) -> Result<ShowCommandResult, String> {
-    let saved_at = crate::time::current_timestamp_millis();
-    let file = state.export_show_file(saved_at.clone());
-    write_show_file(&path, &file, &backup_folder())?;
-    state.mark_saved(path, saved_at);
-    publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-    tracing::info!(event = "session_saved", "Session saved");
-    Ok(ShowCommandResult { changed: true })
 }
 
 fn load_show_file_from_dto(
