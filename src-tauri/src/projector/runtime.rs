@@ -108,6 +108,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
             cache.apply_show_state(state.clone());
             true
         }
+        AppEvent::Settings(_) => false,
     }
 }
 

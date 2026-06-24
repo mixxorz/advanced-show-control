@@ -3,6 +3,7 @@ use tokio::sync::broadcast;
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scenes::ScenesEvent;
+use crate::settings::SettingsEvent;
 use crate::show::ShowEvent;
 
 #[derive(Debug, Clone)]
@@ -18,6 +19,7 @@ pub enum AppEvent {
     Fade { generation: u64, event: FadeEvent },
     Scenes { generation: u64, event: ScenesEvent },
     Show(ShowEvent),
+    Settings(SettingsEvent),
 }
 
 #[derive(Clone)]
