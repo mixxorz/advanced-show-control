@@ -51,6 +51,16 @@ mod tests {
 
         assert_eq!(settings.fader_override_sensitivity, 1);
     }
+
+    #[test]
+    fn partial_shortcut_settings_deserialize_with_agreed_defaults() {
+        let settings: AppSettings =
+            serde_json::from_str(r#"{"keyboardShortcuts":{"cue":{"key":"C"}}}"#)
+                .expect("settings should deserialize");
+
+        assert_eq!(settings.keyboard_shortcuts.go.key, "Space");
+        assert_eq!(settings.keyboard_shortcuts.cue.key, "C");
+    }
 }
 
 use serde::{Deserialize, Serialize};
@@ -92,7 +102,9 @@ impl AppSettings {
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct KeyboardShortcutSettings {
+    #[serde(default = "KeyboardShortcut::go_default")]
     pub go: KeyboardShortcut,
+    #[serde(default = "KeyboardShortcut::cue_default")]
     pub cue: KeyboardShortcut,
 }
 
