@@ -9,12 +9,6 @@ function sceneIndexLabel(scene: SceneSummary) {
   return `${String(scene.index + 1).padStart(3, "0")} ${scene.name}`;
 }
 
-function sceneNameForIndex(lv1Scenes: SceneSummary[], sceneIndex: number) {
-  return (
-    lv1Scenes.find((scene) => scene.index === sceneIndex)?.name ?? "Unknown"
-  );
-}
-
 function defaultTargetIndex(
   lv1Scenes: SceneSummary[],
   existingConfigs: SceneConfig[],
@@ -142,10 +136,11 @@ export function LinkSceneControls(props: {
           onOverwrite={confirmOverwrite}
           sourceSceneName={props.scene.sceneName}
           targetSceneIndex={pendingOverwriteTargetIndex}
-          targetSceneName={sceneNameForIndex(
-            props.lv1Scenes,
-            pendingOverwriteTargetIndex,
-          )}
+          targetSceneName={
+            props.lv1Scenes.find(
+              (scene) => scene.index === pendingOverwriteTargetIndex,
+            )?.name ?? "Unknown"
+          }
         />
       ) : null}
     </>
