@@ -32,7 +32,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - Projector state emission is bounded by dirty-state batching and a fixed projection interval so routine LV1 updates do not flood the frontend.
 - Balance and width reports no longer cancel pan-family fades directly, reducing known false-positive manual override reports while preserving pan override cancellation behavior.
 - Frontend testing is in place with Vitest unit tests, Storybook interaction/browser tests, and Playwright visual checks.
-- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, while Settings now has completed app-level controls backed by a startup-loaded app config `settings.json`.
+- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, while Settings now has completed app-level controls backed by startup-loaded app config `settings.json`, saved immediately on change, and projected through app state.
 - The Scenes tab supports scene status, current/cued/selected scene display, duplicate-name warnings, scene recall navigation, scope editing, duration editing, stored target review, and channel-scope controls.
 - Connection controls are implemented through the connection modal, including discovery results, connect selection, disconnect, connected/unavailable states, and reconnect overlay behavior.
 - The Logs tab shows projected frontend-facing operational logs.
