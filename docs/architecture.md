@@ -26,6 +26,7 @@ The runtime consists of the following primary components:
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
 | `lv1`       | Maintains the LV1 TCP connection and raw LV1 state mirror.                                                                                |
 | `fade`      | Executes active fade timing, overlap behavior, and LV1 parameter writes.                                                                  |
+| `settings`  | Maintains app-level preferences, loads/saves app-config `settings.json`, validates normalized settings replacements, and publishes settings projection facts. |
 | `scenes`    | Performs scene recall automation and recall policy enforcement.                                                                           |
 | `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, and application-managed scene configuration state. |
 | `lifecycle` | Constructs the connected runtime, wires actor peers, installs handles, tears down runtime state, and owns generation changes.             |
@@ -78,6 +79,8 @@ An actor module normally defines four interface concepts:
 2. A handle, such as `Lv1ActorHandle`, `FadeEngineHandle`, `ScenesHandle`, or `ShowStateHandle`.
 3. A task object, such as `Lv1ActorTask`, `FadeEngineTask`, `ScenesTask`, or `ShowActorTask`.
 4. A peer-wiring object, when the actor requires direct access to other actors after construction.
+
+`SettingsActor` is an app-lifetime actor. It is not tied to LV1 connection generation. It owns `AppSettings`, loads `settings.json` from the Tauri app config directory during startup, accepts full-object replacement through `SettingsCommand::ReplaceSettings`, saves changed settings immediately, and publishes `SettingsEvent::StateChanged` through `AppEventBus` for projector consumption.
 
 The actor handle owns a Tokio sender. The handle shall remain dumb. It shall not provide domain-specific helpers that hide mailbox command construction.
 

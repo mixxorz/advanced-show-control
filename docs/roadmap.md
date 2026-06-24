@@ -33,6 +33,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - Balance and width reports no longer cancel pan-family fades directly, reducing known false-positive manual override reports while preserving pan override cancellation behavior.
 - Frontend testing is in place with Vitest unit tests, Storybook interaction/browser tests, and Playwright visual checks.
 - The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, and Settings remains a placeholder until the auto-session recall setting is built.
+- The Settings tab has app-level controls backed by a startup-loaded app config `settings.json`; settings are saved immediately on change and projected through app state.
 - The Scenes tab supports scene status, current/cued/selected scene display, duplicate-name warnings, scene recall navigation, scope editing, duration editing, stored target review, and channel-scope controls.
 - Connection controls are implemented through the connection modal, including discovery results, connect selection, disconnect, connected/unavailable states, and reconnect overlay behavior.
 - The Logs tab shows projected frontend-facing operational logs.
@@ -55,6 +56,8 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Add the first app setting: auto-session recall.
    - Let engineers enable or disable automatic reload of the last session when reconnecting to the same LV1 console.
    - Make the setting clear about safety behavior and when auto-recall will be skipped.
+   - Use the existing app-level settings infrastructure for auto-session recall behavior.
+   - Apply auto-save, keyboard shortcuts, auto-cue, time display, and fader override sensitivity behavior in focused follow-up slices.
 4. Add auto-session recall.
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session only when the setting is enabled and the console identity matches safely.
