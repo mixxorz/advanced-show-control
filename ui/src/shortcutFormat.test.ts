@@ -5,6 +5,7 @@ import type { KeyboardShortcut } from "./types";
 describe("formatShortcut", () => {
   it("uses macOS symbols", () => {
     expect(formatShortcut(shortcut("c", { meta: true }), "mac")).toBe("⌘C");
+    expect(formatShortcut(shortcut("2", { shift: true }), "mac")).toBe("⇧2");
     expect(
       formatShortcut(shortcut("Enter", { shift: true, alt: true }), "mac"),
     ).toBe("⇧⌥Enter");
@@ -13,6 +14,9 @@ describe("formatShortcut", () => {
   it("uses non-macOS labels", () => {
     expect(formatShortcut(shortcut("c", { control: true }), "other")).toBe(
       "Ctrl + C",
+    );
+    expect(formatShortcut(shortcut("2", { shift: true }), "other")).toBe(
+      "Shift + 2",
     );
     expect(formatShortcut(shortcut("Tab", { meta: true }), "other")).toBe(
       "Win + Tab",

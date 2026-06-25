@@ -178,7 +178,8 @@ function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
 }
 
 function normalizeCapturedKey(event: AppKeyboardEvent) {
-  const key = keyFromCode(event.code) ?? event.key;
+  const key =
+    keyFromCode(event.code) ?? printableCodeFallback(event) ?? event.key;
   return key.length === 1 ? key.toUpperCase() : key;
 }
 
@@ -190,6 +191,13 @@ function keyFromCode(code: string) {
     return code.slice(5);
   }
   return CODE_KEY_LABELS[code];
+}
+
+function printableCodeFallback(event: AppKeyboardEvent) {
+  if (event.code && event.key.length === 1) {
+    return event.code;
+  }
+  return undefined;
 }
 
 function isModifierKey(key: string) {
