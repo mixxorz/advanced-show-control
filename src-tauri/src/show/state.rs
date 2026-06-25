@@ -1,7 +1,6 @@
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 use crate::lv1::Lv1StateSnapshot;
 use crate::scenes::ScenesState;
-use crate::show::show_file::{ShowFile, export_show_file};
 
 use super::types::ShowDocument;
 use crate::scenes::{SceneConfig, SceneDocument, align_scene_configs};
@@ -138,18 +137,6 @@ impl ShowState {
 
     pub(crate) fn current_show_file_path(&self) -> Option<std::path::PathBuf> {
         self.show_file_path.clone()
-    }
-
-    pub(crate) fn export_show_file(&self, saved_at: String) -> ShowFile {
-        export_show_file(
-            SceneDocument {
-                scene_configs: self.scene_configs.clone(),
-                cued_scene_internal_id: self.cued_scene_internal_id,
-                selected_scene_internal_id: self.selected_scene_internal_id.clone(),
-            },
-            self.lockout,
-            saved_at,
-        )
     }
 
     pub(crate) fn scene_configs(&self) -> &[SceneConfig] {

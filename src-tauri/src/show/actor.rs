@@ -5,7 +5,9 @@ use tokio::sync::mpsc;
 use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent, log_lagged_subscriber};
-use crate::scenes::ScenesHandle;
+use crate::scenes::{
+    SceneDocument, ScenesCommand, ScenesCommandResult, ScenesHandle, ScenesProjectionReason,
+};
 use crate::show_file::{backup_folder, read_show_file, write_show_file};
 
 use super::commands::ShowCommand;
@@ -377,7 +379,30 @@ async fn handle_command(
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
             let lv1 = current_lv1_snapshot(peers).await.ok();
-            let selected_scene_internal_id = state.reset_for_new_show(lv1.as_ref());
+            let scene_document = if let Some(lv1) = lv1.as_ref() {
+                SceneDocument {
+                    scene_configs: crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list),
+                    cued_scene_internal_id: None,
+                    selected_scene_internal_id: None,
+                }
+            } else {
+                SceneDocument::empty()
+            };
+            let selected_scene_internal_id = scene_document
+                .scene_configs
+                .first()
+                .map(|scene| scene.internal_scene_id.to_string());
+            let result = replace_scene_document(
+                peers,
+                scene_document,
+                selected_scene_internal_id.clone(),
+                ScenesProjectionReason::FileReplacement,
+                false,
+            )
+            .await;
+            if result.is_ok() {
+                state.reset_for_new_show(lv1.as_ref());
+            }
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
             tracing::info!(event = "session_created", "New session created");
             if let Some(reply) = reply {
@@ -387,15 +412,21 @@ async fn handle_command(
             }
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
-            let result = (|| {
+            let result = async {
                 let saved_at = crate::time::current_timestamp_millis();
-                let file = state.export_show_file(saved_at.clone());
+                let scene_document = current_scene_document(peers).await?;
+                let file = crate::show::show_file::export_show_file(
+                    scene_document,
+                    state.lockout(),
+                    saved_at.clone(),
+                );
                 write_show_file(&path, &file, &backup_folder())?;
                 state.mark_saved(path, saved_at);
                 publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
                 tracing::info!(event = "session_saved", "Session saved");
                 Ok(ShowCommandResult { changed: true })
-            })();
+            }
+            .await;
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
@@ -467,10 +498,12 @@ async fn handle_command(
             }
         }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
-            let result = current_lv1_snapshot(peers).await.and_then(|lv1| {
+            let result = async {
+                let lv1 = current_lv1_snapshot(peers).await?;
                 let mut file = read_show_file(&path)?;
-                load_show_file_from_dto(state, event_bus, path, &mut file, &lv1)
-            });
+                load_show_file_from_dto(state, event_bus, peers, path, &mut file, &lv1).await
+            }
+            .await;
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
@@ -572,9 +605,10 @@ fn map_app_command_error(error: AppCommandError) -> String {
     }
 }
 
-fn load_show_file_from_dto(
+async fn load_show_file_from_dto(
     state: &mut ShowState,
     event_bus: &AppEventBus,
+    peers: &ShowActorPeers,
     path: std::path::PathBuf,
     file: &mut super::show_file::ShowFile,
     lv1: &Lv1StateSnapshot,
@@ -600,6 +634,19 @@ fn load_show_file_from_dto(
                 .first()
                 .map(|scene| scene.internal_scene_id.to_string())
         });
+    let scene_document = SceneDocument {
+        scene_configs: aligned_scene_configs.clone(),
+        cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
+        selected_scene_internal_id: selected_scene_internal_id.clone(),
+    };
+    replace_scene_document(
+        peers,
+        scene_document,
+        selected_scene_internal_id.clone(),
+        ScenesProjectionReason::FileReplacement,
+        false,
+    )
+    .await?;
     state.replace_snapshot(crate::show::ShowDocument {
         lockout: imported.lockout,
         scene_configs: aligned_scene_configs.clone(),
@@ -633,6 +680,44 @@ fn load_show_file_from_dto(
     })
 }
 
+async fn current_scene_document(peers: &ShowActorPeers) -> Result<SceneDocument, String> {
+    let scenes = peers
+        .scenes()
+        .ok_or_else(|| "Show blocked: scenes state is unavailable".to_string())?;
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    scenes
+        .send(ScenesCommand::GetSceneDocument { reply })
+        .await
+        .map_err(|_| "Show blocked: scenes state is unavailable".to_string())?;
+    rx.await
+        .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
+}
+
+async fn replace_scene_document(
+    peers: &ShowActorPeers,
+    document: SceneDocument,
+    selected_scene_internal_id: Option<String>,
+    reason: ScenesProjectionReason,
+    persisted_scene_edit: bool,
+) -> Result<ScenesCommandResult, String> {
+    let scenes = peers
+        .scenes()
+        .ok_or_else(|| "Show blocked: scenes state is unavailable".to_string())?;
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    scenes
+        .send(ScenesCommand::ReplaceSceneDocument {
+            document,
+            selected_scene_internal_id,
+            reason,
+            persisted_scene_edit,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| "Show blocked: scenes state is unavailable".to_string())?;
+    rx.await
+        .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
+}
+
 fn store_scene_config_from_channels(
     state: &mut ShowState,
     event_bus: &AppEventBus,
@@ -656,6 +741,11 @@ mod tests {
 
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::AppEventBus;
+    use crate::runtime::generation::RuntimeGeneration;
+    use crate::scenes::{ScenesCommand, build_scenes_actor};
+    use crate::show::commands::ShowCommand;
+    use crate::show::events::{ShowEvent, ShowProjectionReason};
+    use crate::show::handle::ShowStateHandle;
 
     use super::load_show_file_from_dto;
     use crate::scenes::{SceneConfig, SceneScopeToggles};
@@ -705,17 +795,61 @@ mod tests {
         }
     }
 
-    #[test]
-    fn connected_load_aligns_imported_configs_and_adds_default_linked_configs_for_extra_lv1_scenes()
-    {
+    fn show_actor_peers() -> super::ShowActorPeers {
+        let peers = super::ShowActorPeers::default();
+        let (scenes, task, _peers) =
+            build_scenes_actor(1, RuntimeGeneration::default(), AppEventBus::default());
+        task.spawn();
+        peers.set_scenes(scenes);
+        peers
+    }
+
+    fn show_actor(event_bus: AppEventBus) -> (ShowStateHandle, super::ShowActorPeers) {
+        let (handle, task, peers) = super::build_show_actor(event_bus);
+        task.spawn();
+        (handle, peers)
+    }
+
+    async fn get_scene_document(
+        handle: &crate::scenes::ScenesHandle,
+    ) -> crate::scenes::SceneDocument {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        handle
+            .send(ScenesCommand::GetSceneDocument { reply })
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
+
+    async fn recv_file_metadata_event(
+        events: &mut tokio::sync::broadcast::Receiver<crate::runtime::events::AppEvent>,
+    ) -> crate::show::events::ShowProjectionState {
+        loop {
+            match events.recv().await.unwrap() {
+                crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
+                    reason: ShowProjectionReason::FileMetadata,
+                    state,
+                }) => {
+                    return state;
+                }
+                _ => continue,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connected_load_aligns_imported_configs_and_adds_default_linked_configs_for_extra_lv1_scenes()
+     {
         let event_bus = AppEventBus::default();
         let mut state = ShowState::default();
         let path = std::path::PathBuf::from("session.show");
         let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
 
+        let peers = show_actor_peers();
         let result = load_show_file_from_dto(
             &mut state,
             &event_bus,
+            &peers,
             path,
             &mut file,
             &lv1_snapshot(vec![
@@ -729,6 +863,7 @@ mod tests {
                 },
             ]),
         )
+        .await
         .expect("load should succeed");
 
         assert_eq!(state.scene_configs().len(), 2);
@@ -743,8 +878,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn connected_load_drops_blank_file_configs_before_alignment() {
+    #[tokio::test]
+    async fn connected_load_drops_blank_file_configs_before_alignment() {
         let event_bus = AppEventBus::default();
         let mut state = ShowState::default();
         let path = std::path::PathBuf::from("session.show");
@@ -753,9 +888,11 @@ mod tests {
             file_scene(scene_config(2, Some(2), "Verse", 0)),
         ]);
 
+        let peers = show_actor_peers();
         load_show_file_from_dto(
             &mut state,
             &event_bus,
+            &peers,
             path,
             &mut file,
             &lv1_snapshot(vec![
@@ -769,6 +906,7 @@ mod tests {
                 },
             ]),
         )
+        .await
         .expect("load should succeed");
 
         assert_eq!(state.scene_configs().len(), 2);
@@ -785,16 +923,18 @@ mod tests {
         assert_eq!(state.scene_configs()[1].duration_ms, 0);
     }
 
-    #[test]
-    fn connected_load_marks_dirty_when_alignment_changes_imported_configs() {
+    #[tokio::test]
+    async fn connected_load_marks_dirty_when_alignment_changes_imported_configs() {
         let event_bus = AppEventBus::default();
         let mut state = ShowState::default();
         let path = std::path::PathBuf::from("session.show");
         let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
 
+        let peers = show_actor_peers();
         load_show_file_from_dto(
             &mut state,
             &event_bus,
+            &peers,
             path,
             &mut file,
             &lv1_snapshot(vec![SceneListEntry {
@@ -802,22 +942,25 @@ mod tests {
                 name: "Intro".to_string(),
             }]),
         )
+        .await
         .expect("load should succeed");
 
         assert!(state.projection_state().show_file_dirty);
         assert_eq!(state.scene_configs()[0].scene_index, Some(2));
     }
 
-    #[test]
-    fn connected_load_preserves_existing_imported_fade_data_for_matched_scenes() {
+    #[tokio::test]
+    async fn connected_load_preserves_existing_imported_fade_data_for_matched_scenes() {
         let event_bus = AppEventBus::default();
         let mut state = ShowState::default();
         let path = std::path::PathBuf::from("session.show");
         let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_500))]);
 
+        let peers = show_actor_peers();
         load_show_file_from_dto(
             &mut state,
             &event_bus,
+            &peers,
             path,
             &mut file,
             &lv1_snapshot(vec![SceneListEntry {
@@ -825,6 +968,7 @@ mod tests {
                 name: "Intro".to_string(),
             }]),
         )
+        .await
         .expect("load should succeed");
 
         assert_eq!(state.scene_configs()[0].duration_ms, 1_500);
@@ -834,8 +978,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn connected_load_preserves_missing_imported_config_as_unlinked() {
+    #[tokio::test]
+    async fn connected_load_preserves_missing_imported_config_as_unlinked() {
         let event_bus = AppEventBus::default();
         let mut state = ShowState::default();
         let path = std::path::PathBuf::from("session.show");
@@ -844,9 +988,11 @@ mod tests {
             file_scene(scene_config(2, Some(2), "Verse", 2_000)),
         ]);
 
+        let peers = show_actor_peers();
         load_show_file_from_dto(
             &mut state,
             &event_bus,
+            &peers,
             path,
             &mut file,
             &lv1_snapshot(vec![SceneListEntry {
@@ -854,11 +1000,166 @@ mod tests {
                 name: "Intro".to_string(),
             }]),
         )
+        .await
         .expect("load should succeed");
 
         assert_eq!(state.scene_configs().len(), 2);
         assert_eq!(state.scene_configs()[0].scene_index, Some(1));
         assert_eq!(state.scene_configs()[1].scene_index, None);
         assert_eq!(state.scene_configs()[1].scene_name, "Verse");
+    }
+
+    #[tokio::test]
+    async fn save_queries_scenes_for_the_scene_document() {
+        let event_bus = AppEventBus::default();
+        let (show, peers) = show_actor(event_bus.clone());
+        let (scenes, task, _peers) =
+            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        task.spawn();
+        peers.set_scenes(scenes.clone());
+
+        let scenes_document = crate::scenes::SceneDocument {
+            scene_configs: vec![scene_config(11, Some(3), "Scene From Scenes", 2_500)],
+            cued_scene_internal_id: None,
+            selected_scene_internal_id: Some("selected-from-scenes".to_string()),
+        };
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        scenes
+            .send(ScenesCommand::ReplaceSceneDocument {
+                document: scenes_document,
+                selected_scene_internal_id: Some("selected-from-scenes".to_string()),
+                reason: crate::scenes::ScenesProjectionReason::FileReplacement,
+                persisted_scene_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap();
+
+        let path = std::env::temp_dir().join(format!("show-save-{}.ascs", Uuid::new_v4()));
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SaveShowFileAs {
+            path: path.clone(),
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+
+        assert!(rx.await.unwrap().is_ok());
+
+        let saved = crate::show_file::read_show_file(&path).unwrap();
+        assert_eq!(saved.scene_configs[0].scene_name, "Scene From Scenes");
+        assert_eq!(saved.scene_configs[0].scene_index, Some(3));
+    }
+
+    #[tokio::test]
+    async fn load_replaces_scenes_state_and_keeps_dirty_clear_for_replacement_event() {
+        let event_bus = AppEventBus::default();
+        let (show, peers) = show_actor(event_bus.clone());
+        let mut events = event_bus.subscribe();
+        let (scenes, task, _peers) =
+            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        task.spawn();
+        peers.set_scenes(scenes.clone());
+        let new_lv1 = lv1_snapshot(vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let handle = crate::lv1::test_actor_handle(tx);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let crate::lv1::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(new_lv1.clone());
+                }
+            }
+        });
+        peers.set_lv1(1, handle);
+
+        let path = std::env::temp_dir().join(format!("show-load-{}.ascs", Uuid::new_v4()));
+        let file = crate::show::show_file::ShowFile {
+            schema_version: crate::show::SHOW_FILE_SCHEMA_VERSION,
+            app_version: "test".to_string(),
+            saved_at: "123".to_string(),
+            safety: crate::show::show_file::ShowFileSafety { lockout: false },
+            scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
+            cued_scene_internal_id: None,
+        };
+        crate::show_file::write_show_file(&path, &file, &crate::show_file::backup_folder())
+            .unwrap();
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::LoadShowFileFromPath {
+            path: path.clone(),
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+
+        assert!(rx.await.unwrap().is_ok());
+
+        let state = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_file_metadata_event(&mut events),
+        )
+        .await
+        .unwrap();
+        assert!(!state.show_file_dirty);
+        let scene_document = get_scene_document(&scenes).await;
+        assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
+        assert_eq!(
+            scene_document.selected_scene_internal_id,
+            Some(Uuid::from_u128(1).to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn new_show_replaces_scenes_state_from_current_lv1_and_marks_metadata_clean() {
+        let event_bus = AppEventBus::default();
+        let (show, peers) = show_actor(event_bus.clone());
+        let mut events = event_bus.subscribe();
+        let (scenes, task, _peers) =
+            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        task.spawn();
+        peers.set_scenes(scenes.clone());
+
+        let new_lv1 = lv1_snapshot(vec![
+            SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            SceneListEntry {
+                index: 2,
+                name: "Verse".to_string(),
+            },
+        ]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let handle = crate::lv1::test_actor_handle(tx);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let crate::lv1::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(new_lv1.clone());
+                }
+            }
+        });
+        peers.set_lv1(1, handle);
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
+            .await
+            .unwrap();
+
+        assert!(rx.await.unwrap().is_ok());
+
+        let state = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_file_metadata_event(&mut events),
+        )
+        .await
+        .unwrap();
+        assert!(!state.show_file_dirty);
+        let scene_document = get_scene_document(&scenes).await;
+        assert_eq!(scene_document.scene_configs.len(), 2);
+        assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
     }
 }
