@@ -8,6 +8,7 @@ use super::commands::{SettingsCommand, SettingsCommandResult};
 use super::events::SettingsEvent;
 use super::handle::SettingsHandle;
 use super::state::SettingsState;
+use super::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 pub struct SettingsActorTask {
     rx: mpsc::Receiver<SettingsCommand>,
@@ -43,6 +44,7 @@ async fn run_settings_actor(
     while let Some(command) = rx.recv().await {
         handle_command(command, &event_bus, &mut state).await;
     }
+    tracing::debug!(event = "settings_actor_stopped", "Settings actor stopped");
 }
 
 async fn handle_command(
@@ -57,9 +59,15 @@ async fn handle_command(
         SettingsCommand::ReplaceSettings { settings, reply } => {
             let result = state.replace_settings(settings).map(|changed| {
                 if changed {
+                    log_settings_updated(&state.settings());
                     event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
                         settings: state.settings(),
                     }));
+                } else {
+                    tracing::debug!(
+                        event = "settings_update_noop",
+                        "Settings already match requested values"
+                    );
                 }
                 SettingsCommandResult { changed }
             });
@@ -68,6 +76,45 @@ async fn handle_command(
             }
         }
     }
+}
+
+fn log_settings_updated(settings: &AppSettings) {
+    tracing::info!(
+        event = "settings_updated",
+        auto_load_last_show_file = settings.auto_load_last_show_file,
+        auto_save_sessions = settings.auto_save_sessions,
+        auto_cue_next_scene_on_go = settings.auto_cue_next_scene_on_go,
+        time_display = time_display_label(&settings.time_display),
+        fader_override_sensitivity = settings.fader_override_sensitivity,
+        go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
+        cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
+        "Settings updated"
+    );
+}
+
+fn time_display_label(value: &TimeDisplayFormat) -> &'static str {
+    match value {
+        TimeDisplayFormat::TwelveHour => "twelve_hour",
+        TimeDisplayFormat::TwentyFourHour => "twenty_four_hour",
+    }
+}
+
+fn shortcut_label(shortcut: &KeyboardShortcut) -> String {
+    let mut parts = Vec::new();
+    if shortcut.modifiers.shift {
+        parts.push("Shift");
+    }
+    if shortcut.modifiers.control {
+        parts.push("Control");
+    }
+    if shortcut.modifiers.alt {
+        parts.push("Alt");
+    }
+    if shortcut.modifiers.meta {
+        parts.push("Meta");
+    }
+    parts.push(shortcut.key.as_str());
+    parts.join("+")
 }
 
 #[cfg(test)]
