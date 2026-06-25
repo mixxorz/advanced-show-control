@@ -68,6 +68,89 @@ describe("SettingsTab", () => {
     });
   });
 
+  it("updates auto-load while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      autoLoadLastShowFile: true,
+    });
+  });
+
+  it("updates auto-cue while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Auto cue next scene on GO"));
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      autoCueNextSceneOnGo: true,
+    });
+  });
+
+  it("updates time display while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.change(screen.getByLabelText("Time display"), {
+      target: { value: "twelveHour" },
+    });
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      timeDisplay: "twelveHour",
+    });
+  });
+
+  it("updates the GO shortcut key while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.change(screen.getByLabelText("GO keyboard shortcut"), {
+      target: { value: "Enter" },
+    });
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      keyboardShortcuts: {
+        ...disconnectedAppViewState.settings.keyboardShortcuts,
+        go: {
+          ...disconnectedAppViewState.settings.keyboardShortcuts.go,
+          key: "Enter",
+        },
+      },
+    });
+  });
+
+  it("updates the Cue shortcut key while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.change(screen.getByLabelText("Cue keyboard shortcut"), {
+      target: { value: "Q" },
+    });
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      keyboardShortcuts: {
+        ...disconnectedAppViewState.settings.keyboardShortcuts,
+        cue: {
+          ...disconnectedAppViewState.settings.keyboardShortcuts.cue,
+          key: "Q",
+        },
+      },
+    });
+  });
+
   it("updates the GO shortcut modifier while replacing the full settings object", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
