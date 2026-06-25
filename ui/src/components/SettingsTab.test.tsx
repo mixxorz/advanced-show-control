@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../test/render";
 import { disconnectedAppViewState } from "../types";
@@ -98,6 +98,56 @@ describe("SettingsTab", () => {
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
       autoCueNextSceneOnGo: true,
+    });
+  });
+
+  it("composes rapid full-object setting updates before projection refreshes", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+    fireEvent.click(screen.getByLabelText("Auto save sessions"));
+
+    expect(replaceAppSettings).toHaveBeenLastCalledWith({
+      ...disconnectedAppViewState.settings,
+      autoLoadLastShowFile: true,
+      autoSaveSessions: true,
+    });
+  });
+
+  it("shows a settings save error when replacement fails", async () => {
+    replaceAppSettings.mockRejectedValueOnce(new Error("settings disk full"));
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+
+    expect(
+      await screen.findByText("Error: settings disk full"),
+    ).toBeInTheDocument();
+  });
+
+  it("clears a previous settings save error after a later successful replacement", async () => {
+    replaceAppSettings
+      .mockRejectedValueOnce(new Error("settings disk full"))
+      .mockResolvedValueOnce(undefined);
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+    expect(
+      await screen.findByText("Error: settings disk full"),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Auto save sessions"));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText("Error: settings disk full"),
+      ).not.toBeInTheDocument();
     });
   });
 

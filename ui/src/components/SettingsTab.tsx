@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useAppState } from "../appHooks";
 import { replaceAppSettings } from "../commands";
 import { useShortcutCapture } from "../keyboard";
@@ -10,29 +10,51 @@ import { StepperControl } from "./StepperControl";
 import { ToggleControl } from "./ToggleControl";
 
 export function SettingsTab(props: {
-  onReplaceSettings?: (settings: AppSettings) => void;
+  onReplaceSettings?: (settings: AppSettings) => void | Promise<void>;
 }) {
   const { appState } = useAppState();
-  const settings = appState.settings;
   const shortcutCapture = useShortcutCapture();
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [draftSettings, setDraftSettings] = useState<{
+    baseVersion: number;
+    settings: AppSettings;
+  } | null>(null);
+  const replaceRequestId = useRef(0);
+  const settings =
+    draftSettings?.baseVersion === appState.stateVersion
+      ? draftSettings.settings
+      : appState.settings;
 
   function replace(next: AppSettings) {
-    if (props.onReplaceSettings) {
-      props.onReplaceSettings(next);
-      return;
-    }
-    void replaceAppSettings(next);
+    const requestId = replaceRequestId.current + 1;
+    replaceRequestId.current = requestId;
+    setDraftSettings({ baseVersion: appState.stateVersion, settings: next });
+    setSettingsError(null);
+
+    const replacement = props.onReplaceSettings
+      ? props.onReplaceSettings(next)
+      : replaceAppSettings(next);
+
+    void Promise.resolve(replacement).catch((error) => {
+      if (replaceRequestId.current !== requestId) return;
+      setDraftSettings(null);
+      setSettingsError(String(error));
+    });
+  }
+
+  function update(next: (current: AppSettings) => AppSettings) {
+    replace(next(settings));
   }
 
   function updateShortcut(action: "go" | "cue", shortcut: KeyboardShortcut) {
-    replace({
-      ...settings,
+    update((current) => ({
+      ...current,
       keyboardShortcuts: {
-        ...settings.keyboardShortcuts,
+        ...current.keyboardShortcuts,
         [action]: shortcut,
       },
-    });
+    }));
   }
 
   return (
@@ -50,6 +72,14 @@ export function SettingsTab(props: {
               </div>
             </>
           ) : null}
+          {settingsError ? (
+            <>
+              <div className="h-5 w-px bg-console-line" />
+              <div className="text-sm leading-5 text-status-danger">
+                {settingsError}
+              </div>
+            </>
+          ) : null}
         </div>
 
         <div className="relative grid min-h-0 flex-1 content-start gap-8 overflow-auto p-4">
@@ -64,7 +94,10 @@ export function SettingsTab(props: {
                   label="Auto load last show file"
                   checked={settings.autoLoadLastShowFile}
                   onChange={(checked) =>
-                    replace({ ...settings, autoLoadLastShowFile: checked })
+                    update((current) => ({
+                      ...current,
+                      autoLoadLastShowFile: checked,
+                    }))
                   }
                 />
               </SettingRow>
@@ -77,7 +110,10 @@ export function SettingsTab(props: {
                   label="Auto save sessions"
                   checked={settings.autoSaveSessions}
                   onChange={(checked) =>
-                    replace({ ...settings, autoSaveSessions: checked })
+                    update((current) => ({
+                      ...current,
+                      autoSaveSessions: checked,
+                    }))
                   }
                 />
               </SettingRow>
@@ -90,7 +126,10 @@ export function SettingsTab(props: {
                   label="Auto cue next scene on GO"
                   checked={settings.autoCueNextSceneOnGo}
                   onChange={(checked) =>
-                    replace({ ...settings, autoCueNextSceneOnGo: checked })
+                    update((current) => ({
+                      ...current,
+                      autoCueNextSceneOnGo: checked,
+                    }))
                   }
                 />
               </SettingRow>
@@ -108,10 +147,10 @@ export function SettingsTab(props: {
                   ]}
                   value={settings.timeDisplay}
                   onChange={(value) =>
-                    replace({
-                      ...settings,
+                    update((current) => ({
+                      ...current,
                       timeDisplay: value as AppSettings["timeDisplay"],
-                    })
+                    }))
                   }
                 />
               </SettingRow>
@@ -126,10 +165,10 @@ export function SettingsTab(props: {
                   max={10}
                   value={settings.faderOverrideSensitivity}
                   onChange={(value) =>
-                    replace({
-                      ...settings,
+                    update((current) => ({
+                      ...current,
                       faderOverrideSensitivity: value,
-                    })
+                    }))
                   }
                 />
               </SettingRow>

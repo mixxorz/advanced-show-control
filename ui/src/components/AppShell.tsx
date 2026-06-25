@@ -15,7 +15,7 @@ export function AppShell(props: {
   onOpenConnection: () => void;
   onResume: () => void;
   onSelectTab: (tab: MainTab) => void;
-  onReplaceSettings?: (settings: AppSettings) => void;
+  onReplaceSettings?: (settings: AppSettings) => void | Promise<void>;
   showConnection: boolean;
 }) {
   const { appState } = useAppState();
