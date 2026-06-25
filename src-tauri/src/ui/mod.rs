@@ -46,7 +46,13 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::open_show_file_dialog,
             commands::show::save_show_file,
             commands::show::save_show_file_as_dialog,
+            commands::scenes::cue_scene,
+            commands::scenes::delete_scene_config,
             commands::scenes::recall_scene,
+            commands::scenes::select_scene_config,
+            commands::scenes::set_channel_scoped,
+            commands::scenes::set_scene_duration_ms,
+            commands::scenes::store_scene_config_from_current_lv1,
             commands::lifecycle::connect_lv1_system,
             commands::lifecycle::attempt_reconnect_lv1,
             commands::lifecycle::startup_auto_connect_lv1,
@@ -88,6 +94,13 @@ mod tests {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
         let _ = super::commands::scenes::recall_scene;
+        let _ = super::commands::scenes::cue_scene;
+        let _ = super::commands::scenes::delete_scene_config;
+        let _ = super::commands::scenes::link_scene_config;
+        let _ = super::commands::scenes::select_scene_config;
+        let _ = super::commands::scenes::set_channel_scoped;
+        let _ = super::commands::scenes::set_scene_duration_ms;
+        let _ = super::commands::scenes::store_scene_config_from_current_lv1;
         let _ = super::commands::settings::replace_app_settings;
         let _ = super::commands::show::set_lockout;
     }

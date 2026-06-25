@@ -11,7 +11,10 @@ pub use lifecycle::{
     attempt_reconnect_lv1, connect_lv1_system, disconnect_lv1, frontend_ready, reconnect_timed_out,
     startup_auto_connect_lv1,
 };
-pub use scenes::recall_scene;
+pub use scenes::{
+    cue_scene, delete_scene_config, link_scene_config, recall_scene, select_scene_config,
+    set_channel_scoped, set_scene_duration_ms, store_scene_config_from_current_lv1,
+};
 pub use settings::replace_app_settings;
 pub use show::{
     new_show_file, open_show_file_dialog, refresh_lv1_discovery, save_show_file,
