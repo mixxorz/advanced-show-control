@@ -49,6 +49,7 @@ Read these files before substantial work:
 
 - Prefer the smallest correct change.
 - Use TDD for behavior changes, bug fixes, and safety logic.
+- When writing implementation plans, explicitly choose the relevant Rust test style from the allowed categories below.
 - Keep code paths explicit and easy to reason about; this project controls live mixer faders.
 - Follow existing module patterns unless the task is specifically to clean up structure.
 - Do not make broad refactors while implementing a feature unless they are required for the feature and covered by tests.
@@ -57,6 +58,25 @@ Read these files before substantial work:
 - Add future ideas to the appropriate release section in `docs/roadmap.md` instead of expanding the current scope.
 - For UI work, preserve the existing design language unless the task is to redesign it.
 - For frontend styling, define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables. Avoid hard-coded Tailwind values when a reusable token is appropriate.
+
+## Logging Policy
+
+- Use `tracing` as the application logging API.
+- `DEBUG` is for protocol details, internal decisions, noisy diagnostics, subscriber lag details, state counts, and low-level write/drop information. `DEBUG` events go to diagnostic file/stdout sinks, not the frontend log UI.
+- `INFO` is for user-relevant operational facts and successful state changes that an engineer may need to understand the app's behavior, such as connection progress, scene/cue actions, completed user-requested file operations, and non-noisy reconciliation outcomes.
+- `WARN` is for visible safety blocks, skipped/blocked operations, recoverable failures, and user-relevant conditions that need attention.
+- `ERROR` is for command failures, unrecoverable runtime setup failures, and failed file writes that prevent diagnostics or user-requested persistence.
+- Do not duplicate the same fact at multiple layers. Log the request or low-level mechanics at `DEBUG`; log the resulting user-visible fact at `INFO`/`WARN`/`ERROR` as appropriate.
+
+## Rust Test Policy
+
+Rust tests should fit one of these categories:
+
+- Pure unit tests that call functions directly and have no side effects.
+- Actor tests that interact through the actor mailbox, `AppEventBus`, and a tracing listener when tracing output is part of the behavior under test.
+- Smoke tests through the debug module/app.
+
+Do not test side-effecting actor behavior by directly mutating actor internals or inspecting private state. When writing implementation plans, specify which of these categories covers each Rust behavior being added or changed.
 
 ## Safety-Critical Rules
 
@@ -178,6 +198,7 @@ Before claiming work is complete, run the verification command that proves the c
 
 ## Commit Rules
 
+- Commit early and often in this repo. You do not need to ask for approval before making commits unless the user explicitly asks you not to commit.
 - Check `git status --short` before committing.
 - Inspect the relevant `git diff` before committing.
 - Stage only intended files.
