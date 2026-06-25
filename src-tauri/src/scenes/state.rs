@@ -102,6 +102,11 @@ impl ScenesState {
         self.clear_missing_cue();
     }
 
+    pub fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
+        self.replace_snapshot(snapshot);
+        self.reset_recall_tracking();
+    }
+
     pub fn get_scene_config(&self, internal_scene_id: uuid::Uuid) -> Option<SceneConfig> {
         self.scene_configs
             .iter()
@@ -301,6 +306,11 @@ impl ScenesState {
         {
             self.cued_scene_internal_id = None;
         }
+    }
+
+    fn reset_recall_tracking(&mut self) {
+        self.gate = RecallGate::default();
+        self.scene_list_edit_suppressed_until = None;
     }
 }
 
@@ -554,5 +564,33 @@ mod tests {
             state.selected_scene_internal_id,
             Some("scene-123".to_string())
         );
+    }
+
+    #[test]
+    fn session_document_replacement_clears_recall_gate_and_edit_suppression() {
+        let mut state = ScenesState::default();
+        let now = Instant::now();
+
+        assert!(!state.accepts_at(&scene(1, "Intro"), now));
+        state.observe_scene_list(initial_scene_list(), now);
+        state.observe_scene_list(moved_current_scene_list(), now + Duration::from_millis(10));
+        assert!(state.is_scene_list_edit_suppressed(now + Duration::from_millis(10)));
+
+        state.replace_snapshot_for_session(SceneDocument {
+            scene_configs: vec![SceneConfig {
+                internal_scene_id: uuid::Uuid::from_u128(1),
+                scene_index: Some(1),
+                scene_name: "Intro".to_string(),
+                duration_ms: 1_000,
+                channel_configs: vec![],
+                scoped_channels: vec![],
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_internal_id: None,
+            selected_scene_internal_id: None,
+        });
+
+        assert!(!state.is_scene_list_edit_suppressed(now));
+        assert!(!state.accepts_at(&scene(1, "Intro"), now + Duration::from_millis(1)));
     }
 }

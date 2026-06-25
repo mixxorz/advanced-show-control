@@ -153,6 +153,17 @@ fn handle_app_event(
             }
             publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
         }
+        AppEvent::Scenes {
+            generation,
+            event:
+                crate::scenes::ScenesEvent::StateChanged {
+                    persisted_scene_edit: true,
+                    ..
+                },
+        } if generation == *active_generation => {
+            state.mark_dirty();
+            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+        }
         _ => {}
     }
 }
@@ -527,7 +538,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
-    use crate::runtime::events::AppEventBus;
+    use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
     use crate::scenes::{ScenesCommand, build_scenes_actor};
     use crate::show::commands::ShowCommand;
@@ -901,6 +912,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn persisted_scene_edit_marks_show_file_dirty_but_file_replacement_does_not() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = ShowState::default();
+
+        super::handle_app_event(
+            crate::runtime::events::AppEvent::Scenes {
+                generation: 1,
+                event: crate::scenes::ScenesEvent::StateChanged {
+                    reason: crate::scenes::ScenesProjectionReason::SceneState,
+                    state: crate::scenes::ScenesProjectionState {
+                        scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
+                        cued_scene_internal_id: None,
+                        selected_scene_internal_id: None,
+                    },
+                    persisted_scene_edit: true,
+                },
+            },
+            &mut 1,
+            &mut state,
+            &event_bus,
+        );
+
+        let dirty_state = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
+                    reason: ShowProjectionReason::FileMetadata,
+                    state,
+                }) = events.recv().await.unwrap()
+                {
+                    break state;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(dirty_state.show_file_dirty);
+
+        super::handle_app_event(
+            crate::runtime::events::AppEvent::Scenes {
+                generation: 1,
+                event: crate::scenes::ScenesEvent::StateChanged {
+                    reason: crate::scenes::ScenesProjectionReason::FileReplacement,
+                    state: crate::scenes::ScenesProjectionState {
+                        scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
+                        cued_scene_internal_id: None,
+                        selected_scene_internal_id: None,
+                    },
+                    persisted_scene_edit: false,
+                },
+            },
+            &mut 1,
+            &mut state,
+            &event_bus,
+        );
+
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn new_show_replaces_scenes_state_from_current_lv1_and_marks_metadata_clean() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
@@ -909,6 +980,10 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
+        event_bus.publish(crate::runtime::events::AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 1 },
+        ));
+        tokio::task::yield_now().await;
 
         let new_lv1 = lv1_snapshot(vec![
             SceneListEntry {

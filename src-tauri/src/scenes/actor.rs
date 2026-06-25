@@ -133,39 +133,49 @@ async fn run_scenes_actor(task: ScenesTask) {
                         Some(ScenesCommand::GetSceneConfig { internal_scene_id, reply }) => { let _ = reply.send(recall_state.get_scene_config(internal_scene_id)); }
                         Some(ScenesCommand::InitialProjectionState { reply }) => { let _ = reply.send(recall_state.projection_state()); }
                         Some(ScenesCommand::SetSceneDuration { internal_scene_id, duration_ms, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_scene_duration_ms(internal_scene_id, duration_ms), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_scene_duration_ms(internal_scene_id, duration_ms), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::SetSceneScopeFadersEnabled { internal_scene_id, enabled, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_scene_scope_faders_enabled(internal_scene_id, enabled), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_scene_scope_faders_enabled(internal_scene_id, enabled), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::SetSceneScopePanEnabled { internal_scene_id, enabled, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_scene_scope_pan_enabled(internal_scene_id, enabled), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_scene_scope_pan_enabled(internal_scene_id, enabled), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::LinkSceneConfig { source_internal_scene_id, target_scene_index, overwrite_existing, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.link_scene_config_by_index(source_internal_scene_id, target_scene_index, overwrite_existing), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.link_scene_config_by_index(source_internal_scene_id, target_scene_index, overwrite_existing), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::DeleteSceneConfig { internal_scene_id, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.delete_scene_config(internal_scene_id), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.delete_scene_config(internal_scene_id), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::SetChannelScoped { internal_scene_id, group, channel, scoped, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_channel_scoped(internal_scene_id, group, channel, scoped), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_channel_scoped(internal_scene_id, group, channel, scoped), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::SetAllChannelsScoped { internal_scene_id, scoped, reply }) => {
-                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_all_channels_scoped(internal_scene_id, scoped), &event_bus, generation);
+                            let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_all_channels_scoped(internal_scene_id, scoped), &event_bus, generation);
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::CueScene { internal_scene_id, reply }) => {
-                            let result = recall_state.cue_scene(internal_scene_id).map(|changed| CueSceneResult { changed, scene: recall_state.get_scene_config(internal_scene_id).unwrap() });
+                            let result = recall_state.cue_scene(internal_scene_id).map(|changed| {
+                                if changed {
+                                    publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
+                                }
+                                CueSceneResult { changed, scene: recall_state.get_scene_config(internal_scene_id).unwrap() }
+                            });
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::SelectSceneConfig { internal_scene_id, reply }) => {
-                            let result = recall_state.select_scene_config(internal_scene_id).map(|_| SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() });
+                            let result = recall_state.select_scene_config(internal_scene_id).map(|changed| {
+                                if changed {
+                                    publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
+                                }
+                                SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() }
+                            });
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::StoreSceneConfigFromCurrentLv1 { internal_scene_id, reply }) => {
@@ -174,7 +184,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
                         Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => {
-                            recall_state.replace_snapshot(document);
+                            recall_state.replace_snapshot_for_session(document);
                             recall_state.selected_scene_internal_id = selected_scene_internal_id;
                             publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit);
                             if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); }
@@ -227,17 +237,17 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(ScenesCommand::GetSceneDocument { reply }) => { let _ = reply.send(recall_state.snapshot()); }
                     Some(ScenesCommand::GetSceneConfig { internal_scene_id, reply }) => { let _ = reply.send(recall_state.get_scene_config(internal_scene_id)); }
                     Some(ScenesCommand::InitialProjectionState { reply }) => { let _ = reply.send(recall_state.projection_state()); }
-                    Some(ScenesCommand::SetSceneDuration { internal_scene_id, duration_ms, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_scene_duration_ms(internal_scene_id, duration_ms), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::SetSceneScopeFadersEnabled { internal_scene_id, enabled, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_scene_scope_faders_enabled(internal_scene_id, enabled), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::SetSceneScopePanEnabled { internal_scene_id, enabled, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_scene_scope_pan_enabled(internal_scene_id, enabled), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::LinkSceneConfig { source_internal_scene_id, target_scene_index, overwrite_existing, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.link_scene_config_by_index(source_internal_scene_id, target_scene_index, overwrite_existing), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::DeleteSceneConfig { internal_scene_id, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.delete_scene_config(internal_scene_id), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::SetChannelScoped { internal_scene_id, group, channel, scoped, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_channel_scoped(internal_scene_id, group, channel, scoped), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::SetAllChannelsScoped { internal_scene_id, scoped, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, false, |state| state.set_all_channels_scoped(internal_scene_id, scoped), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::CueScene { internal_scene_id, reply }) => { let result = recall_state.cue_scene(internal_scene_id).map(|changed| CueSceneResult { changed, scene: recall_state.get_scene_config(internal_scene_id).unwrap() }); if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::SelectSceneConfig { internal_scene_id, reply }) => { let result = recall_state.select_scene_config(internal_scene_id).map(|_| SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() }); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::SetSceneDuration { internal_scene_id, duration_ms, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_scene_duration_ms(internal_scene_id, duration_ms), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::SetSceneScopeFadersEnabled { internal_scene_id, enabled, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_scene_scope_faders_enabled(internal_scene_id, enabled), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::SetSceneScopePanEnabled { internal_scene_id, enabled, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_scene_scope_pan_enabled(internal_scene_id, enabled), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::LinkSceneConfig { source_internal_scene_id, target_scene_index, overwrite_existing, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.link_scene_config_by_index(source_internal_scene_id, target_scene_index, overwrite_existing), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::DeleteSceneConfig { internal_scene_id, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.delete_scene_config(internal_scene_id), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::SetChannelScoped { internal_scene_id, group, channel, scoped, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_channel_scoped(internal_scene_id, group, channel, scoped), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::SetAllChannelsScoped { internal_scene_id, scoped, reply }) => { let result = mutate_scene_state(&mut recall_state, ScenesProjectionReason::SceneState, true, |state| state.set_all_channels_scoped(internal_scene_id, scoped), &event_bus, generation); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::CueScene { internal_scene_id, reply }) => { let result = recall_state.cue_scene(internal_scene_id).map(|changed| { if changed { publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true); } CueSceneResult { changed, scene: recall_state.get_scene_config(internal_scene_id).unwrap() } }); if let Some(reply) = reply { let _ = reply.send(result); } }
+                    Some(ScenesCommand::SelectSceneConfig { internal_scene_id, reply }) => { let result = recall_state.select_scene_config(internal_scene_id).map(|changed| { if changed { publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true); } SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() } }); if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::StoreSceneConfigFromCurrentLv1 { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let result = store_scene_config_from_current_lv1(&peer_handles.lv1, &event_bus, generation, &mut recall_state, internal_scene_id).await; if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => { recall_state.replace_snapshot(document); recall_state.selected_scene_internal_id = selected_scene_internal_id; publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit); if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); } }
+                    Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => { recall_state.replace_snapshot_for_session(document); recall_state.selected_scene_internal_id = selected_scene_internal_id; publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit); if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); } }
                     Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let lockout = recall_state.lockout(); let _ = reply.send(handle_explicit_recall_scene(lockout, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
                     Some(ScenesCommand::Shutdown) | None => break,
                 }
@@ -822,7 +832,7 @@ mod tests {
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
-        let server = tokio::spawn(async move {
+        let _server = tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {
                 if let crate::lv1::Lv1Command::GetState { reply } = command {
                     let _ = reply.send(Lv1StateSnapshot {
@@ -920,9 +930,100 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
 
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-        drop(server);
+    #[tokio::test]
+    async fn cue_and_select_scene_config_publish_persisted_scene_edits() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        let scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
+        let (handle, task, _peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
+        task.spawn();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::ReplaceSceneDocument {
+                document: SceneDocument {
+                    scene_configs: vec![SceneConfig {
+                        internal_scene_id: scene_id,
+                        scene_index: Some(1),
+                        scene_name: "Intro".to_string(),
+                        duration_ms: 1_000,
+                        channel_configs: vec![],
+                        scoped_channels: vec![],
+                        scope_toggles: Default::default(),
+                    }],
+                    cued_scene_internal_id: None,
+                    selected_scene_internal_id: None,
+                },
+                selected_scene_internal_id: None,
+                reason: ScenesProjectionReason::SceneState,
+                persisted_scene_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), ScenesCommandResult { changed: true });
+
+        let mut events = event_bus.subscribe();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::CueScene {
+                internal_scene_id: scene_id,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert!(rx.await.unwrap().unwrap().changed);
+
+        let cue_event = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let AppEvent::Scenes {
+                    generation: 1,
+                    event,
+                } = events.recv().await.unwrap()
+                    && let ScenesEvent::StateChanged {
+                        persisted_scene_edit,
+                        ..
+                    } = event
+                {
+                    break persisted_scene_edit;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for cue scene state change");
+        assert!(cue_event);
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::SelectSceneConfig {
+                internal_scene_id: scene_id,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap().unwrap().scene.internal_scene_id, scene_id);
+
+        let select_event = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let AppEvent::Scenes {
+                    generation: 1,
+                    event,
+                } = events.recv().await.unwrap()
+                    && let ScenesEvent::StateChanged {
+                        persisted_scene_edit,
+                        ..
+                    } = event
+                {
+                    break persisted_scene_edit;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for select scene state change");
+        assert!(select_event);
     }
 
     #[tokio::test(start_paused = true)]
