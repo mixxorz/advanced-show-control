@@ -7,6 +7,7 @@ import {
 } from "./appContext";
 import { AppShell, type MainTab } from "./components/AppShell";
 import { formatSessionWindowTitle } from "./sessionTitle";
+import { KeyboardProvider } from "./keyboard";
 import {
   disconnectedAppViewState,
   type AppViewState,
@@ -296,16 +297,18 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
   }, [appState.showFileDirty, appState.showFileName, services]);
 
   return (
-    <AppStateProvider appState={appState} commandError={commandError}>
-      <AppCommandsProvider commands={commands}>
-        <AppShell
-          activeTab={activeTab}
-          onOpenConnection={() => setConnectionModalMode("manual")}
-          onResume={() => setConnectionModalMode(null)}
-          onSelectTab={setActiveTab}
-          showConnection={showConnection}
-        />
-      </AppCommandsProvider>
-    </AppStateProvider>
+    <KeyboardProvider>
+      <AppStateProvider appState={appState} commandError={commandError}>
+        <AppCommandsProvider commands={commands}>
+          <AppShell
+            activeTab={activeTab}
+            onOpenConnection={() => setConnectionModalMode("manual")}
+            onResume={() => setConnectionModalMode(null)}
+            onSelectTab={setActiveTab}
+            showConnection={showConnection}
+          />
+        </AppCommandsProvider>
+      </AppStateProvider>
+    </KeyboardProvider>
   );
 }
