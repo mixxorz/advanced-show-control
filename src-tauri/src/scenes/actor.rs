@@ -826,10 +826,11 @@ mod tests {
     #[tokio::test]
     async fn store_scene_config_from_current_lv1_publishes_state_change() {
         let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
         let scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
         let server = tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {
                 if let crate::lv1::Lv1Command::GetState { reply } = command {
@@ -856,31 +857,66 @@ mod tests {
             }
         });
 
-        let mut recall_state = ScenesState::default();
-        recall_state.replace_snapshot(SceneDocument {
-            scene_configs: vec![SceneConfig {
+        let (handle, task, peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
+        peers.set_peers(ShowStateHandle::new_empty(event_bus.clone()), lv1, fade);
+        task.spawn();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::ReplaceSceneDocument {
+                document: SceneDocument {
+                    scene_configs: vec![SceneConfig {
+                        internal_scene_id: scene_id,
+                        scene_index: Some(3),
+                        scene_name: "Song 2 -- Changed".to_string(),
+                        duration_ms: 1_000,
+                        channel_configs: vec![],
+                        scoped_channels: vec![],
+                        scope_toggles: Default::default(),
+                    }],
+                    cued_scene_internal_id: None,
+                    selected_scene_internal_id: None,
+                },
+                selected_scene_internal_id: None,
+                reason: ScenesProjectionReason::SceneState,
+                persisted_scene_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), ScenesCommandResult { changed: true });
+
+        let mut events = event_bus.subscribe();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::StoreSceneConfigFromCurrentLv1 {
                 internal_scene_id: scene_id,
-                scene_index: Some(3),
-                scene_name: "Song 2 -- Changed".to_string(),
-                duration_ms: 1_000,
-                channel_configs: vec![],
-                scoped_channels: vec![],
-                scope_toggles: Default::default(),
-            }],
-            cued_scene_internal_id: None,
-            selected_scene_internal_id: None,
-        });
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
 
-        let result =
-            store_scene_config_from_current_lv1(&lv1, &event_bus, 1, &mut recall_state, scene_id)
-                .await
-                .unwrap();
-        assert_eq!(result, ScenesCommandResult { changed: true });
+        assert_eq!(
+            rx.await.unwrap().unwrap(),
+            ScenesCommandResult { changed: true }
+        );
 
-        let event =
-            tokio::time::timeout(Duration::from_secs(1), next_scene_recall_event(&mut events))
-                .await
-                .expect("timed out waiting for scene state change");
+        let event = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if let AppEvent::Scenes {
+                    generation: 1,
+                    event,
+                } = events.recv().await.unwrap()
+                    && let ScenesEvent::StateChanged { .. } = event
+                {
+                    break event;
+                }
+            }
+        })
+        .await
+        .expect("timed out waiting for scene state change");
+
         match event {
             ScenesEvent::StateChanged {
                 persisted_scene_edit,
@@ -894,8 +930,8 @@ mod tests {
             other => panic!("unexpected event: {other:?}"),
         }
 
-        drop(lv1);
-        server.await.unwrap();
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(server);
     }
 
     #[tokio::test(start_paused = true)]
