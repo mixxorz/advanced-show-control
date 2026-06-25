@@ -63,6 +63,7 @@ enum RecallGate {
 pub struct ScenesState {
     pub(crate) scene_configs: Vec<SceneConfig>,
     pub(crate) cued_scene_internal_id: Option<uuid::Uuid>,
+    pub(crate) selected_scene_internal_id: Option<String>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
@@ -73,12 +74,14 @@ impl ScenesState {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
             cued_scene_internal_id: self.cued_scene_internal_id,
+            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
         }
     }
 
     pub fn replace_snapshot(&mut self, snapshot: SceneDocument) {
         self.scene_configs = snapshot.scene_configs;
         self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
+        self.selected_scene_internal_id = snapshot.selected_scene_internal_id;
         self.clear_missing_cue();
     }
 
@@ -348,5 +351,27 @@ mod tests {
         assert!(state.is_scene_list_edit_suppressed(now + Duration::from_millis(10)));
         assert!(state.is_scene_list_edit_suppressed(now + Duration::from_millis(509)));
         assert!(!state.is_scene_list_edit_suppressed(now + Duration::from_millis(510)));
+    }
+
+    #[test]
+    fn snapshot_round_trips_selected_scene_internal_id() {
+        let mut state = ScenesState {
+            selected_scene_internal_id: Some("scene-123".to_string()),
+            ..Default::default()
+        };
+
+        let snapshot = state.snapshot();
+        assert_eq!(
+            snapshot.selected_scene_internal_id,
+            Some("scene-123".to_string())
+        );
+
+        state.selected_scene_internal_id = None;
+        state.replace_snapshot(snapshot);
+
+        assert_eq!(
+            state.selected_scene_internal_id,
+            Some("scene-123".to_string())
+        );
     }
 }

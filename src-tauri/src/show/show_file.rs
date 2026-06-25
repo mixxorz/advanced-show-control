@@ -139,6 +139,7 @@ pub fn import_show_file(
     let snapshot = SceneDocument {
         scene_configs,
         cued_scene_internal_id: file.cued_scene_internal_id,
+        selected_scene_internal_id: selected_scene_internal_id.clone(),
     };
 
     Ok(ImportedShowFile {
@@ -236,6 +237,7 @@ mod tests {
         let cued_scene_internal_id = uuid::Uuid::from_u128(0x55555555555545558555555555555555);
         let snapshot = SceneDocument {
             cued_scene_internal_id: Some(cued_scene_internal_id),
+            selected_scene_internal_id: None,
             scene_configs: vec![SceneConfig {
                 internal_scene_id,
                 scene_index: Some(1),

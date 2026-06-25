@@ -54,6 +54,7 @@ pub struct SceneConfig {
 pub struct SceneDocument {
     pub scene_configs: Vec<SceneConfig>,
     pub cued_scene_internal_id: Option<Uuid>,
+    pub selected_scene_internal_id: Option<String>,
 }
 
 impl SceneDocument {
@@ -61,6 +62,7 @@ impl SceneDocument {
         Self {
             scene_configs: Vec::new(),
             cued_scene_internal_id: None,
+            selected_scene_internal_id: None,
         }
     }
 }
@@ -177,6 +179,7 @@ mod tests {
                 scope_toggles: SceneScopeToggles::default(),
             }],
             cued_scene_internal_id: Some(cued_scene_internal_id),
+            selected_scene_internal_id: Some("selected".to_string()),
         };
 
         let json = serde_json::to_value(document).unwrap();
@@ -185,6 +188,7 @@ mod tests {
             json["cuedSceneInternalId"],
             cued_scene_internal_id.to_string()
         );
+        assert_eq!(json["selectedSceneInternalId"], "selected");
         assert_eq!(
             json["sceneConfigs"][0]["internalSceneId"],
             internal_scene_id.to_string()

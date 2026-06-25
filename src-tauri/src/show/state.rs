@@ -145,6 +145,7 @@ impl ShowState {
             SceneDocument {
                 scene_configs: self.scene_configs.clone(),
                 cued_scene_internal_id: self.cued_scene_internal_id,
+                selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             },
             self.lockout,
             saved_at,
@@ -170,6 +171,7 @@ impl ShowState {
         scenes.replace_snapshot(SceneDocument {
             scene_configs: self.scene_configs.clone(),
             cued_scene_internal_id: self.cued_scene_internal_id,
+            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
         });
         scenes
     }
@@ -178,6 +180,7 @@ impl ShowState {
         let snapshot = scenes.snapshot();
         self.scene_configs = snapshot.scene_configs;
         self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
+        self.selected_scene_internal_id = snapshot.selected_scene_internal_id;
     }
 
     pub fn store_scene_config(
