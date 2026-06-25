@@ -107,16 +107,26 @@ make check
 
 `make check` runs the standard non-visual CI-style verification: formatting, linting, tests, and builds. It does not run Docker visual checks or the hardware/debug smoke app.
 
-Debug smoke targets:
+Common development targets:
 
 ```bash
-make debug-build
-make debug-smoke
+make dev
+make storybook
+make probe ARGS="..."
 ```
 
-`make debug-smoke` runs the dev-only Tauri hardware smoke app and requires an LV1-compatible target environment.
+`make dev` starts the Tauri dev server and app. `make storybook` starts Storybook on port 6006. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
 
-After running `make smoke` or `make debug-smoke`, always inspect `logs/debug-smoke-report.txt` for the authoritative suite result. The terminal output can be noisy or truncated; do not claim the smoke passed just because the shell command returned or no failure marker appeared in captured output.
+Debug smoke target:
+
+```bash
+make smoke
+make smoke VERBOSE=1
+```
+
+`make smoke` runs the dev-only Tauri hardware smoke app quietly and requires an LV1-compatible target environment. Use `VERBOSE=1` to stream terminal logs.
+
+After running `make smoke`, always inspect `logs/debug-smoke-report.txt` for the authoritative suite result. The terminal output can be noisy or truncated; do not claim the smoke passed just because the shell command returned or no failure marker appeared in captured output.
 
 Runtime diagnostic logs are JSONL files written under Tauri's app config directory, not the repo `logs/` folder. On macOS, check:
 
@@ -154,25 +164,25 @@ make ui-test
 make ui-storybook-test
 make visual-test
 
-npm run format:check
-npm run lint
-npm run typecheck
-npm run build
-npm run test
-npm run test:storybook
-npm run test:visual:ci
+npm --prefix ui run format:check
+npm --prefix ui run lint
+npm --prefix ui run typecheck
+npm --prefix ui run build
+npm --prefix ui run test
+npm --prefix ui run test:storybook
+npm --prefix ui run test:visual:ci
 ```
 
 Frontend check meanings:
 
-- `make ui-fmt` / `npm run format:check` runs Prettier in check mode.
-- `make ui-lint` / `npm run lint` runs ESLint.
-- `make ui-typecheck` / `npm run typecheck` runs TypeScript with `tsc --noEmit`.
-- `make ui-build` / `npm run build` runs the Vite production build.
-- `make ui-test` / `npm run test` runs Vitest unit tests.
-- `make ui-storybook-test` / `npm run test:storybook` runs Storybook interaction/browser tests through Vitest.
-- `make visual-test` / `npm run test:visual:ci` runs Playwright visual regression tests in the Docker visual-test image for CI-compatible screenshots.
-- `make visual-update` / `npm run test:visual:update:ci` regenerates Playwright visual snapshots in the Docker visual-test image; use this when UI changes intentionally update screenshots.
+- `make ui-fmt` / `npm --prefix ui run format:check` runs Prettier in check mode.
+- `make ui-lint` / `npm --prefix ui run lint` runs ESLint.
+- `make ui-typecheck` / `npm --prefix ui run typecheck` runs TypeScript with `tsc --noEmit`.
+- `make ui-build` / `npm --prefix ui run build` runs the Vite production build.
+- `make ui-test` / `npm --prefix ui run test` runs Vitest unit tests.
+- `make ui-storybook-test` / `npm --prefix ui run test:storybook` runs Storybook interaction/browser tests through Vitest.
+- `make visual-test` / `npm --prefix ui run test:visual:ci` runs Playwright visual regression tests in the Docker visual-test image for CI-compatible screenshots.
+- `make visual-update` / `npm --prefix ui run test:visual:update:ci` regenerates Playwright visual snapshots in the Docker visual-test image; use this when UI changes intentionally update screenshots.
 - Prefer the `:ci` visual commands over local `npm run test:visual` / `npm run test:visual:update` so screenshot rendering matches CI more closely.
 
 CI runs the checks covered by `make check`: Rust formatting, linting, tests, and build, plus frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook`. CI also runs Docker-backed visual checks on manual workflow dispatch or when visual-relevant files change.
