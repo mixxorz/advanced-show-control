@@ -1,7 +1,8 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../test/render";
 import { disconnectedAppViewState } from "../types";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { SettingsTab } from "./SettingsTab";
 
 const replaceAppSettings = vi.fn();
@@ -107,6 +108,35 @@ describe("SettingsTab", () => {
     });
 
     fireEvent.click(screen.getByLabelText("Auto load last show file"));
+    fireEvent.click(screen.getByLabelText("Auto save sessions"));
+
+    expect(replaceAppSettings).toHaveBeenLastCalledWith({
+      ...disconnectedAppViewState.settings,
+      autoLoadLastShowFile: true,
+      autoSaveSessions: true,
+    });
+  });
+
+  it("keeps composing draft settings across unrelated projection updates", () => {
+    const { rerender } = render(
+      <MockAppProviders appState={disconnectedAppViewState}>
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...disconnectedAppViewState,
+          stateVersion: disconnectedAppViewState.stateVersion + 1,
+        }}
+      >
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
     fireEvent.click(screen.getByLabelText("Auto save sessions"));
 
     expect(replaceAppSettings).toHaveBeenLastCalledWith({

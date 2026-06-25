@@ -17,19 +17,20 @@ export function SettingsTab(props: {
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [draftSettings, setDraftSettings] = useState<{
-    baseVersion: number;
+    baseSettings: AppSettings;
     settings: AppSettings;
   } | null>(null);
   const replaceRequestId = useRef(0);
   const settings =
-    draftSettings?.baseVersion === appState.stateVersion
+    draftSettings &&
+    settingsEqual(appState.settings, draftSettings.baseSettings)
       ? draftSettings.settings
       : appState.settings;
 
   function replace(next: AppSettings) {
     const requestId = replaceRequestId.current + 1;
     replaceRequestId.current = requestId;
-    setDraftSettings({ baseVersion: appState.stateVersion, settings: next });
+    setDraftSettings({ baseSettings: appState.settings, settings: next });
     setSettingsError(null);
 
     const replacement = props.onReplaceSettings
@@ -207,6 +208,10 @@ export function SettingsTab(props: {
       </Panel>
     </div>
   );
+}
+
+function settingsEqual(left: AppSettings, right: AppSettings) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function SettingsSection(props: { title: string; children: ReactNode }) {
