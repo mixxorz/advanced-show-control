@@ -13,4 +13,5 @@ pub use commands::ScenesCommand;
 pub use events::ScenesEvent;
 pub use handle::ScenesHandle;
 pub(crate) use scene_alignment::{align_scene_configs, scene_alignment_diagnostic};
+pub use state::ScenesState;
 pub use types::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};

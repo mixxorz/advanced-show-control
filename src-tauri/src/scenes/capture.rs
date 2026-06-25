@@ -1,10 +1,7 @@
-use crate::lv1::ChannelInfo;
-
 use super::state::ScenesState;
+use crate::lv1::ChannelInfo;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig};
 use uuid::Uuid;
-
-#[allow(dead_code)]
 impl ScenesState {
     pub fn store_scene_config(
         &mut self,
@@ -82,7 +79,7 @@ impl ScenesState {
                 .unwrap_or_default(),
         };
         match self
-            .scene_configs_mut()
+            .scene_configs
             .iter_mut()
             .find(|scene| scene.internal_scene_id == internal_scene_id)
         {
@@ -95,7 +92,7 @@ impl ScenesState {
                 }
             }
             None => {
-                self.scene_configs_mut().push(snapshot);
+                self.scene_configs.push(snapshot);
                 Ok(true)
             }
         }
@@ -174,7 +171,6 @@ impl ScenesState {
             })
             .collect();
         if scoped {
-            // Check if all channels are already scoped (regardless of order)
             let all_scoped = refs.iter().all(|ref_channel| {
                 scene
                     .scoped_channels
@@ -182,7 +178,6 @@ impl ScenesState {
                     .any(|scoped_channel| scoped_channel == ref_channel)
             });
             if !all_scoped || scene.scoped_channels.len() != refs.len() {
-                // Either not all channels are scoped, or there are extra scoped channels
                 scene.scoped_channels = refs;
                 changed = true;
             }

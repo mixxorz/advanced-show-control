@@ -59,18 +59,15 @@ enum RecallGate {
     },
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ScenesState {
-    scene_configs: Vec<SceneConfig>,
-    cued_scene_internal_id: Option<uuid::Uuid>,
-    selected_scene_internal_id: Option<String>,
+    pub(crate) scene_configs: Vec<SceneConfig>,
+    pub(crate) cued_scene_internal_id: Option<uuid::Uuid>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
 }
 
-#[allow(dead_code)]
 impl ScenesState {
     pub fn snapshot(&self) -> SceneDocument {
         SceneDocument {
@@ -92,10 +89,6 @@ impl ScenesState {
             .cloned()
     }
 
-    pub(crate) fn scene_configs_mut(&mut self) -> &mut Vec<SceneConfig> {
-        &mut self.scene_configs
-    }
-
     pub(crate) fn get_scene_config_mut(
         &mut self,
         internal_scene_id: uuid::Uuid,
@@ -103,17 +96,6 @@ impl ScenesState {
         self.scene_configs
             .iter_mut()
             .find(|scene| scene.internal_scene_id == internal_scene_id)
-    }
-
-    fn clear_missing_cue(&mut self) {
-        if let Some(cued_scene_internal_id) = self.cued_scene_internal_id
-            && !self
-                .scene_configs
-                .iter()
-                .any(|scene| scene.internal_scene_id == cued_scene_internal_id)
-        {
-            self.cued_scene_internal_id = None;
-        }
     }
 
     pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
@@ -174,6 +156,17 @@ impl ScenesState {
                 baseline,
                 last_trigger,
             } => decide_armed(baseline, last_trigger, observed),
+        }
+    }
+
+    fn clear_missing_cue(&mut self) {
+        if let Some(cued_scene_internal_id) = self.cued_scene_internal_id
+            && !self
+                .scene_configs
+                .iter()
+                .any(|scene| scene.internal_scene_id == cued_scene_internal_id)
+        {
+            self.cued_scene_internal_id = None;
         }
     }
 }
