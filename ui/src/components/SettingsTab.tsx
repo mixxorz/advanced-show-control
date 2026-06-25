@@ -69,7 +69,7 @@ export function SettingsTab(props: {
                 />
               </SettingRow>
               <SettingRow
-                help="Save app-managed scene fade settings automatically as you work."
+                help="Automatically save the session after any changes."
                 label="Auto save sessions"
                 onHelpChange={setActiveHelp}
               >
@@ -82,7 +82,7 @@ export function SettingsTab(props: {
                 />
               </SettingRow>
               <SettingRow
-                help="After GO recalls a scene, automatically prepare the next LV1 scene for the next GO press."
+                help="After GO recalls a scene, automatically cue the following scene in the active cue list."
                 label="Auto cue next scene on GO"
                 onHelpChange={setActiveHelp}
               >
@@ -116,7 +116,7 @@ export function SettingsTab(props: {
                 />
               </SettingRow>
               <SettingRow
-                help="Controls how much manual fader movement is needed before the app treats it as an override."
+                help="Controls how much fader movement triggers a manual override. 10 reacts to tiny movements; 1 requires larger movement."
                 label="Fader override sensitivity"
                 onHelpChange={setActiveHelp}
               >
@@ -136,11 +136,7 @@ export function SettingsTab(props: {
             </SettingsSection>
 
             <SettingsSection title="Keyboard Shortcuts">
-              <SettingRow
-                help="Keyboard shortcut used for the app GO action. Runtime shortcut behavior is not wired yet."
-                label="GO"
-                onHelpChange={setActiveHelp}
-              >
+              <SettingRow label="GO" onHelpChange={setActiveHelp}>
                 <KeyboardShortcutInput
                   label="GO keyboard shortcut"
                   shortcut={settings.keyboardShortcuts.go}
@@ -153,11 +149,7 @@ export function SettingsTab(props: {
                   }
                 />
               </SettingRow>
-              <SettingRow
-                help="Keyboard shortcut used to cue the next scene. Runtime shortcut behavior is not wired yet."
-                label="CUE"
-                onHelpChange={setActiveHelp}
-              >
+              <SettingRow label="CUE" onHelpChange={setActiveHelp}>
                 <KeyboardShortcutInput
                   label="Cue keyboard shortcut"
                   shortcut={settings.keyboardShortcuts.cue}
