@@ -43,6 +43,7 @@ Read these files before substantial work:
 
 - `docs/roadmap.md` for product intent, safety model, current MVP roadmap, and deferred work.
 - `docs/architecture.md` for runtime architecture.
+- `docs/coding-conventions.md` for logging, testing, frontend, verification, and commit conventions.
 - `docs/lv1-osc.md` for LV1 protocol details when touching protocol behavior.
 
 ## Agent Developer Guidance
@@ -61,12 +62,10 @@ Read these files before substantial work:
 
 ## Logging Policy
 
+- Follow `docs/coding-conventions.md` as the source of truth for logging policy.
 - Use `tracing` as the application logging API.
-- `DEBUG` is for protocol details, internal decisions, noisy diagnostics, subscriber lag details, state counts, and low-level write/drop information. `DEBUG` events go to diagnostic file/stdout sinks, not the frontend log UI.
-- `INFO` is for user-relevant operational facts and successful state changes that an engineer may need to understand the app's behavior, such as connection progress, scene/cue actions, completed user-requested file operations, and non-noisy reconciliation outcomes.
-- `WARN` is for visible safety blocks, skipped/blocked operations, recoverable failures, and user-relevant conditions that need attention.
-- `ERROR` is for command failures, unrecoverable runtime setup failures, and failed file writes that prevent diagnostics or user-requested persistence.
-- Do not duplicate the same fact at multiple layers. Log the request or low-level mechanics at `DEBUG`; log the resulting user-visible fact at `INFO`/`WARN`/`ERROR` as appropriate.
+- User-facing `INFO`, `WARN`, and `ERROR` messages must be complete enough to show directly in the UI.
+- Do not duplicate the same fact at multiple layers.
 
 ## Rust Test Policy
 

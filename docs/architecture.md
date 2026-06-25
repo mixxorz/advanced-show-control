@@ -71,6 +71,12 @@ The backend architecture shall satisfy the requirements in this section.
 3. Tauri command adapters shall not construct partial `AppViewState` snapshots.
 4. The projector shall be the only backend component that owns frontend state projection.
 
+### 4.5 Coding Conventions
+
+Detailed implementation conventions, including logging levels, user-facing log message rules, test styles, frontend conventions, verification expectations, and commit practices, live in `docs/coding-conventions.md`.
+
+Architecture documents own system shape and boundaries. Coding conventions own day-to-day implementation practice inside those boundaries.
+
 ## 5.0 Actor Model
 
 An actor module normally defines four interface concepts:
@@ -238,7 +244,7 @@ The smoke suite shall validate the following paths:
 
 ## 12.0 Projector Cache and Frontend Emission
 
-The projector converts backend facts into `AppViewState` for the React frontend. It subscribes to `AppEventBus` and to user-interface log events. It maintains a `ProjectionCache` and emits `app-status-changed` through Tauri.
+The projector converts backend facts into `AppViewState` for the React frontend. It subscribes to `AppEventBus` and to user-interface log events emitted by the tracing UI sink. It maintains a `ProjectionCache` and emits `app-status-changed` through Tauri.
 
 The projector interval is defined as:
 
