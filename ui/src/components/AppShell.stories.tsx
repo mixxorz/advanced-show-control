@@ -6,6 +6,7 @@ import {
   AppStateProvider,
   type AppCommands,
 } from "../appContext";
+import { KeyboardProvider } from "../keyboard";
 import { disconnectedAppViewState } from "../types";
 import {
   connectedAppState,
@@ -84,18 +85,20 @@ const meta: Meta<AppShellStoryArgs> = {
     showConnection: false,
   },
   render: (args) => (
-    <StatefulAppShellStory
-      commandError={args.commandError}
-      initialAppState={args.appState}
-    >
-      <AppShell
-        activeTab={args.activeTab}
-        onOpenConnection={args.onOpenConnection}
-        onResume={args.onResume}
-        onSelectTab={args.onSelectTab}
-        showConnection={args.showConnection}
-      />
-    </StatefulAppShellStory>
+    <KeyboardProvider>
+      <StatefulAppShellStory
+        commandError={args.commandError}
+        initialAppState={args.appState}
+      >
+        <AppShell
+          activeTab={args.activeTab}
+          onOpenConnection={args.onOpenConnection}
+          onResume={args.onResume}
+          onSelectTab={args.onSelectTab}
+          showConnection={args.showConnection}
+        />
+      </StatefulAppShellStory>
+    </KeyboardProvider>
   ),
 };
 
