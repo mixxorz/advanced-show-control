@@ -6,6 +6,13 @@ import { KeyboardShortcutInput } from "./KeyboardShortcutInput";
 const meta = {
   title: "Primitives/KeyboardShortcutInput",
   component: KeyboardShortcutInput,
+  decorators: [
+    (Story) => (
+      <main className="bg-console-bg p-6 text-console-primary">
+        <Story />
+      </main>
+    ),
+  ],
   parameters: {
     layout: "centered",
   },
@@ -45,7 +52,7 @@ export const Variants: Story = {
     shortcut: shortcut("K", { meta: true }),
   },
   render: () => (
-    <div className="grid gap-6 rounded-console-panel border border-console-line bg-console-chrome p-5">
+    <div className="grid gap-6">
       <div className="grid grid-cols-[7rem_repeat(3,12rem)] gap-3 text-sm">
         <span />
         {platforms.map((platform) => (

@@ -7,9 +7,9 @@ const meta = {
   component: SelectControl,
   decorators: [
     (Story) => (
-      <div className="rounded-console-panel border border-console-line bg-console-chrome p-5">
+      <main className="bg-console-bg p-6 text-console-primary">
         <Story />
-      </div>
+      </main>
     ),
   ],
   parameters: { layout: "centered" },
