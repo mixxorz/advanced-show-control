@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { useAppState } from "../appHooks";
 import { replaceAppSettings } from "../commands";
 import { useShortcutCapture } from "../keyboard";
@@ -15,6 +15,7 @@ export function SettingsTab(props: {
   const { appState } = useAppState();
   const settings = appState.settings;
   const shortcutCapture = useShortcutCapture();
+  const [activeHelp, setActiveHelp] = useState<string | null>(null);
 
   function replace(next: AppSettings) {
     if (props.onReplaceSettings) {
@@ -37,102 +38,140 @@ export function SettingsTab(props: {
   return (
     <div className="grid h-full min-h-0 gap-3 overflow-auto">
       <Panel className="flex min-h-0 flex-col overflow-hidden">
-        <div className="flex items-center justify-between gap-3 border-b border-console-line px-4 py-3">
+        <div className="flex items-center gap-4 border-b border-console-line px-4 py-3">
           <h2 className="text-lg font-normal uppercase text-console-primary">
             Settings
           </h2>
+          {activeHelp ? (
+            <>
+              <div className="h-5 w-px bg-console-line" />
+              <div className="text-sm leading-5 text-console-primary">
+                {activeHelp}
+              </div>
+            </>
+          ) : null}
         </div>
 
-        <div className="grid content-start gap-8 p-4">
-          <SettingsSection title="General">
-            <SettingRow label="Auto load last show file">
-              <ToggleControl
+        <div className="relative grid min-h-0 flex-1 content-start gap-8 overflow-auto p-4">
+          <div className="grid content-start gap-8">
+            <SettingsSection title="General">
+              <SettingRow
+                help="Open the last show file automatically when the app starts."
                 label="Auto load last show file"
-                checked={settings.autoLoadLastShowFile}
-                onChange={(checked) =>
-                  replace({ ...settings, autoLoadLastShowFile: checked })
-                }
-              />
-            </SettingRow>
-            <SettingRow label="Auto save sessions">
-              <ToggleControl
+                onHelpChange={setActiveHelp}
+              >
+                <ToggleControl
+                  label="Auto load last show file"
+                  checked={settings.autoLoadLastShowFile}
+                  onChange={(checked) =>
+                    replace({ ...settings, autoLoadLastShowFile: checked })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                help="Save app-managed scene fade settings automatically as you work."
                 label="Auto save sessions"
-                checked={settings.autoSaveSessions}
-                onChange={(checked) =>
-                  replace({ ...settings, autoSaveSessions: checked })
-                }
-              />
-            </SettingRow>
-            <SettingRow label="Auto cue next scene on GO">
-              <ToggleControl
+                onHelpChange={setActiveHelp}
+              >
+                <ToggleControl
+                  label="Auto save sessions"
+                  checked={settings.autoSaveSessions}
+                  onChange={(checked) =>
+                    replace({ ...settings, autoSaveSessions: checked })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                help="After GO recalls a scene, automatically prepare the next LV1 scene for the next GO press."
                 label="Auto cue next scene on GO"
-                checked={settings.autoCueNextSceneOnGo}
-                onChange={(checked) =>
-                  replace({ ...settings, autoCueNextSceneOnGo: checked })
-                }
-              />
-            </SettingRow>
+                onHelpChange={setActiveHelp}
+              >
+                <ToggleControl
+                  label="Auto cue next scene on GO"
+                  checked={settings.autoCueNextSceneOnGo}
+                  onChange={(checked) =>
+                    replace({ ...settings, autoCueNextSceneOnGo: checked })
+                  }
+                />
+              </SettingRow>
 
-            <SettingRow label="Time display">
-              <SelectControl
+              <SettingRow
+                help="Choose whether times are displayed with a 12-hour or 24-hour clock."
                 label="Time display"
-                options={[
-                  { label: "12 hour", value: "twelveHour" },
-                  { label: "24 hour", value: "twentyFourHour" },
-                ]}
-                value={settings.timeDisplay}
-                onChange={(value) =>
-                  replace({
-                    ...settings,
-                    timeDisplay: value as AppSettings["timeDisplay"],
-                  })
-                }
-              />
-            </SettingRow>
-            <SettingRow label="Fader override sensitivity">
-              <StepperControl
+                onHelpChange={setActiveHelp}
+              >
+                <SelectControl
+                  label="Time display"
+                  options={[
+                    { label: "12 hour", value: "twelveHour" },
+                    { label: "24 hour", value: "twentyFourHour" },
+                  ]}
+                  value={settings.timeDisplay}
+                  onChange={(value) =>
+                    replace({
+                      ...settings,
+                      timeDisplay: value as AppSettings["timeDisplay"],
+                    })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                help="Controls how much manual fader movement is needed before the app treats it as an override."
                 label="Fader override sensitivity"
-                min={1}
-                max={10}
-                value={settings.faderOverrideSensitivity}
-                onChange={(value) =>
-                  replace({
-                    ...settings,
-                    faderOverrideSensitivity: value,
-                  })
-                }
-              />
-            </SettingRow>
-          </SettingsSection>
+                onHelpChange={setActiveHelp}
+              >
+                <StepperControl
+                  label="Fader override sensitivity"
+                  min={1}
+                  max={10}
+                  value={settings.faderOverrideSensitivity}
+                  onChange={(value) =>
+                    replace({
+                      ...settings,
+                      faderOverrideSensitivity: value,
+                    })
+                  }
+                />
+              </SettingRow>
+            </SettingsSection>
 
-          <SettingsSection title="Keyboard Shortcuts">
-            <SettingRow label="GO keyboard shortcut">
-              <KeyboardShortcutInput
-                label="GO keyboard shortcut"
-                shortcut={settings.keyboardShortcuts.go}
-                isCapturing={shortcutCapture.isCapturing("go")}
-                onStartCapture={() =>
-                  shortcutCapture.startCapture({
-                    id: "go",
-                    onCapture: (shortcut) => updateShortcut("go", shortcut),
-                  })
-                }
-              />
-            </SettingRow>
-            <SettingRow label="Cue keyboard shortcut">
-              <KeyboardShortcutInput
-                label="Cue keyboard shortcut"
-                shortcut={settings.keyboardShortcuts.cue}
-                isCapturing={shortcutCapture.isCapturing("cue")}
-                onStartCapture={() =>
-                  shortcutCapture.startCapture({
-                    id: "cue",
-                    onCapture: (shortcut) => updateShortcut("cue", shortcut),
-                  })
-                }
-              />
-            </SettingRow>
-          </SettingsSection>
+            <SettingsSection title="Keyboard Shortcuts">
+              <SettingRow
+                help="Keyboard shortcut used for the app GO action. Runtime shortcut behavior is not wired yet."
+                label="GO"
+                onHelpChange={setActiveHelp}
+              >
+                <KeyboardShortcutInput
+                  label="GO keyboard shortcut"
+                  shortcut={settings.keyboardShortcuts.go}
+                  isCapturing={shortcutCapture.isCapturing("go")}
+                  onStartCapture={() =>
+                    shortcutCapture.startCapture({
+                      id: "go",
+                      onCapture: (shortcut) => updateShortcut("go", shortcut),
+                    })
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                help="Keyboard shortcut used to cue the next scene. Runtime shortcut behavior is not wired yet."
+                label="CUE"
+                onHelpChange={setActiveHelp}
+              >
+                <KeyboardShortcutInput
+                  label="Cue keyboard shortcut"
+                  shortcut={settings.keyboardShortcuts.cue}
+                  isCapturing={shortcutCapture.isCapturing("cue")}
+                  onStartCapture={() =>
+                    shortcutCapture.startCapture({
+                      id: "cue",
+                      onCapture: (shortcut) => updateShortcut("cue", shortcut),
+                    })
+                  }
+                />
+              </SettingRow>
+            </SettingsSection>
+          </div>
         </div>
       </Panel>
     </div>
@@ -145,17 +184,36 @@ function SettingsSection(props: { title: string; children: ReactNode }) {
       <h3 className="text-xs uppercase tracking-[0.08em] text-console-primary">
         {props.title}
       </h3>
-      <div className="grid content-start gap-3 md:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)] md:items-center">
+      <div className="grid content-start gap-3 md:grid-cols-[minmax(14rem,18rem)_max-content] md:items-center">
         {props.children}
       </div>
     </section>
   );
 }
 
-function SettingRow(props: { label: string; children: ReactNode }) {
+function SettingRow(props: {
+  label: string;
+  help?: string;
+  children: ReactNode;
+  onHelpChange?: (help: string | null) => void;
+}) {
+  function showHelp() {
+    props.onHelpChange?.(props.help ?? null);
+  }
+
+  function hideHelp() {
+    props.onHelpChange?.(null);
+  }
+
   return (
-    <div className="grid gap-2 md:contents">
-      <div className="text-sm font-normal text-console-muted">
+    <div
+      className="grid gap-2 md:contents"
+      onBlur={hideHelp}
+      onFocus={showHelp}
+      onMouseEnter={showHelp}
+      onMouseLeave={hideHelp}
+    >
+      <div className="cursor-default text-sm font-normal text-console-muted">
         {props.label}
       </div>
       <div className="flex min-h-9 items-center text-sm text-console-primary">
