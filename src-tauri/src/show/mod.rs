@@ -1,9 +1,7 @@
 mod actor;
-mod capture;
 mod commands;
 mod events;
 mod handle;
-mod scene_alignment;
 mod show_file;
 mod state;
 mod types;

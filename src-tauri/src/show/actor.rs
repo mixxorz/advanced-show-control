@@ -122,13 +122,13 @@ fn handle_app_event(
             event: Lv1Event::SceneListChanged(scenes),
         } if generation == *active_generation => {
             let before = state.scene_configs().to_vec();
-            let after = crate::show::scene_alignment::align_scene_configs(before.clone(), &scenes);
+            let after = crate::scenes::align_scene_configs(before.clone(), &scenes);
             let changed = state.replace_scene_configs_if_changed(after);
             if changed {
                 tracing::debug!(
                     event = "session_scene_alignment",
                     "{}",
-                    crate::show::scene_alignment::scene_alignment_diagnostic(
+                    crate::scenes::scene_alignment_diagnostic(
                         &before,
                         state.scene_configs(),
                         &scenes
@@ -570,10 +570,8 @@ fn load_show_file_from_dto(
     let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
     let report = imported.report.clone();
     let imported_scene_configs = imported.snapshot.scene_configs;
-    let aligned_scene_configs = crate::show::scene_alignment::align_scene_configs(
-        imported_scene_configs.clone(),
-        &lv1.scene_list,
-    );
+    let aligned_scene_configs =
+        crate::scenes::align_scene_configs(imported_scene_configs.clone(), &lv1.scene_list);
     let alignment_changed = aligned_scene_configs != imported_scene_configs;
     let should_mark_dirty =
         report.removed_anything() || imported.generated_internal_scene_ids || alignment_changed;
@@ -606,7 +604,7 @@ fn load_show_file_from_dto(
         tracing::debug!(
             event = "session_scene_alignment",
             "{}",
-            crate::show::scene_alignment::scene_alignment_diagnostic(
+            crate::scenes::scene_alignment_diagnostic(
                 &imported_scene_configs,
                 &aligned_scene_configs,
                 &lv1.scene_list

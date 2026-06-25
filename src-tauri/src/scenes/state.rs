@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::lv1::{SceneListEntry, SceneState};
+use crate::scenes::{SceneConfig, SceneDocument};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
 const SAME_SCENE_REPEAT_DELAY: Duration = Duration::from_millis(500);
@@ -58,14 +59,63 @@ enum RecallGate {
     },
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct ScenesState {
+    scene_configs: Vec<SceneConfig>,
+    cued_scene_internal_id: Option<uuid::Uuid>,
+    selected_scene_internal_id: Option<String>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
 }
 
+#[allow(dead_code)]
 impl ScenesState {
+    pub fn snapshot(&self) -> SceneDocument {
+        SceneDocument {
+            scene_configs: self.scene_configs.clone(),
+            cued_scene_internal_id: self.cued_scene_internal_id,
+        }
+    }
+
+    pub fn replace_snapshot(&mut self, snapshot: SceneDocument) {
+        self.scene_configs = snapshot.scene_configs;
+        self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
+        self.clear_missing_cue();
+    }
+
+    pub fn get_scene_config(&self, internal_scene_id: uuid::Uuid) -> Option<SceneConfig> {
+        self.scene_configs
+            .iter()
+            .find(|scene| scene.internal_scene_id == internal_scene_id)
+            .cloned()
+    }
+
+    pub(crate) fn scene_configs_mut(&mut self) -> &mut Vec<SceneConfig> {
+        &mut self.scene_configs
+    }
+
+    pub(crate) fn get_scene_config_mut(
+        &mut self,
+        internal_scene_id: uuid::Uuid,
+    ) -> Option<&mut SceneConfig> {
+        self.scene_configs
+            .iter_mut()
+            .find(|scene| scene.internal_scene_id == internal_scene_id)
+    }
+
+    fn clear_missing_cue(&mut self) {
+        if let Some(cued_scene_internal_id) = self.cued_scene_internal_id
+            && !self
+                .scene_configs
+                .iter()
+                .any(|scene| scene.internal_scene_id == cued_scene_internal_id)
+        {
+            self.cued_scene_internal_id = None;
+        }
+    }
+
     pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {

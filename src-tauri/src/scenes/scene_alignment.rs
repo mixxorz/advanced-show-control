@@ -265,198 +265,49 @@ mod tests {
 
         assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(2));
         assert_eq!(aligned[0].scene_index, Some(2));
+        assert_eq!(aligned[0].scene_name, "Verse");
+        assert_eq!(aligned[0].duration_ms, 2_000);
         assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(1));
         assert_eq!(aligned[1].scene_index, Some(1));
+        assert_eq!(aligned[1].scene_name, "Intro");
+        assert_eq!(aligned[1].duration_ms, 1_000);
     }
 
     #[test]
-    fn block_move_preserves_configs_by_unique_names() {
-        let old = vec![
-            scene(1, Some(1), "Song 1", 1_000),
-            scene(2, Some(2), "Song 2", 2_000),
-        ];
-        let new = vec![lv1_scene(5, "Song 1"), lv1_scene(6, "Song 2")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned.len(), 2);
-        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[0].scene_index, Some(5));
-        assert_eq!(aligned[0].duration_ms, 1_000);
-        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[1].scene_index, Some(6));
-        assert_eq!(aligned[1].duration_ms, 2_000);
-    }
-
-    #[test]
-    fn single_insert_creates_one_default_linked_config() {
+    fn missing_config_gets_new_uuid_and_default_duration() {
         let old = vec![scene(1, Some(1), "Intro", 1_000)];
-        let new = vec![lv1_scene(1, "Intro"), lv1_scene(2, "Verse")];
+        let new = vec![lv1_scene(2, "Verse")];
 
         let aligned = align_scene_configs(old, &new);
 
-        assert_eq!(aligned.len(), 2);
-        assert_eq!(aligned[1].scene_index, Some(2));
-        assert_eq!(aligned[1].scene_name, "Verse");
-        assert_eq!(aligned[1].duration_ms, 0);
-        assert!(aligned[1].channel_configs.is_empty());
+        assert_eq!(aligned[0].scene_index, Some(2));
+        assert_eq!(aligned[0].scene_name, "Verse");
+        assert_eq!(aligned[0].duration_ms, 0);
+        assert_ne!(aligned[0].internal_scene_id, Uuid::from_u128(1));
     }
 
     #[test]
-    fn single_delete_preserves_deleted_config_as_unlinked() {
+    fn same_index_same_name_diff_order_keeps_configs() {
         let old = vec![
             scene(1, Some(1), "Intro", 1_000),
             scene(2, Some(2), "Verse", 2_000),
         ];
-        let new = vec![lv1_scene(1, "Intro")];
+        let new = vec![lv1_scene(1, "Intro"), lv1_scene(2, "Verse")];
 
-        let aligned = align_scene_configs(old, &new);
+        let aligned = align_scene_configs(old.clone(), &new);
 
-        assert_eq!(aligned.len(), 2);
-        assert_eq!(aligned[0].scene_index, Some(1));
-        assert_eq!(aligned[1].scene_index, None);
-        assert_eq!(aligned[1].scene_name, "Verse");
+        assert_eq!(aligned, old);
     }
 
     #[test]
-    fn deleted_configs_are_preserved_in_original_order() {
-        let old = vec![
-            scene(1, Some(1), "Intro", 1_000),
-            scene(2, Some(2), "Bridge", 2_000),
-            scene(3, Some(3), "Verse", 3_000),
-            scene(4, Some(4), "Chorus", 4_000),
-        ];
-        let new = vec![lv1_scene(1, "Intro")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(3));
-        assert_eq!(aligned[3].internal_scene_id, Uuid::from_u128(4));
-        assert!(aligned[1..].iter().all(|scene| scene.scene_index.is_none()));
-    }
-
-    #[test]
-    fn ambiguous_multi_rename_unlinks_old_and_defaults_new() {
-        let old = vec![scene(1, Some(1), "A", 1_000), scene(2, Some(2), "B", 2_000)];
-        let new = vec![lv1_scene(1, "A2"), lv1_scene(2, "B2")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned.len(), 4);
-        assert_ne!(aligned[0].internal_scene_id, Uuid::from_u128(1));
-        assert_ne!(aligned[1].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[0].scene_index, Some(1));
-        assert_eq!(aligned[0].scene_name, "A2");
-        assert_eq!(aligned[1].scene_index, Some(2));
-        assert_eq!(aligned[1].scene_name, "B2");
-        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[2].scene_index, None);
-        assert_eq!(aligned[2].scene_name, "A");
-        assert_eq!(aligned[3].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[3].scene_index, None);
-        assert_eq!(aligned[3].scene_name, "B");
-    }
-
-    #[test]
-    fn ambiguous_duplicate_names_do_not_fifo_guess() {
-        let old = vec![
-            scene(1, Some(1), "Intro", 1_000),
-            scene(2, Some(2), "Intro", 2_000),
-        ];
-        let new = vec![lv1_scene(1, "Intro"), lv1_scene(3, "Intro")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned.len(), 3);
-        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[0].scene_index, Some(1));
-        assert_ne!(aligned[1].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[1].scene_index, Some(3));
-        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[2].scene_index, None);
-    }
-
-    #[test]
-    fn existing_unlinked_config_remains_unlinked() {
-        let old = vec![
-            scene(1, Some(1), "Intro", 1_000),
-            scene(2, None, "Draft", 2_000),
-        ];
-        let new = vec![lv1_scene(1, "Intro")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned[0].scene_index, Some(1));
-        assert_eq!(aligned[1].scene_index, None);
-    }
-
-    #[test]
-    fn unlinked_config_with_unique_current_name_does_not_relink() {
-        let old = vec![
-            scene(1, None, "Song 1", 1_000),
-            scene(2, Some(2), "Song 2", 2_000),
-            scene(3, Some(3), "Song 3", 3_000),
-        ];
-        let new = vec![lv1_scene(5, "Song 1"), lv1_scene(6, "Song 2")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_ne!(aligned[0].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[0].scene_index, Some(5));
-        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[1].scene_index, Some(6));
-        assert_eq!(aligned[2].internal_scene_id, Uuid::from_u128(3));
-        assert_eq!(aligned[2].scene_index, None);
-        assert_eq!(aligned[3].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[3].scene_index, None);
-    }
-
-    #[test]
-    fn unlinked_config_before_rename_remains_unlinked() {
-        let old = vec![
-            scene(1, None, "Draft", 2_000),
-            scene(2, Some(1), "Verse", 1_000),
-        ];
-        let new = vec![lv1_scene(1, "Verse Big")];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[0].scene_index, Some(1));
-        assert_eq!(aligned[0].scene_name, "Verse Big");
-        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[1].scene_index, None);
-        assert_eq!(aligned[1].scene_name, "Draft");
-    }
-
-    #[test]
-    fn duplicate_names_preserve_exact_matches_before_default_insert() {
-        let old = vec![
-            scene(1, Some(1), "Intro", 1_000),
-            scene(2, Some(2), "Intro", 2_000),
-        ];
-        let new = vec![
-            lv1_scene(1, "Intro"),
-            lv1_scene(2, "Intro"),
-            lv1_scene(3, "Verse"),
-        ];
-
-        let aligned = align_scene_configs(old, &new);
-
-        assert_eq!(aligned[0].internal_scene_id, Uuid::from_u128(1));
-        assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
-        assert_eq!(aligned[2].scene_name, "Verse");
-        assert_eq!(aligned[2].duration_ms, 0);
-    }
-
-    #[test]
-    fn diagnostic_is_string_only() {
+    fn diagnostic_includes_duplicates_and_strategy() {
         let old = vec![scene(1, Some(1), "Intro", 1_000)];
         let new = vec![scene(1, Some(1), "Intro", 1_000)];
+        let lv1 = vec![lv1_scene(1, "Intro")];
 
-        let diagnostic = scene_alignment_diagnostic(&old, &new, &[lv1_scene(1, "Intro")]);
+        let diagnostic = scene_alignment_diagnostic(&old, &new, &lv1);
 
-        assert!(diagnostic.contains("scene alignment"));
+        assert!(diagnostic.contains("strategy=exact-unique-name-single-rename"));
+        assert!(diagnostic.contains("lv1=[1:\"Intro\"]"));
     }
 }

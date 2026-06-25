@@ -1,10 +1,11 @@
 use crate::lv1::ChannelInfo;
 
-use super::state::ShowState;
+use super::state::ScenesState;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig};
 use uuid::Uuid;
 
-impl ShowState {
+#[allow(dead_code)]
+impl ScenesState {
     pub fn store_scene_config(
         &mut self,
         internal_scene_id: Uuid,
