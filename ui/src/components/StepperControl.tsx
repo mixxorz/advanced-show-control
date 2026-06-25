@@ -17,7 +17,7 @@ export function StepperControl(props: {
     <div className="group flex h-9 w-32 gap-1">
       <input
         aria-label={props.label}
-        className={`${settingControlText} w-[7.75rem] rounded-console-control border border-console-line bg-console-panel px-3 py-1.5 text-center text-accent-orange outline-none transition-colors group-hover:border-console-line-strong focus:border-console-line-strong`}
+        className={`${settingControlText} w-32 rounded-console-control border border-console-line bg-console-panel px-3 py-1.5 text-center text-accent-orange outline-none transition-colors group-hover:border-console-line-strong focus:border-console-line-strong`}
         readOnly
         type="text"
         value={props.value}
