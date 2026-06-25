@@ -47,6 +47,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Remove or refactor current dead-code suppressions instead of replacing them with broader lint allowances.
    - Decide whether `#![forbid(dead_code)]` should apply to normal builds only or to test targets as well.
    - Enable the lint only after the Rust crate and preserved CLI/probe binary can pass without suppressions.
+   - Review currently-unused show commands such as `ShowCommand::GetLockout` and `ShowCommand::SetDiscoveredLv1Systems` before enabling stricter dead-code policy.
 2. Add session scene reconciliation/remapping.
    - Handle loaded sessions whose stored scene references no longer match the current LV1 scene list.
    - Preserve app-managed fade configuration where a safe remap can be made.
