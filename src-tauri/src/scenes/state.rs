@@ -70,6 +70,14 @@ pub struct ScenesState {
 }
 
 impl ScenesState {
+    pub fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
+        crate::scenes::ScenesProjectionState {
+            scene_configs: self.scene_configs.clone(),
+            cued_scene_internal_id: self.cued_scene_internal_id.map(|id| id.to_string()),
+            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
+        }
+    }
+
     pub fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
@@ -101,6 +109,94 @@ impl ScenesState {
             .find(|scene| scene.internal_scene_id == internal_scene_id)
     }
 
+    pub fn cue_scene(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
+        if self.get_scene_config(internal_scene_id).is_none() {
+            return Err("Scene config not found".to_string());
+        }
+        let next = Some(internal_scene_id);
+        if self.cued_scene_internal_id == next {
+            return Ok(false);
+        }
+        self.cued_scene_internal_id = next;
+        Ok(true)
+    }
+
+    pub fn select_scene_config(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
+        if self.get_scene_config(internal_scene_id).is_none() {
+            return Err("Scene config not found".to_string());
+        }
+        let next = Some(internal_scene_id.to_string());
+        if self.selected_scene_internal_id == next {
+            return Ok(false);
+        }
+        self.selected_scene_internal_id = next;
+        if self.cued_scene_internal_id == Some(internal_scene_id) {
+            self.cued_scene_internal_id = None;
+        }
+        Ok(true)
+    }
+
+    pub fn link_scene_config(
+        &mut self,
+        source_internal_scene_id: uuid::Uuid,
+        target: &SceneListEntry,
+        overwrite_existing: bool,
+    ) -> Result<bool, String> {
+        let source = self
+            .scene_configs
+            .iter()
+            .find(|scene| scene.internal_scene_id == source_internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        if source.scene_index.is_some() {
+            return Err("Link blocked: source scene is already linked".to_string());
+        }
+        if let Some(target_index) = self
+            .scene_configs
+            .iter()
+            .position(|scene| scene.scene_index == Some(target.index))
+        {
+            if self.scene_configs[target_index].internal_scene_id == source_internal_scene_id {
+                return Ok(false);
+            }
+            if !overwrite_existing {
+                return Err("Link blocked: target scene already has a config".to_string());
+            }
+            let removed_internal_scene_id = self.scene_configs[target_index].internal_scene_id;
+            self.scene_configs.remove(target_index);
+            if self.selected_scene_internal_id.as_deref()
+                == Some(&removed_internal_scene_id.to_string())
+            {
+                self.selected_scene_internal_id = None;
+            }
+            if self.cued_scene_internal_id == Some(removed_internal_scene_id) {
+                self.cued_scene_internal_id = None;
+            }
+        }
+        let source = self
+            .get_scene_config_mut(source_internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        source.scene_index = Some(target.index);
+        source.scene_name = target.name.clone();
+        Ok(true)
+    }
+
+    pub fn delete_scene_config(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
+        let Some(index) = self
+            .scene_configs
+            .iter()
+            .position(|scene| scene.internal_scene_id == internal_scene_id)
+        else {
+            return Err("Scene config not found".to_string());
+        };
+        self.scene_configs.remove(index);
+        if self.selected_scene_internal_id.as_deref() == Some(&internal_scene_id.to_string()) {
+            self.selected_scene_internal_id = None;
+        }
+        if self.cued_scene_internal_id == Some(internal_scene_id) {
+            self.cued_scene_internal_id = None;
+        }
+        Ok(true)
+    }
     pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {
