@@ -48,6 +48,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::save_show_file_as_dialog,
             commands::scenes::cue_scene,
             commands::scenes::delete_scene_config,
+            commands::scenes::link_scene_config,
             commands::scenes::recall_scene,
             commands::scenes::select_scene_config,
             commands::scenes::set_channel_scoped,
@@ -103,6 +104,14 @@ mod tests {
         let _ = super::commands::scenes::store_scene_config_from_current_lv1;
         let _ = super::commands::settings::replace_app_settings;
         let _ = super::commands::show::set_lockout;
+    }
+
+    #[test]
+    fn build_app_registers_link_scene_config() {
+        let source = include_str!("mod.rs");
+        let expected = concat!("commands::scenes::", "link_scene_config");
+
+        assert!(source.contains(expected));
     }
 
     #[test]
