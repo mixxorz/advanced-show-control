@@ -10,6 +10,7 @@ Keyboard handling should also be centralized now, before app-wide shortcut execu
 
 - Replace manual shortcut key and modifier controls with a standard keybind capture interaction.
 - Capture key and modifier state from one shared app-wide keyboard event source.
+- Introduce a keyboard handler API that can later support actual app shortcut execution.
 - Preserve the existing persisted settings shape and full-object settings replacement command.
 - Display shortcuts with OS-appropriate modifier symbols or labels.
 - Keep shortcut execution behavior deferred; this change edits settings only.
@@ -29,25 +30,51 @@ When the user clicks the control, that row enters capture mode and the control d
 
 Only one shortcut can be captured at a time. Starting capture for another row replaces the previous pending capture.
 
+`Tab` is recordable while capture mode is active. Capture mode consumes the key event instead of moving focus.
+
 ## Frontend Architecture
 
 Add a small keyboard layer near the React app root:
 
 - `KeyboardProvider` owns a single app-wide `window.addEventListener("keydown", ...)` listener.
 - The provider normalizes browser `KeyboardEvent` objects into a simple app key event shape containing `key`, `shift`, `control`, `alt`, and `meta`.
-- The provider exposes shortcut capture state through hooks instead of requiring components to add their own key listeners.
-- Capture mode has priority over future normal shortcut dispatch. While capture mode handles an event, it prevents default browser handling and stops propagation.
+- The provider exposes a handler registration API instead of requiring components to add their own key listeners.
+- Multiple handlers can be registered at once. Each key event is offered to enabled handlers in priority order until one returns `handled`.
+- When a handler returns `handled`, the provider prevents default browser handling, stops propagation, and stops dispatching that key event.
+- Capture mode is implemented as a high-priority handler. Future app shortcut execution should be implemented as a lower-priority handler so capture preempts execution.
 
-Settings uses this layer through a shortcut capture hook. `SettingsTab` remains responsible for constructing the full replacement `AppSettings` object and calling `replaceAppSettings`. The capture button remains presentational: it displays the formatted shortcut or the capture prompt and requests capture start on click.
+Settings uses this layer through a shortcut capture hook built on top of handler registration. `SettingsTab` remains responsible for constructing the full replacement `AppSettings` object and calling `replaceAppSettings`. The capture button remains presentational: it displays the formatted shortcut or the capture prompt and requests capture start on click.
+
+The low-level keyboard API should be general-purpose:
+
+```ts
+type AppKeyboardEvent = {
+  key: string;
+  modifiers: KeyboardShortcutModifiers;
+  originalEvent: KeyboardEvent;
+};
+
+type KeyboardHandler = {
+  id: string;
+  priority: number;
+  enabled?: boolean;
+  handleKeyDown: (event: AppKeyboardEvent) => "handled" | "ignored";
+};
+```
+
+The initial convenience hooks should be:
+
+- `useKeyboardHandler(handler)`: registers one handler while the component is mounted.
+- `useShortcutCapture()`: starts, cancels, and reports active capture state using a high-priority keyboard handler.
 
 ## Data Flow
 
 1. User clicks the GO or Cue shortcut control.
 2. Settings starts capture for that action through the keyboard provider.
 3. The global keydown listener receives the next key event.
-4. Modifier-only keys are ignored while preserving capture mode.
+4. Modifier-only keys are handled by capture while preserving capture mode.
 5. `Escape` cancels capture without calling `replaceAppSettings`.
-6. Any other key is normalized into the existing `KeyboardShortcut` shape.
+6. Any other key, including `Tab`, is normalized into the existing `KeyboardShortcut` shape.
 7. Settings replaces the full settings object through `replaceAppSettings`.
 8. The app projection updates and the control displays the persisted shortcut.
 
@@ -89,6 +116,8 @@ Key labels should be readable and stable for common keys: `Space`, `Enter`, `Esc
 
 If a key combination is reserved by the OS or webview and no keydown event is delivered, the app cannot capture it. Capture mode stays active until a delivered key records the shortcut or `Escape` cancels.
 
+Only one handler handles a specific delivered key event, but many handlers can be registered and eligible. Capture must use a higher priority than future shortcut execution so editing a shortcut cannot accidentally run the shortcut currently being edited.
+
 Settings persistence errors continue to flow through the existing `replaceAppSettings` command behavior. The UI change must not mark show/session data dirty and must not send any LV1 or fade commands.
 
 ## Testing
@@ -99,7 +128,9 @@ Add frontend tests for:
 - Capturing modifiers from the same keydown event as the non-modifier key.
 - Modifier-only keydown not saving or exiting capture mode.
 - `Escape` cancelling without saving.
+- `Tab` being captured rather than moving focus while capture is active.
 - OS-specific formatting for macOS and non-macOS displays.
 - Only the active shortcut row showing capture state.
+- Handler priority dispatch stopping after the first handler returns `handled`.
 
 Run targeted Settings tests first, then frontend typecheck and tests before committing implementation.
