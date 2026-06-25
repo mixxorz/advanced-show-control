@@ -106,6 +106,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn actor_loads_defaults_when_file_is_invalid() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("invalid");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), "not json").unwrap();
+        let (handle, task) = build_settings_actor(dir, event_bus);
+        task.spawn();
+
+        assert_eq!(get_settings(&handle).await, AppSettings::default());
+    }
+
+    #[tokio::test]
+    async fn actor_loads_partial_file_with_defaults() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("partial");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("settings.json"),
+            r#"{"autoSaveSessions":true,"keyboardShortcuts":{"cue":{"key":"K"}}}"#,
+        )
+        .unwrap();
+        let (handle, task) = build_settings_actor(dir, event_bus);
+        task.spawn();
+
+        let settings = get_settings(&handle).await;
+        assert!(settings.auto_save_sessions);
+        assert_eq!(settings.keyboard_shortcuts.go.key, "Space");
+        assert_eq!(settings.keyboard_shortcuts.cue.key, "K");
+        assert_eq!(settings.fader_override_sensitivity, 9);
+    }
+
+    #[tokio::test]
     async fn actor_normalizes_replacement_saves_file_and_publishes_event() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
