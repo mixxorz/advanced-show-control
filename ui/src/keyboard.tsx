@@ -12,6 +12,7 @@ import {
 import type { KeyboardShortcut, KeyboardShortcutModifiers } from "./types";
 
 export type AppKeyboardEvent = {
+  code: string;
   key: string;
   modifiers: KeyboardShortcutModifiers;
   originalEvent: KeyboardEvent;
@@ -95,7 +96,7 @@ export function KeyboardProvider(props: { children: ReactNode }) {
 
         clearCapture();
         current.onCapture({
-          key: normalizeCapturedKey(event.key),
+          key: normalizeCapturedKey(event),
           modifiers: event.modifiers,
         });
         return "handled";
@@ -164,6 +165,7 @@ function useKeyboardContext() {
 
 function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
   return {
+    code: event.code,
     key: event.key,
     modifiers: {
       shift: event.shiftKey,
@@ -175,8 +177,19 @@ function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
   };
 }
 
-function normalizeCapturedKey(key: string) {
+function normalizeCapturedKey(event: AppKeyboardEvent) {
+  const key = keyFromCode(event.code) ?? event.key;
   return key.length === 1 ? key.toUpperCase() : key;
+}
+
+function keyFromCode(code: string) {
+  if (code.startsWith("Key") && code.length === 4) {
+    return code.slice(3);
+  }
+  if (code.startsWith("Digit") && code.length === 6) {
+    return code.slice(5);
+  }
+  return CODE_KEY_LABELS[code];
 }
 
 function isModifierKey(key: string) {
@@ -187,3 +200,17 @@ function isModifierKey(key: string) {
 
 const CAPTURE_HANDLER_ID = "shortcut-capture";
 const CAPTURE_PRIORITY = 1000;
+
+const CODE_KEY_LABELS: Record<string, string> = {
+  Backquote: "`",
+  Backslash: "\\",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Comma: ",",
+  Equal: "=",
+  Minus: "-",
+  Period: ".",
+  Quote: "'",
+  Semicolon: ";",
+  Slash: "/",
+};

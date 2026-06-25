@@ -181,6 +181,36 @@ describe("KeyboardProvider", () => {
       modifiers: { shift: false, control: false, alt: false, meta: false },
     });
   });
+
+  it("stores shifted number keys as the unshifted key plus Shift modifier", () => {
+    const onCapture = vi.fn();
+
+    function Harness() {
+      const capture = useShortcutCapture();
+      return (
+        <button
+          type="button"
+          onClick={() => capture.startCapture({ id: "go", onCapture })}
+        >
+          capture
+        </button>
+      );
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    fireKeyDown("@", { code: "Digit2", shiftKey: true });
+
+    expect(onCapture).toHaveBeenCalledWith({
+      key: "2",
+      modifiers: { shift: true, control: false, alt: false, meta: false },
+    });
+  });
 });
 
 function fireKeyDown(key: string, init: KeyboardEventInit = {}) {
