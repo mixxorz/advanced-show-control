@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::lv1::SceneListEntry;
 use uuid::Uuid;
 
-use super::types::{SceneConfig, SceneScopeToggles};
+use crate::scenes::{SceneConfig, SceneScopeToggles};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SceneEntry {
@@ -209,7 +209,7 @@ mod tests {
     use crate::lv1::SceneListEntry;
 
     use super::{align_scene_configs, scene_alignment_diagnostic};
-    use crate::show::{SceneConfig, SceneScopeToggles};
+    use crate::scenes::{SceneConfig, SceneScopeToggles};
 
     fn scene(id: u128, index: Option<i32>, name: &str, duration_ms: u64) -> SceneConfig {
         SceneConfig {

@@ -522,9 +522,8 @@ mod tests {
     };
     use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scenes::events::ScenesEvent;
-    use crate::show::{
-        ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument, ShowStateHandle,
-    };
+    use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
+    use crate::show::{ShowDocument, ShowStateHandle};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},

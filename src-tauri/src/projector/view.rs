@@ -1,9 +1,8 @@
 use serde::Serialize;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::scenes::SceneConfig;
 use crate::settings::AppSettings;
-
-pub use crate::show::SceneConfig;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]

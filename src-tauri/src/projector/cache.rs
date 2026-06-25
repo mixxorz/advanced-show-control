@@ -27,7 +27,7 @@ pub struct ProjectionCache {
     fade_state: AppFadeState,
     selected_scene_internal_id: Option<String>,
     lockout: bool,
-    scene_configs: Vec<crate::show::SceneConfig>,
+    scene_configs: Vec<crate::scenes::SceneConfig>,
     cued_scene_internal_id: Option<String>,
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,

@@ -2,7 +2,8 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectS
 use crate::lv1::Lv1StateSnapshot;
 use crate::show::show_file::{ShowFile, export_show_file};
 
-use super::types::{SceneConfig, ShowDocument};
+use super::types::ShowDocument;
+use crate::scenes::{SceneConfig, SceneDocument};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -142,7 +143,14 @@ impl ShowState {
     }
 
     pub(crate) fn export_show_file(&self, saved_at: String) -> ShowFile {
-        export_show_file(self.snapshot(), saved_at)
+        export_show_file(
+            SceneDocument {
+                scene_configs: self.scene_configs.clone(),
+                cued_scene_internal_id: self.cued_scene_internal_id,
+            },
+            self.lockout,
+            saved_at,
+        )
     }
 
     pub(crate) fn scene_configs_mut(&mut self) -> &mut Vec<SceneConfig> {
@@ -342,7 +350,7 @@ impl ShowState {
 mod tests {
     use super::*;
     use crate::lv1::{ChannelInfo, PanMode};
-    use crate::show::{ChannelConfig, SceneScopeToggles};
+    use crate::scenes::{ChannelConfig, SceneScopeToggles};
     use uuid::Uuid;
 
     fn channel(group: i32, channel: i32, name: &str, gain_db: f64) -> ChannelInfo {
@@ -809,7 +817,7 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
-                scoped_channels: vec![crate::show::types::ChannelRef {
+                scoped_channels: vec![crate::scenes::ChannelRef {
                     group: 0,
                     channel: 1,
                 }],
@@ -908,7 +916,7 @@ mod tests {
                         width: None,
                         pan_mode: None,
                     }],
-                    scoped_channels: vec![crate::show::types::ChannelRef {
+                    scoped_channels: vec![crate::scenes::ChannelRef {
                         group: 0,
                         channel: 1,
                     }],

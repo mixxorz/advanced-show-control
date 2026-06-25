@@ -21,4 +21,4 @@ pub use show_file::{
     ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
 pub use state::ShowState;
-pub use types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument};
+pub use types::ShowDocument;

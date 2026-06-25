@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::lv1::{Lv1StateSnapshot, PanMode};
-use crate::show::types::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles, ShowDocument};
+use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
 
@@ -85,20 +85,19 @@ impl LoadValidationReport {
 }
 
 pub struct ImportedShowFile {
-    pub snapshot: ShowDocument,
+    pub snapshot: SceneDocument,
+    pub lockout: bool,
     pub selected_scene_internal_id: Option<String>,
     pub report: LoadValidationReport,
     pub generated_internal_scene_ids: bool,
 }
 
-pub fn export_show_file(snapshot: ShowDocument, saved_at: String) -> ShowFile {
+pub fn export_show_file(snapshot: SceneDocument, lockout: bool, saved_at: String) -> ShowFile {
     ShowFile {
         schema_version: SHOW_FILE_SCHEMA_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         saved_at,
-        safety: ShowFileSafety {
-            lockout: snapshot.lockout,
-        },
+        safety: ShowFileSafety { lockout },
         cued_scene_internal_id: snapshot.cued_scene_internal_id,
         scene_configs: snapshot
             .scene_configs
@@ -137,14 +136,14 @@ pub fn import_show_file(
     let selected_scene_internal_id = scene_configs
         .first()
         .map(|config| config.internal_scene_id.to_string());
-    let snapshot = ShowDocument {
-        lockout: file.safety.lockout,
+    let snapshot = SceneDocument {
         scene_configs,
         cued_scene_internal_id: file.cued_scene_internal_id,
     };
 
     Ok(ImportedShowFile {
         snapshot,
+        lockout: file.safety.lockout,
         selected_scene_internal_id,
         report: LoadValidationReport::default(),
         generated_internal_scene_ids,
@@ -235,8 +234,7 @@ mod tests {
     fn export_show_file_contains_current_configs() {
         let internal_scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
         let cued_scene_internal_id = uuid::Uuid::from_u128(0x55555555555545558555555555555555);
-        let snapshot = ShowDocument {
-            lockout: true,
+        let snapshot = SceneDocument {
             cued_scene_internal_id: Some(cued_scene_internal_id),
             scene_configs: vec![SceneConfig {
                 internal_scene_id,
@@ -263,7 +261,7 @@ mod tests {
             }],
         };
 
-        let file = export_show_file(snapshot, "saved".to_string());
+        let file = export_show_file(snapshot, true, "saved".to_string());
 
         assert_eq!(file.schema_version, SHOW_FILE_SCHEMA_VERSION);
         assert_eq!(file.saved_at, "saved");

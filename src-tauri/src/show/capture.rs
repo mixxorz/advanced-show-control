@@ -1,7 +1,7 @@
 use crate::lv1::ChannelInfo;
 
 use super::state::ShowState;
-use super::types::{ChannelConfig, ChannelRef, SceneConfig};
+use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig};
 use uuid::Uuid;
 
 impl ShowState {

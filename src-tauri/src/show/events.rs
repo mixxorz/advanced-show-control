@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
-use super::types::SceneConfig;
+use crate::scenes::SceneConfig;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShowEvent {

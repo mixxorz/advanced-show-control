@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use super::types::{SceneConfig, ShowDocument};
+use super::types::ShowDocument;
+use crate::scenes::SceneConfig;
 
 pub enum ShowCommand {
     GetShowDocument {
@@ -204,7 +205,8 @@ pub fn validate_recall_scene_request(
 mod tests {
     use super::*;
     use crate::lv1::{ConnectionStatus, SceneListEntry};
-    use crate::show::{SceneScopeToggles, ShowDocument};
+    use crate::scenes::SceneScopeToggles;
+    use crate::show::ShowDocument;
 
     fn scene_config(internal_scene_id: Uuid, scene_index: Option<i32>) -> SceneConfig {
         SceneConfig {

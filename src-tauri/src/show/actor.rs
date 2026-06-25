@@ -589,7 +589,7 @@ fn load_show_file_from_dto(
                 .map(|scene| scene.internal_scene_id.to_string())
         });
     state.replace_snapshot(crate::show::types::ShowDocument {
-        lockout: imported.snapshot.lockout,
+        lockout: imported.lockout,
         scene_configs: aligned_scene_configs.clone(),
         cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
     });
@@ -646,9 +646,8 @@ mod tests {
     use crate::runtime::events::AppEventBus;
 
     use super::load_show_file_from_dto;
-    use crate::show::{
-        SceneConfig, SceneScopeToggles, ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowState,
-    };
+    use crate::scenes::{SceneConfig, SceneScopeToggles};
+    use crate::show::{ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowState};
 
     fn lv1_snapshot(scenes: Vec<SceneListEntry>) -> Lv1StateSnapshot {
         Lv1StateSnapshot {
