@@ -81,7 +81,7 @@ fn build_connected_runtime(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     identity: &crate::connection_state::Lv1SystemIdentity,
-    show: ShowStateHandle,
+    _show: ShowStateHandle,
     show_peers: ShowActorPeers,
     event_bus: AppEventBus,
 ) -> BuiltConnectedRuntime {
@@ -97,7 +97,7 @@ fn build_connected_runtime(
         build_scenes_actor(generation, runtime_generation, event_bus);
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
-    scene_recall_peers.set_peers(show, lv1.clone(), fade.clone());
+    scene_recall_peers.set_peers(lv1.clone(), fade.clone());
     BuiltConnectedRuntime {
         lv1,
         lv1_task,
@@ -348,7 +348,7 @@ impl AppLifecycle {
         }
         let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
             build_scenes_actor(generation, runtime_generation, event_bus);
-        scene_recall_peers.set_peers(self.show.clone(), lv1, fade);
+        scene_recall_peers.set_peers(lv1, fade);
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         scene_recall_task.spawn();

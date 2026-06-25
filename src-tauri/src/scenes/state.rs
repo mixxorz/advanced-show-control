@@ -61,6 +61,7 @@ enum RecallGate {
 
 #[derive(Debug, Default)]
 pub struct ScenesState {
+    lockout: bool,
     pub(crate) scene_configs: Vec<SceneConfig>,
     pub(crate) cued_scene_internal_id: Option<uuid::Uuid>,
     pub(crate) selected_scene_internal_id: Option<String>,
@@ -70,6 +71,14 @@ pub struct ScenesState {
 }
 
 impl ScenesState {
+    pub fn set_lockout(&mut self, lockout: bool) {
+        self.lockout = lockout;
+    }
+
+    pub fn lockout(&self) -> bool {
+        self.lockout
+    }
+
     pub fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
@@ -98,6 +107,10 @@ impl ScenesState {
             .iter()
             .find(|scene| scene.internal_scene_id == internal_scene_id)
             .cloned()
+    }
+
+    pub fn scene_configs(&self) -> &[SceneConfig] {
+        &self.scene_configs
     }
 
     pub fn scene_list_entry_for_index(&self, index: i32) -> Option<SceneListEntry> {

@@ -16,7 +16,7 @@ use crate::scenes::{
     CueSceneResult, RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult,
     ScenesEvent, ScenesProjectionReason, ScenesState, SelectedSceneResult,
 };
-use crate::show::{ShowCommand, ShowStateHandle};
+use crate::show::{ShowEvent, ShowProjectionReason};
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -27,15 +27,14 @@ pub struct ScenesPeers {
 
 #[derive(Clone)]
 struct ScenesPeerHandles {
-    show: ShowStateHandle,
     lv1: Lv1ActorHandle,
     fade: FadeEngineHandle,
 }
 
 impl ScenesPeers {
-    pub fn set_peers(&self, show: ShowStateHandle, lv1: Lv1ActorHandle, fade: FadeEngineHandle) {
+    pub fn set_peers(&self, lv1: Lv1ActorHandle, fade: FadeEngineHandle) {
         *self.peers.lock().expect("scene recall peer lock poisoned") =
-            Some(ScenesPeerHandles { show, lv1, fade });
+            Some(ScenesPeerHandles { lv1, fade });
     }
 
     fn handles(&self) -> ScenesPeerHandles {
@@ -180,7 +179,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit);
                             if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); }
                         }
-                        Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
+                        Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let lockout = recall_state.lockout(); let _ = reply.send(handle_explicit_recall_scene(lockout, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
                         Some(ScenesCommand::Shutdown) | None => break,
                     }
                 }
@@ -191,6 +190,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                         }
                         Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
                             pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
+                        }
+                        Ok(AppEvent::Show(ShowEvent::StateChanged { reason, state })) => {
+                            if reason == ShowProjectionReason::ShowState {
+                                apply_show_projection_state(&mut recall_state, state);
+                            }
                         }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -205,7 +209,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                         process_scene_observation(
                             generation,
                             &runtime_generation,
-                            &peer_handles.show,
                             &peer_handles.lv1,
                             &peer_handles.fade,
                             &event_bus,
@@ -235,7 +238,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(ScenesCommand::SelectSceneConfig { internal_scene_id, reply }) => { let result = recall_state.select_scene_config(internal_scene_id).map(|_| SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() }); if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::StoreSceneConfigFromCurrentLv1 { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let result = store_scene_config_from_current_lv1(&peer_handles.lv1, &event_bus, generation, &mut recall_state, internal_scene_id).await; if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => { recall_state.replace_snapshot(document); recall_state.selected_scene_internal_id = selected_scene_internal_id; publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit); if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); } }
-                    Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
+                    Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let lockout = recall_state.lockout(); let _ = reply.send(handle_explicit_recall_scene(lockout, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
                     Some(ScenesCommand::Shutdown) | None => break,
                 }
             }
@@ -255,6 +258,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                             scene,
                             tokio::time::Instant::now(),
                         ));
+                    }
+                    Ok(AppEvent::Show(ShowEvent::StateChanged { reason, state })) => {
+                        if reason == ShowProjectionReason::ShowState {
+                            apply_show_projection_state(&mut recall_state, state);
+                        }
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -286,6 +294,20 @@ fn publish_scene_state_changed(
             persisted_scene_edit,
         },
     );
+}
+
+fn apply_show_projection_state(
+    recall_state: &mut ScenesState,
+    state: crate::show::ShowProjectionState,
+) {
+    recall_state.set_lockout(state.lockout);
+    recall_state.replace_snapshot(SceneDocument {
+        scene_configs: state.scene_configs,
+        cued_scene_internal_id: state
+            .cued_scene_internal_id
+            .and_then(|id| uuid::Uuid::parse_str(&id).ok()),
+        selected_scene_internal_id: state.selected_scene_internal_id,
+    });
 }
 
 fn mutate_scene_state<F>(
@@ -337,7 +359,6 @@ async fn store_scene_config_from_current_lv1(
 async fn process_scene_observation(
     generation: u64,
     runtime_generation: &RuntimeGeneration,
-    show: &ShowStateHandle,
     lv1: &Lv1ActorHandle,
     fade: &FadeEngineHandle,
     event_bus: &AppEventBus,
@@ -381,45 +402,15 @@ async fn process_scene_observation(
         }
     };
 
-    let (reply, rx) = oneshot::channel();
-    if show
-        .send(ShowCommand::GetShowDocument { reply })
-        .await
-        .is_err()
-    {
-        if !is_generation_current(generation, runtime_generation).await {
-            return;
-        }
-        event_bus.publish_scenes(
-            generation,
-            ScenesEvent::Blocked {
-                scene_label: scene_label(&observation.scene),
-                reason: "failed to fetch show document: show state is unavailable".to_string(),
-            },
-        );
-        return;
-    }
-    let show_document = match rx.await {
-        Ok(show_document) => show_document,
-        Err(_) => {
-            if !is_generation_current(generation, runtime_generation).await {
-                return;
-            }
-            event_bus.publish_scenes(
-                generation,
-                ScenesEvent::Blocked {
-                    scene_label: scene_label(&observation.scene),
-                    reason: "failed to fetch show document: reply channel closed".to_string(),
-                },
-            );
-            return;
-        }
-    };
-    let lockout = show_document.lockout;
-    let scene_config = show_document.scene_configs.into_iter().find(|scene| {
-        scene.scene_index == Some(observation.scene.index)
-            && scene.scene_name == observation.scene.name
-    });
+    let lockout = recall_state.lockout();
+    let scene_config = recall_state
+        .scene_configs()
+        .iter()
+        .find(|scene| {
+            scene.scene_index == Some(observation.scene.index)
+                && scene.scene_name == observation.scene.name
+        })
+        .cloned();
 
     match decide_scene_recall(RecallPolicyInput {
         recalled_scene: observation.scene.clone(),
@@ -518,7 +509,7 @@ fn scene_label(scene: &SceneState) -> String {
 }
 
 async fn handle_explicit_recall_scene(
-    show: &ShowStateHandle,
+    lockout: bool,
     lv1: &Lv1ActorHandle,
     scene_document: &SceneDocument,
     internal_scene_id: uuid::Uuid,
@@ -559,12 +550,6 @@ async fn handle_explicit_recall_scene(
             );
             error
         })?;
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::GetLockout { reply })
-        .await
-        .map_err(|_| AppCommandError::ShowUnavailable)?;
-    let lockout = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-
     let result = crate::scenes::validate_recall_scene_request(
         lockout,
         scene_document,
@@ -647,7 +632,7 @@ mod tests {
     use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scenes::events::ScenesEvent;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
-    use crate::show::{ShowDocument, ShowStateHandle};
+    use crate::show::{ShowCommand, ShowDocument, ShowStateHandle};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -751,7 +736,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         arm_recall_state(&event_bus).await;
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
@@ -788,7 +774,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         event_bus.publish(AppEvent::Lv1 {
@@ -821,7 +808,8 @@ mod tests {
             lv1,
             fade,
             event_bus,
-        );
+        )
+        .await;
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
@@ -861,7 +849,7 @@ mod tests {
         });
 
         let (handle, task, peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
-        peers.set_peers(ShowStateHandle::new_empty(event_bus.clone()), lv1, fade);
+        peers.set_peers(lv1, fade);
         task.spawn();
 
         let (reply, rx) = oneshot::channel();
@@ -955,7 +943,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
@@ -1020,7 +1009,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
@@ -1065,7 +1055,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         event_bus.publish(AppEvent::Lv1 {
@@ -1120,7 +1111,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
 
         event_bus.publish(AppEvent::Lv1 {
@@ -1174,7 +1166,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
 
         event_bus.publish(AppEvent::Lv1 {
@@ -1230,7 +1223,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
 
         event_bus.publish(AppEvent::Lv1 {
@@ -1285,7 +1279,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
@@ -1340,7 +1335,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
@@ -1419,7 +1415,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
         yield_to_actor().await;
@@ -1493,7 +1490,8 @@ mod tests {
             lv1,
             fade,
             event_bus.clone(),
-        );
+        )
+        .await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
 
@@ -1542,8 +1540,9 @@ mod tests {
             match event {
                 AppEvent::Scenes {
                     generation: 1,
-                    event: _,
-                } => return event,
+                    event: ScenesEvent::StateChanged { .. },
+                } => continue,
+                AppEvent::Scenes { generation: 1, .. } => return event,
                 _ => continue,
             }
         }
@@ -1557,6 +1556,7 @@ mod tests {
                 generation: 1,
                 event,
             } = events.recv().await.unwrap()
+                && !matches!(event, ScenesEvent::StateChanged { .. })
             {
                 break event;
             }
@@ -1794,7 +1794,7 @@ mod tests {
         }
     }
 
-    fn build_and_spawn_scene_recall_fader(
+    async fn build_and_spawn_scene_recall_fader(
         generation: u64,
         runtime_generation: RuntimeGeneration,
         show: ShowStateHandle,
@@ -1803,8 +1803,29 @@ mod tests {
         event_bus: AppEventBus,
     ) -> ScenesHandle {
         let (handle, task, peers) = build_scenes_actor(generation, runtime_generation, event_bus);
-        peers.set_peers(show, lv1, fade);
+        peers.set_peers(lv1, fade);
         task.spawn();
+        let (reply, rx) = oneshot::channel();
+        show.send(ShowCommand::GetShowDocument { reply })
+            .await
+            .unwrap();
+        let document = rx.await.unwrap();
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::ReplaceSceneDocument {
+                document: SceneDocument {
+                    scene_configs: document.scene_configs,
+                    cued_scene_internal_id: document.cued_scene_internal_id,
+                    selected_scene_internal_id: None,
+                },
+                selected_scene_internal_id: None,
+                reason: ScenesProjectionReason::FileReplacement,
+                persisted_scene_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await;
         handle
     }
 }
