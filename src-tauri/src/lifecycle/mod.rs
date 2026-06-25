@@ -95,6 +95,7 @@ fn build_connected_runtime(
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
         build_scenes_actor(generation, runtime_generation, event_bus);
+    show_peers.set_scenes(scene_recall_fader.clone());
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -772,6 +773,31 @@ mod tests {
         let second = lifecycle.begin_connecting().await.unwrap();
 
         assert!(second > first);
+    }
+
+    #[tokio::test]
+    async fn connected_runtime_installs_scenes_peer_on_show() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            address: "127.0.0.1".parse().unwrap(),
+            host: Some("localhost".to_string()),
+            port: 9000,
+        };
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let _built_runtime = build_connected_runtime(
+            generation,
+            runtime_generation,
+            &identity,
+            lifecycle.show.clone(),
+            lifecycle.show_peers.clone(),
+            event_bus,
+        );
+
+        assert!(lifecycle.show_peers.scenes().is_some());
     }
 
     #[tokio::test]

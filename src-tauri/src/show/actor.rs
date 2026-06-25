@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent, log_lagged_subscriber};
+use crate::scenes::ScenesHandle;
 use crate::show_file::{backup_folder, read_show_file, write_show_file};
 
 use super::commands::ShowCommand;
@@ -17,11 +18,16 @@ use super::{LoadShowFileResult, NewShowFileResult, ShowCommandResult};
 #[derive(Clone, Default)]
 pub struct ShowActorPeers {
     lv1: Arc<Mutex<Option<(u64, Lv1ActorHandle)>>>,
+    scenes: Arc<Mutex<Option<ScenesHandle>>>,
 }
 
 impl ShowActorPeers {
     pub fn set_lv1(&self, generation: u64, lv1: Lv1ActorHandle) {
         *self.lv1.lock().expect("show peer lock poisoned") = Some((generation, lv1));
+    }
+
+    pub fn set_scenes(&self, scenes: ScenesHandle) {
+        *self.scenes.lock().expect("show peer lock poisoned") = Some(scenes);
     }
 
     pub fn clear_lv1(&self, generation: u64) {
@@ -40,6 +46,14 @@ impl ShowActorPeers {
             .expect("show peer lock poisoned")
             .as_ref()
             .map(|(_, lv1)| lv1.clone())
+    }
+
+    pub fn scenes(&self) -> Option<ScenesHandle> {
+        self.scenes
+            .lock()
+            .expect("show peer lock poisoned")
+            .as_ref()
+            .cloned()
     }
 }
 
