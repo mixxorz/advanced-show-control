@@ -1,5 +1,5 @@
 import { fireEvent, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../test/render";
 import { disconnectedAppViewState } from "../types";
 import { SettingsTab } from "./SettingsTab";
@@ -12,6 +12,10 @@ vi.mock("../commands", async (actual) => ({
 }));
 
 describe("SettingsTab", () => {
+  beforeEach(() => {
+    replaceAppSettings.mockReset();
+  });
+
   it("renders projected settings and replaces the full object on toggle", () => {
     const state = {
       ...disconnectedAppViewState,
@@ -109,87 +113,111 @@ describe("SettingsTab", () => {
     });
   });
 
-  it("updates the GO shortcut key while replacing the full settings object", () => {
+  it("captures the GO shortcut while replacing the full settings object", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
     });
 
-    fireEvent.change(screen.getByLabelText("GO keyboard shortcut"), {
-      target: { value: "Enter" },
-    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    expect(screen.getByText("Press shortcut...")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Enter", shiftKey: true });
 
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
       keyboardShortcuts: {
         ...disconnectedAppViewState.settings.keyboardShortcuts,
         go: {
-          ...disconnectedAppViewState.settings.keyboardShortcuts.go,
           key: "Enter",
-        },
-      },
-    });
-  });
-
-  it("updates the Cue shortcut key while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.change(screen.getByLabelText("Cue keyboard shortcut"), {
-      target: { value: "Q" },
-    });
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      keyboardShortcuts: {
-        ...disconnectedAppViewState.settings.keyboardShortcuts,
-        cue: {
-          ...disconnectedAppViewState.settings.keyboardShortcuts.cue,
-          key: "Q",
-        },
-      },
-    });
-  });
-
-  it("updates the GO shortcut modifier while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("GO Shift"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      keyboardShortcuts: {
-        ...disconnectedAppViewState.settings.keyboardShortcuts,
-        go: {
-          ...disconnectedAppViewState.settings.keyboardShortcuts.go,
           modifiers: {
-            ...disconnectedAppViewState.settings.keyboardShortcuts.go.modifiers,
             shift: true,
+            control: false,
+            alt: false,
+            meta: false,
           },
         },
       },
     });
   });
 
-  it("updates the Cue shortcut modifier while replacing the full settings object", () => {
+  it("captures the Cue shortcut while replacing the full settings object", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
     });
 
-    fireEvent.click(screen.getByLabelText("Cue Control"));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change Cue keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "q", ctrlKey: true });
 
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
       keyboardShortcuts: {
         ...disconnectedAppViewState.settings.keyboardShortcuts,
         cue: {
-          ...disconnectedAppViewState.settings.keyboardShortcuts.cue,
+          key: "Q",
           modifiers: {
-            ...disconnectedAppViewState.settings.keyboardShortcuts.cue
-              .modifiers,
+            shift: false,
             control: true,
+            alt: false,
+            meta: false,
+          },
+        },
+      },
+    });
+  });
+
+  it("does not save a shortcut for modifier-only keydown", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "Shift", shiftKey: true });
+
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("Press shortcut...")).toBeInTheDocument();
+  });
+
+  it("cancels shortcut capture on Escape", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "Escape" });
+
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+    expect(screen.queryByText("Press shortcut...")).not.toBeInTheDocument();
+  });
+
+  it("captures Tab as a shortcut", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "Tab" });
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      keyboardShortcuts: {
+        ...disconnectedAppViewState.settings.keyboardShortcuts,
+        go: {
+          key: "Tab",
+          modifiers: {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
           },
         },
       },

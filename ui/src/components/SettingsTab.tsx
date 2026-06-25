@@ -1,11 +1,14 @@
 import { useAppState } from "../appHooks";
 import { replaceAppSettings } from "../commands";
+import { useShortcutCapture } from "../keyboard";
+import { formatShortcut } from "../shortcutFormat";
 import type { AppSettings, KeyboardShortcut } from "../types";
 import { Panel } from "./Panel";
 
 export function SettingsTab() {
   const { appState } = useAppState();
   const settings = appState.settings;
+  const shortcutCapture = useShortcutCapture();
 
   function replace(next: AppSettings) {
     void replaceAppSettings(next);
@@ -94,33 +97,25 @@ export function SettingsTab() {
       </Panel>
 
       <Panel className="grid gap-4 p-4">
-        <ShortcutInput
+        <ShortcutCaptureButton
           label="GO keyboard shortcut"
           shortcut={settings.keyboardShortcuts.go}
-          onChange={(shortcut) => updateShortcut("go", shortcut)}
-        />
-        <ShortcutModifierControls
-          labelPrefix="GO"
-          shortcut={settings.keyboardShortcuts.go}
-          onChange={(modifiers) =>
-            updateShortcut("go", {
-              ...settings.keyboardShortcuts.go,
-              modifiers,
+          isCapturing={shortcutCapture.isCapturing("go")}
+          onStartCapture={() =>
+            shortcutCapture.startCapture({
+              id: "go",
+              onCapture: (shortcut) => updateShortcut("go", shortcut),
             })
           }
         />
-        <ShortcutInput
+        <ShortcutCaptureButton
           label="Cue keyboard shortcut"
           shortcut={settings.keyboardShortcuts.cue}
-          onChange={(shortcut) => updateShortcut("cue", shortcut)}
-        />
-        <ShortcutModifierControls
-          labelPrefix="Cue"
-          shortcut={settings.keyboardShortcuts.cue}
-          onChange={(modifiers) =>
-            updateShortcut("cue", {
-              ...settings.keyboardShortcuts.cue,
-              modifiers,
+          isCapturing={shortcutCapture.isCapturing("cue")}
+          onStartCapture={() =>
+            shortcutCapture.startCapture({
+              id: "cue",
+              onCapture: (shortcut) => updateShortcut("cue", shortcut),
             })
           }
         />
@@ -147,57 +142,25 @@ function SettingCheckbox(props: {
   );
 }
 
-function ShortcutInput(props: {
+function ShortcutCaptureButton(props: {
   label: string;
   shortcut: KeyboardShortcut;
-  onChange: (shortcut: KeyboardShortcut) => void;
+  isCapturing: boolean;
+  onStartCapture: () => void;
 }) {
   return (
-    <label className="grid gap-2 text-sm text-console-muted">
-      {props.label}
-      <input
-        className="rounded-console-button border border-console-line bg-console-surface px-3 py-2 text-console-primary"
-        value={props.shortcut.key}
-        onChange={(event) =>
-          props.onChange({ ...props.shortcut, key: event.target.value })
-        }
-      />
-    </label>
-  );
-}
-
-function ShortcutModifierControls(props: {
-  labelPrefix: string;
-  shortcut: KeyboardShortcut;
-  onChange: (modifiers: KeyboardShortcut["modifiers"]) => void;
-}) {
-  return (
-    <div className="grid gap-2">
-      <span className="text-sm text-console-muted">
-        {props.labelPrefix} modifiers
-      </span>
-      <div className="flex flex-wrap gap-4 text-sm text-console-primary">
-        {(["shift", "control", "alt", "meta"] as const).map((modifier) => (
-          <label key={modifier} className="flex items-center gap-2">
-            <input
-              aria-label={`${props.labelPrefix} ${capitalize(modifier)}`}
-              type="checkbox"
-              checked={props.shortcut.modifiers[modifier]}
-              onChange={(event) =>
-                props.onChange({
-                  ...props.shortcut.modifiers,
-                  [modifier]: event.target.checked,
-                })
-              }
-            />
-            {capitalize(modifier)}
-          </label>
-        ))}
-      </div>
+    <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+      <span className="text-console-muted">{props.label}</span>
+      <button
+        aria-label={`Change ${props.label}`}
+        className="min-w-36 rounded-console-button border border-console-line bg-console-surface px-3 py-2 text-left font-mono text-console-primary transition hover:border-console-accent focus:outline-none focus:ring-2 focus:ring-console-accent"
+        type="button"
+        onClick={props.onStartCapture}
+      >
+        {props.isCapturing
+          ? "Press shortcut..."
+          : formatShortcut(props.shortcut)}
+      </button>
     </div>
   );
-}
-
-function capitalize(value: string) {
-  return value.charAt(0).toUpperCase() + value.slice(1);
 }
