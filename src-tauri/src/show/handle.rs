@@ -35,9 +35,8 @@ mod tests {
     use crate::lv1::{Lv1Event, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
     use crate::scenes::{SceneConfig, SceneScopeToggles};
-    use crate::show::ShowCommand;
-    use crate::show::ShowDocument;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
+    use crate::show::{ShowCommand, ShowDocument};
     use uuid::Uuid;
 
     fn scene_config(index: Option<i32>, name: &str, internal_scene_id: Uuid) -> SceneConfig {

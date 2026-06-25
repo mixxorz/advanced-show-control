@@ -153,8 +153,8 @@ The following peer relationships are defined:
 | Actor    | Peer Handles Received                                                             | Purpose                                                                                                         |
 | -------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `fade`   | `Lv1ActorHandle` through `FadeEnginePeers`                                        | Allows active fades to write parameters to LV1.                                                                 |
-| `scenes` | `ShowStateHandle`, `Lv1ActorHandle`, and `FadeEngineHandle` through `ScenesPeers` | Allows recall automation to validate show state, validate LV1 state, send LV1 recall commands, and start fades. |
-| `show`   | `Lv1ActorHandle` through `ShowActorPeers`                                         | Allows show-owned workflows to obtain fresh LV1 state.                                                          |
+| `scenes` | `Lv1ActorHandle` and `FadeEngineHandle` through `ScenesPeers`                     | Allows recall automation to validate LV1 state, send LV1 recall commands, and start fades.                      |
+| `show`   | `ScenesHandle` and `Lv1ActorHandle` through `ShowActorPeers`                      | Allows show-owned workflows to coordinate scene persistence and obtain fresh LV1 state.                         |
 
 ## 9.0 Runtime Lifecycle and Generations
 

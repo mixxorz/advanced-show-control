@@ -452,7 +452,7 @@ async fn load_show_file_from_dto(
         false,
     )
     .await?;
-    state.replace_snapshot(crate::show::ShowDocument {
+    state.replace_snapshot(super::types::ShowDocument {
         lockout: imported.lockout,
         scene_configs: aligned_scene_configs.clone(),
         cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,

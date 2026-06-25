@@ -8,8 +8,7 @@ mod types;
 
 pub use actor::{ShowActorPeers, ShowActorTask, build_show_actor};
 pub use commands::{
-    ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult,
-    SelectedSceneResult, ShowCommand, ShowCommandResult,
+    ConnectCommandResult, LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult,
 };
 pub use events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
 pub use handle::ShowStateHandle;
@@ -19,4 +18,5 @@ pub use show_file::{
     ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
 pub use state::ShowState;
-pub use types::ShowDocument;
+#[allow(unused_imports)]
+pub(crate) use types::ShowDocument;
