@@ -59,10 +59,9 @@ async fn handle_command(
         SettingsCommand::ReplaceSettings { settings, reply } => {
             let result = state.replace_settings(settings).map(|changed| {
                 if changed {
-                    log_settings_updated(&state.settings());
-                    event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
-                        settings: state.settings(),
-                    }));
+                    let settings = state.settings();
+                    log_settings_updated(&settings);
+                    event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged { settings }));
                 } else {
                     tracing::debug!(
                         event = "settings_update_noop",
@@ -71,9 +70,7 @@ async fn handle_command(
                 }
                 SettingsCommandResult { changed }
             });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+            let _ = reply.send(result);
         }
     }
 }
@@ -200,7 +197,7 @@ mod tests {
                     fader_override_sensitivity: 99,
                     ..Default::default()
                 },
-                reply: Some(reply),
+                reply,
             })
             .await
             .unwrap();
@@ -233,7 +230,7 @@ mod tests {
         handle
             .send(SettingsCommand::ReplaceSettings {
                 settings: AppSettings::default(),
-                reply: Some(reply),
+                reply,
             })
             .await
             .unwrap();

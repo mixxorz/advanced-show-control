@@ -10,7 +10,7 @@ pub enum SettingsCommand {
     },
     ReplaceSettings {
         settings: AppSettings,
-        reply: Option<oneshot::Sender<Result<SettingsCommandResult, String>>>,
+        reply: oneshot::Sender<Result<SettingsCommandResult, String>>,
     },
 }
 

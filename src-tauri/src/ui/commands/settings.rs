@@ -14,10 +14,7 @@ pub async fn replace_app_settings(
     let settings_handle = lifecycle.current_settings().await;
     let (reply, rx) = oneshot::channel();
     settings_handle
-        .send(SettingsCommand::ReplaceSettings {
-            settings,
-            reply: Some(reply),
-        })
+        .send(SettingsCommand::ReplaceSettings { settings, reply })
         .await
         .map_err(|_| AppCommandError::CommandFailed("Settings unavailable".to_string()))
         .map_err(map_app_command_error)?;
