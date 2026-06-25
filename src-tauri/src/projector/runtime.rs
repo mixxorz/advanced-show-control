@@ -7,6 +7,7 @@ use crate::logging::UiLogEvent;
 use crate::projector::AppViewState;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
+use crate::scenes::{ScenesEvent, ScenesProjectionState};
 use crate::settings::{AppSettings, SettingsEvent};
 use crate::show::{ShowEvent, ShowProjectionState};
 
@@ -18,6 +19,7 @@ pub struct ProjectorInputs<R: Runtime> {
     pub app: AppHandle<R>,
     pub generation: u64,
     pub initial_show_state: ShowProjectionState,
+    pub initial_scenes_state: ScenesProjectionState,
     pub initial_settings: AppSettings,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
@@ -29,6 +31,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
             app,
             generation,
             initial_show_state,
+            initial_scenes_state,
             initial_settings,
             mut events,
             mut logs,
@@ -43,6 +46,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         let mut cache = ProjectionCache::new();
         cache.set_active_generation(generation);
         cache.apply_show_state(initial_show_state);
+        cache.apply_scenes_state(initial_scenes_state);
         cache.apply_settings(initial_settings);
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -107,7 +111,16 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
         }
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
         AppEvent::Fade { generation, event } => cache.apply_fade_event(*generation, event),
-        AppEvent::Scenes { .. } => false,
+        AppEvent::Scenes { generation, event } => match event {
+            ScenesEvent::StateChanged { state, .. } => {
+                if !cache.is_active_generation(*generation) {
+                    return false;
+                }
+                cache.apply_scenes_state(state.clone());
+                true
+            }
+            _ => false,
+        },
         AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
             cache.apply_show_state(state.clone());
             true
@@ -151,6 +164,11 @@ mod tests {
                 pending_lv1_identity: None,
                 reconnect: Default::default(),
                 last_event_at: None,
+            },
+            initial_scenes_state: ScenesProjectionState {
+                scene_configs: Vec::new(),
+                cued_scene_internal_id: None,
+                selected_scene_internal_id: None,
             },
             initial_settings: AppSettings::default(),
             events,
@@ -233,6 +251,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scenes_event_marks_cache_dirty_and_projects_scene_configs() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let (_log_tx, log_rx) = broadcast::channel(8);
+        let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received_events = received.clone();
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            received_events.lock().unwrap().push(payload);
+        });
+
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
+
+        event_bus.publish(AppEvent::Scenes {
+            generation: 0,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                reason: crate::scenes::ScenesProjectionReason::SceneState,
+                state: ScenesProjectionState {
+                    scene_configs: vec![crate::scenes::SceneConfig {
+                        internal_scene_id: uuid::Uuid::from_u128(
+                            0x11111111111141118111111111111111,
+                        ),
+                        scene_index: Some(8),
+                        scene_name: "Bridge".to_string(),
+                        duration_ms: 2_000,
+                        channel_configs: vec![],
+                        scoped_channels: vec![],
+                        scope_toggles: Default::default(),
+                    }],
+                    cued_scene_internal_id: Some("cue-id".to_string()),
+                    selected_scene_internal_id: Some("selected-id".to_string()),
+                },
+                persisted_scene_edit: false,
+            },
+        });
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+
+        projector.abort();
+        let snapshots = received.lock().unwrap();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot["sceneConfigs"]
+                .as_array()
+                .is_some_and(|scenes| scenes.iter().any(|scene| scene["sceneName"] == "Bridge"))
+        }));
+    }
+
+    #[tokio::test]
     async fn projector_emits_initial_show_state() {
         let app = mock_app();
         let handle = app.handle().clone();
@@ -263,6 +330,11 @@ mod tests {
                 pending_lv1_identity: None,
                 reconnect: Default::default(),
                 last_event_at: None,
+            },
+            initial_scenes_state: ScenesProjectionState {
+                scene_configs: Vec::new(),
+                cued_scene_internal_id: None,
+                selected_scene_internal_id: None,
             },
             initial_settings: AppSettings::default(),
             events: event_bus.subscribe(),

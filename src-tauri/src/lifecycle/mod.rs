@@ -559,6 +559,18 @@ impl AppLifecycle {
         let initial_show_state = rx
             .await
             .map_err(|_| "Show state reply channel is closed".to_string())?;
+        let scenes_handle = self
+            .show_peers
+            .scenes()
+            .ok_or_else(|| "Scenes state is unavailable".to_string())?;
+        let (reply, rx) = oneshot::channel();
+        scenes_handle
+            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+            .await
+            .map_err(|_| "Scenes state is unavailable".to_string())?;
+        let initial_scenes_state = rx
+            .await
+            .map_err(|_| "Scenes state reply channel is closed".to_string())?;
         let settings_handle = self.current_settings().await;
         let (reply, rx) = oneshot::channel();
         settings_handle
@@ -579,6 +591,7 @@ impl AppLifecycle {
                 app,
                 generation,
                 initial_show_state,
+                initial_scenes_state,
                 initial_settings,
                 events: self.event_bus.subscribe(),
                 logs,
