@@ -46,11 +46,6 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::open_show_file_dialog,
             commands::show::save_show_file,
             commands::show::save_show_file_as_dialog,
-            commands::show::set_scene_duration_ms,
-            commands::show::link_scene_config,
-            commands::show::delete_scene_config,
-            commands::show::select_scene_config,
-            commands::show::cue_scene,
             commands::scenes::recall_scene,
             commands::lifecycle::connect_lv1_system,
             commands::lifecycle::attempt_reconnect_lv1,
@@ -59,11 +54,6 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::lifecycle::reconnect_timed_out,
             commands::fade::abort_all_fades,
             commands::settings::replace_app_settings,
-            commands::show::store_scene_config,
-            commands::show::set_channel_scoped,
-            commands::show::set_all_channels_scoped,
-            commands::show::set_scene_scope_faders_enabled,
-            commands::show::set_scene_scope_pan_enabled,
             commands::show::set_lockout,
         ])
         .on_menu_event(|app, event| {

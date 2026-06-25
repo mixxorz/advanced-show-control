@@ -1473,15 +1473,30 @@ mod tests {
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
         seed_show_with_duration(&show, 0).await;
-        let (reply, rx) = oneshot::channel();
-        show.send(ShowCommand::SetSceneScopeFadersEnabled {
-            internal_scene_id: intro_internal_scene_id(),
-            enabled: false,
-            reply: Some(reply),
+        show.send(ShowCommand::ReplaceSnapshotForTest {
+            snapshot: ShowDocument {
+                lockout: false,
+                scene_configs: vec![SceneConfig {
+                    internal_scene_id: intro_internal_scene_id(),
+                    scene_index: Some(1),
+                    scene_name: "Intro".to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: crate::scenes::SceneScopeToggles {
+                        faders: false,
+                        pan: false,
+                    },
+                }],
+                cued_scene_internal_id: None,
+            },
+            reply: None,
         })
         .await
         .unwrap();
-        let _ = rx.await.unwrap().unwrap();
+        let (_scenes, task, _peers) =
+            build_scenes_actor(1, runtime_generation.clone(), event_bus.clone());
+        task.spawn();
 
         let handle = build_and_spawn_scene_recall_fader(
             1,

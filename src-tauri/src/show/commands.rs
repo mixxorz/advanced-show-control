@@ -1,13 +1,12 @@
 //! Show-owned application command handlers.
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::scenes::SceneConfig;
 use crate::show::show_file::LoadValidationReport;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
-use uuid::Uuid;
 
 use super::types::ShowDocument;
-use crate::scenes::SceneConfig;
 
 pub enum ShowCommand {
     GetShowDocument {
@@ -19,61 +18,12 @@ pub enum ShowCommand {
     GetLockout {
         reply: oneshot::Sender<bool>,
     },
-    GetSceneConfig {
-        internal_scene_id: Uuid,
-        reply: oneshot::Sender<Option<SceneConfig>>,
-    },
     InitialProjectionState {
         reply: oneshot::Sender<super::events::ShowProjectionState>,
     },
     SetLockout {
         enabled: bool,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
-    SetSceneDuration {
-        internal_scene_id: Uuid,
-        duration_ms: u64,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    SetSceneScopeFadersEnabled {
-        internal_scene_id: Uuid,
-        enabled: bool,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    SetSceneScopePanEnabled {
-        internal_scene_id: Uuid,
-        enabled: bool,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    LinkSceneConfig {
-        source_internal_scene_id: Uuid,
-        target_scene_index: i32,
-        overwrite_existing: bool,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    DeleteSceneConfig {
-        internal_scene_id: Uuid,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    SetChannelScoped {
-        internal_scene_id: Uuid,
-        group: i32,
-        channel: i32,
-        scoped: bool,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    SetAllChannelsScoped {
-        internal_scene_id: Uuid,
-        scoped: bool,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    CueScene {
-        internal_scene_id: Uuid,
-        reply: Option<oneshot::Sender<Result<CueSceneResult, String>>>,
-    },
-    SelectSceneConfig {
-        internal_scene_id: Uuid,
-        reply: Option<oneshot::Sender<Result<SelectedSceneResult, String>>>,
     },
     NewShowFileFromCurrentLv1 {
         reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
@@ -108,10 +58,6 @@ pub enum ShowCommand {
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
-    },
-    StoreSceneConfigFromCurrentLv1 {
-        internal_scene_id: Uuid,
-        reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
     },
     #[cfg(test)]
     ReplaceSnapshotForTest {

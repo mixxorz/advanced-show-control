@@ -191,12 +191,6 @@ async fn handle_command(
         ShowCommand::GetLockout { reply } => {
             let _ = reply.send(state.lockout());
         }
-        ShowCommand::GetSceneConfig {
-            internal_scene_id,
-            reply,
-        } => {
-            let _ = reply.send(state.get_scene_config(internal_scene_id));
-        }
         ShowCommand::InitialProjectionState { reply } => {
             let _ = reply.send(state.projection_state());
         }
@@ -205,176 +199,6 @@ async fn handle_command(
             publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::SetSceneDuration {
-            internal_scene_id,
-            duration_ms,
-            reply,
-        } => {
-            let result = state
-                .set_scene_duration_ms(internal_scene_id, duration_ms)
-                .map(|changed| {
-                    if changed {
-                        state.mark_dirty();
-                    }
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    ShowCommandResult { changed }
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::SetSceneScopeFadersEnabled {
-            internal_scene_id,
-            enabled,
-            reply,
-        } => {
-            let result = state
-                .set_scene_scope_faders_enabled(internal_scene_id, enabled)
-                .map(|changed| {
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    ShowCommandResult { changed }
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::SetSceneScopePanEnabled {
-            internal_scene_id,
-            enabled,
-            reply,
-        } => {
-            let result = state
-                .set_scene_scope_pan_enabled(internal_scene_id, enabled)
-                .map(|changed| {
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    ShowCommandResult { changed }
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::SetChannelScoped {
-            internal_scene_id,
-            group,
-            channel,
-            scoped,
-            reply,
-        } => {
-            let result = state
-                .set_channel_scoped(internal_scene_id, group, channel, scoped)
-                .map(|changed| {
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    ShowCommandResult { changed }
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::LinkSceneConfig {
-            source_internal_scene_id,
-            target_scene_index,
-            overwrite_existing,
-            reply,
-        } => {
-            let result = current_lv1_snapshot(peers)
-                .await
-                .map_err(|_| "Link blocked: LV1 state is unavailable".to_string())
-                .and_then(|lv1| {
-                    let target = lv1
-                        .scene_list
-                        .iter()
-                        .find(|scene| scene.index == target_scene_index)
-                        .ok_or_else(|| "Link blocked: target scene not found".to_string())?;
-                    state
-                        .link_scene_config(source_internal_scene_id, target, overwrite_existing)
-                        .map(|changed| {
-                            if changed {
-                                state.mark_dirty();
-                            }
-                            publish_if_changed(
-                                event_bus,
-                                ShowProjectionReason::ShowState,
-                                state,
-                                changed,
-                            );
-                            ShowCommandResult { changed }
-                        })
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::DeleteSceneConfig {
-            internal_scene_id,
-            reply,
-        } => {
-            let result = state.delete_scene_config(internal_scene_id).map(|changed| {
-                if changed {
-                    state.mark_dirty();
-                }
-                publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                ShowCommandResult { changed }
-            });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::SetAllChannelsScoped {
-            internal_scene_id,
-            scoped,
-            reply,
-        } => {
-            let result = state
-                .set_all_channels_scoped(internal_scene_id, scoped)
-                .map(|changed| {
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    ShowCommandResult { changed }
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::CueScene {
-            internal_scene_id,
-            reply,
-        } => {
-            tracing::debug!(event = "scene_cue_requested", internal_scene_id = %internal_scene_id, "Scene cue requested");
-            let result = state
-                .get_scene_config(internal_scene_id)
-                .ok_or_else(|| {
-                    tracing::warn!(event = "scene_cue_blocked", internal_scene_id = %internal_scene_id, reason = "scene config not found", "Scene cue blocked: scene config not found");
-                    "Scene config not found".to_string()
-                })
-                .and_then(|scene| {
-                    if scene.scene_index.is_none() {
-                        return Err("Cue blocked: scene is unlinked".to_string());
-                    }
-                    let changed = state.cue_scene(internal_scene_id)?;
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    tracing::info!(event = "scene_cued", internal_scene_id = %scene.internal_scene_id, scene_index = scene.scene_index, scene_name = %scene.scene_name, "Scene cued: {}", scene.scene_name);
-                    Ok(super::commands::CueSceneResult { changed, scene })
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
-        ShowCommand::SelectSceneConfig {
-            internal_scene_id,
-            reply,
-        } => {
-            let result = state
-                .get_scene_config(internal_scene_id)
-                .ok_or_else(|| "Scene config not found".to_string())
-                .map(|scene| {
-                    let changed = state
-                        .set_selected_scene_internal_id(Some(scene.internal_scene_id.to_string()));
-                    publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-                    super::commands::SelectedSceneResult { scene }
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
             }
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
@@ -508,25 +332,6 @@ async fn handle_command(
                 let _ = reply.send(result);
             }
         }
-        ShowCommand::StoreSceneConfigFromCurrentLv1 {
-            internal_scene_id,
-            reply,
-        } => {
-            let result = current_lv1_snapshot(peers)
-                .await
-                .map_err(|_| "Store scene blocked: LV1 state is unavailable".to_string())
-                .and_then(|lv1| {
-                    store_scene_config_from_channels(
-                        state,
-                        event_bus,
-                        internal_scene_id,
-                        lv1.channels,
-                    )
-                });
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
         #[cfg(test)]
         ShowCommand::ReplaceSnapshotForTest { snapshot, reply } => {
             let changed = state.snapshot() != snapshot;
@@ -652,7 +457,6 @@ async fn load_show_file_from_dto(
         scene_configs: aligned_scene_configs.clone(),
         cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
     });
-    state.set_selected_scene_internal_id(selected_scene_internal_id.clone());
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
         state.mark_dirty();
@@ -716,23 +520,6 @@ async fn replace_scene_document(
         .map_err(|_| "Show blocked: scenes state is unavailable".to_string())?;
     rx.await
         .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
-}
-
-fn store_scene_config_from_channels(
-    state: &mut ShowState,
-    event_bus: &AppEventBus,
-    internal_scene_id: uuid::Uuid,
-    channels: Vec<crate::lv1::ChannelInfo>,
-) -> Result<ShowCommandResult, String> {
-    if state.get_scene_config(internal_scene_id).is_none() {
-        return Err("Scene config not found".to_string());
-    }
-    state
-        .store_scene_config(internal_scene_id, &channels)
-        .map(|changed| {
-            publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-            ShowCommandResult { changed }
-        })
 }
 
 #[cfg(test)]
