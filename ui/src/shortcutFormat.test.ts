@@ -12,20 +12,23 @@ describe("formatShortcut", () => {
   });
 
   it("uses non-macOS labels", () => {
-    expect(formatShortcut(shortcut("c", { control: true }), "other")).toBe(
+    expect(formatShortcut(shortcut("c", { control: true }), "windows")).toBe(
       "Ctrl + C",
     );
-    expect(formatShortcut(shortcut("2", { shift: true }), "other")).toBe(
+    expect(formatShortcut(shortcut("2", { shift: true }), "windows")).toBe(
       "Shift + 2",
     );
-    expect(formatShortcut(shortcut("Tab", { meta: true }), "other")).toBe(
+    expect(formatShortcut(shortcut("Tab", { meta: true }), "windows")).toBe(
       "Win + Tab",
+    );
+    expect(formatShortcut(shortcut("Tab", { meta: true }), "linux")).toBe(
+      "Meta + Tab",
     );
   });
 
   it("formats common key labels", () => {
-    expect(formatShortcut(shortcut(" ", {}), "other")).toBe("Space");
-    expect(formatShortcut(shortcut("ArrowRight", {}), "other")).toBe("Right");
+    expect(formatShortcut(shortcut(" ", {}), "windows")).toBe("Space");
+    expect(formatShortcut(shortcut("ArrowRight", {}), "windows")).toBe("Right");
   });
 });
 

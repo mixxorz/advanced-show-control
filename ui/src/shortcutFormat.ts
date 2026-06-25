@@ -1,13 +1,15 @@
 import type { KeyboardShortcut } from "./types";
 
-export type ShortcutPlatform = "mac" | "other";
+export type ShortcutPlatform = "mac" | "windows" | "linux";
 
 export function detectShortcutPlatform(): ShortcutPlatform {
   const userAgentData = navigator as Navigator & {
     userAgentData?: { platform?: string };
   };
   const platform = userAgentData.userAgentData?.platform ?? navigator.platform;
-  return /mac|iphone|ipad|ipod/i.test(platform) ? "mac" : "other";
+  if (/mac|iphone|ipad|ipod/i.test(platform)) return "mac";
+  if (/win/i.test(platform)) return "windows";
+  return "linux";
 }
 
 export function formatShortcut(
@@ -15,12 +17,18 @@ export function formatShortcut(
   platform: ShortcutPlatform = detectShortcutPlatform(),
 ) {
   const modifiers = shortcut.modifiers;
-  const parts =
-    platform === "mac"
-      ? macModifierParts(modifiers)
-      : otherModifierParts(modifiers);
+  const parts = modifierParts(modifiers, platform);
   parts.push(formatKey(shortcut.key));
   return platform === "mac" ? parts.join("") : parts.join(" + ");
+}
+
+function modifierParts(
+  modifiers: KeyboardShortcut["modifiers"],
+  platform: ShortcutPlatform,
+) {
+  return platform === "mac"
+    ? macModifierParts(modifiers)
+    : textModifierParts(modifiers, platform);
 }
 
 function macModifierParts(modifiers: KeyboardShortcut["modifiers"]) {
@@ -32,12 +40,15 @@ function macModifierParts(modifiers: KeyboardShortcut["modifiers"]) {
   return parts;
 }
 
-function otherModifierParts(modifiers: KeyboardShortcut["modifiers"]) {
+function textModifierParts(
+  modifiers: KeyboardShortcut["modifiers"],
+  platform: Exclude<ShortcutPlatform, "mac">,
+) {
   const parts: string[] = [];
   if (modifiers.shift) parts.push("Shift");
   if (modifiers.control) parts.push("Ctrl");
   if (modifiers.alt) parts.push("Alt");
-  if (modifiers.meta) parts.push("Win");
+  if (modifiers.meta) parts.push(platform === "windows" ? "Win" : "Meta");
   return parts;
 }
 

@@ -62,13 +62,16 @@ describe("SettingsTab", () => {
       appState: disconnectedAppViewState,
     });
 
-    fireEvent.change(screen.getByLabelText("Fader override sensitivity"), {
-      target: { value: "10" },
-    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Increase Fader override sensitivity",
+      }),
+    );
 
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
-      faderOverrideSensitivity: 10,
+      faderOverrideSensitivity:
+        disconnectedAppViewState.settings.faderOverrideSensitivity + 1,
     });
   });
 
@@ -121,7 +124,7 @@ describe("SettingsTab", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
     );
-    expect(screen.getByText("Press shortcut...")).toBeInTheDocument();
+    expect(screen.getByText("...")).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "Enter", shiftKey: true });
 
@@ -180,7 +183,7 @@ describe("SettingsTab", () => {
     fireEvent.keyDown(window, { key: "Shift", shiftKey: true });
 
     expect(replaceAppSettings).not.toHaveBeenCalled();
-    expect(screen.getByText("Press shortcut...")).toBeInTheDocument();
+    expect(screen.getByText("...")).toBeInTheDocument();
   });
 
   it("cancels shortcut capture on Escape", () => {
@@ -194,7 +197,7 @@ describe("SettingsTab", () => {
     fireEvent.keyDown(window, { key: "Escape" });
 
     expect(replaceAppSettings).not.toHaveBeenCalled();
-    expect(screen.queryByText("Press shortcut...")).not.toBeInTheDocument();
+    expect(screen.queryByText("...")).not.toBeInTheDocument();
   });
 
   it("captures Tab as a shortcut", () => {

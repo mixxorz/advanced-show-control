@@ -1,4 +1,4 @@
-import { useState, type ComponentProps, type ReactNode } from "react";
+import { useState, type ComponentProps } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 import {
@@ -14,7 +14,7 @@ import {
   discoveringAppState,
 } from "../storybook/mockAppState";
 import { mockAppCommands } from "../storybook/mockAppCommands";
-import type { AppViewState, SceneConfig } from "../types";
+import type { AppSettings, AppViewState, SceneConfig } from "../types";
 import { AppShell } from "./AppShell";
 
 type AppShellStoryArgs = ComponentProps<typeof AppShell> & {
@@ -87,23 +87,16 @@ const meta: Meta<AppShellStoryArgs> = {
   render: (args) => (
     <KeyboardProvider>
       <StatefulAppShellStory
+        appShellProps={args}
         commandError={args.commandError}
         initialAppState={args.appState}
-      >
-        <AppShell
-          activeTab={args.activeTab}
-          onOpenConnection={args.onOpenConnection}
-          onResume={args.onResume}
-          onSelectTab={args.onSelectTab}
-          showConnection={args.showConnection}
-        />
-      </StatefulAppShellStory>
+      />
     </KeyboardProvider>
   ),
 };
 
 function StatefulAppShellStory(props: {
-  children: ReactNode;
+  appShellProps: ComponentProps<typeof AppShell>;
   commandError?: string | null;
   initialAppState?: AppViewState;
 }) {
@@ -209,13 +202,24 @@ function StatefulAppShellStory(props: {
       setAppState((state) => ({ ...state, lockout: !state.lockout })),
   };
 
+  function replaceSettings(settings: AppSettings) {
+    setAppState((state) => ({ ...state, settings }));
+  }
+
   return (
     <AppStateProvider
       appState={appState}
       commandError={props.commandError ?? null}
     >
       <AppCommandsProvider commands={commands}>
-        {props.children}
+        <AppShell
+          activeTab={props.appShellProps.activeTab}
+          onOpenConnection={props.appShellProps.onOpenConnection}
+          onReplaceSettings={replaceSettings}
+          onResume={props.appShellProps.onResume}
+          onSelectTab={props.appShellProps.onSelectTab}
+          showConnection={props.appShellProps.showConnection}
+        />
       </AppCommandsProvider>
     </AppStateProvider>
   );
@@ -285,9 +289,10 @@ export const LogsTab: Story = {
   },
 };
 
-export const SettingsPlaceholder: Story = {
+export const SettingsTab: Story = {
   args: {
     activeTab: "settings",
+    appState: connectedAppState,
   },
 };
 

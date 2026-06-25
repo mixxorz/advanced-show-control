@@ -1,16 +1,26 @@
+import type { ReactNode } from "react";
 import { useAppState } from "../appHooks";
 import { replaceAppSettings } from "../commands";
 import { useShortcutCapture } from "../keyboard";
-import { formatShortcut } from "../shortcutFormat";
 import type { AppSettings, KeyboardShortcut } from "../types";
+import { KeyboardShortcutInput } from "./KeyboardShortcutInput";
 import { Panel } from "./Panel";
+import { SelectControl } from "./SelectControl";
+import { StepperControl } from "./StepperControl";
+import { ToggleControl } from "./ToggleControl";
 
-export function SettingsTab() {
+export function SettingsTab(props: {
+  onReplaceSettings?: (settings: AppSettings) => void;
+}) {
   const { appState } = useAppState();
   const settings = appState.settings;
   const shortcutCapture = useShortcutCapture();
 
   function replace(next: AppSettings) {
+    if (props.onReplaceSettings) {
+      props.onReplaceSettings(next);
+      return;
+    }
     void replaceAppSettings(next);
   }
 
@@ -26,141 +36,131 @@ export function SettingsTab() {
 
   return (
     <div className="grid h-full min-h-0 gap-3 overflow-auto">
-      <Panel className="p-4">
-        <h1 className="text-lg font-semibold text-console-primary">Settings</h1>
-        <p className="mt-1 text-sm text-console-muted">
-          Settings are saved immediately to this computer. These controls do not
-          change show behavior yet.
-        </p>
-      </Panel>
+      <Panel className="flex min-h-0 flex-col overflow-hidden">
+        <div className="flex items-center justify-between gap-3 border-b border-console-line px-4 py-3">
+          <h2 className="text-lg font-normal uppercase text-console-primary">
+            Settings
+          </h2>
+        </div>
 
-      <Panel className="grid gap-4 p-4">
-        <SettingCheckbox
-          label="Auto load last show file"
-          checked={settings.autoLoadLastShowFile}
-          onChange={(checked) =>
-            replace({ ...settings, autoLoadLastShowFile: checked })
-          }
-        />
-        <SettingCheckbox
-          label="Auto save sessions"
-          checked={settings.autoSaveSessions}
-          onChange={(checked) =>
-            replace({ ...settings, autoSaveSessions: checked })
-          }
-        />
-        <SettingCheckbox
-          label="Auto cue next scene on GO"
-          checked={settings.autoCueNextSceneOnGo}
-          onChange={(checked) =>
-            replace({ ...settings, autoCueNextSceneOnGo: checked })
-          }
-        />
-      </Panel>
+        <div className="grid content-start gap-8 p-4">
+          <SettingsSection title="General">
+            <SettingRow label="Auto load last show file">
+              <ToggleControl
+                label="Auto load last show file"
+                checked={settings.autoLoadLastShowFile}
+                onChange={(checked) =>
+                  replace({ ...settings, autoLoadLastShowFile: checked })
+                }
+              />
+            </SettingRow>
+            <SettingRow label="Auto save sessions">
+              <ToggleControl
+                label="Auto save sessions"
+                checked={settings.autoSaveSessions}
+                onChange={(checked) =>
+                  replace({ ...settings, autoSaveSessions: checked })
+                }
+              />
+            </SettingRow>
+            <SettingRow label="Auto cue next scene on GO">
+              <ToggleControl
+                label="Auto cue next scene on GO"
+                checked={settings.autoCueNextSceneOnGo}
+                onChange={(checked) =>
+                  replace({ ...settings, autoCueNextSceneOnGo: checked })
+                }
+              />
+            </SettingRow>
 
-      <Panel className="grid gap-4 p-4">
-        <label className="grid gap-2 text-sm text-console-muted">
-          Time display
-          <select
-            className="rounded-console-button border border-console-line bg-console-surface px-3 py-2 text-console-primary"
-            value={settings.timeDisplay}
-            onChange={(event) =>
-              replace({
-                ...settings,
-                timeDisplay: event.target.value as AppSettings["timeDisplay"],
-              })
-            }
-          >
-            <option value="twelveHour">12 hour</option>
-            <option value="twentyFourHour">24 hour</option>
-          </select>
-        </label>
-        <label className="grid gap-2 text-sm text-console-muted">
-          Fader override sensitivity
-          <input
-            aria-label="Fader override sensitivity"
-            type="range"
-            min="1"
-            max="10"
-            value={settings.faderOverrideSensitivity}
-            onChange={(event) =>
-              replace({
-                ...settings,
-                faderOverrideSensitivity: Number(event.target.value),
-              })
-            }
-          />
-          <span className="text-console-primary">
-            {settings.faderOverrideSensitivity}
-          </span>
-        </label>
-      </Panel>
+            <SettingRow label="Time display">
+              <SelectControl
+                label="Time display"
+                options={[
+                  { label: "12 hour", value: "twelveHour" },
+                  { label: "24 hour", value: "twentyFourHour" },
+                ]}
+                value={settings.timeDisplay}
+                onChange={(value) =>
+                  replace({
+                    ...settings,
+                    timeDisplay: value as AppSettings["timeDisplay"],
+                  })
+                }
+              />
+            </SettingRow>
+            <SettingRow label="Fader override sensitivity">
+              <StepperControl
+                label="Fader override sensitivity"
+                min={1}
+                max={10}
+                value={settings.faderOverrideSensitivity}
+                onChange={(value) =>
+                  replace({
+                    ...settings,
+                    faderOverrideSensitivity: value,
+                  })
+                }
+              />
+            </SettingRow>
+          </SettingsSection>
 
-      <Panel className="grid gap-4 p-4">
-        <ShortcutCaptureButton
-          label="GO keyboard shortcut"
-          shortcut={settings.keyboardShortcuts.go}
-          isCapturing={shortcutCapture.isCapturing("go")}
-          onStartCapture={() =>
-            shortcutCapture.startCapture({
-              id: "go",
-              onCapture: (shortcut) => updateShortcut("go", shortcut),
-            })
-          }
-        />
-        <ShortcutCaptureButton
-          label="Cue keyboard shortcut"
-          shortcut={settings.keyboardShortcuts.cue}
-          isCapturing={shortcutCapture.isCapturing("cue")}
-          onStartCapture={() =>
-            shortcutCapture.startCapture({
-              id: "cue",
-              onCapture: (shortcut) => updateShortcut("cue", shortcut),
-            })
-          }
-        />
+          <SettingsSection title="Keyboard Shortcuts">
+            <SettingRow label="GO keyboard shortcut">
+              <KeyboardShortcutInput
+                label="GO keyboard shortcut"
+                shortcut={settings.keyboardShortcuts.go}
+                isCapturing={shortcutCapture.isCapturing("go")}
+                onStartCapture={() =>
+                  shortcutCapture.startCapture({
+                    id: "go",
+                    onCapture: (shortcut) => updateShortcut("go", shortcut),
+                  })
+                }
+              />
+            </SettingRow>
+            <SettingRow label="Cue keyboard shortcut">
+              <KeyboardShortcutInput
+                label="Cue keyboard shortcut"
+                shortcut={settings.keyboardShortcuts.cue}
+                isCapturing={shortcutCapture.isCapturing("cue")}
+                onStartCapture={() =>
+                  shortcutCapture.startCapture({
+                    id: "cue",
+                    onCapture: (shortcut) => updateShortcut("cue", shortcut),
+                  })
+                }
+              />
+            </SettingRow>
+          </SettingsSection>
+        </div>
       </Panel>
     </div>
   );
 }
 
-function SettingCheckbox(props: {
-  label: string;
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-}) {
+function SettingsSection(props: { title: string; children: ReactNode }) {
   return (
-    <label className="flex items-center justify-between gap-3 text-sm text-console-primary">
-      {props.label}
-      <input
-        aria-label={props.label}
-        type="checkbox"
-        checked={props.checked}
-        onChange={(event) => props.onChange(event.target.checked)}
-      />
-    </label>
+    <section className="grid content-start gap-2">
+      <h3 className="text-xs uppercase tracking-[0.08em] text-console-primary">
+        {props.title}
+      </h3>
+      <div className="grid content-start gap-3 md:grid-cols-[minmax(14rem,18rem)_minmax(0,1fr)] md:items-center">
+        {props.children}
+      </div>
+    </section>
   );
 }
 
-function ShortcutCaptureButton(props: {
-  label: string;
-  shortcut: KeyboardShortcut;
-  isCapturing: boolean;
-  onStartCapture: () => void;
-}) {
+function SettingRow(props: { label: string; children: ReactNode }) {
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
-      <span className="text-console-muted">{props.label}</span>
-      <button
-        aria-label={`Change ${props.label}`}
-        className="min-w-36 rounded-console-button border border-console-line bg-console-surface px-3 py-2 text-left font-mono text-console-primary transition hover:border-console-accent focus:outline-none focus:ring-2 focus:ring-console-accent"
-        type="button"
-        onClick={props.onStartCapture}
-      >
-        {props.isCapturing
-          ? "Press shortcut..."
-          : formatShortcut(props.shortcut)}
-      </button>
+    <div className="grid gap-2 md:contents">
+      <div className="text-sm font-normal text-console-muted">
+        {props.label}
+      </div>
+      <div className="flex min-h-9 items-center text-sm text-console-primary">
+        {props.children}
+      </div>
     </div>
   );
 }

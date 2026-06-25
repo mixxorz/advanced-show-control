@@ -1,4 +1,5 @@
 import { useAppState } from "../appHooks";
+import type { AppSettings } from "../types";
 import { BottomStatusBar } from "./BottomStatusBar";
 import { ConnectionModal } from "./ConnectionModal";
 import { ConsoleLogsTab } from "./ConsoleLogsTab";
@@ -14,6 +15,7 @@ export function AppShell(props: {
   onOpenConnection: () => void;
   onResume: () => void;
   onSelectTab: (tab: MainTab) => void;
+  onReplaceSettings?: (settings: AppSettings) => void;
   showConnection: boolean;
 }) {
   const { appState } = useAppState();
@@ -33,7 +35,9 @@ export function AppShell(props: {
           )}
           {props.activeTab === "events" && <PlaceholderTab name="Events" />}
           {props.activeTab === "logs" && <ConsoleLogsTab />}
-          {props.activeTab === "settings" && <SettingsTab />}
+          {props.activeTab === "settings" && (
+            <SettingsTab onReplaceSettings={props.onReplaceSettings} />
+          )}
         </section>
         <BottomStatusBar appState={appState} />
       </main>
