@@ -588,7 +588,7 @@ fn load_show_file_from_dto(
                 .first()
                 .map(|scene| scene.internal_scene_id.to_string())
         });
-    state.replace_snapshot(crate::show::types::ShowDocument {
+    state.replace_snapshot(crate::show::ShowDocument {
         lockout: imported.lockout,
         scene_configs: aligned_scene_configs.clone(),
         cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
