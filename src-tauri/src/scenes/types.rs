@@ -162,6 +162,37 @@ mod tests {
     }
 
     #[test]
+    fn scene_document_serializes_cued_scene_internal_id_and_scene_configs() {
+        let cued_scene_internal_id =
+            Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        let internal_scene_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
+        let document = SceneDocument {
+            scene_configs: vec![SceneConfig {
+                internal_scene_id,
+                scene_index: Some(12),
+                scene_name: "Cue".to_string(),
+                duration_ms: 2500,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            cued_scene_internal_id: Some(cued_scene_internal_id),
+        };
+
+        let json = serde_json::to_value(document).unwrap();
+
+        assert_eq!(
+            json["cuedSceneInternalId"],
+            cued_scene_internal_id.to_string()
+        );
+        assert_eq!(
+            json["sceneConfigs"][0]["internalSceneId"],
+            internal_scene_id.to_string()
+        );
+        assert_eq!(json["sceneConfigs"][0]["sceneIndex"], 12);
+    }
+
+    #[test]
     fn missing_pan_scope_defaults_to_false() {
         let json = serde_json::json!({ "faders": true });
 
