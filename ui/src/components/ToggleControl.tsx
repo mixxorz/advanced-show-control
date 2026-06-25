@@ -14,10 +14,10 @@ export function ToggleControl(props: {
       onClick={() => props.onChange(!props.checked)}
     >
       <span
-        className={`grid h-full w-1/2 place-items-center rounded-[calc(var(--radius-console-control)-0.25rem)] ${settingControlText} transition-all ${
+        className={`grid h-full w-1/2 place-items-center rounded-[calc(var(--radius-console-control)-0.25rem)] border bg-console-panel ${settingControlText} transition-all ${
           props.checked
-            ? "translate-x-full bg-accent-orange text-white"
-            : "translate-x-0 bg-console-line text-console-muted"
+            ? "translate-x-full border-accent-orange text-accent-orange"
+            : "translate-x-0 border-console-line text-console-muted"
         }`}
       >
         {props.checked ? "ON" : "OFF"}
