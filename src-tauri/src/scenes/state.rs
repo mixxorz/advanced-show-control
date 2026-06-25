@@ -100,6 +100,15 @@ impl ScenesState {
             .cloned()
     }
 
+    pub fn scene_list_entry_for_index(&self, index: i32) -> Option<SceneListEntry> {
+        self.last_scene_list.as_ref().and_then(|scene_list| {
+            scene_list
+                .iter()
+                .find(|scene| scene.index == index)
+                .cloned()
+        })
+    }
+
     pub(crate) fn get_scene_config_mut(
         &mut self,
         internal_scene_id: uuid::Uuid,
@@ -178,6 +187,18 @@ impl ScenesState {
         source.scene_index = Some(target.index);
         source.scene_name = target.name.clone();
         Ok(true)
+    }
+
+    pub fn link_scene_config_by_index(
+        &mut self,
+        source_internal_scene_id: uuid::Uuid,
+        target_scene_index: i32,
+        overwrite_existing: bool,
+    ) -> Result<bool, String> {
+        let target = self
+            .scene_list_entry_for_index(target_scene_index)
+            .ok_or_else(|| "Link blocked: target scene not found".to_string())?;
+        self.link_scene_config(source_internal_scene_id, &target, overwrite_existing)
     }
 
     pub fn delete_scene_config(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
@@ -337,6 +358,57 @@ mod tests {
             scene_entry(4, "Song 2 -- Changed"),
             scene_entry(5, "Test"),
         ]
+    }
+
+    #[test]
+    fn link_scene_config_uses_current_scene_list_entry() {
+        let mut state = ScenesState::default();
+        state.replace_snapshot(SceneDocument {
+            scene_configs: vec![SceneConfig {
+                internal_scene_id: uuid::Uuid::from_u128(1),
+                scene_index: None,
+                scene_name: "Source".to_string(),
+                duration_ms: 1_000,
+                channel_configs: vec![],
+                scoped_channels: vec![],
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_internal_id: None,
+            selected_scene_internal_id: None,
+        });
+        state.observe_scene_list(vec![scene_entry(3, "Song 2 -- Changed")], Instant::now());
+
+        assert!(
+            state
+                .link_scene_config_by_index(uuid::Uuid::from_u128(1), 3, false)
+                .unwrap()
+        );
+        let linked = state.get_scene_config(uuid::Uuid::from_u128(1)).unwrap();
+        assert_eq!(linked.scene_index, Some(3));
+        assert_eq!(linked.scene_name, "Song 2 -- Changed");
+    }
+
+    #[test]
+    fn link_scene_config_by_index_reuses_missing_target_error() {
+        let mut state = ScenesState::default();
+        state.replace_snapshot(SceneDocument {
+            scene_configs: vec![SceneConfig {
+                internal_scene_id: uuid::Uuid::from_u128(1),
+                scene_index: None,
+                scene_name: "Source".to_string(),
+                duration_ms: 1_000,
+                channel_configs: vec![],
+                scoped_channels: vec![],
+                scope_toggles: Default::default(),
+            }],
+            cued_scene_internal_id: None,
+            selected_scene_internal_id: None,
+        });
+
+        let err = state
+            .link_scene_config_by_index(uuid::Uuid::from_u128(1), 99, false)
+            .unwrap_err();
+        assert_eq!(err, "Link blocked: target scene not found");
     }
 
     #[test]
