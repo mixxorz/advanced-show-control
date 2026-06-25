@@ -8,8 +8,8 @@ mod types;
 
 pub use actor::{ShowActorPeers, ShowActorTask, build_show_actor};
 pub use commands::{
-    ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult, RecallSceneResult,
-    SelectedSceneResult, ShowCommand, ShowCommandResult, validate_recall_scene_request,
+    ConnectCommandResult, CueSceneResult, LoadShowFileResult, NewShowFileResult,
+    SelectedSceneResult, ShowCommand, ShowCommandResult,
 };
 pub use events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
 pub use handle::ShowStateHandle;

@@ -1,8 +1,8 @@
 use super::map_app_command_error;
 use crate::lifecycle::AppLifecycle;
 use crate::runtime::errors::AppCommandError;
+use crate::scenes::RecallSceneResult;
 use crate::scenes::ScenesCommand;
-use crate::show::RecallSceneResult;
 use tauri::State;
 use tokio::sync::oneshot;
 

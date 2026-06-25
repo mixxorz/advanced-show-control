@@ -13,8 +13,8 @@ use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::handle::ScenesHandle;
 use crate::scenes::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scenes::{
-    CueSceneResult, RecallSceneResult, ScenesCommand, ScenesCommandResult, ScenesEvent,
-    ScenesProjectionReason, ScenesState, SelectedSceneResult,
+    CueSceneResult, RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult,
+    ScenesEvent, ScenesProjectionReason, ScenesState, SelectedSceneResult,
 };
 use crate::show::{ShowCommand, ShowStateHandle};
 
@@ -180,7 +180,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit);
                             if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); }
                         }
-                        Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, internal_scene_id).await); }
+                        Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
                         Some(ScenesCommand::Shutdown) | None => break,
                     }
                 }
@@ -235,7 +235,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(ScenesCommand::SelectSceneConfig { internal_scene_id, reply }) => { let result = recall_state.select_scene_config(internal_scene_id).map(|_| SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() }); if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::StoreSceneConfigFromCurrentLv1 { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let result = store_scene_config_from_current_lv1(&peer_handles.lv1, &event_bus, generation, &mut recall_state, internal_scene_id).await; if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => { recall_state.replace_snapshot(document); recall_state.selected_scene_internal_id = selected_scene_internal_id; publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit); if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); } }
-                    Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, internal_scene_id).await); }
+                    Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let _ = reply.send(handle_explicit_recall_scene(&peer_handles.show, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
                     Some(ScenesCommand::Shutdown) | None => break,
                 }
             }
@@ -520,6 +520,7 @@ fn scene_label(scene: &SceneState) -> String {
 async fn handle_explicit_recall_scene(
     show: &ShowStateHandle,
     lv1: &Lv1ActorHandle,
+    scene_document: &SceneDocument,
     internal_scene_id: uuid::Uuid,
 ) -> Result<RecallSceneResult, AppCommandError> {
     tracing::debug!(
@@ -559,12 +560,14 @@ async fn handle_explicit_recall_scene(
             error
         })?;
     let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::GetShowDocument { reply })
+    show.send(ShowCommand::GetLockout { reply })
         .await
         .map_err(|_| AppCommandError::ShowUnavailable)?;
-    let show_document = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-    let result = crate::show::validate_recall_scene_request(
-        &show_document,
+    let lockout = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
+
+    let result = crate::scenes::validate_recall_scene_request(
+        lockout,
+        scene_document,
         &lv1_snapshot,
         internal_scene_id,
     )
