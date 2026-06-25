@@ -16,21 +16,17 @@ export function SettingsTab(props: {
   const shortcutCapture = useShortcutCapture();
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
-  const [draftSettings, setDraftSettings] = useState<{
-    baseSettings: AppSettings;
-    settings: AppSettings;
-  } | null>(null);
+  const [draftSettings, setDraftSettings] = useState<AppSettings | null>(null);
   const replaceRequestId = useRef(0);
   const settings =
-    draftSettings &&
-    settingsEqual(appState.settings, draftSettings.baseSettings)
-      ? draftSettings.settings
+    draftSettings && !settingsEqual(appState.settings, draftSettings)
+      ? draftSettings
       : appState.settings;
 
   function replace(next: AppSettings) {
     const requestId = replaceRequestId.current + 1;
     replaceRequestId.current = requestId;
-    setDraftSettings({ baseSettings: appState.settings, settings: next });
+    setDraftSettings(next);
     setSettingsError(null);
 
     const replacement = props.onReplaceSettings

@@ -146,6 +146,41 @@ describe("SettingsTab", () => {
     });
   });
 
+  it("keeps the latest draft visible across intermediate settings projections", () => {
+    const { rerender } = render(
+      <MockAppProviders appState={disconnectedAppViewState}>
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+    fireEvent.click(screen.getByLabelText("Auto save sessions"));
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...disconnectedAppViewState,
+          stateVersion: disconnectedAppViewState.stateVersion + 1,
+          settings: {
+            ...disconnectedAppViewState.settings,
+            autoLoadLastShowFile: true,
+          },
+        }}
+      >
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
+    expect(screen.getByLabelText("Auto load last show file")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("Auto save sessions")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
   it("shows a settings save error when replacement fails", async () => {
     replaceAppSettings.mockRejectedValueOnce(new Error("settings disk full"));
     renderWithAppProviders(<SettingsTab />, {
