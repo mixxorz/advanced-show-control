@@ -46,7 +46,6 @@ export type Lv1SystemIdentity = {
 
 export type DiscoveredLv1System = {
   identity: Lv1SystemIdentity;
-  latencyMs: number | null;
   status: DiscoveredLv1Status;
 };
 

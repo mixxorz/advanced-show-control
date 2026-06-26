@@ -35,11 +35,9 @@ describe("ConnectionModal", () => {
 
     expect(screen.getByText("FOH LV1")).toBeInTheDocument();
     expect(screen.getByText("192.168.1.42:22000")).toBeInTheDocument();
-    expect(screen.getByText("3 ms")).toBeInTheDocument();
     expect(screen.getByText("Available")).toBeInTheDocument();
     expect(screen.getByText("LV1 Console")).toBeInTheDocument();
     expect(screen.getByText("192.168.1.43:22000")).toBeInTheDocument();
-    expect(screen.getByText("-- ms")).toBeInTheDocument();
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
   });
 
@@ -90,7 +88,6 @@ describe("ConnectionModal", () => {
       discoveredLv1Systems: [
         {
           identity: connectedAppState.connectedLv1Identity!,
-          latencyMs: 4,
           status: "connected",
         },
       ],

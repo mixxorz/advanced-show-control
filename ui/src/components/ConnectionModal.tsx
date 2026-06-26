@@ -116,26 +116,14 @@ function SystemRow(props: {
       {isUnavailable ? (
         <div className="flex items-center gap-3 font-mono text-sm text-status-danger md:justify-self-end">
           <span>Unavailable</span>
-          <span className="h-4 border-l border-console-line" />
-          <span>
-            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
-          </span>
         </div>
       ) : isConnected ? (
         <div className="flex items-center gap-3 font-mono text-sm text-status-current md:justify-self-end">
           <span>Connected</span>
-          <span className="h-4 border-l border-console-line" />
-          <span>
-            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
-          </span>
         </div>
       ) : (
         <div className="flex items-center gap-3 font-mono text-sm text-status-cued md:justify-self-end">
           <span>Available</span>
-          <span className="h-4 border-l border-console-line" />
-          <span>
-            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
-          </span>
         </div>
       )}
       <span className="h-2.5 w-2.5 rotate-45 border-t-2 border-r-2 border-console-secondary md:justify-self-end" />

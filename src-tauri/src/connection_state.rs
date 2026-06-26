@@ -23,7 +23,6 @@ pub struct Lv1SystemIdentity {
 #[serde(rename_all = "camelCase")]
 pub struct DiscoveredLv1System {
     pub identity: Lv1SystemIdentity,
-    pub latency_ms: Option<u64>,
     pub status: DiscoveredLv1Status,
 }
 
@@ -48,7 +47,6 @@ pub fn identity_from_discovery(entry: &DiscoveryEntry) -> Option<Lv1SystemIdenti
 pub fn system_from_discovery(entry: &DiscoveryEntry) -> Option<DiscoveredLv1System> {
     Some(DiscoveredLv1System {
         identity: identity_from_discovery(entry)?,
-        latency_ms: entry.latency_ms,
         status: DiscoveredLv1Status::Available,
     })
 }
@@ -58,7 +56,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn system_from_discovery_preserves_latency() {
+    fn system_from_discovery_maps_identity_and_status() {
         let entry = DiscoveryEntry {
             service: "_waveslv113._tcp".to_string(),
             uuid: Some("lv1-demo".to_string()),
@@ -67,12 +65,12 @@ mod tests {
             addresses: vec!["192.168.1.42".to_string()],
             ipv6: Vec::new(),
             source: "192.168.1.42".to_string(),
-            latency_ms: Some(7),
         };
 
         let system = system_from_discovery(&entry).expect("entry should map to modal system");
 
-        assert_eq!(system.latency_ms, Some(7));
+        assert_eq!(system.identity.address, "192.168.1.42");
+        assert_eq!(system.identity.port, 22000);
         assert_eq!(system.status, DiscoveredLv1Status::Available);
     }
 }
