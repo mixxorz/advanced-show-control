@@ -58,7 +58,11 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
    - Persist enough console identity metadata to avoid loading a session onto the wrong LV1 console.
    - Auto-reload the last session only when the setting is enabled and the console identity matches safely.
    - Make skipped, blocked, successful, or failed auto-recall decisions visible in the UI and logs.
-5. Sort out bundling.
+5. Make scene state app-lifetime instead of connection-lifetime.
+   - Keep `scenes` available before LV1 connection so `frontend_ready` can always request `InitialProjectionState` without an empty-projection special case.
+   - Treat LV1 and fade handles as optional runtime peers used for recall/capture execution, not as prerequisites for owning scene documents or projections.
+   - Preserve existing recall safety behavior when runtime peers connect, disconnect, or reconnect.
+6. Sort out bundling.
    - Produce a practical app package for MVP testing.
    - Document the packaging path and any platform limitations.
 
@@ -78,6 +82,7 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 - The MVP crate has a settled dead-code policy, with dead-code suppressions removed or justified before enabling any strict lint.
 - Frontend development has Storybook and test coverage in place for continued iteration.
 - Shell state projection is bounded so routine LV1 updates do not overload the frontend.
+- Scene state projection is owned by an app-lifetime actor and does not require a connected LV1 runtime to initialize the UI.
 - Bundling is good enough for MVP rehearsal/testing distribution.
 - The release is hardened enough to be trusted in live-show workflows appropriate to its feature set; hardening is part of every release, not a separate final phase.
 
