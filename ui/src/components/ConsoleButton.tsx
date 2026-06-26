@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 type ConsoleButtonVariant =
   | "primary"
@@ -9,15 +9,17 @@ type ConsoleButtonVariant =
   | "ghost-secondary";
 type ConsoleButtonSize = "default" | "small" | "big";
 
-export function ConsoleButton(props: {
-  active?: boolean;
-  children: ReactNode;
-  disabled?: boolean;
-  fullWidth?: boolean;
-  onClick?: () => void;
-  size?: ConsoleButtonSize;
-  variant?: ConsoleButtonVariant;
-}) {
+export function ConsoleButton(
+  props: {
+    active?: boolean;
+    children: ReactNode;
+    disabled?: boolean;
+    fullWidth?: boolean;
+    onClick?: ButtonHTMLAttributes<HTMLButtonElement>["onClick"];
+    size?: ConsoleButtonSize;
+    variant?: ConsoleButtonVariant;
+  } & ButtonHTMLAttributes<HTMLButtonElement>,
+) {
   const variant = props.variant ?? "secondary";
   const size = props.size ?? "default";
   const sizeClass = {
@@ -48,8 +50,10 @@ export function ConsoleButton(props: {
   return (
     <button
       className={`${baseClass} ${sizeClass} ${widthClass} ${className}`}
+      aria-label={props["aria-label"]}
       disabled={props.disabled}
       onClick={props.onClick}
+      type={props.type ?? "button"}
     >
       {props.children}
     </button>

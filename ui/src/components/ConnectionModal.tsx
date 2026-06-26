@@ -1,10 +1,40 @@
+import { useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import type { DiscoveredLv1System, Lv1SystemIdentity } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
 
+type ProbeResult =
+  | { status: "idle" }
+  | { status: "testing" }
+  | { status: "success"; tcpConnectMs: number }
+  | { status: "error"; message: string };
+
 export function ConnectionModal(props: { onResume: () => void }) {
   const { appState, commandError } = useAppState();
   const commands = useAppCommands();
+  const [probeResults, setProbeResults] = useState<Record<string, ProbeResult>>(
+    {},
+  );
+
+  async function testSystem(system: DiscoveredLv1System) {
+    const key = systemKey(system);
+    setProbeResults((current) => ({
+      ...current,
+      [key]: { status: "testing" },
+    }));
+    try {
+      const result = await commands.probeLv1TcpConnectLatency(system.identity);
+      setProbeResults((current) => ({
+        ...current,
+        [key]: { status: "success", tcpConnectMs: result.tcpConnectMs },
+      }));
+    } catch (error) {
+      setProbeResults((current) => ({
+        ...current,
+        [key]: { status: "error", message: String(error) },
+      }));
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/75 p-6 font-ui text-console-primary">
@@ -54,9 +84,13 @@ export function ConnectionModal(props: { onResume: () => void }) {
                 <SystemRow
                   connectedIdentity={appState.connectedLv1Identity}
                   key={systemKey(system)}
+                  onTestSystem={testSystem}
                   system={system}
                   onSelectSystem={commands.selectSystem}
                   onResume={props.onResume}
+                  probeResult={
+                    probeResults[systemKey(system)] ?? { status: "idle" }
+                  }
                 />
               ))
             )}
@@ -69,6 +103,8 @@ export function ConnectionModal(props: { onResume: () => void }) {
 
 function SystemRow(props: {
   connectedIdentity: Lv1SystemIdentity | null;
+  onTestSystem: (system: DiscoveredLv1System) => void | Promise<void>;
+  probeResult: ProbeResult;
   system: DiscoveredLv1System;
   onSelectSystem: (identity: Lv1SystemIdentity) => void;
   onResume: () => void;
@@ -83,7 +119,7 @@ function SystemRow(props: {
       : "border-console-line bg-console-section/70 hover:border-console-line-strong hover:bg-console-control/70";
 
   return (
-    <button
+    <div
       className={`grid gap-3 rounded-console-control border px-4 py-2.5 text-left md:grid-cols-[1fr_auto_auto] md:items-center ${rowClass}`}
       onClick={() => {
         if (isConnected) {
@@ -94,7 +130,21 @@ function SystemRow(props: {
           props.onSelectSystem(system.identity);
         }
       }}
-      type="button"
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") {
+          return;
+        }
+        event.preventDefault();
+        if (isConnected) {
+          props.onResume();
+          return;
+        }
+        if (!isUnavailable) {
+          props.onSelectSystem(system.identity);
+        }
+      }}
+      role="button"
+      tabIndex={0}
     >
       <div className="grid min-w-0 grid-cols-[auto_1fr] items-center gap-x-3 gap-y-0.5">
         <span
@@ -113,22 +163,54 @@ function SystemRow(props: {
           {system.identity.address}:{system.identity.port}
         </div>
       </div>
-      {isUnavailable ? (
-        <div className="flex items-center gap-3 font-mono text-sm text-status-danger md:justify-self-end">
-          <span>Unavailable</span>
-        </div>
-      ) : isConnected ? (
-        <div className="flex items-center gap-3 font-mono text-sm text-status-current md:justify-self-end">
-          <span>Connected</span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-3 font-mono text-sm text-status-cued md:justify-self-end">
-          <span>Available</span>
-        </div>
-      )}
+      <div className="flex items-center gap-3 font-mono text-sm md:justify-self-end">
+        <span
+          className={
+            isUnavailable
+              ? "text-status-danger"
+              : isConnected
+                ? "text-status-current"
+                : "text-status-cued"
+          }
+        >
+          {isUnavailable
+            ? "Unavailable"
+            : isConnected
+              ? "Connected"
+              : "Available"}
+        </span>
+        <span className="h-4 border-l border-console-line" />
+        <span className="text-console-secondary">
+          {probeLabel(props.probeResult)}
+        </span>
+        <ConsoleButton
+          aria-label="Test TCP latency"
+          onClick={(event) => {
+            event.stopPropagation();
+            void props.onTestSystem(system);
+          }}
+          size="small"
+          variant="secondary"
+        >
+          Test
+        </ConsoleButton>
+      </div>
       <span className="h-2.5 w-2.5 rotate-45 border-t-2 border-r-2 border-console-secondary md:justify-self-end" />
-    </button>
+    </div>
   );
+}
+
+function probeLabel(result: ProbeResult) {
+  switch (result.status) {
+    case "testing":
+      return "Testing...";
+    case "success":
+      return `TCP ${result.tcpConnectMs} ms`;
+    case "error":
+      return result.message;
+    case "idle":
+      return "Not tested";
+  }
 }
 
 function identitiesMatch(

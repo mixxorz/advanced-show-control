@@ -5,6 +5,7 @@ import {
   connectedAppState,
   discoveredSystemsAppState,
 } from "../storybook/mockAppState";
+import type { AppCommands } from "../appContext";
 import { renderWithAppProviders } from "../test/render";
 import type { AppViewState, DiscoveredLv1System } from "../types";
 import { ConnectionModal } from "./ConnectionModal";
@@ -15,6 +16,7 @@ function renderModal(
     commandError?: string | null;
     onResume?: () => void;
     selectSystem?: (identity: DiscoveredLv1System["identity"]) => void;
+    commands?: Partial<AppCommands>;
   } = {},
 ) {
   return renderWithAppProviders(
@@ -22,9 +24,10 @@ function renderModal(
     {
       appState: options.appState ?? discoveredSystemsAppState,
       commandError: options.commandError,
-      commands: options.selectSystem
-        ? { selectSystem: options.selectSystem }
-        : undefined,
+      commands: {
+        ...(options.selectSystem ? { selectSystem: options.selectSystem } : {}),
+        ...(options.commands ?? {}),
+      },
     },
   );
 }
@@ -79,6 +82,31 @@ describe("ConnectionModal", () => {
 
     await user.click(screen.getByRole("button", { name: /LV1 Console/i }));
 
+    expect(selectSystem).not.toHaveBeenCalled();
+  });
+
+  it("shows a TCP probe result without selecting the system", async () => {
+    const user = userEvent.setup();
+    const selectSystem = vi.fn();
+    const probeLv1TcpConnectLatency = vi
+      .fn()
+      .mockResolvedValue({ tcpConnectMs: 5 });
+    renderModal({
+      selectSystem,
+      commands: { probeLv1TcpConnectLatency },
+    });
+
+    await user.click(
+      screen.getAllByRole("button", { name: "Test TCP latency" })[0],
+    );
+
+    expect(probeLv1TcpConnectLatency).toHaveBeenCalledWith({
+      uuid: "lv1-demo",
+      host: "FOH LV1",
+      address: "192.168.1.42",
+      port: 22000,
+    });
+    expect(await screen.findByText("TCP 5 ms")).toBeInTheDocument();
     expect(selectSystem).not.toHaveBeenCalled();
   });
 
