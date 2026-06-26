@@ -132,6 +132,13 @@ mod tests {
     }
 
     #[test]
+    fn build_app_registers_lv1_latency_probe_command() {
+        let source = include_str!("mod.rs");
+
+        assert!(source.contains("commands::lifecycle::probe_lv1_tcp_connect_latency"));
+    }
+
+    #[test]
     fn invoke_handler_includes_frontend_ready() {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
     }
