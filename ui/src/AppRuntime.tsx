@@ -34,6 +34,7 @@ export type AppRuntimeServices = {
   recallScene: (internalSceneId: string) => Promise<unknown>;
   probeLv1TcpConnectLatency: (
     identity: Lv1SystemIdentity,
+    timeoutMs?: number,
   ) => Promise<TcpConnectLatencyResult>;
   selectSceneConfig: (internalSceneId: string) => Promise<unknown>;
   setAllChannelsScoped: (
@@ -254,8 +255,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       runCommand(() => services.cueScene(internalSceneId)),
     recallScene: (internalSceneId) =>
       runCommand(() => services.recallScene(internalSceneId)),
-    probeLv1TcpConnectLatency: (identity) =>
-      services.probeLv1TcpConnectLatency(identity),
+    probeLv1TcpConnectLatency: (identity, timeoutMs) =>
+      services.probeLv1TcpConnectLatency(identity, timeoutMs),
     saveShowFile: () => runCommand(() => services.saveShowFile()),
     saveShowFileAs: () => runCommand(() => services.saveShowFileAs()),
     selectScene: (internalSceneId: string) =>

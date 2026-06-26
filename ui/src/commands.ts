@@ -27,11 +27,11 @@ export async function attemptReconnectLv1() {
 
 export async function probeLv1TcpConnectLatency(
   identity: Lv1SystemIdentity,
-  timeoutMs = 500,
+  timeoutMs?: number,
 ) {
   return invoke<TcpConnectLatencyResult>("probe_lv1_tcp_connect_latency", {
     identity,
-    timeoutMs,
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
   });
 }
 

@@ -25,6 +25,7 @@ export type AppCommands = {
   selectSystem: (identity: Lv1SystemIdentity) => void | Promise<void>;
   probeLv1TcpConnectLatency: (
     identity: Lv1SystemIdentity,
+    timeoutMs?: number,
   ) => Promise<TcpConnectLatencyResult>;
   setAllChannelsScoped: (internalSceneId: string, scoped: boolean) => void;
   setChannelScoped: (
