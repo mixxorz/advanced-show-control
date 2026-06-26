@@ -1,6 +1,6 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   connectedAppState,
   discoveredSystemsAppState,
@@ -9,6 +9,10 @@ import type { AppCommands } from "../appContext";
 import { renderWithAppProviders } from "../test/render";
 import type { AppViewState, DiscoveredLv1System } from "../types";
 import { ConnectionModal } from "./ConnectionModal";
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function renderModal(
   options: {
@@ -25,6 +29,7 @@ function renderModal(
       appState: options.appState ?? discoveredSystemsAppState,
       commandError: options.commandError,
       commands: {
+        probeLv1TcpConnectLatency: () => new Promise(() => {}),
         ...(options.selectSystem ? { selectSystem: options.selectSystem } : {}),
         ...(options.commands ?? {}),
       },
@@ -85,29 +90,53 @@ describe("ConnectionModal", () => {
     expect(selectSystem).not.toHaveBeenCalled();
   });
 
-  it("shows a TCP probe result without selecting the system", async () => {
-    const user = userEvent.setup();
-    const selectSystem = vi.fn();
+  it("updates TCP latency once per second without a separate test action", async () => {
+    vi.useFakeTimers();
     const probeLv1TcpConnectLatency = vi
       .fn()
-      .mockResolvedValue({ tcpConnectMs: 5 });
+      .mockResolvedValueOnce({ tcpConnectMs: 5 })
+      .mockResolvedValueOnce({ tcpConnectMs: 8 })
+      .mockResolvedValue({ tcpConnectMs: 13 });
     renderModal({
-      selectSystem,
       commands: { probeLv1TcpConnectLatency },
     });
 
-    await user.click(
-      screen.getAllByRole("button", { name: "Test TCP latency" })[0],
-    );
+    expect(
+      screen.queryByRole("button", { name: "Test TCP latency" }),
+    ).toBeNull();
 
-    expect(probeLv1TcpConnectLatency).toHaveBeenCalledWith({
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("5 ms")).toBeInTheDocument();
+    expect(screen.getByText("8 ms")).toBeInTheDocument();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(probeLv1TcpConnectLatency).toHaveBeenCalledTimes(4);
+    expect(screen.getAllByText("13 ms")).toHaveLength(2);
+  });
+
+  it("keeps selecting available systems while latency updates passively", async () => {
+    const user = userEvent.setup();
+    const selectSystem = vi.fn();
+    renderModal({ selectSystem });
+
+    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
+
+    expect(selectSystem).toHaveBeenCalledWith({
       uuid: "lv1-demo",
       host: "FOH LV1",
       address: "192.168.1.42",
       port: 22000,
     });
-    expect(await screen.findByText("TCP 5 ms")).toBeInTheDocument();
-    expect(selectSystem).not.toHaveBeenCalled();
   });
 
   it("highlights the currently connected system", () => {
