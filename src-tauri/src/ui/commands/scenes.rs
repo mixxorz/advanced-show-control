@@ -15,7 +15,7 @@ pub async fn recall_scene(
     let scene_recall = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scene_recall
@@ -24,7 +24,7 @@ pub async fn recall_scene(
             reply,
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -41,7 +41,7 @@ pub async fn set_scene_duration_ms(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -51,7 +51,7 @@ pub async fn set_scene_duration_ms(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -68,7 +68,7 @@ pub async fn link_scene_config(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -79,7 +79,7 @@ pub async fn link_scene_config(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -94,7 +94,7 @@ pub async fn delete_scene_config(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -103,7 +103,7 @@ pub async fn delete_scene_config(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -118,7 +118,7 @@ pub async fn select_scene_config(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -127,7 +127,7 @@ pub async fn select_scene_config(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -142,7 +142,7 @@ pub async fn cue_scene(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -151,7 +151,7 @@ pub async fn cue_scene(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -166,7 +166,7 @@ pub async fn store_scene_config(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -175,11 +175,24 @@ pub async fn store_scene_config(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
         .map_err(map_app_command_error)?
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn scenes_unavailable_has_scene_specific_message() {
+        assert_eq!(
+            super::map_app_command_error(
+                crate::runtime::errors::AppCommandError::ScenesUnavailable
+            ),
+            "scene state is unavailable"
+        );
+    }
 }
 
 #[tauri::command]
@@ -191,7 +204,7 @@ pub async fn set_all_channels_scoped(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -201,7 +214,7 @@ pub async fn set_all_channels_scoped(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -217,7 +230,7 @@ pub async fn set_scene_scope_faders_enabled(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -227,7 +240,7 @@ pub async fn set_scene_scope_faders_enabled(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -243,7 +256,7 @@ pub async fn set_scene_scope_pan_enabled(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -253,7 +266,7 @@ pub async fn set_scene_scope_pan_enabled(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -271,7 +284,7 @@ pub async fn set_channel_scoped(
     let scenes = lifecycle
         .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::Lv1Unavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -283,7 +296,7 @@ pub async fn set_channel_scoped(
             reply: Some(reply),
         })
         .await
-        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)

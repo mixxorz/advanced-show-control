@@ -195,36 +195,41 @@ async fn handle_command(
             }
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
-            let lv1 = current_lv1_snapshot(peers).await.ok();
-            let scene_document = if let Some(lv1) = lv1.as_ref() {
-                SceneDocument {
-                    scene_configs: crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list),
-                    cued_scene_internal_id: None,
-                    selected_scene_internal_id: None,
-                }
-            } else {
-                SceneDocument::empty()
-            };
-            let selected_scene_internal_id = scene_document
-                .scene_configs
-                .first()
-                .map(|scene| scene.internal_scene_id.to_string());
-            let result = replace_scene_document(
-                peers,
-                scene_document,
-                ScenesProjectionReason::FileReplacement,
-                false,
-            )
-            .await;
-            if result.is_ok() {
+            let result = async {
+                let lv1 = current_lv1_snapshot(peers).await.ok();
+                let scene_document = if let Some(lv1) = lv1.as_ref() {
+                    SceneDocument {
+                        scene_configs: crate::scenes::align_scene_configs(
+                            Vec::new(),
+                            &lv1.scene_list,
+                        ),
+                        cued_scene_internal_id: None,
+                        selected_scene_internal_id: None,
+                    }
+                } else {
+                    SceneDocument::empty()
+                };
+                let selected_scene_internal_id = scene_document
+                    .scene_configs
+                    .first()
+                    .map(|scene| scene.internal_scene_id.to_string());
+                replace_scene_document(
+                    peers,
+                    scene_document,
+                    ScenesProjectionReason::FileReplacement,
+                    false,
+                )
+                .await?;
                 state.reset_for_new_show();
-            }
-            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-            tracing::info!(event = "session_created", "New session created");
-            if let Some(reply) = reply {
-                let _ = reply.send(Ok(NewShowFileResult {
+                publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+                tracing::info!(event = "session_created", "New session created");
+                Ok(NewShowFileResult {
                     selected_scene_internal_id,
-                }));
+                })
+            }
+            .await;
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
             }
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
@@ -932,6 +937,24 @@ mod tests {
             &event_bus,
         );
 
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn new_show_fails_when_scenes_state_is_unavailable() {
+        let event_bus = AppEventBus::default();
+        let (show, _peers) = show_actor(event_bus.clone());
+        let mut events = event_bus.subscribe();
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            rx.await.unwrap().unwrap_err(),
+            "Show blocked: scenes state is unavailable"
+        );
         assert!(events.try_recv().is_err());
     }
 

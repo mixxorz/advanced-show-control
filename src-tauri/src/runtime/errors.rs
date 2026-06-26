@@ -8,6 +8,8 @@ pub enum AppCommandError {
     FadeUnavailable,
     #[error("show state is unavailable")]
     ShowUnavailable,
+    #[error("scene state is unavailable")]
+    ScenesUnavailable,
     #[error("app command reply channel is closed")]
     ReplyChannelClosed,
     #[error("command failed: {0}")]
