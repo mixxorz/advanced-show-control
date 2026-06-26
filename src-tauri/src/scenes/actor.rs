@@ -184,9 +184,8 @@ async fn run_scenes_actor(task: ScenesTask) {
                             let result = store_scene_config_from_current_lv1(&peer_handles.lv1, &event_bus, generation, &mut recall_state, internal_scene_id).await;
                             if let Some(reply) = reply { let _ = reply.send(result); }
                         }
-                        Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => {
+                        Some(ScenesCommand::ReplaceSceneDocument { document, reason, persisted_scene_edit, reply }) => {
                             recall_state.replace_snapshot_for_session(document);
-                            recall_state.selected_scene_internal_id = selected_scene_internal_id;
                             publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit);
                             if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); }
                         }
@@ -250,7 +249,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(ScenesCommand::CueScene { internal_scene_id, reply }) => { let result = recall_state.cue_scene(internal_scene_id).map(|changed| { if changed { publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true); } CueSceneResult { changed, scene: recall_state.get_scene_config(internal_scene_id).unwrap() } }); if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::SelectSceneConfig { internal_scene_id, reply }) => { let result = recall_state.select_scene_config(internal_scene_id).map(|changed| { if changed { publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true); } SelectedSceneResult { scene: recall_state.get_scene_config(internal_scene_id).unwrap() } }); if let Some(reply) = reply { let _ = reply.send(result); } }
                     Some(ScenesCommand::StoreSceneConfigFromCurrentLv1 { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let result = store_scene_config_from_current_lv1(&peer_handles.lv1, &event_bus, generation, &mut recall_state, internal_scene_id).await; if let Some(reply) = reply { let _ = reply.send(result); } }
-                    Some(ScenesCommand::ReplaceSceneDocument { document, selected_scene_internal_id, reason, persisted_scene_edit, reply }) => { recall_state.replace_snapshot_for_session(document); recall_state.selected_scene_internal_id = selected_scene_internal_id; publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit); if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); } }
+                    Some(ScenesCommand::ReplaceSceneDocument { document, reason, persisted_scene_edit, reply }) => { recall_state.replace_snapshot_for_session(document); publish_scene_state_changed(&event_bus, generation, reason, &recall_state, persisted_scene_edit); if let Some(reply) = reply { let _ = reply.send(ScenesCommandResult { changed: true }); } }
                     Some(ScenesCommand::RecallScene { internal_scene_id, reply }) => { let peer_handles = peers.handles(); let scene_document = recall_state.snapshot(); let lockout = recall_state.lockout(); let _ = reply.send(handle_explicit_recall_scene(lockout, &peer_handles.lv1, &scene_document, internal_scene_id).await); }
                     Some(ScenesCommand::Shutdown) | None => break,
                 }
@@ -1027,7 +1026,6 @@ mod tests {
                     cued_scene_internal_id: None,
                     selected_scene_internal_id: None,
                 },
-                selected_scene_internal_id: None,
                 reason: ScenesProjectionReason::SceneState,
                 persisted_scene_edit: false,
                 reply: Some(reply),
@@ -1105,7 +1103,6 @@ mod tests {
                     cued_scene_internal_id: None,
                     selected_scene_internal_id: None,
                 },
-                selected_scene_internal_id: None,
                 reason: ScenesProjectionReason::SceneState,
                 persisted_scene_edit: false,
                 reply: Some(reply),
@@ -2066,7 +2063,6 @@ mod tests {
         handle
             .send(ScenesCommand::ReplaceSceneDocument {
                 document,
-                selected_scene_internal_id: None,
                 reason: ScenesProjectionReason::FileReplacement,
                 persisted_scene_edit: false,
                 reply: Some(reply),

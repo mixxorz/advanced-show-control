@@ -212,7 +212,6 @@ async fn handle_command(
             let result = replace_scene_document(
                 peers,
                 scene_document,
-                selected_scene_internal_id.clone(),
                 ScenesProjectionReason::FileReplacement,
                 false,
             )
@@ -426,7 +425,6 @@ async fn load_show_file_from_dto(
     replace_scene_document(
         peers,
         scene_document,
-        selected_scene_internal_id.clone(),
         ScenesProjectionReason::FileReplacement,
         false,
     )
@@ -475,7 +473,6 @@ async fn current_scene_document(peers: &ShowActorPeers) -> Result<SceneDocument,
 async fn replace_scene_document(
     peers: &ShowActorPeers,
     document: SceneDocument,
-    selected_scene_internal_id: Option<String>,
     reason: ScenesProjectionReason,
     persisted_scene_edit: bool,
 ) -> Result<ScenesCommandResult, String> {
@@ -486,7 +483,6 @@ async fn replace_scene_document(
     scenes
         .send(ScenesCommand::ReplaceSceneDocument {
             document,
-            selected_scene_internal_id,
             reason,
             persisted_scene_edit,
             reply: Some(reply),
@@ -794,7 +790,6 @@ mod tests {
         scenes
             .send(ScenesCommand::ReplaceSceneDocument {
                 document: scenes_document,
-                selected_scene_internal_id: Some("selected-from-scenes".to_string()),
                 reason: crate::scenes::ScenesProjectionReason::FileReplacement,
                 persisted_scene_edit: false,
                 reply: Some(reply),

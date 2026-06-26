@@ -70,7 +70,6 @@ pub enum ScenesCommand {
     },
     ReplaceSceneDocument {
         document: SceneDocument,
-        selected_scene_internal_id: Option<String>,
         reason: ScenesProjectionReason,
         persisted_scene_edit: bool,
         reply: Option<oneshot::Sender<ScenesCommandResult>>,
