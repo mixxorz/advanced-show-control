@@ -13,7 +13,9 @@ pub use lifecycle::{
 };
 pub use scenes::{
     cue_scene, delete_scene_config, link_scene_config, recall_scene, select_scene_config,
-    set_channel_scoped, set_scene_duration_ms, store_scene_config_from_current_lv1,
+    set_all_channels_scoped, set_channel_scoped, set_scene_duration_ms,
+    set_scene_scope_faders_enabled, set_scene_scope_pan_enabled,
+    store_scene_config_from_current_lv1,
 };
 pub use settings::replace_app_settings;
 pub use show::{

@@ -183,6 +183,84 @@ pub async fn store_scene_config_from_current_lv1(
 }
 
 #[tauri::command]
+pub async fn set_all_channels_scoped(
+    lifecycle: State<'_, AppLifecycle>,
+    internal_scene_id: uuid::Uuid,
+    scoped: bool,
+) -> Result<ScenesCommandResult, String> {
+    let scenes = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    scenes
+        .send(ScenesCommand::SetAllChannelsScoped {
+            internal_scene_id,
+            scoped,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
+pub async fn set_scene_scope_faders_enabled(
+    lifecycle: State<'_, AppLifecycle>,
+    internal_scene_id: uuid::Uuid,
+    enabled: bool,
+) -> Result<ScenesCommandResult, String> {
+    let scenes = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    scenes
+        .send(ScenesCommand::SetSceneScopeFadersEnabled {
+            internal_scene_id,
+            enabled,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
+pub async fn set_scene_scope_pan_enabled(
+    lifecycle: State<'_, AppLifecycle>,
+    internal_scene_id: uuid::Uuid,
+    enabled: bool,
+) -> Result<ScenesCommandResult, String> {
+    let scenes = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or(AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    scenes
+        .send(ScenesCommand::SetSceneScopePanEnabled {
+            internal_scene_id,
+            enabled,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| AppCommandError::Lv1Unavailable)
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
 pub async fn set_channel_scoped(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,

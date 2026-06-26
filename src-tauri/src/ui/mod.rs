@@ -51,8 +51,11 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::scenes::link_scene_config,
             commands::scenes::recall_scene,
             commands::scenes::select_scene_config,
+            commands::scenes::set_all_channels_scoped,
             commands::scenes::set_channel_scoped,
             commands::scenes::set_scene_duration_ms,
+            commands::scenes::set_scene_scope_faders_enabled,
+            commands::scenes::set_scene_scope_pan_enabled,
             commands::scenes::store_scene_config_from_current_lv1,
             commands::lifecycle::connect_lv1_system,
             commands::lifecycle::attempt_reconnect_lv1,
@@ -99,8 +102,11 @@ mod tests {
         let _ = super::commands::scenes::delete_scene_config;
         let _ = super::commands::scenes::link_scene_config;
         let _ = super::commands::scenes::select_scene_config;
+        let _ = super::commands::scenes::set_all_channels_scoped;
         let _ = super::commands::scenes::set_channel_scoped;
         let _ = super::commands::scenes::set_scene_duration_ms;
+        let _ = super::commands::scenes::set_scene_scope_faders_enabled;
+        let _ = super::commands::scenes::set_scene_scope_pan_enabled;
         let _ = super::commands::scenes::store_scene_config_from_current_lv1;
         let _ = super::commands::settings::replace_app_settings;
         let _ = super::commands::show::set_lockout;
@@ -112,6 +118,15 @@ mod tests {
         let expected = concat!("commands::scenes::", "link_scene_config");
 
         assert!(source.contains(expected));
+    }
+
+    #[test]
+    fn build_app_registers_scene_scope_commands() {
+        let source = include_str!("mod.rs");
+
+        assert!(source.contains("commands::scenes::set_all_channels_scoped"));
+        assert!(source.contains("commands::scenes::set_scene_scope_faders_enabled"));
+        assert!(source.contains("commands::scenes::set_scene_scope_pan_enabled"));
     }
 
     #[test]
