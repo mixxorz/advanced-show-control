@@ -14,35 +14,68 @@ Do not add scenarios for planned roadmap features that are not implemented. Cue 
 
 ## Organization
 
-Use workflow-oriented feature files rather than UI-tab or backend-domain files.
+Use one Gherkin feature file per distinct implemented product capability.
+
+Use subdirectories only to keep related capabilities easy to browse. The subdirectory is not the feature boundary; the `Feature:` declaration inside each file is the boundary.
 
 Create feature files under `features/` using stable, lower-case file names:
 
-- `features/connection.feature`
-- `features/sessions.feature`
-- `features/scenes.feature`
-- `features/fades.feature`
-- `features/safety.feature`
-- `features/settings.feature`
-- `features/logs.feature`
+- `features/connection/lv1-discovery.feature`
+- `features/connection/manual-lv1-connection.feature`
+- `features/connection/lv1-disconnection.feature`
+- `features/connection/lv1-reconnect.feature`
+- `features/connection/startup-auto-connect.feature`
+- `features/sessions/new-session.feature`
+- `features/sessions/open-session.feature`
+- `features/sessions/save-session.feature`
+- `features/sessions/session-title.feature`
+- `features/sessions/missing-scene-configs.feature`
+- `features/scenes/scene-list.feature`
+- `features/scenes/scene-selection.feature`
+- `features/scenes/scene-cueing.feature`
+- `features/scenes/scene-recall.feature`
+- `features/scenes/store-scene-config.feature`
+- `features/scenes/link-scene-config.feature`
+- `features/scenes/delete-scene-config.feature`
+- `features/scenes/scene-duration.feature`
+- `features/scopes/fader-scope.feature`
+- `features/scopes/pan-scope.feature`
+- `features/scopes/channel-scope.feature`
+- `features/fades/timed-fade.feature`
+- `features/fades/zero-duration-fade.feature`
+- `features/fades/scoped-parameter-fade.feature`
+- `features/fades/fade-overlap.feature`
+- `features/fades/same-scene-repeat.feature`
+- `features/fades/manual-override.feature`
+- `features/safety/lockout.feature`
+- `features/safety/abort-all.feature`
+- `features/safety/unsafe-lv1-state.feature`
+- `features/safety/scene-identity-validation.feature`
+- `features/safety/reconnect-generation-guard.feature`
+- `features/settings/app-settings.feature`
+- `features/settings/keyboard-shortcuts.feature`
+- `features/settings/settings-persistence.feature`
+- `features/logs/operational-logs.feature`
 
-This structure keeps the documentation aligned with how an engineer uses the app while avoiding tight coupling to React components or Rust actor internals.
+This structure keeps each Gherkin file focused on a single product capability while avoiding tight coupling to React components or Rust actor internals.
 
 ## Feature Coverage
 
-`connection.feature` should cover LV1 discovery, startup connection modal behavior, selecting an available console, connected and unavailable discovery rows, disconnect, reconnect overlay behavior, and startup auto-connect where currently implemented.
+The connection files should cover LV1 discovery, startup connection modal behavior, selecting an available console, connected and unavailable discovery rows, disconnect, reconnect overlay behavior, and startup auto-connect where currently implemented.
 
-`sessions.feature` should cover creating a new `.ascs` session from current LV1 state, opening a session, saving, Save As, untitled defaults, dirty window title state, native file menu behavior where visible through the app, and visible handling of skipped scene configs when loaded LV1 scene identities are missing.
+The session files should cover creating a new `.ascs` session from current LV1 state, opening a session, saving, Save As, untitled defaults, dirty window title state, native file menu behavior where visible through the app, and visible handling of skipped scene configs when loaded LV1 scene identities are missing.
 
-`scenes.feature` should cover scene list display, current/cued/selected scene state, selecting and cueing scenes, duplicate-name warnings, storing app-managed scene configs from LV1, linking unlinked scene configs, overwrite confirmation, deleting scene configs, duration editing, fader and pan scope toggles, individual channel scope, and all-channel scope changes.
+The scene files should cover scene list display, current/cued/selected scene state, selecting and cueing scenes, duplicate-name warnings, recalling scenes through the app, storing app-managed scene configs from LV1, linking unlinked scene configs, overwrite confirmation, deleting scene configs, and duration editing.
 
-`fades.feature` should cover recalling app-managed scenes, starting fades from current live values, duration-based movement, immediate movement for zero-duration scenes, scoped-only movement, final target behavior, overlap behavior, same-scene repeat behavior, and manual override cancellation.
+The scope files should cover fader and pan scope toggles, individual channel scope, and all-channel scope changes.
 
-`safety.feature` should cover global lockout, Abort All, blocked recall visibility, disconnected or unavailable LV1 state, stale or unsafe state, scene identity validation, generation-guarded reconnect behavior, and the rule that blocked, skipped, or disabled recalls do not abort an active fade.
+The fade files should cover recalling app-managed scenes, starting fades from current live values, duration-based movement, immediate movement for zero-duration scenes, scoped-only movement, final target behavior, overlap behavior, same-scene repeat behavior, and manual override cancellation.
 
-`settings.feature` should cover implemented settings controls: auto-load last show file, auto-save sessions, auto-cue next scene on GO as a stored setting, time display preference, fader override sensitivity, GO shortcut capture, CUE shortcut capture, immediate settings persistence, optimistic UI behavior, and settings command failure display.
+The safety files should cover global lockout, Abort All, blocked recall visibility, disconnected or unavailable LV1 state, stale or unsafe state, scene identity validation, generation-guarded reconnect behavior, and the rule that blocked, skipped, or disabled recalls do not abort an active fade.
 
-`logs.feature` should cover frontend-facing operational logs, visible safety warnings, bounded log projection through app state, and separation from diagnostic-only debug logs.
+The settings files should cover implemented settings controls: auto-load last show file, auto-save sessions, auto-cue next scene on GO as a stored setting, time display preference, fader override sensitivity, GO shortcut capture, CUE shortcut capture, immediate settings persistence, optimistic UI behavior, and settings command failure display.
+
+The logs file should cover frontend-facing operational logs, visible safety warnings, bounded log projection through app state, and separation from diagnostic-only debug logs.
 
 ## Gherkin Style
 
