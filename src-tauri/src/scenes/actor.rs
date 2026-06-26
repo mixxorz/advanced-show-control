@@ -12,6 +12,7 @@ use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::handle::ScenesHandle;
 use crate::scenes::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
+use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
     CueSceneResult, RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult,
     ScenesEvent, ScenesProjectionReason, ScenesState, SelectedSceneResult,
@@ -195,8 +196,10 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
                 event = events.recv() => {
                     match event {
-                        Ok(AppEvent::Lv1 { event: Lv1Event::SceneListChanged(scene_list), .. }) => {
-                            if recall_state.observe_and_align_scene_list(scene_list, tokio::time::Instant::now()) {
+                        Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneListChanged(scene_list) }) => {
+                            let before = recall_state.scene_configs().to_vec();
+                            if recall_state.observe_and_align_scene_list(event_generation == generation, scene_list.clone(), tokio::time::Instant::now()) {
+                                log_scene_alignment(&before, &recall_state, &scene_list);
                                 publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
                             }
                         }
@@ -255,10 +258,12 @@ async fn run_scenes_actor(task: ScenesTask) {
             event = events.recv() => {
                 match event {
                     Ok(AppEvent::Lv1 {
+                        generation: event_generation,
                         event: Lv1Event::SceneListChanged(scene_list),
-                        ..
                     }) => {
-                        if recall_state.observe_and_align_scene_list(scene_list, tokio::time::Instant::now()) {
+                        let before = recall_state.scene_configs().to_vec();
+                        if recall_state.observe_and_align_scene_list(event_generation == generation, scene_list.clone(), tokio::time::Instant::now()) {
+                            log_scene_alignment(&before, &recall_state, &scene_list);
                             publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
                         }
                     }
@@ -303,6 +308,18 @@ fn publish_scene_state_changed(
             state: state.projection_state(),
             persisted_scene_edit,
         },
+    );
+}
+
+fn log_scene_alignment(
+    before: &[crate::scenes::SceneConfig],
+    state: &ScenesState,
+    scene_list: &[crate::lv1::SceneListEntry],
+) {
+    tracing::debug!(
+        event = "session_scene_alignment",
+        "{}",
+        scene_alignment_diagnostic(before, state.scene_configs(), scene_list)
     );
 }
 
@@ -633,6 +650,45 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
     use std::time::Duration;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct CapturedLogEvent {
+        event: Option<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogEvents(Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>);
+
+    impl<S> Layer<S> for CapturedLogEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedLogEvent::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedLogEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "event" {
+                self.event = Some(value.to_string());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "event" {
+                self.event = Some(format!("{value:?}").trim_matches('"').to_string());
+            }
+        }
+    }
 
     async fn arm_recall_state(event_bus: &AppEventBus) {
         event_bus.publish(AppEvent::Lv1 {
@@ -753,6 +809,81 @@ mod tests {
         assert_eq!(state.scene_configs[0].scene_name, "Smoke A");
         assert_eq!(state.scene_configs[1].scene_index, Some(1));
         assert_eq!(state.scene_configs[1].scene_name, "Smoke B");
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scene_list_changed_updates_existing_scene_configs() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let handle = build_and_spawn_scene_recall_fader_with_document(
+            1,
+            runtime_generation,
+            lv1,
+            fade,
+            event_bus.clone(),
+            intro_scene_document(),
+        )
+        .await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneListChanged(vec![scene_entry(1, "Intro Renamed")]),
+        });
+
+        let state = next_scene_state_with_name(&mut events, "Intro Renamed").await;
+        assert_eq!(state.scene_configs.len(), 1);
+        assert_eq!(
+            state.scene_configs[0].internal_scene_id,
+            intro_internal_scene_id()
+        );
+        assert_eq!(state.scene_configs[0].scene_index, Some(1));
+        assert_eq!(state.scene_configs[0].scene_name, "Intro Renamed");
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scene_list_alignment_logs_diagnostic_when_configs_change() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let handle = build_and_spawn_scene_recall_fader_with_document(
+            1,
+            runtime_generation,
+            lv1,
+            fade,
+            event_bus.clone(),
+            intro_scene_document(),
+        )
+        .await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneListChanged(vec![scene_entry(1, "Intro Renamed")]),
+        });
+        let _ = next_scene_state_with_name(&mut events, "Intro Renamed").await;
+
+        assert!(
+            logs.lock()
+                .unwrap()
+                .iter()
+                .any(|log| { log.event.as_deref() == Some("session_scene_alignment") })
+        );
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
@@ -1642,6 +1773,36 @@ mod tests {
                 && !matches!(event, ScenesEvent::StateChanged { .. })
             {
                 break event;
+            }
+        }
+    }
+
+    async fn next_scene_state_changed(
+        events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    ) -> crate::scenes::ScenesProjectionState {
+        loop {
+            if let AppEvent::Scenes {
+                generation: 1,
+                event: ScenesEvent::StateChanged { state, .. },
+            } = events.recv().await.unwrap()
+            {
+                break state;
+            }
+        }
+    }
+
+    async fn next_scene_state_with_name(
+        events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+        scene_name: &str,
+    ) -> crate::scenes::ScenesProjectionState {
+        loop {
+            let state = next_scene_state_changed(events).await;
+            if state
+                .scene_configs
+                .iter()
+                .any(|scene| scene.scene_name == scene_name)
+            {
+                break state;
             }
         }
     }

@@ -255,14 +255,15 @@ impl ScenesState {
 
     pub fn observe_and_align_scene_list(
         &mut self,
+        align_configs: bool,
         scene_list: Vec<SceneListEntry>,
         now: Instant,
     ) -> bool {
-        let should_seed_configs = self.scene_configs.is_empty();
         let previous = self.scene_configs.clone();
         self.observe_scene_list(scene_list.clone(), now);
-        if should_seed_configs {
-            self.scene_configs = align_scene_configs(Vec::new(), &scene_list);
+        if align_configs {
+            self.scene_configs =
+                align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
             self.clear_missing_cue();
         }
         previous != self.scene_configs
