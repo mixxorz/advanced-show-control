@@ -16,6 +16,7 @@ pub struct DiscoveryEntry {
     pub addresses: Vec<String>,
     pub ipv6: Vec<String>,
     pub source: String,
+    pub latency_ms: Option<u64>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -99,7 +100,8 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
         &Ipv4Addr::UNSPECIFIED,
     )?;
 
-    let deadline = Instant::now() + options.timeout;
+    let started_at = Instant::now();
+    let deadline = started_at + options.timeout;
     let mut found = BTreeMap::<String, DiscoveryEntry>::new();
     let mut buf = [0_u8; 65_536];
 
@@ -113,13 +115,14 @@ pub fn discover(options: DiscoverOptions) -> std::io::Result<Vec<DiscoveryEntry>
 
         match socket.recv_from(&mut buf) {
             Ok((size, source)) => {
-                if let Ok(entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string())
+                if let Ok(mut entry) = parse_zdns_packet(&buf[..size], &source.ip().to_string())
                     && entry_matches(
                         &entry,
                         &options.filter_service,
                         options.filter_host_ip.as_deref(),
                     )
                 {
+                    entry.latency_ms = Some(started_at.elapsed().as_millis() as u64);
                     let key = dedupe_key(&entry);
                     found.entry(key).or_insert(entry);
                 }
@@ -233,6 +236,7 @@ pub fn parse_zdns_packet(bytes: &[u8], source: &str) -> Result<DiscoveryEntry, D
         addresses,
         ipv6,
         source: source.to_string(),
+        latency_ms: None,
     })
 }
 
@@ -324,6 +328,7 @@ mod tests {
             addresses: vec!["192.168.1.10".to_string()],
             ipv6: vec![],
             source: "192.168.1.10".to_string(),
+            latency_ms: None,
         };
 
         assert!(entry_matches(&entry, "_waveslv113._tcp", None));
@@ -357,6 +362,7 @@ mod tests {
             addresses: vec!["192.168.1.10".to_string()],
             ipv6: vec![],
             source: "192.168.1.10".to_string(),
+            latency_ms: None,
         };
         let key = dedupe_key(&entry);
 
@@ -378,6 +384,7 @@ mod tests {
             addresses: vec!["192.168.1.10".to_string()],
             ipv6: vec![],
             source: "192.168.1.10".to_string(),
+            latency_ms: None,
         };
         let key = dedupe_key(&entry);
 

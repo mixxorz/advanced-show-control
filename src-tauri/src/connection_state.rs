@@ -44,3 +44,35 @@ pub fn identity_from_discovery(entry: &DiscoveryEntry) -> Option<Lv1SystemIdenti
         port,
     })
 }
+
+pub fn system_from_discovery(entry: &DiscoveryEntry) -> Option<DiscoveredLv1System> {
+    Some(DiscoveredLv1System {
+        identity: identity_from_discovery(entry)?,
+        latency_ms: entry.latency_ms,
+        status: DiscoveredLv1Status::Available,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn system_from_discovery_preserves_latency() {
+        let entry = DiscoveryEntry {
+            service: "_waveslv113._tcp".to_string(),
+            uuid: Some("lv1-demo".to_string()),
+            host: Some("FOH LV1".to_string()),
+            port: Some(22000),
+            addresses: vec!["192.168.1.42".to_string()],
+            ipv6: Vec::new(),
+            source: "192.168.1.42".to_string(),
+            latency_ms: Some(7),
+        };
+
+        let system = system_from_discovery(&entry).expect("entry should map to modal system");
+
+        assert_eq!(system.latency_ms, Some(7));
+        assert_eq!(system.status, DiscoveredLv1Status::Available);
+    }
+}

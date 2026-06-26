@@ -351,12 +351,7 @@ fn refresh_lv1_discovery(
     })
     .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?
     .iter()
-    .filter_map(crate::connection_state::identity_from_discovery)
-    .map(|identity| crate::connection_state::DiscoveredLv1System {
-        identity,
-        latency_ms: None,
-        status: crate::connection_state::DiscoveredLv1Status::Available,
-    })
+    .filter_map(crate::connection_state::system_from_discovery)
     .collect();
     let changed = state.set_discovered_lv1_systems(systems);
     publish_if_changed(
