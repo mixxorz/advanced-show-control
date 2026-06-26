@@ -4,7 +4,6 @@ mod events;
 mod handle;
 mod show_file;
 mod state;
-mod types;
 
 pub use actor::{ShowActorPeers, ShowActorTask, build_show_actor};
 pub use commands::{
@@ -18,5 +17,3 @@ pub use show_file::{
     ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
 pub use state::ShowState;
-#[allow(unused_imports)]
-pub(crate) use types::ShowDocument;

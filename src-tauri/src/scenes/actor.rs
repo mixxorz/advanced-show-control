@@ -16,7 +16,7 @@ use crate::scenes::{
     CueSceneResult, RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult,
     ScenesEvent, ScenesProjectionReason, ScenesState, SelectedSceneResult,
 };
-use crate::show::{ShowEvent, ShowProjectionReason};
+use crate::show::ShowEvent;
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -201,10 +201,8 @@ async fn run_scenes_actor(task: ScenesTask) {
                         Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
                             pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
                         }
-                        Ok(AppEvent::Show(ShowEvent::StateChanged { reason, state })) => {
-                            if reason == ShowProjectionReason::ShowState {
-                                apply_show_projection_state(&mut recall_state, state);
-                            }
+                        Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) => {
+                            recall_state.set_lockout(state.lockout);
                         }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -269,10 +267,8 @@ async fn run_scenes_actor(task: ScenesTask) {
                             tokio::time::Instant::now(),
                         ));
                     }
-                    Ok(AppEvent::Show(ShowEvent::StateChanged { reason, state })) => {
-                        if reason == ShowProjectionReason::ShowState {
-                            apply_show_projection_state(&mut recall_state, state);
-                        }
+                    Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) => {
+                        recall_state.set_lockout(state.lockout);
                     }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -304,20 +300,6 @@ fn publish_scene_state_changed(
             persisted_scene_edit,
         },
     );
-}
-
-fn apply_show_projection_state(
-    recall_state: &mut ScenesState,
-    state: crate::show::ShowProjectionState,
-) {
-    recall_state.set_lockout(state.lockout);
-    recall_state.replace_snapshot(SceneDocument {
-        scene_configs: state.scene_configs,
-        cued_scene_internal_id: state
-            .cued_scene_internal_id
-            .and_then(|id| uuid::Uuid::parse_str(&id).ok()),
-        selected_scene_internal_id: state.selected_scene_internal_id,
-    });
 }
 
 fn mutate_scene_state<F>(
@@ -642,7 +624,6 @@ mod tests {
     use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scenes::events::ScenesEvent;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
-    use crate::show::{ShowCommand, ShowDocument, ShowStateHandle};
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -737,12 +718,10 @@ mod tests {
         drop(lv1_rx);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -770,17 +749,14 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade_tx, fade_rx) = tokio::sync::mpsc::channel(1);
         drop(fade_rx);
         let fade = FadeEngineHandle::new(fade_tx);
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -811,15 +787,8 @@ mod tests {
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
 
-        let handle = build_and_spawn_scene_recall_fader(
-            1,
-            runtime_generation,
-            ShowStateHandle::new_empty(event_bus.clone()),
-            lv1,
-            fade,
-            event_bus,
-        )
-        .await;
+        let handle =
+            build_and_spawn_scene_recall_fader(1, runtime_generation, lv1, fade, event_bus).await;
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
@@ -1032,15 +1001,12 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1098,15 +1064,12 @@ mod tests {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, _fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1144,15 +1107,12 @@ mod tests {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1200,15 +1160,12 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1255,15 +1212,12 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1312,15 +1266,12 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1368,15 +1319,12 @@ mod tests {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1424,15 +1372,12 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1503,16 +1448,13 @@ mod tests {
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) =
             spawn_fake_lv1_with_mismatched_scene(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show(&show).await;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
@@ -1570,42 +1512,18 @@ mod tests {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let show = show_handle();
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
-        seed_show_with_duration(&show, 0).await;
-        show.send(ShowCommand::ReplaceSnapshotForTest {
-            snapshot: ShowDocument {
-                lockout: false,
-                scene_configs: vec![SceneConfig {
-                    internal_scene_id: intro_internal_scene_id(),
-                    scene_index: Some(1),
-                    scene_name: "Intro".to_string(),
-                    duration_ms: 0,
-                    channel_configs: Vec::new(),
-                    scoped_channels: Vec::new(),
-                    scope_toggles: crate::scenes::SceneScopeToggles {
-                        faders: false,
-                        pan: false,
-                    },
-                }],
-                cued_scene_internal_id: None,
-            },
-            reply: None,
-        })
-        .await
-        .unwrap();
-        let (_scenes, task, _peers) =
-            build_scenes_actor(1, runtime_generation.clone(), event_bus.clone());
-        task.spawn();
-
-        let handle = build_and_spawn_scene_recall_fader(
+        let handle = build_and_spawn_scene_recall_fader_with_document(
             1,
             runtime_generation.clone(),
-            show.clone(),
             lv1,
             fade,
             event_bus.clone(),
+            intro_scene_document_with_scope(crate::scenes::SceneScopeToggles {
+                faders: false,
+                pan: false,
+            }),
         )
         .await;
         release_lv1.send(()).unwrap();
@@ -1834,17 +1752,12 @@ mod tests {
         (crate::lv1::test_actor_handle(lv1_tx), release_tx, server)
     }
 
-    fn show_handle() -> ShowStateHandle {
-        ShowStateHandle::new_empty(AppEventBus::default())
+    fn intro_scene_document() -> SceneDocument {
+        intro_scene_document_with_duration(4_000)
     }
 
-    async fn seed_show(handle: &ShowStateHandle) {
-        seed_show_with_duration(handle, 4_000).await;
-    }
-
-    async fn seed_show_with_duration(handle: &ShowStateHandle, duration_ms: u64) {
-        let snapshot = ShowDocument {
-            lockout: false,
+    fn intro_scene_document_with_duration(duration_ms: u64) -> SceneDocument {
+        SceneDocument {
             scene_configs: vec![SceneConfig {
                 internal_scene_id: intro_internal_scene_id(),
                 scene_index: Some(1),
@@ -1866,16 +1779,16 @@ mod tests {
                 scope_toggles: SceneScopeToggles::default(),
             }],
             cued_scene_internal_id: None,
-        };
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ShowCommand::ReplaceSnapshotForTest {
-                snapshot,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        let _ = rx.await;
+            selected_scene_internal_id: None,
+        }
+    }
+
+    fn intro_scene_document_with_scope(scope_toggles: SceneScopeToggles) -> SceneDocument {
+        let mut document = intro_scene_document_with_duration(0);
+        document.scene_configs[0].channel_configs.clear();
+        document.scene_configs[0].scoped_channels.clear();
+        document.scene_configs[0].scope_toggles = scope_toggles;
+        document
     }
 
     fn intro_internal_scene_id() -> uuid::Uuid {
@@ -1913,27 +1826,36 @@ mod tests {
     async fn build_and_spawn_scene_recall_fader(
         generation: u64,
         runtime_generation: RuntimeGeneration,
-        show: ShowStateHandle,
         lv1: Lv1ActorHandle,
         fade: FadeEngineHandle,
         event_bus: AppEventBus,
+    ) -> ScenesHandle {
+        build_and_spawn_scene_recall_fader_with_document(
+            generation,
+            runtime_generation,
+            lv1,
+            fade,
+            event_bus,
+            intro_scene_document(),
+        )
+        .await
+    }
+
+    async fn build_and_spawn_scene_recall_fader_with_document(
+        generation: u64,
+        runtime_generation: RuntimeGeneration,
+        lv1: Lv1ActorHandle,
+        fade: FadeEngineHandle,
+        event_bus: AppEventBus,
+        document: SceneDocument,
     ) -> ScenesHandle {
         let (handle, task, peers) = build_scenes_actor(generation, runtime_generation, event_bus);
         peers.set_peers(lv1, fade);
         task.spawn();
         let (reply, rx) = oneshot::channel();
-        show.send(ShowCommand::GetShowDocument { reply })
-            .await
-            .unwrap();
-        let document = rx.await.unwrap();
-        let (reply, rx) = oneshot::channel();
         handle
             .send(ScenesCommand::ReplaceSceneDocument {
-                document: SceneDocument {
-                    scene_configs: document.scene_configs,
-                    cued_scene_internal_id: document.cued_scene_internal_id,
-                    selected_scene_internal_id: None,
-                },
+                document,
                 selected_scene_internal_id: None,
                 reason: ScenesProjectionReason::FileReplacement,
                 persisted_scene_edit: false,

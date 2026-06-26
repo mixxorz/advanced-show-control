@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
-use crate::scenes::SceneConfig;
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShowEvent {
     StateChanged {
@@ -14,7 +12,6 @@ pub enum ShowEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShowProjectionReason {
-    ShowState,
     ConnectionMetadata,
     FileMetadata,
 }
@@ -22,9 +19,6 @@ pub enum ShowProjectionReason {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShowProjectionState {
     pub lockout: bool,
-    pub scene_configs: Vec<SceneConfig>,
-    pub cued_scene_internal_id: Option<String>,
-    pub selected_scene_internal_id: Option<String>,
     pub show_file_path: Option<PathBuf>,
     pub show_file_name: String,
     pub show_file_dirty: bool,

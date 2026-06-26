@@ -218,12 +218,9 @@ mod tests {
         let mut rx = bus.subscribe();
 
         bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::ShowState,
+            reason: ShowProjectionReason::FileMetadata,
             state: crate::show::ShowProjectionState {
                 lockout: false,
-                scene_configs: vec![],
-                cued_scene_internal_id: None,
-                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,
@@ -240,7 +237,7 @@ mod tests {
         assert!(matches!(
             event,
             AppEvent::Show(ShowEvent::StateChanged {
-                reason: ShowProjectionReason::ShowState,
+                reason: ShowProjectionReason::FileMetadata,
                 ..
             })
         ));
@@ -251,12 +248,9 @@ mod tests {
         let bus = AppEventBus::new(1);
 
         let sent = bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::ShowState,
+            reason: ShowProjectionReason::FileMetadata,
             state: crate::show::ShowProjectionState {
                 lockout: false,
-                scene_configs: vec![],
-                cued_scene_internal_id: None,
-                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,

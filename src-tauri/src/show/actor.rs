@@ -133,26 +133,6 @@ fn handle_app_event(
                 changed,
             );
         }
-        AppEvent::Lv1 {
-            generation,
-            event: Lv1Event::SceneListChanged(scenes),
-        } if generation == *active_generation => {
-            let before = state.scene_configs().to_vec();
-            let after = crate::scenes::align_scene_configs(before.clone(), &scenes);
-            let changed = state.replace_scene_configs_if_changed(after);
-            if changed {
-                tracing::debug!(
-                    event = "session_scene_alignment",
-                    "{}",
-                    crate::scenes::scene_alignment_diagnostic(
-                        &before,
-                        state.scene_configs(),
-                        &scenes
-                    )
-                );
-            }
-            publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
-        }
         AppEvent::Scenes {
             generation,
             event:
@@ -193,9 +173,6 @@ async fn handle_command(
     peers: &ShowActorPeers,
 ) {
     match command {
-        ShowCommand::GetShowDocument { reply } => {
-            let _ = reply.send(state.snapshot());
-        }
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
         }
@@ -207,7 +184,12 @@ async fn handle_command(
         }
         ShowCommand::SetLockout { enabled, reply } => {
             let changed = state.set_lockout(enabled);
-            publish_if_changed(event_bus, ShowProjectionReason::ShowState, state, changed);
+            publish_if_changed(
+                event_bus,
+                ShowProjectionReason::FileMetadata,
+                state,
+                changed,
+            );
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
@@ -236,7 +218,7 @@ async fn handle_command(
             )
             .await;
             if result.is_ok() {
-                state.reset_for_new_show(lv1.as_ref());
+                state.reset_for_new_show();
             }
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
             tracing::info!(event = "session_created", "New session created");
@@ -344,23 +326,9 @@ async fn handle_command(
             }
         }
         #[cfg(test)]
-        ShowCommand::ReplaceSnapshotForTest { snapshot, reply } => {
-            let changed = state.snapshot() != snapshot;
-            if changed {
-                state.replace_snapshot(snapshot);
-                publish_state_changed(event_bus, ShowProjectionReason::ShowState, state);
-            }
-            if let Some(reply) = reply {
-                let _ = reply.send(());
-            }
-        }
-        #[cfg(test)]
         ShowCommand::ClearForTest { reply } => {
-            let changed = state.snapshot() != super::types::ShowDocument::empty();
-            if changed {
-                state.clear();
-                publish_state_changed(event_bus, ShowProjectionReason::ShowState, state);
-            }
+            state.clear();
+            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
             if let Some(reply) = reply {
                 let _ = reply.send(());
             }
@@ -463,11 +431,7 @@ async fn load_show_file_from_dto(
         false,
     )
     .await?;
-    state.replace_snapshot(super::types::ShowDocument {
-        lockout: imported.lockout,
-        scene_configs: aligned_scene_configs.clone(),
-        cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
-    });
+    state.set_lockout(imported.lockout);
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
         state.mark_dirty();
@@ -664,12 +628,13 @@ mod tests {
         .await
         .expect("load should succeed");
 
-        assert_eq!(state.scene_configs().len(), 2);
-        assert_eq!(state.scene_configs()[0].scene_index, Some(1));
-        assert_eq!(state.scene_configs()[0].duration_ms, 1_000);
-        assert_eq!(state.scene_configs()[1].scene_index, Some(2));
-        assert_eq!(state.scene_configs()[1].scene_name, "Verse");
-        assert_eq!(state.scene_configs()[1].duration_ms, 0);
+        let scene_document = get_scene_document(&peers.scenes().unwrap()).await;
+        assert_eq!(scene_document.scene_configs.len(), 2);
+        assert_eq!(scene_document.scene_configs[0].scene_index, Some(1));
+        assert_eq!(scene_document.scene_configs[0].duration_ms, 1_000);
+        assert_eq!(scene_document.scene_configs[1].scene_index, Some(2));
+        assert_eq!(scene_document.scene_configs[1].scene_name, "Verse");
+        assert_eq!(scene_document.scene_configs[1].duration_ms, 0);
         assert_eq!(
             result.selected_scene_internal_id,
             Some(Uuid::from_u128(1).to_string())
@@ -707,18 +672,19 @@ mod tests {
         .await
         .expect("load should succeed");
 
-        assert_eq!(state.scene_configs().len(), 2);
+        let scene_document = get_scene_document(&peers.scenes().unwrap()).await;
+        assert_eq!(scene_document.scene_configs.len(), 2);
         assert_eq!(
-            state.scene_configs()[0].internal_scene_id,
+            scene_document.scene_configs[0].internal_scene_id,
             Uuid::from_u128(1)
         );
-        assert_eq!(state.scene_configs()[0].duration_ms, 1_000);
+        assert_eq!(scene_document.scene_configs[0].duration_ms, 1_000);
         assert_ne!(
-            state.scene_configs()[1].internal_scene_id,
+            scene_document.scene_configs[1].internal_scene_id,
             Uuid::from_u128(2)
         );
-        assert_eq!(state.scene_configs()[1].scene_index, Some(2));
-        assert_eq!(state.scene_configs()[1].duration_ms, 0);
+        assert_eq!(scene_document.scene_configs[1].scene_index, Some(2));
+        assert_eq!(scene_document.scene_configs[1].duration_ms, 0);
     }
 
     #[tokio::test]
@@ -744,7 +710,8 @@ mod tests {
         .expect("load should succeed");
 
         assert!(state.projection_state().show_file_dirty);
-        assert_eq!(state.scene_configs()[0].scene_index, Some(2));
+        let scene_document = get_scene_document(&peers.scenes().unwrap()).await;
+        assert_eq!(scene_document.scene_configs[0].scene_index, Some(2));
     }
 
     #[tokio::test]
@@ -769,9 +736,10 @@ mod tests {
         .await
         .expect("load should succeed");
 
-        assert_eq!(state.scene_configs()[0].duration_ms, 1_500);
+        let scene_document = get_scene_document(&peers.scenes().unwrap()).await;
+        assert_eq!(scene_document.scene_configs[0].duration_ms, 1_500);
         assert_eq!(
-            state.scene_configs()[0].internal_scene_id,
+            scene_document.scene_configs[0].internal_scene_id,
             Uuid::from_u128(1)
         );
     }
@@ -801,10 +769,11 @@ mod tests {
         .await
         .expect("load should succeed");
 
-        assert_eq!(state.scene_configs().len(), 2);
-        assert_eq!(state.scene_configs()[0].scene_index, Some(1));
-        assert_eq!(state.scene_configs()[1].scene_index, None);
-        assert_eq!(state.scene_configs()[1].scene_name, "Verse");
+        let scene_document = get_scene_document(&peers.scenes().unwrap()).await;
+        assert_eq!(scene_document.scene_configs.len(), 2);
+        assert_eq!(scene_document.scene_configs[0].scene_index, Some(1));
+        assert_eq!(scene_document.scene_configs[1].scene_index, None);
+        assert_eq!(scene_document.scene_configs[1].scene_name, "Verse");
     }
 
     #[tokio::test]

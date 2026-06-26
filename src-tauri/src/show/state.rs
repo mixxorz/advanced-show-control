@@ -1,15 +1,8 @@
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::lv1::Lv1StateSnapshot;
-
-use super::types::ShowDocument;
-use crate::scenes::{SceneConfig, align_scene_configs};
-use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     lockout: bool,
-    scene_configs: Vec<SceneConfig>,
-    cued_scene_internal_id: Option<Uuid>,
     show_file_path: Option<std::path::PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
@@ -21,13 +14,8 @@ pub struct ShowState {
 }
 
 impl ShowState {
-    pub(crate) fn reset_for_new_show(&mut self, lv1: Option<&Lv1StateSnapshot>) {
+    pub(crate) fn reset_for_new_show(&mut self) {
         self.clear();
-        if let Some(lv1) = lv1
-            && !lv1.scene_list.is_empty()
-        {
-            self.scene_configs = align_scene_configs(self.scene_configs.clone(), &lv1.scene_list);
-        }
         self.show_file_path = None;
         self.show_file_dirty = false;
         self.show_file_last_saved_at = None;
@@ -121,28 +109,6 @@ impl ShowState {
         self.show_file_path.clone()
     }
 
-    pub(crate) fn scene_configs(&self) -> &[SceneConfig] {
-        &self.scene_configs
-    }
-
-    pub(crate) fn replace_scene_configs_if_changed(&mut self, next: Vec<SceneConfig>) -> bool {
-        if self.scene_configs == next {
-            false
-        } else {
-            self.scene_configs = next;
-            self.clear_missing_cue();
-            true
-        }
-    }
-
-    pub fn snapshot(&self) -> ShowDocument {
-        ShowDocument {
-            lockout: self.lockout,
-            scene_configs: self.scene_configs.clone(),
-            cued_scene_internal_id: self.cued_scene_internal_id,
-        }
-    }
-
     pub fn projection_state(&self) -> super::events::ShowProjectionState {
         let show_file_name = self
             .show_file_path
@@ -154,9 +120,6 @@ impl ShowState {
 
         super::events::ShowProjectionState {
             lockout: self.lockout,
-            scene_configs: self.scene_configs.clone(),
-            cued_scene_internal_id: self.cued_scene_internal_id.map(|id| id.to_string()),
-            selected_scene_internal_id: None,
             show_file_path: self.show_file_path.clone(),
             show_file_name,
             show_file_dirty: self.show_file_dirty,
@@ -169,27 +132,8 @@ impl ShowState {
         }
     }
 
-    pub fn replace_snapshot(&mut self, snapshot: ShowDocument) {
-        self.lockout = snapshot.lockout;
-        self.scene_configs = snapshot.scene_configs;
-        self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
-    }
-
     pub fn clear(&mut self) {
         self.lockout = false;
-        self.scene_configs.clear();
-        self.cued_scene_internal_id = None;
-    }
-
-    fn clear_missing_cue(&mut self) {
-        if let Some(cued_scene_internal_id) = self.cued_scene_internal_id
-            && !self
-                .scene_configs
-                .iter()
-                .any(|scene| scene.internal_scene_id == cued_scene_internal_id)
-        {
-            self.cued_scene_internal_id = None;
-        }
     }
 
     pub fn set_lockout(&mut self, enabled: bool) -> bool {

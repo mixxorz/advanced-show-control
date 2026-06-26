@@ -6,12 +6,7 @@ use crate::show::show_file::LoadValidationReport;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
-use super::types::ShowDocument;
-
 pub enum ShowCommand {
-    GetShowDocument {
-        reply: oneshot::Sender<ShowDocument>,
-    },
     CurrentShowFilePath {
         reply: oneshot::Sender<Option<std::path::PathBuf>>,
     },
@@ -58,11 +53,6 @@ pub enum ShowCommand {
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
-    },
-    #[cfg(test)]
-    ReplaceSnapshotForTest {
-        snapshot: ShowDocument,
-        reply: Option<oneshot::Sender<()>>,
     },
     #[cfg(test)]
     ClearForTest {

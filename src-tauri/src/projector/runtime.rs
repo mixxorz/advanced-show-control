@@ -152,9 +152,6 @@ mod tests {
             generation,
             initial_show_state: ShowProjectionState {
                 lockout: false,
-                scene_configs: Vec::new(),
-                cued_scene_internal_id: None,
-                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,
@@ -226,12 +223,9 @@ mod tests {
         let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
 
         event_bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::ShowState,
+            reason: ShowProjectionReason::FileMetadata,
             state: ShowProjectionState {
                 lockout: true,
-                scene_configs: vec![],
-                cued_scene_internal_id: None,
-                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,
@@ -318,9 +312,6 @@ mod tests {
             generation: 0,
             initial_show_state: ShowProjectionState {
                 lockout: true,
-                scene_configs: Vec::new(),
-                cued_scene_internal_id: None,
-                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Seeded Show".to_string(),
                 show_file_dirty: false,
@@ -365,12 +356,9 @@ mod tests {
         let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
 
         let event = AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::ShowState,
+            reason: ShowProjectionReason::FileMetadata,
             state: ShowProjectionState {
                 lockout: true,
-                scene_configs: vec![],
-                cued_scene_internal_id: None,
-                selected_scene_internal_id: None,
                 show_file_path: None,
                 show_file_name: "Untitled Session".to_string(),
                 show_file_dirty: false,
