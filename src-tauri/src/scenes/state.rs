@@ -63,24 +63,24 @@ enum RecallGate {
 #[derive(Debug, Default)]
 pub struct ScenesState {
     lockout: bool,
-    pub(crate) scene_configs: Vec<SceneConfig>,
-    pub(crate) cued_scene_internal_id: Option<uuid::Uuid>,
-    pub(crate) selected_scene_internal_id: Option<String>,
+    scene_configs: Vec<SceneConfig>,
+    cued_scene_internal_id: Option<uuid::Uuid>,
+    selected_scene_internal_id: Option<String>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
 }
 
 impl ScenesState {
-    pub fn set_lockout(&mut self, lockout: bool) {
+    pub(crate) fn set_lockout(&mut self, lockout: bool) {
         self.lockout = lockout;
     }
 
-    pub fn lockout(&self) -> bool {
+    pub(crate) fn lockout(&self) -> bool {
         self.lockout
     }
 
-    pub fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
+    pub(crate) fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
             cued_scene_internal_id: self.cued_scene_internal_id.map(|id| id.to_string()),
@@ -88,7 +88,7 @@ impl ScenesState {
         }
     }
 
-    pub fn snapshot(&self) -> SceneDocument {
+    pub(crate) fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
             cued_scene_internal_id: self.cued_scene_internal_id,
@@ -96,30 +96,30 @@ impl ScenesState {
         }
     }
 
-    pub fn replace_snapshot(&mut self, snapshot: SceneDocument) {
+    pub(crate) fn replace_snapshot(&mut self, snapshot: SceneDocument) {
         self.scene_configs = snapshot.scene_configs;
         self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
         self.selected_scene_internal_id = snapshot.selected_scene_internal_id;
         self.clear_missing_cue();
     }
 
-    pub fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
+    pub(crate) fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
         self.replace_snapshot(snapshot);
         self.reset_recall_tracking();
     }
 
-    pub fn get_scene_config(&self, internal_scene_id: uuid::Uuid) -> Option<SceneConfig> {
+    pub(crate) fn get_scene_config(&self, internal_scene_id: uuid::Uuid) -> Option<SceneConfig> {
         self.scene_configs
             .iter()
             .find(|scene| scene.internal_scene_id == internal_scene_id)
             .cloned()
     }
 
-    pub fn scene_configs(&self) -> &[SceneConfig] {
+    pub(crate) fn scene_configs(&self) -> &[SceneConfig] {
         &self.scene_configs
     }
 
-    pub fn scene_list_entry_for_index(&self, index: i32) -> Option<SceneListEntry> {
+    pub(crate) fn scene_list_entry_for_index(&self, index: i32) -> Option<SceneListEntry> {
         self.last_scene_list.as_ref().and_then(|scene_list| {
             scene_list
                 .iter()
@@ -137,7 +137,28 @@ impl ScenesState {
             .find(|scene| scene.internal_scene_id == internal_scene_id)
     }
 
-    pub fn cue_scene(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
+    pub(super) fn upsert_scene_config(&mut self, snapshot: SceneConfig) -> bool {
+        match self
+            .scene_configs
+            .iter_mut()
+            .find(|scene| scene.internal_scene_id == snapshot.internal_scene_id)
+        {
+            Some(existing) => {
+                if *existing == snapshot {
+                    false
+                } else {
+                    *existing = snapshot;
+                    true
+                }
+            }
+            None => {
+                self.scene_configs.push(snapshot);
+                true
+            }
+        }
+    }
+
+    pub(crate) fn cue_scene(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
         if self.get_scene_config(internal_scene_id).is_none() {
             return Err("Scene config not found".to_string());
         }
@@ -149,7 +170,10 @@ impl ScenesState {
         Ok(true)
     }
 
-    pub fn select_scene_config(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
+    pub(crate) fn select_scene_config(
+        &mut self,
+        internal_scene_id: uuid::Uuid,
+    ) -> Result<bool, String> {
         if self.get_scene_config(internal_scene_id).is_none() {
             return Err("Scene config not found".to_string());
         }
@@ -164,7 +188,7 @@ impl ScenesState {
         Ok(true)
     }
 
-    pub fn link_scene_config(
+    pub(crate) fn link_scene_config(
         &mut self,
         source_internal_scene_id: uuid::Uuid,
         target: &SceneListEntry,
@@ -208,7 +232,7 @@ impl ScenesState {
         Ok(true)
     }
 
-    pub fn link_scene_config_by_index(
+    pub(crate) fn link_scene_config_by_index(
         &mut self,
         source_internal_scene_id: uuid::Uuid,
         target_scene_index: i32,
@@ -220,7 +244,10 @@ impl ScenesState {
         self.link_scene_config(source_internal_scene_id, &target, overwrite_existing)
     }
 
-    pub fn delete_scene_config(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
+    pub(crate) fn delete_scene_config(
+        &mut self,
+        internal_scene_id: uuid::Uuid,
+    ) -> Result<bool, String> {
         let Some(index) = self
             .scene_configs
             .iter()
@@ -237,7 +264,7 @@ impl ScenesState {
         }
         Ok(true)
     }
-    pub fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
+    pub(crate) fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {
                 self.last_scene_list = Some(scene_list);
@@ -253,7 +280,7 @@ impl ScenesState {
         }
     }
 
-    pub fn observe_and_align_scene_list(
+    pub(crate) fn observe_and_align_scene_list(
         &mut self,
         align_configs: bool,
         scene_list: Vec<SceneListEntry>,
@@ -269,13 +296,13 @@ impl ScenesState {
         previous != self.scene_configs
     }
 
-    pub fn is_scene_list_edit_suppressed(&self, now: Instant) -> bool {
+    pub(crate) fn is_scene_list_edit_suppressed(&self, now: Instant) -> bool {
         self.scene_list_edit_suppressed_until
             .map(|deadline| now < deadline)
             .unwrap_or(false)
     }
 
-    pub fn accepts(&mut self, current_scene: &SceneState) -> bool {
+    pub(crate) fn accepts(&mut self, current_scene: &SceneState) -> bool {
         self.accepts_at(current_scene, Instant::now())
     }
 

@@ -3,7 +3,7 @@ use crate::lv1::ChannelInfo;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig};
 use uuid::Uuid;
 impl ScenesState {
-    pub fn store_scene_config(
+    pub(crate) fn store_scene_config(
         &mut self,
         internal_scene_id: Uuid,
         channels: &[ChannelInfo],
@@ -78,27 +78,10 @@ impl ScenesState {
                 .map(|scene| scene.scope_toggles)
                 .unwrap_or_default(),
         };
-        match self
-            .scene_configs
-            .iter_mut()
-            .find(|scene| scene.internal_scene_id == internal_scene_id)
-        {
-            Some(existing) => {
-                if *existing == snapshot {
-                    Ok(false)
-                } else {
-                    *existing = snapshot;
-                    Ok(true)
-                }
-            }
-            None => {
-                self.scene_configs.push(snapshot);
-                Ok(true)
-            }
-        }
+        Ok(self.upsert_scene_config(snapshot))
     }
 
-    pub fn set_scene_duration_ms(
+    pub(crate) fn set_scene_duration_ms(
         &mut self,
         internal_scene_id: Uuid,
         duration_ms: u64,
@@ -117,7 +100,7 @@ impl ScenesState {
         }
     }
 
-    pub fn set_channel_scoped(
+    pub(crate) fn set_channel_scoped(
         &mut self,
         internal_scene_id: Uuid,
         group: i32,
@@ -153,7 +136,7 @@ impl ScenesState {
         }
     }
 
-    pub fn set_all_channels_scoped(
+    pub(crate) fn set_all_channels_scoped(
         &mut self,
         internal_scene_id: Uuid,
         scoped: bool,
@@ -188,7 +171,7 @@ impl ScenesState {
         Ok(changed)
     }
 
-    pub fn set_scene_scope_faders_enabled(
+    pub(crate) fn set_scene_scope_faders_enabled(
         &mut self,
         internal_scene_id: Uuid,
         enabled: bool,
@@ -204,7 +187,7 @@ impl ScenesState {
         }
     }
 
-    pub fn set_scene_scope_pan_enabled(
+    pub(crate) fn set_scene_scope_pan_enabled(
         &mut self,
         internal_scene_id: Uuid,
         enabled: bool,
