@@ -29,7 +29,7 @@ Create feature files under `features/` using stable, lower-case file names:
 - `features/sessions/open-session.feature`
 - `features/sessions/save-session.feature`
 - `features/sessions/session-title.feature`
-- `features/sessions/missing-scene-configs.feature`
+- `features/sessions/scene-alignment.feature`
 - `features/scenes/scene-list.feature`
 - `features/scenes/scene-selection.feature`
 - `features/scenes/scene-cueing.feature`
@@ -49,9 +49,9 @@ Create feature files under `features/` using stable, lower-case file names:
 - `features/fades/manual-override.feature`
 - `features/safety/lockout.feature`
 - `features/safety/abort-all.feature`
-- `features/safety/unsafe-lv1-state.feature`
-- `features/safety/scene-identity-validation.feature`
-- `features/safety/reconnect-generation-guard.feature`
+- `features/safety/recall-safety.feature`
+- `features/safety/connection-loss-safety.feature`
+- `features/safety/scene-mismatch-safety.feature`
 - `features/settings/app-settings.feature`
 - `features/settings/keyboard-shortcuts.feature`
 - `features/settings/settings-persistence.feature`
@@ -63,7 +63,7 @@ This structure keeps each Gherkin file focused on a single product capability wh
 
 The connection files should cover LV1 discovery, startup connection modal behavior, selecting an available console, connected and unavailable discovery rows, disconnect, reconnect overlay behavior, and startup auto-connect where currently implemented.
 
-The session files should cover creating a new `.ascs` session from current LV1 state, opening a session, saving, Save As, untitled defaults, dirty window title state, native file menu behavior where visible through the app, and visible handling of skipped scene configs when loaded LV1 scene identities are missing.
+The session files should cover creating a new `.ascs` session from current LV1 state, opening a session, saving, Save As, untitled defaults, dirty window title state, native file menu behavior where visible through the app, and scene alignment behavior when loaded app-managed scene configs do not line up with the current LV1 scene list.
 
 The scene files should cover scene list display, current/cued/selected scene state, selecting and cueing scenes, duplicate-name warnings, recalling scenes through the app, storing app-managed scene configs from LV1, linking unlinked scene configs, overwrite confirmation, deleting scene configs, and duration editing.
 
@@ -71,7 +71,7 @@ The scope files should cover fader and pan scope toggles, individual channel sco
 
 The fade files should cover recalling app-managed scenes, starting fades from current live values, duration-based movement, immediate movement for zero-duration scenes, scoped-only movement, final target behavior, overlap behavior, same-scene repeat behavior, and manual override cancellation.
 
-The safety files should cover global lockout, Abort All, blocked recall visibility, disconnected or unavailable LV1 state, stale or unsafe state, scene identity validation, generation-guarded reconnect behavior, and the rule that blocked, skipped, or disabled recalls do not abort an active fade.
+The safety files should cover global lockout, Abort All, blocked recall visibility, disconnected or unavailable LV1 state, scene mismatch behavior, connection-loss and reconnect behavior, and the rule that blocked, skipped, or disabled recalls do not abort an active fade.
 
 The settings files should cover implemented settings controls: auto-load last show file, auto-save sessions, auto-cue next scene on GO as a stored setting, time display preference, fader override sensitivity, GO shortcut capture, CUE shortcut capture, immediate settings persistence, optimistic UI behavior, and settings command failure display.
 
