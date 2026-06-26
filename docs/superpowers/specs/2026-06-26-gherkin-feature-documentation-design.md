@@ -47,11 +47,8 @@ Create feature files under `features/` using stable, lower-case file names:
 - `features/fades/fade-overlap.feature`
 - `features/fades/same-scene-repeat.feature`
 - `features/fades/manual-override.feature`
-- `features/safety/lockout.feature`
-- `features/safety/abort-all.feature`
-- `features/safety/recall-safety.feature`
-- `features/safety/connection-loss-safety.feature`
-- `features/safety/scene-mismatch-safety.feature`
+- `features/controls/lockout.feature`
+- `features/controls/abort-all.feature`
 - `features/settings/app-settings.feature`
 - `features/settings/keyboard-shortcuts.feature`
 - `features/settings/settings-persistence.feature`
@@ -71,7 +68,9 @@ The scope files should cover fader and pan scope toggles, individual channel sco
 
 The fade files should cover recalling app-managed scenes, starting fades from current live values, duration-based movement, immediate movement for zero-duration scenes, scoped-only movement, final target behavior, overlap behavior, same-scene repeat behavior, and manual override cancellation.
 
-The safety files should cover global lockout, Abort All, blocked recall visibility, disconnected or unavailable LV1 state, scene mismatch behavior, connection-loss and reconnect behavior, and the rule that blocked, skipped, or disabled recalls do not abort an active fade.
+The controls files should cover explicit user controls that are safety-relevant product capabilities: global lockout and Abort All.
+
+Safety behavior should be documented as scenarios or `Rule:` blocks inside the feature files it constrains, not as standalone safety feature files. Connection-loss and reconnect safety belongs with connection features. Scene mismatch and scene alignment safety belongs with scene or session features. Recall blocking and the rule that blocked, skipped, or disabled recalls do not abort an active fade belongs with scene recall or fade behavior.
 
 The settings files should cover implemented settings controls: auto-load last show file, auto-save sessions, auto-cue next scene on GO as a stored setting, time display preference, fader override sensitivity, GO shortcut capture, CUE shortcut capture, immediate settings persistence, optimistic UI behavior, and settings command failure display.
 
