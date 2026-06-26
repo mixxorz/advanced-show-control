@@ -59,6 +59,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::scenes::store_scene_config,
             commands::lifecycle::connect_lv1_system,
             commands::lifecycle::attempt_reconnect_lv1,
+            commands::lifecycle::probe_lv1_tcp_connect_latency,
             commands::lifecycle::startup_auto_connect_lv1,
             commands::lifecycle::disconnect_lv1,
             commands::lifecycle::reconnect_timed_out,
@@ -97,6 +98,7 @@ mod tests {
     fn command_adapter_exports_existing_command_names() {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
+        let _ = super::commands::lifecycle::probe_lv1_tcp_connect_latency;
         let _ = super::commands::scenes::recall_scene;
         let _ = super::commands::scenes::cue_scene;
         let _ = super::commands::scenes::delete_scene_config;

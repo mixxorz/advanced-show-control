@@ -16,6 +16,7 @@ function makeCommands(commands: Partial<AppCommands> = {}): AppCommands {
     disconnect: vi.fn(),
     newShowFile: vi.fn(),
     openShowFile: vi.fn(),
+    probeLv1TcpConnectLatency: vi.fn(),
     saveShowFile: vi.fn(),
     saveShowFileAs: vi.fn(),
     selectScene: vi.fn(),

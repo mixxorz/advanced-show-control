@@ -1,5 +1,9 @@
 import type { ReactNode } from "react";
-import type { AppViewState, Lv1SystemIdentity } from "./types";
+import type {
+  AppViewState,
+  Lv1SystemIdentity,
+  TcpConnectLatencyResult,
+} from "./types";
 import { AppCommandsContext, AppStateContext } from "./appContextValues";
 
 export type AppCommands = {
@@ -19,6 +23,9 @@ export type AppCommands = {
   selectScene: (internalSceneId: string) => void;
   recallScene?: (internalSceneId: string) => void;
   selectSystem: (identity: Lv1SystemIdentity) => void | Promise<void>;
+  probeLv1TcpConnectLatency: (
+    identity: Lv1SystemIdentity,
+  ) => Promise<TcpConnectLatencyResult>;
   setAllChannelsScoped: (internalSceneId: string, scoped: boolean) => void;
   setChannelScoped: (
     internalSceneId: string,

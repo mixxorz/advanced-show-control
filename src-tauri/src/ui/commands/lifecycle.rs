@@ -39,6 +39,14 @@ pub async fn startup_auto_connect_lv1(
 }
 
 #[tauri::command]
+pub async fn probe_lv1_tcp_connect_latency(
+    identity: Lv1SystemIdentity,
+    timeout_ms: Option<u64>,
+) -> Result<crate::lv1::TcpConnectProbeResult, String> {
+    crate::lv1::probe_tcp_connect_latency(&identity.address, identity.port, timeout_ms).await
+}
+
+#[tauri::command]
 pub async fn disconnect_lv1(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {

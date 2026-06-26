@@ -8,8 +8,8 @@ pub(crate) mod show;
 
 pub use fade::abort_all_fades;
 pub use lifecycle::{
-    attempt_reconnect_lv1, connect_lv1_system, disconnect_lv1, frontend_ready, reconnect_timed_out,
-    startup_auto_connect_lv1,
+    attempt_reconnect_lv1, connect_lv1_system, disconnect_lv1, frontend_ready,
+    probe_lv1_tcp_connect_latency, reconnect_timed_out, startup_auto_connect_lv1,
 };
 pub use scenes::{
     cue_scene, delete_scene_config, link_scene_config, recall_scene, select_scene_config,

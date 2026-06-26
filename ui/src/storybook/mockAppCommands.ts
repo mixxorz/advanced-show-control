@@ -9,6 +9,7 @@ export const mockAppCommands: AppCommands = {
   disconnect: noop,
   newShowFile: noop,
   openShowFile: noop,
+  probeLv1TcpConnectLatency: async () => ({ tcpConnectMs: 3 }),
   saveShowFile: noop,
   saveShowFileAs: noop,
   selectScene: noop,

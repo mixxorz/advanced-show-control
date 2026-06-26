@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { AppSettings, Lv1SystemIdentity } from "./types";
+import type {
+  AppSettings,
+  Lv1SystemIdentity,
+  TcpConnectLatencyResult,
+} from "./types";
 
 export async function startupAutoConnectLv1() {
   return invoke<void>("startup_auto_connect_lv1");
@@ -19,6 +23,16 @@ export async function reconnectTimedOut(attempt: number) {
 
 export async function attemptReconnectLv1() {
   return invoke<void>("attempt_reconnect_lv1");
+}
+
+export async function probeLv1TcpConnectLatency(
+  identity: Lv1SystemIdentity,
+  timeoutMs = 500,
+) {
+  return invoke<TcpConnectLatencyResult>("probe_lv1_tcp_connect_latency", {
+    identity,
+    timeoutMs,
+  });
 }
 
 export async function setSceneScopePanEnabled(

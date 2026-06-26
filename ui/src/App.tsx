@@ -8,6 +8,7 @@ import {
   connectLv1System,
   deleteSceneConfig,
   linkSceneConfig,
+  probeLv1TcpConnectLatency,
   reconnectTimedOut,
   refreshLv1Discovery,
   startupAutoConnectLv1,
@@ -28,6 +29,7 @@ const services: AppRuntimeServices = {
   cueScene: (internalSceneId) => invoke<void>("cue_scene", { internalSceneId }),
   recallScene: (internalSceneId) =>
     invoke<void>("recall_scene", { internalSceneId }),
+  probeLv1TcpConnectLatency,
   reconnectTimedOut,
   refreshLv1Discovery,
   saveShowFile: () => invoke<void>("save_show_file"),

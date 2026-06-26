@@ -12,6 +12,7 @@ import {
   disconnectedAppViewState,
   type AppViewState,
   type Lv1SystemIdentity,
+  type TcpConnectLatencyResult,
 } from "./types";
 
 export type AppStatusListener = (appState: AppViewState) => void;
@@ -31,6 +32,9 @@ export type AppRuntimeServices = {
   saveShowFileAs: () => Promise<unknown>;
   cueScene: (internalSceneId: string) => Promise<unknown>;
   recallScene: (internalSceneId: string) => Promise<unknown>;
+  probeLv1TcpConnectLatency: (
+    identity: Lv1SystemIdentity,
+  ) => Promise<TcpConnectLatencyResult>;
   selectSceneConfig: (internalSceneId: string) => Promise<unknown>;
   setAllChannelsScoped: (
     internalSceneId: string,
@@ -250,6 +254,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       runCommand(() => services.cueScene(internalSceneId)),
     recallScene: (internalSceneId) =>
       runCommand(() => services.recallScene(internalSceneId)),
+    probeLv1TcpConnectLatency: (identity) =>
+      services.probeLv1TcpConnectLatency(identity),
     saveShowFile: () => runCommand(() => services.saveShowFile()),
     saveShowFileAs: () => runCommand(() => services.saveShowFileAs()),
     selectScene: (internalSceneId: string) =>

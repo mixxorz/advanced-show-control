@@ -24,6 +24,7 @@ function makeServices(
     openShowFile: vi.fn(async () => undefined),
     cueScene: vi.fn(async () => undefined),
     recallScene: vi.fn(async () => undefined),
+    probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
     reconnectTimedOut: vi.fn(async () => undefined),
     refreshLv1Discovery: vi.fn(async () => undefined),
     saveShowFile: vi.fn(async () => undefined),
