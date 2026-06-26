@@ -27,7 +27,9 @@ Out of scope:
 
 `DiscoveredLv1System` will contain only `identity` and `status`. Discovery parsing remains responsible for `/zDNS` identity data and does not record elapsed advertisement delay.
 
-The new Tauri command belongs at the UI command adapter layer because it is an acknowledged, stateless diagnostic request. It does not require `Lv1Actor`, `ShowState`, or `AppEventBus` ownership because it does not mutate app state and does not send LV1 protocol data.
+The TCP probe implementation belongs under the `lv1/` module because it is LV1 network behavior, even though it does not use the persistent `Lv1Actor` connection. The `ui/` Tauri command remains a thin adapter that accepts frontend input, calls the `lv1` probe API, and maps the result or error into frontend-safe data.
+
+The probe does not require `Lv1Actor`, `ShowState`, or `AppEventBus` ownership because it does not mutate app state and does not send LV1 protocol data.
 
 Command shape:
 
@@ -38,9 +40,9 @@ probe_lv1_tcp_connect_latency(identity, timeoutMs?) -> { tcpConnectMs }
 The command will:
 
 - Resolve the target from `identity.address` and `identity.port`.
-- Use a bounded timeout, defaulting to 500 ms and clamped to 100-2000 ms.
-- Measure from immediately before `TcpStream::connect` begins until it succeeds.
-- Immediately drop the stream after connect success.
+- Call a public `lv1` helper that uses a bounded timeout, defaulting to 500 ms and clamped to 100-2000 ms.
+- Measure inside `lv1/` from immediately before `TcpStream::connect` begins until it succeeds.
+- Immediately drop the stream after connect success inside the helper.
 - Return a frontend-safe error string on timeout or connection failure.
 
 This probe must not send any LV1 protocol messages and must not reuse or interfere with the persistent `Lv1Actor` connection.
@@ -73,8 +75,9 @@ Timeouts should produce the message `TCP probe timed out`.
 Rust tests:
 
 - Pure unit tests for discovery/system mapping without latency.
-- Pure unit tests for timeout clamping or probe target validation if implemented as helper functions.
-- A focused async test for a successful TCP connect probe can use a local `TcpListener` if it does not inspect private actor state.
+- Pure unit tests for timeout clamping or probe target validation in the `lv1` probe helper.
+- A focused async test for a successful `lv1` TCP connect probe can use a local `TcpListener` if it does not inspect private actor state.
+- A thin Tauri command adapter test is not required unless the adapter grows logic beyond deserialization, delegation, and error mapping.
 
 Frontend tests:
 
