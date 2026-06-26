@@ -3,6 +3,7 @@ use std::time::Duration;
 use tokio::time::Instant;
 
 use crate::lv1::{SceneListEntry, SceneState};
+use crate::scenes::scene_alignment::align_scene_configs;
 use crate::scenes::{SceneConfig, SceneDocument};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
@@ -250,6 +251,21 @@ impl ScenesState {
                     Some(now + SCENE_LIST_EDIT_SUPPRESSION_WINDOW);
             }
         }
+    }
+
+    pub fn observe_and_align_scene_list(
+        &mut self,
+        scene_list: Vec<SceneListEntry>,
+        now: Instant,
+    ) -> bool {
+        let should_seed_configs = self.scene_configs.is_empty();
+        let previous = self.scene_configs.clone();
+        self.observe_scene_list(scene_list.clone(), now);
+        if should_seed_configs {
+            self.scene_configs = align_scene_configs(Vec::new(), &scene_list);
+            self.clear_missing_cue();
+        }
+        previous != self.scene_configs
     }
 
     pub fn is_scene_list_edit_suppressed(&self, now: Instant) -> bool {

@@ -40,7 +40,11 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::show::open_show_file_dialog,
             crate::ui::commands::show::save_show_file,
             crate::ui::commands::show::save_show_file_as_dialog,
+            crate::ui::commands::scenes::link_scene_config,
             crate::ui::commands::scenes::recall_scene,
+            crate::ui::commands::scenes::set_channel_scoped,
+            crate::ui::commands::scenes::set_scene_duration_ms,
+            crate::ui::commands::scenes::store_scene_config,
             crate::ui::commands::lifecycle::connect_lv1_system,
             crate::ui::commands::lifecycle::attempt_reconnect_lv1,
             crate::ui::commands::lifecycle::startup_auto_connect_lv1,
@@ -55,4 +59,17 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             commands::debug_smoke_get_channel_gain,
             commands::debug_smoke_load_unlinked_scene_session,
         ])
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn debug_app_registers_smoke_scene_commands() {
+        let source = include_str!("debug.rs");
+
+        assert!(source.contains("crate::ui::commands::scenes::link_scene_config"));
+        assert!(source.contains("crate::ui::commands::scenes::set_channel_scoped"));
+        assert!(source.contains("crate::ui::commands::scenes::set_scene_duration_ms"));
+        assert!(source.contains("crate::ui::commands::scenes::store_scene_config"));
+    }
 }

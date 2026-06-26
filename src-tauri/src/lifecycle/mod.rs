@@ -559,18 +559,21 @@ impl AppLifecycle {
         let initial_show_state = rx
             .await
             .map_err(|_| "Show state reply channel is closed".to_string())?;
-        let scenes_handle = self
-            .show_peers
-            .scenes()
-            .ok_or_else(|| "Scenes state is unavailable".to_string())?;
-        let (reply, rx) = oneshot::channel();
-        scenes_handle
-            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| "Scenes state is unavailable".to_string())?;
-        let initial_scenes_state = rx
-            .await
-            .map_err(|_| "Scenes state reply channel is closed".to_string())?;
+        let initial_scenes_state = if let Some(scenes_handle) = self.show_peers.scenes() {
+            let (reply, rx) = oneshot::channel();
+            scenes_handle
+                .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+                .await
+                .map_err(|_| "Scenes state is unavailable".to_string())?;
+            rx.await
+                .map_err(|_| "Scenes state reply channel is closed".to_string())?
+        } else {
+            crate::scenes::ScenesProjectionState {
+                scene_configs: Vec::new(),
+                cued_scene_internal_id: None,
+                selected_scene_internal_id: None,
+            }
+        };
         let settings_handle = self.current_settings().await;
         let (reply, rx) = oneshot::channel();
         settings_handle
@@ -774,6 +777,20 @@ mod tests {
             scene_list: vec![],
             channels: vec![],
         }
+    }
+
+    #[tokio::test]
+    async fn frontend_ready_starts_projection_before_connected_scenes_exist() {
+        let app = mock_app();
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus);
+        let (log_tx, log_rx) = tokio::sync::broadcast::channel(8);
+
+        let result = lifecycle.frontend_ready(app.handle().clone(), log_rx).await;
+
+        assert!(result.is_ok());
+        assert!(lifecycle.inner.lock().await.frontend_ready);
+        drop(log_tx);
     }
 
     #[tokio::test]

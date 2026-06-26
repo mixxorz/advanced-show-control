@@ -159,7 +159,7 @@ pub async fn cue_scene(
 }
 
 #[tauri::command]
-pub async fn store_scene_config_from_current_lv1(
+pub async fn store_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<ScenesCommandResult, String> {

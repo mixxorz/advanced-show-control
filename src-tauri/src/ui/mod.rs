@@ -56,7 +56,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::scenes::set_scene_duration_ms,
             commands::scenes::set_scene_scope_faders_enabled,
             commands::scenes::set_scene_scope_pan_enabled,
-            commands::scenes::store_scene_config_from_current_lv1,
+            commands::scenes::store_scene_config,
             commands::lifecycle::connect_lv1_system,
             commands::lifecycle::attempt_reconnect_lv1,
             commands::lifecycle::startup_auto_connect_lv1,
@@ -107,7 +107,7 @@ mod tests {
         let _ = super::commands::scenes::set_scene_duration_ms;
         let _ = super::commands::scenes::set_scene_scope_faders_enabled;
         let _ = super::commands::scenes::set_scene_scope_pan_enabled;
-        let _ = super::commands::scenes::store_scene_config_from_current_lv1;
+        let _ = super::commands::scenes::store_scene_config;
         let _ = super::commands::settings::replace_app_settings;
         let _ = super::commands::show::set_lockout;
     }

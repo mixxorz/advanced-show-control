@@ -196,7 +196,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                 event = events.recv() => {
                     match event {
                         Ok(AppEvent::Lv1 { event: Lv1Event::SceneListChanged(scene_list), .. }) => {
-                            recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
+                            if recall_state.observe_and_align_scene_list(scene_list, tokio::time::Instant::now()) {
+                                publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
+                            }
                         }
                         Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
                             pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
@@ -256,7 +258,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                         event: Lv1Event::SceneListChanged(scene_list),
                         ..
                     }) => {
-                        recall_state.observe_scene_list(scene_list, tokio::time::Instant::now());
+                        if recall_state.observe_and_align_scene_list(scene_list, tokio::time::Instant::now()) {
+                            publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
+                        }
                     }
                     Ok(AppEvent::Lv1 {
                         event: Lv1Event::SceneChanged(scene),
@@ -706,6 +710,51 @@ mod tests {
             scene_entry(4, "Song 3"),
             scene_entry(5, "Test"),
         ]
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scene_list_changed_publishes_default_scene_configs() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
+        peers.set_peers(lv1, fade);
+        task.spawn();
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneListChanged(vec![
+                scene_entry(0, "Smoke A"),
+                scene_entry(1, "Smoke B"),
+            ]),
+        });
+
+        let state = loop {
+            if let AppEvent::Scenes {
+                generation: 1,
+                event:
+                    ScenesEvent::StateChanged {
+                        state,
+                        persisted_scene_edit,
+                        ..
+                    },
+            } = events.recv().await.unwrap()
+            {
+                assert!(persisted_scene_edit);
+                break state;
+            }
+        };
+        assert_eq!(state.scene_configs.len(), 2);
+        assert_eq!(state.scene_configs[0].scene_index, Some(0));
+        assert_eq!(state.scene_configs[0].scene_name, "Smoke A");
+        assert_eq!(state.scene_configs[1].scene_index, Some(1));
+        assert_eq!(state.scene_configs[1].scene_name, "Smoke B");
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
