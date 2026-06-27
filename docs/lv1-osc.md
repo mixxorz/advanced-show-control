@@ -127,6 +127,13 @@ Active width values come from `/Notify/PanArcWidth`.
 | `12`  | Link/DCAs                  | `Link 1` through `Link 16`                 |
 | `24`  | Hidden link/control entry  | `HidLink:0`                                |
 
+### Channel names
+
+| Direction     | Address              | Arguments                              | Meaning              |
+| ------------- | -------------------- | -------------------------------------- | -------------------- |
+| LV1 to client | `/Notify/Track/Name` | `i:<group> i:<channel> s:<name> T\|F` | Channel name changed |
+| Client to LV1 | `/Set/TrackName`     | `i:<group> i:<channel> s:<name>`       | Set channel name     |
+
 ## Scenes
 
 ### Scene list
@@ -354,8 +361,6 @@ Known selectors:
 | `/Notify/ServiceVersion`    | LV1 version information                                                 |
 | `/Notify/CurrentSessionID`  | Session identifier                                                      |
 | `/Notify/TrackColor`        | Channel color metadata                                                  |
-| `/Notify/Track/Name`        | Channel naming notification                                             |
-| `/Notify/TrackName`         | Channel naming notification                                             |
 | `/Notify/NumberOfChannels`  | Input-channel count candidate; `/Channels` provides the fuller topology |
 
 ## Unconfirmed
