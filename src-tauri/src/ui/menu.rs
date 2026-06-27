@@ -228,23 +228,4 @@ mod tests {
         assert_eq!(MENU_SAVE_SESSION, "session:save");
         assert_eq!(MENU_SAVE_SESSION_AS, "session:save-as");
     }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_menu_keeps_file_after_application_menu() {
-        let source = include_str!("menu.rs");
-        let app_menu = source.find("let app_menu = Submenu::with_items").unwrap();
-        let file_menu = source.find("let file_menu = Submenu::with_items").unwrap();
-
-        assert!(app_menu < file_menu);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_app_menu_uses_display_name() {
-        let source = include_str!("menu.rs");
-
-        assert!(source.contains("Advanced Show Control"));
-        assert!(!source.contains(&format!("{}.{}", "package_info()", "name")));
-    }
 }

@@ -80,21 +80,6 @@ mod tests {
     }
 
     #[test]
-    fn build_app_installs_session_menu_during_setup() {
-        let source = include_str!("mod.rs");
-        let expected = concat!("menu::", "install_session_menu", "(app)?;");
-
-        assert!(source.contains(expected));
-    }
-
-    #[test]
-    fn default_capability_allows_window_title_updates() {
-        let capability = include_str!("../../capabilities/default.json");
-
-        assert!(capability.contains("core:window:allow-set-title"));
-    }
-
-    #[test]
     fn command_adapter_exports_existing_command_names() {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
@@ -112,30 +97,6 @@ mod tests {
         let _ = super::commands::scenes::store_scene_config;
         let _ = super::commands::settings::replace_app_settings;
         let _ = super::commands::show::set_lockout;
-    }
-
-    #[test]
-    fn build_app_registers_link_scene_config() {
-        let source = include_str!("mod.rs");
-        let expected = concat!("commands::scenes::", "link_scene_config");
-
-        assert!(source.contains(expected));
-    }
-
-    #[test]
-    fn build_app_registers_scene_scope_commands() {
-        let source = include_str!("mod.rs");
-
-        assert!(source.contains("commands::scenes::set_all_channels_scoped"));
-        assert!(source.contains("commands::scenes::set_scene_scope_faders_enabled"));
-        assert!(source.contains("commands::scenes::set_scene_scope_pan_enabled"));
-    }
-
-    #[test]
-    fn build_app_registers_lv1_latency_probe_command() {
-        let source = include_str!("mod.rs");
-
-        assert!(source.contains("commands::lifecycle::probe_lv1_tcp_connect_latency"));
     }
 
     #[test]

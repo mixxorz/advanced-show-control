@@ -92,11 +92,15 @@ describe("ConnectionModal", () => {
 
   it("updates TCP latency once per second without a separate test action", async () => {
     vi.useFakeTimers();
-    const probeLv1TcpConnectLatency = vi
-      .fn()
-      .mockResolvedValueOnce({ tcpConnectMs: 5 })
-      .mockResolvedValueOnce({ tcpConnectMs: 8 })
-      .mockResolvedValue({ tcpConnectMs: 13 });
+    let probeRound = 0;
+    const probeLv1TcpConnectLatency = vi.fn(
+      async (identity: DiscoveredLv1System["identity"]) => {
+        const isFirstSystem = identity.address === "192.168.1.42";
+        const tcpConnectMs = probeRound === 0 ? (isFirstSystem ? 5 : 8) : 13;
+        if (!isFirstSystem) probeRound += 1;
+        return { tcpConnectMs };
+      },
+    );
     renderModal({
       commands: { probeLv1TcpConnectLatency },
     });
