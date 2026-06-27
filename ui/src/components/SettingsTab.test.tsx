@@ -341,4 +341,65 @@ describe("SettingsTab", () => {
       },
     });
   });
+
+  it("rejects a captured shortcut already assigned to the other configurable action", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "c", code: "KeyC" });
+
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("Already assigned to Cue")).toBeInTheDocument();
+  });
+
+  it("rejects a captured shortcut reserved by a fixed File menu accelerator", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change Cue keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "s", code: "KeyS", ctrlKey: true });
+
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Already assigned to Save Session"),
+    ).toBeInTheDocument();
+  });
+
+  it("clears shortcut conflict text after a successful non-conflicting capture", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "c", code: "KeyC" });
+    expect(screen.getByText("Already assigned to Cue")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "Enter", code: "Enter", shiftKey: true });
+
+    expect(
+      screen.queryByText("Already assigned to Cue"),
+    ).not.toBeInTheDocument();
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      keyboardShortcuts: {
+        ...disconnectedAppViewState.settings.keyboardShortcuts,
+        go: {
+          key: "Enter",
+          modifiers: { shift: true, control: false, alt: false, meta: false },
+        },
+      },
+    });
+  });
 });
