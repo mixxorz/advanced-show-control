@@ -172,7 +172,6 @@ function makeDiscoveredSystems(): DiscoveredLv1System[] {
         address: "192.168.1.42",
         port: 22000,
       },
-      latencyMs: 3,
       status: "available",
     },
     {
@@ -182,7 +181,6 @@ function makeDiscoveredSystems(): DiscoveredLv1System[] {
         address: "192.168.1.43",
         port: 22000,
       },
-      latencyMs: null,
       status: "unavailable",
     },
   ];

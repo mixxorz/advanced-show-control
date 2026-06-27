@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import type { DiscoveredLv1System, Lv1SystemIdentity } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
@@ -5,6 +6,49 @@ import { ConsoleButton } from "./ConsoleButton";
 export function ConnectionModal(props: { onResume: () => void }) {
   const { appState, commandError } = useAppState();
   const commands = useAppCommands();
+  const [latencyBySystem, setLatencyBySystem] = useState<
+    Record<string, number>
+  >({});
+
+  useEffect(() => {
+    if (appState.discoveredLv1Systems.length === 0) {
+      return;
+    }
+    let cancelled = false;
+
+    async function refreshLatencies() {
+      const entries = await Promise.all(
+        appState.discoveredLv1Systems.map(async (system) => {
+          try {
+            const result = await commands.probeLv1TcpConnectLatency(
+              system.identity,
+            );
+            return [systemKey(system), result.tcpConnectMs] as const;
+          } catch {
+            return [systemKey(system), null] as const;
+          }
+        }),
+      );
+      if (cancelled) return;
+      setLatencyBySystem(
+        Object.fromEntries(
+          entries.filter(
+            (entry): entry is readonly [string, number] => entry[1] !== null,
+          ),
+        ),
+      );
+    }
+
+    void refreshLatencies();
+    const interval = window.setInterval(() => {
+      void refreshLatencies();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [appState.discoveredLv1Systems, commands]);
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/75 p-6 font-ui text-console-primary">
@@ -54,6 +98,7 @@ export function ConnectionModal(props: { onResume: () => void }) {
                 <SystemRow
                   connectedIdentity={appState.connectedLv1Identity}
                   key={systemKey(system)}
+                  latencyMs={latencyBySystem[systemKey(system)] ?? null}
                   system={system}
                   onSelectSystem={commands.selectSystem}
                   onResume={props.onResume}
@@ -69,6 +114,7 @@ export function ConnectionModal(props: { onResume: () => void }) {
 
 function SystemRow(props: {
   connectedIdentity: Lv1SystemIdentity | null;
+  latencyMs: number | null;
   system: DiscoveredLv1System;
   onSelectSystem: (identity: Lv1SystemIdentity) => void;
   onResume: () => void;
@@ -113,34 +159,34 @@ function SystemRow(props: {
           {system.identity.address}:{system.identity.port}
         </div>
       </div>
-      {isUnavailable ? (
-        <div className="flex items-center gap-3 font-mono text-sm text-status-danger md:justify-self-end">
-          <span>Unavailable</span>
-          <span className="h-4 border-l border-console-line" />
-          <span>
-            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
-          </span>
-        </div>
-      ) : isConnected ? (
-        <div className="flex items-center gap-3 font-mono text-sm text-status-current md:justify-self-end">
-          <span>Connected</span>
-          <span className="h-4 border-l border-console-line" />
-          <span>
-            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
-          </span>
-        </div>
-      ) : (
-        <div className="flex items-center gap-3 font-mono text-sm text-status-cued md:justify-self-end">
-          <span>Available</span>
-          <span className="h-4 border-l border-console-line" />
-          <span>
-            {system.latencyMs === null ? "-- ms" : `${system.latencyMs} ms`}
-          </span>
-        </div>
-      )}
+      <div className="flex items-center gap-3 font-mono text-sm md:justify-self-end">
+        <span
+          className={
+            isUnavailable
+              ? "text-status-danger"
+              : isConnected
+                ? "text-status-current"
+                : "text-status-cued"
+          }
+        >
+          {isUnavailable
+            ? "Unavailable"
+            : isConnected
+              ? "Connected"
+              : "Available"}
+        </span>
+        <span className="h-4 border-l border-console-line" />
+        <span className="text-console-secondary">
+          {latencyLabel(props.latencyMs)}
+        </span>
+      </div>
       <span className="h-2.5 w-2.5 rotate-45 border-t-2 border-r-2 border-console-secondary md:justify-self-end" />
     </button>
   );
+}
+
+function latencyLabel(latencyMs: number | null) {
+  return latencyMs === null ? "-- ms" : `${latencyMs} ms`;
 }
 
 function identitiesMatch(

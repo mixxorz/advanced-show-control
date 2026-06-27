@@ -60,16 +60,3 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             commands::debug_smoke_load_unlinked_scene_session,
         ])
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn debug_app_registers_smoke_scene_commands() {
-        let source = include_str!("debug.rs");
-
-        assert!(source.contains("crate::ui::commands::scenes::link_scene_config"));
-        assert!(source.contains("crate::ui::commands::scenes::set_channel_scoped"));
-        assert!(source.contains("crate::ui::commands::scenes::set_scene_duration_ms"));
-        assert!(source.contains("crate::ui::commands::scenes::store_scene_config"));
-    }
-}

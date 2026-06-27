@@ -54,6 +54,8 @@ Rust tests should fit one of these categories:
 
 Do not test side-effecting actor behavior by directly mutating actor internals or inspecting private state.
 
+Do not write source-string tests that read Rust source files with `include_str!` or similar mechanisms and assert on implementation text. Test behavior through public functions, actor mailboxes, command adapters, or smoke tests instead.
+
 Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks. Avoid `cargo test` unless a test harness feature specifically requires it.
 
 ## Frontend

@@ -37,6 +37,10 @@ export type AppSettings = {
   faderOverrideSensitivity: number;
 };
 
+export type TcpConnectLatencyResult = {
+  tcpConnectMs: number;
+};
+
 export type Lv1SystemIdentity = {
   uuid: string | null;
   host: string | null;
@@ -46,7 +50,6 @@ export type Lv1SystemIdentity = {
 
 export type DiscoveredLv1System = {
   identity: Lv1SystemIdentity;
-  latencyMs: number | null;
   status: DiscoveredLv1Status;
 };
 

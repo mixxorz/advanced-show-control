@@ -21,7 +21,6 @@ const manyDiscoveredSystems: DiscoveredLv1System[] = Array.from(
       address: `192.168.1.${42 + index}`,
       port: 22000,
     },
-    latencyMs: index % 4 === 0 ? null : 3 + index,
     status: index % 4 === 0 ? "unavailable" : "available",
   }),
 );
@@ -41,7 +40,6 @@ const connectedSystemsAppState: AppViewState = {
         address: "192.168.1.42",
         port: 22000,
       },
-      latencyMs: 3,
       status: "connected",
     },
     {
@@ -51,7 +49,6 @@ const connectedSystemsAppState: AppViewState = {
         address: "192.168.1.43",
         port: 22000,
       },
-      latencyMs: 6,
       status: "available",
     },
     {
@@ -61,7 +58,6 @@ const connectedSystemsAppState: AppViewState = {
         address: "192.168.1.44",
         port: 22000,
       },
-      latencyMs: null,
       status: "unavailable",
     },
   ],
