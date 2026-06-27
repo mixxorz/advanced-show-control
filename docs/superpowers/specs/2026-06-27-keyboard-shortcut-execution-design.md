@@ -10,7 +10,7 @@ This change wires shortcut behavior without changing the persisted settings shap
 
 - Execute the saved `GO` keyboard shortcut from the React keyboard layer.
 - Execute the saved `Cue` keyboard shortcut from the React keyboard layer.
-- Detect shortcut assignment conflicts when capturing `GO` or `Cue` shortcuts.
+- Detect shortcut assignment conflicts when capturing `GO` or `Cue` shortcuts, including conflicts with fixed File menu accelerators.
 - Add standard native keyboard accelerators for New Session, Open Session, Save Session, and Save As.
 - Keep shortcut capture higher priority than execution so editing a shortcut never triggers an app action.
 - Reuse existing app commands and menu handlers instead of introducing parallel command paths.
@@ -38,7 +38,7 @@ Standard file shortcuts stay in the native Tauri File menu. The menu already own
 
 Shortcut capture remains modal within the keyboard layer. While a shortcut input is capturing, the capture handler consumes delivered key events before the execution handler sees them.
 
-If the user captures a shortcut that is already assigned to another configurable shortcut action, Settings rejects the new assignment, leaves the existing shortcut value unchanged, and shows red inline text to the right of that row's keyboard input capture box. The message should name the conflicting action, such as `Already assigned to GO` or `Already assigned to Cue`. The message clears when the user starts another capture, successfully saves a non-conflicting shortcut, or leaves the Settings tab.
+If the user captures a shortcut that is already assigned to another configurable shortcut action or a fixed File menu accelerator, Settings rejects the new assignment, leaves the existing shortcut value unchanged, and shows red inline text to the right of that row's keyboard input capture box. The message should name the conflicting action, such as `Already assigned to GO`, `Already assigned to Cue`, `Already assigned to Save Session`, or `Already assigned to Save As`. The message clears when the user starts another capture, successfully saves a non-conflicting shortcut, or leaves the Settings tab.
 
 The native File menu exposes these accelerators:
 
@@ -60,13 +60,22 @@ The handler should:
 
 The handler should not call Tauri commands directly. It should call the existing `AppCommands` methods that already route through `AppRuntime` error handling.
 
-Settings should perform conflict detection before calling `replaceAppSettings`. The check only compares the shortcut being captured against other configurable shortcut actions. It does not compare against native File menu accelerators because those are fixed platform shortcuts and not part of the user-editable settings model.
+Settings should perform conflict detection before calling `replaceAppSettings`. The check compares the shortcut being captured against other configurable shortcut actions and a small hardcoded React list of fixed File menu accelerators. The fixed list exists only for validation and messaging; native menu execution remains owned by Tauri.
+
+The hardcoded fixed shortcuts for conflict validation are:
+
+- New Session: `CmdOrCtrl+N`
+- Open Session: `CmdOrCtrl+O`
+- Save Session: `CmdOrCtrl+S`
+- Save As: `CmdOrCtrl+Shift+S`
+
+For matching, `CmdOrCtrl` means `meta: true` on macOS and `control: true` on non-macOS platforms, with the other command modifier false. This mirrors the display/platform split already used by shortcut formatting.
 
 ## Matching Rules
 
 A keyboard event matches a saved shortcut when the comparable key label and all four modifier booleans are equal. The implementation should share key-label normalization with shortcut capture so execution uses the same conventions as stored settings: `Space`, `Enter`, uppercase letters, and unshifted digit keys with `shift: true`.
 
-If two configured shortcuts are identical because of a pre-existing or manually edited settings file, `GO` should take precedence over `Cue` because it is the primary show-operation action. New duplicates captured through Settings are rejected before persistence.
+If two configured shortcuts are identical because of a pre-existing or manually edited settings file, `GO` should take precedence over `Cue` because it is the primary show-operation action. New duplicates or fixed-file-shortcut conflicts captured through Settings are rejected before persistence.
 
 ## Native Menu Architecture
 
@@ -93,6 +102,7 @@ Add frontend tests for:
 - Shortcut capture preempts shortcut execution.
 - `GO` wins when `GO` and `Cue` are configured to the same shortcut.
 - Capturing a shortcut already assigned to the other action leaves settings unchanged and shows inline red conflict text beside the capture control.
+- Capturing a shortcut reserved by a fixed File menu accelerator leaves settings unchanged and shows inline red conflict text naming the file action.
 - Conflict text clears after a successful non-conflicting capture.
 
 Add Rust pure unit coverage for the File menu item accelerators if the existing menu tests can inspect the constructed accelerator values without launching the app. If not, keep the Rust change minimal and rely on existing stable menu-id tests plus manual code inspection.
