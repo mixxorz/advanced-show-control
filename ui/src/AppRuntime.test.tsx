@@ -277,6 +277,163 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.recallScene).toHaveBeenCalledTimes(1);
   });
 
+  it("recalls the cued scene when the configured GO shortcut is pressed", async () => {
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    const scene = connectedAppState.sceneConfigs[0];
+    const appState = {
+      ...connectedAppState,
+      cuedSceneInternalId: scene.internalSceneId,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: " ",
+          code: "Space",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallScene).toHaveBeenCalledWith(scene.internalSceneId);
+  });
+
+  it("does not run GO when no scene is cued", async () => {
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    const appState = {
+      ...connectedAppState,
+      cuedSceneInternalId: null,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: " ",
+          code: "Space",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallScene).not.toHaveBeenCalled();
+  });
+
+  it("cues the selected linked scene when the configured Cue shortcut is pressed", async () => {
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    const scene = connectedAppState.sceneConfigs[0];
+
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.cueScene).toHaveBeenCalledWith(scene.internalSceneId);
+  });
+
+  it("does not run Cue for an unlinked selected scene", async () => {
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    const unlinked = { ...connectedAppState.sceneConfigs[0], sceneIndex: null };
+    const appState = {
+      ...connectedAppState,
+      sceneConfigs: [unlinked],
+      selectedSceneInternalId: unlinked.internalSceneId,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.cueScene).not.toHaveBeenCalled();
+  });
+
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {
     const user = userEvent.setup();
     let listener: ((snapshot: AppViewState) => void) | null = null;

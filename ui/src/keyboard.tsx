@@ -96,7 +96,7 @@ export function KeyboardProvider(props: { children: ReactNode }) {
 
         clearCapture();
         current.onCapture({
-          key: normalizeCapturedKey(event),
+          key: shortcutKeyFromEvent(event),
           modifiers: event.modifiers,
         });
         return "handled";
@@ -177,10 +177,23 @@ function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
   };
 }
 
-function normalizeCapturedKey(event: AppKeyboardEvent) {
+export function shortcutKeyFromEvent(event: AppKeyboardEvent) {
   const key =
     keyFromCode(event.code) ?? printableCodeFallback(event) ?? event.key;
   return key.length === 1 ? key.toUpperCase() : key;
+}
+
+export function shortcutMatchesEvent(
+  shortcut: KeyboardShortcut,
+  event: AppKeyboardEvent,
+) {
+  return (
+    shortcut.key === shortcutKeyFromEvent(event) &&
+    shortcut.modifiers.shift === event.modifiers.shift &&
+    shortcut.modifiers.control === event.modifiers.control &&
+    shortcut.modifiers.alt === event.modifiers.alt &&
+    shortcut.modifiers.meta === event.modifiers.meta
+  );
 }
 
 function keyFromCode(code: string) {

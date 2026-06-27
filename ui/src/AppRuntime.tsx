@@ -7,7 +7,11 @@ import {
 } from "./appContext";
 import { AppShell, type MainTab } from "./components/AppShell";
 import { formatSessionWindowTitle } from "./sessionTitle";
-import { KeyboardProvider } from "./keyboard";
+import {
+  KeyboardProvider,
+  shortcutMatchesEvent,
+  useKeyboardHandler,
+} from "./keyboard";
 import {
   disconnectedAppViewState,
   type AppViewState,
@@ -72,6 +76,60 @@ export type AppRuntimeServices = {
 };
 
 type ConnectionModalMode = "startup" | "manual" | null;
+
+const SHORTCUT_EXECUTION_PRIORITY = 100;
+
+function AppShortcutHandler(props: {
+  appState: AppViewState;
+  commands: AppCommands;
+}) {
+  useKeyboardHandler({
+    id: "app-shortcut-execution",
+    priority: SHORTCUT_EXECUTION_PRIORITY,
+    handleKeyDown: (event) => {
+      if (
+        shortcutMatchesEvent(
+          props.appState.settings.keyboardShortcuts.go,
+          event,
+        )
+      ) {
+        if (
+          !props.appState.cuedSceneInternalId ||
+          !props.commands.recallScene
+        ) {
+          return "ignored";
+        }
+        props.commands.recallScene(props.appState.cuedSceneInternalId);
+        return "handled";
+      }
+
+      if (
+        shortcutMatchesEvent(
+          props.appState.settings.keyboardShortcuts.cue,
+          event,
+        )
+      ) {
+        const selected = props.appState.sceneConfigs.find(
+          (scene) =>
+            scene.internalSceneId === props.appState.selectedSceneInternalId,
+        );
+        if (
+          !selected ||
+          selected.sceneIndex === null ||
+          !props.commands.cueScene
+        ) {
+          return "ignored";
+        }
+        props.commands.cueScene(selected.internalSceneId);
+        return "handled";
+      }
+
+      return "ignored";
+    },
+  });
+
+  return null;
+}
 
 export function AppRuntime(props: { services: AppRuntimeServices }) {
   const { services } = props;
@@ -307,6 +365,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     <KeyboardProvider>
       <AppStateProvider appState={appState} commandError={commandError}>
         <AppCommandsProvider commands={commands}>
+          <AppShortcutHandler appState={appState} commands={commands} />
           <AppShell
             activeTab={activeTab}
             onOpenConnection={() => setConnectionModalMode("manual")}

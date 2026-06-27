@@ -2,6 +2,8 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
   KeyboardProvider,
+  shortcutKeyFromEvent,
+  shortcutMatchesEvent,
   useKeyboardHandler,
   useShortcutCapture,
 } from "./keyboard";
@@ -240,6 +242,74 @@ describe("KeyboardProvider", () => {
       key: "IntlBackslash",
       modifiers: { shift: true, control: false, alt: false, meta: false },
     });
+  });
+
+  it("normalizes comparable shortcut keys from keydown events", () => {
+    const seen: string[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "recorder",
+        priority: 1,
+        handleKeyDown: (event) => {
+          seen.push(shortcutKeyFromEvent(event));
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown(" ", { code: "Space" });
+    fireKeyDown("q", { code: "KeyQ" });
+    fireKeyDown("@", { code: "Digit2", shiftKey: true });
+
+    expect(seen).toEqual(["Space", "Q", "2"]);
+  });
+
+  it("matches shortcuts by comparable key and modifiers", () => {
+    const matches: boolean[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "matcher",
+        priority: 1,
+        handleKeyDown: (event) => {
+          matches.push(
+            shortcutMatchesEvent(
+              {
+                key: "S",
+                modifiers: {
+                  shift: true,
+                  control: true,
+                  alt: false,
+                  meta: false,
+                },
+              },
+              event,
+            ),
+          );
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("S", { code: "KeyS", shiftKey: true, ctrlKey: true });
+    fireKeyDown("s", { code: "KeyS", ctrlKey: true });
+
+    expect(matches).toEqual([true, false]);
   });
 });
 
