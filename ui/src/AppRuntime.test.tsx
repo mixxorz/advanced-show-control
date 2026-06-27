@@ -434,6 +434,106 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.cueScene).not.toHaveBeenCalled();
   });
 
+  it("does not execute shortcuts while shortcut capture is active", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: " ",
+          code: "Space",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallScene).not.toHaveBeenCalled();
+  });
+
+  it("gives GO precedence when GO and Cue are configured to the same shortcut", async () => {
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    const scene = connectedAppState.sceneConfigs[0];
+    const appState = {
+      ...connectedAppState,
+      cuedSceneInternalId: scene.internalSceneId,
+      settings: {
+        ...connectedAppState.settings,
+        keyboardShortcuts: {
+          go: {
+            key: "C",
+            modifiers: {
+              shift: false,
+              control: false,
+              alt: false,
+              meta: false,
+            },
+          },
+          cue: {
+            key: "C",
+            modifiers: {
+              shift: false,
+              control: false,
+              alt: false,
+              meta: false,
+            },
+          },
+        },
+      },
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallScene).toHaveBeenCalledWith(scene.internalSceneId);
+    expect(services.cueScene).not.toHaveBeenCalled();
+  });
+
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {
     const user = userEvent.setup();
     let listener: ((snapshot: AppViewState) => void) | null = null;
