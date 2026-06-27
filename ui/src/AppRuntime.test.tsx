@@ -1,4 +1,5 @@
 import { act, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -306,7 +307,7 @@ describe("AppRuntime connection lifecycle", () => {
       ).not.toBeInTheDocument();
     });
 
-    act(() => {
+    await act(async () => {
       window.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: " ",
@@ -435,36 +436,53 @@ describe("AppRuntime connection lifecycle", () => {
   });
 
   it("does not execute shortcuts while shortcut capture is active", async () => {
-    const user = userEvent.setup();
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     const services = makeServices({
       startupAutoConnectLv1: vi.fn(async () => undefined),
     });
 
-    render(<AppRuntime services={services} />);
+    try {
+      render(<AppRuntime services={services} />);
 
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Connect to LV1" }),
-      ).not.toBeInTheDocument();
-    });
+      await waitFor(() => {
+        expect(
+          screen.queryByRole("heading", { name: "Connect to LV1" }),
+        ).not.toBeInTheDocument();
+      });
 
-    await user.click(screen.getByRole("button", { name: "Settings" }));
-    await user.click(
-      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
-    );
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      });
 
-    act(() => {
-      window.dispatchEvent(
-        new KeyboardEvent("keydown", {
-          key: " ",
-          code: "Space",
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-    });
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+        );
+      });
 
-    expect(services.recallScene).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(
+          screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+        ).toHaveTextContent("...");
+      });
+
+      await act(async () => {
+        window.dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: " ",
+            code: "Space",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+
+      expect(services.recallScene).not.toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   it("gives GO precedence when GO and Cue are configured to the same shortcut", async () => {
