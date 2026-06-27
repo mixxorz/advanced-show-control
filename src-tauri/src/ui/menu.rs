@@ -14,6 +14,10 @@ pub const MENU_NEW_SESSION: &str = "session:new";
 pub const MENU_OPEN_SESSION: &str = "session:open";
 pub const MENU_SAVE_SESSION: &str = "session:save";
 pub const MENU_SAVE_SESSION_AS: &str = "session:save-as";
+pub const MENU_NEW_SESSION_ACCELERATOR: &str = "CmdOrCtrl+N";
+pub const MENU_OPEN_SESSION_ACCELERATOR: &str = "CmdOrCtrl+O";
+pub const MENU_SAVE_SESSION_ACCELERATOR: &str = "CmdOrCtrl+S";
+pub const MENU_SAVE_SESSION_AS_ACCELERATOR: &str = "CmdOrCtrl+Shift+S";
 #[cfg(target_os = "macos")]
 const APP_DISPLAY_NAME: &str = "Advanced Show Control";
 #[cfg(target_os = "macos")]
@@ -46,27 +50,33 @@ pub fn install_session_menu(app: &mut App<tauri::Wry>) -> tauri::Result<()> {
         "File",
         true,
         &[
-            &MenuItem::with_id(handle, MENU_NEW_SESSION, "New Session", true, None::<&str>)?,
+            &MenuItem::with_id(
+                handle,
+                MENU_NEW_SESSION,
+                "New Session",
+                true,
+                Some(MENU_NEW_SESSION_ACCELERATOR),
+            )?,
             &MenuItem::with_id(
                 handle,
                 MENU_OPEN_SESSION,
                 "Open Session...",
                 true,
-                None::<&str>,
+                Some(MENU_OPEN_SESSION_ACCELERATOR),
             )?,
             &MenuItem::with_id(
                 handle,
                 MENU_SAVE_SESSION,
                 "Save Session",
                 true,
-                None::<&str>,
+                Some(MENU_SAVE_SESSION_ACCELERATOR),
             )?,
             &MenuItem::with_id(
                 handle,
                 MENU_SAVE_SESSION_AS,
                 "Save As...",
                 true,
-                None::<&str>,
+                Some(MENU_SAVE_SESSION_AS_ACCELERATOR),
             )?,
         ],
     )?;
@@ -227,5 +237,13 @@ mod tests {
         assert_eq!(MENU_OPEN_SESSION, "session:open");
         assert_eq!(MENU_SAVE_SESSION, "session:save");
         assert_eq!(MENU_SAVE_SESSION_AS, "session:save-as");
+    }
+
+    #[test]
+    fn file_menu_accelerators_are_standard() {
+        assert_eq!(MENU_NEW_SESSION_ACCELERATOR, "CmdOrCtrl+N");
+        assert_eq!(MENU_OPEN_SESSION_ACCELERATOR, "CmdOrCtrl+O");
+        assert_eq!(MENU_SAVE_SESSION_ACCELERATOR, "CmdOrCtrl+S");
+        assert_eq!(MENU_SAVE_SESSION_AS_ACCELERATOR, "CmdOrCtrl+Shift+S");
     }
 }
