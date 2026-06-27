@@ -10,13 +10,14 @@ This change wires shortcut behavior without changing the persisted settings shap
 
 - Execute the saved `GO` keyboard shortcut from the React keyboard layer.
 - Execute the saved `Cue` keyboard shortcut from the React keyboard layer.
+- Detect shortcut assignment conflicts when capturing `GO` or `Cue` shortcuts.
 - Add standard native keyboard accelerators for New Session, Open Session, Save Session, and Save As.
 - Keep shortcut capture higher priority than execution so editing a shortcut never triggers an app action.
 - Reuse existing app commands and menu handlers instead of introducing parallel command paths.
 
 ## Non-Goals
 
-- Do not add shortcut conflict detection or warnings.
+- Do not add shortcut conflict resolution beyond rejecting a newly captured duplicate.
 - Do not add global OS-level shortcuts that fire while the app is unfocused.
 - Do not change Rust settings types or settings persistence.
 - Do not implement Cue Lists behavior for auto-advance or cue-list-specific GO semantics.
@@ -36,6 +37,8 @@ Standard file shortcuts stay in the native Tauri File menu. The menu already own
 `Cue` uses the saved `settings.keyboardShortcuts.cue` shortcut. When pressed while the app window is focused, it cues the currently selected scene if one exists, the scene is linked to an LV1 scene, and cue is available. This matches the selected scene header's Cue button behavior.
 
 Shortcut capture remains modal within the keyboard layer. While a shortcut input is capturing, the capture handler consumes delivered key events before the execution handler sees them.
+
+If the user captures a shortcut that is already assigned to another configurable shortcut action, Settings rejects the new assignment, leaves the existing shortcut value unchanged, and shows red inline text to the right of that row's keyboard input capture box. The message should name the conflicting action, such as `Already assigned to GO` or `Already assigned to Cue`. The message clears when the user starts another capture, successfully saves a non-conflicting shortcut, or leaves the Settings tab.
 
 The native File menu exposes these accelerators:
 
@@ -57,11 +60,13 @@ The handler should:
 
 The handler should not call Tauri commands directly. It should call the existing `AppCommands` methods that already route through `AppRuntime` error handling.
 
+Settings should perform conflict detection before calling `replaceAppSettings`. The check only compares the shortcut being captured against other configurable shortcut actions. It does not compare against native File menu accelerators because those are fixed platform shortcuts and not part of the user-editable settings model.
+
 ## Matching Rules
 
 A keyboard event matches a saved shortcut when the comparable key label and all four modifier booleans are equal. The implementation should share key-label normalization with shortcut capture so execution uses the same conventions as stored settings: `Space`, `Enter`, uppercase letters, and unshifted digit keys with `shift: true`.
 
-If two configured shortcuts are identical, `GO` should take precedence over `Cue` because it is the primary show-operation action. Conflict detection is deferred.
+If two configured shortcuts are identical because of a pre-existing or manually edited settings file, `GO` should take precedence over `Cue` because it is the primary show-operation action. New duplicates captured through Settings are rejected before persistence.
 
 ## Native Menu Architecture
 
@@ -87,6 +92,8 @@ Add frontend tests for:
 - Pressing the configured `Cue` shortcut does nothing for no selection or an unlinked selected scene.
 - Shortcut capture preempts shortcut execution.
 - `GO` wins when `GO` and `Cue` are configured to the same shortcut.
+- Capturing a shortcut already assigned to the other action leaves settings unchanged and shows inline red conflict text beside the capture control.
+- Conflict text clears after a successful non-conflicting capture.
 
 Add Rust pure unit coverage for the File menu item accelerators if the existing menu tests can inspect the constructed accelerator values without launching the app. If not, keep the Rust change minimal and rely on existing stable menu-id tests plus manual code inspection.
 
