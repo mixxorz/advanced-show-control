@@ -4,7 +4,7 @@
 
 **Goal:** Produce an unsigned universal macOS Tauri build artifact through GitHub Actions while trialing only on `windows-build-gh-actions`.
 
-**Architecture:** Add one macOS packaging workflow that runs on `macos-latest`, installs both Apple Silicon and Intel Rust targets, runs a universal Tauri build, and uploads macOS bundle artifacts from root `target/universal-apple-darwin/release`. Reuse the existing enabled Tauri bundling config.
+**Architecture:** Add one macOS packaging workflow that runs on `macos-latest`, installs both Apple Silicon and Intel Rust targets, runs a universal Tauri build, and uploads macOS bundle artifacts from root `target/universal-apple-darwin/release`. Keep the app crate limited to the production app binary; move probe/debug binaries behind a separate dev-tools manifest so Tauri does not bundle them as app sidecars.
 
 **Tech Stack:** GitHub Actions, Tauri v2 CLI, Rust stable from `rust-toolchain.toml`, Node from `.nvmrc`, npm workspaces by prefix.
 
@@ -25,12 +25,20 @@
 - Create: `.github/workflows/macos-build.yml`
 - Create: `docs/superpowers/plans/2026-07-04-universal-macos-build-github-actions.md`
 - Modify: `src-tauri/Cargo.toml`
+- Modify: `src-tauri/tauri.conf.json`
 - Modify: `Makefile`
+- Create: `src-tauri/dev-tools/Cargo.toml`
+- Create: `src-tauri/dev-tools/src/bin/lv1-probe.rs`
+- Create: `src-tauri/dev-tools/src/bin/advanced-show-control-debug.rs`
+- Delete: `src-tauri/src/bin/lv1-probe.rs`
+- Delete: `src-tauri/src/bin/advanced-show-control-debug.rs`
 
 **Interfaces:**
 - Consumes: root `package-lock.json`, `ui/package-lock.json`, `.nvmrc`, `rust-toolchain.toml`, `src-tauri/tauri.conf.json`.
 - Produces: GitHub Actions artifact named `advanced-show-control-macos-universal` containing macOS bundle output from `target/universal-apple-darwin/release/bundle` and the app binary from `target/universal-apple-darwin/release/advanced-show-control`.
-- Preserves: `make probe` and `make smoke` by opting them into the `dev-tools` Cargo feature.
+- Preserves: `make probe` and `make smoke` by running binaries through `src-tauri/dev-tools/Cargo.toml`.
+- Directs: Tauri bundling at `advanced-show-control` with root `mainBinaryName` so CLI/debug binaries are not copied into app bundles.
+- Excludes: dev-tool sidecars by setting `bundle.externalBin` to an empty list.
 
 - [ ] **Step 1: Add the macOS build workflow**
 
