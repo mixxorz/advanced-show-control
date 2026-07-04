@@ -5,6 +5,11 @@ description = "Desktop app for Advanced Show Control"
 edition = "2024"
 license = "GPL-3.0-or-later"
 default-run = "advanced-show-control"
+autobins = false
+
+[[bin]]
+name = "advanced-show-control"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
