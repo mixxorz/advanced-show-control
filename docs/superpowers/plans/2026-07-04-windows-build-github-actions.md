@@ -4,7 +4,7 @@
 
 **Goal:** Produce an unsigned Windows x64 Tauri build artifact through GitHub Actions while trialing only on `windows-build-gh-actions`.
 
-**Architecture:** Add one packaging workflow that runs on `windows-latest`, installs the project toolchains, runs the Tauri build, and uploads Windows bundle artifacts. Enable Tauri bundling in the existing app config so the workflow produces distributable files rather than only a compiled binary.
+**Architecture:** Add one packaging workflow that runs on `windows-latest`, installs the project toolchains, runs the Tauri build, and uploads Windows bundle artifacts from root `target/release`. Enable Tauri bundling in the existing app config so the workflow produces distributable files rather than only a compiled binary.
 
 **Tech Stack:** GitHub Actions, Tauri v2 CLI, Rust stable from `rust-toolchain.toml`, Node from `.nvmrc`, npm workspaces by prefix.
 
@@ -26,7 +26,7 @@
 
 **Interfaces:**
 - Consumes: root `package-lock.json`, `ui/package-lock.json`, `.nvmrc`, `rust-toolchain.toml`, `src-tauri/tauri.conf.json`.
-- Produces: GitHub Actions artifact named `advanced-show-control-windows-x64` containing Windows bundle output from `src-tauri/target/release/bundle`.
+- Produces: GitHub Actions artifact named `advanced-show-control-windows-x64` containing Windows bundle output from `target/release/bundle`.
 
 - [ ] **Step 1: Enable Tauri bundling**
 
@@ -100,8 +100,8 @@ jobs:
         with:
           name: advanced-show-control-windows-x64
           path: |
-            src-tauri/target/release/bundle/**/*
-            src-tauri/target/release/advanced-show-control.exe
+            target/release/bundle/**/*
+            target/release/advanced-show-control.exe
           if-no-files-found: error
 ```
 
