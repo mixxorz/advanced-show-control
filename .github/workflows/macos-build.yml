@@ -1,0 +1,54 @@
+name: macOS Build
+
+on:
+  push:
+    branches:
+      - windows-build-gh-actions
+  workflow_dispatch:
+
+jobs:
+  build-macos:
+    name: Build macOS universal
+    runs-on: macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install UI dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Build macOS universal app
+        run: npm run tauri -- build --target universal-apple-darwin
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: advanced-show-control-macos-universal
+          path: |
+            target/universal-apple-darwin/release/bundle/**/*
+            target/universal-apple-darwin/release/advanced-show-control
+          if-no-files-found: error
