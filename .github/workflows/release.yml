@@ -164,7 +164,7 @@ jobs:
           release_tag="${{ needs.validate-release.outputs.release_tag }}"
           awk -v release_tag="$release_tag" '
             $0 ~ "^## \\[" release_tag "\\] - " { capture=1; next }
-            capture && /^## \\[/ { exit }
+            capture && /^## \[/ { exit }
             capture { print }
           ' CHANGELOG.md > release-notes.md
           if [[ ! -s release-notes.md ]]; then
