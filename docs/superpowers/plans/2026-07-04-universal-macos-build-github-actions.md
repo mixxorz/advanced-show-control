@@ -24,10 +24,13 @@
 **Files:**
 - Create: `.github/workflows/macos-build.yml`
 - Create: `docs/superpowers/plans/2026-07-04-universal-macos-build-github-actions.md`
+- Modify: `src-tauri/Cargo.toml`
+- Modify: `Makefile`
 
 **Interfaces:**
 - Consumes: root `package-lock.json`, `ui/package-lock.json`, `.nvmrc`, `rust-toolchain.toml`, `src-tauri/tauri.conf.json`.
 - Produces: GitHub Actions artifact named `advanced-show-control-macos-universal` containing macOS bundle output from `target/universal-apple-darwin/release/bundle` and the app binary from `target/universal-apple-darwin/release/advanced-show-control`.
+- Preserves: `make probe` and `make smoke` by opting them into the `dev-tools` Cargo feature.
 
 - [ ] **Step 1: Add the macOS build workflow**
 
