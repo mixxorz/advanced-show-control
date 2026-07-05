@@ -1,5 +1,6 @@
 use tokio::sync::broadcast;
 
+use crate::cue_lists::CueListsEvent;
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scenes::ScenesEvent;
@@ -18,6 +19,7 @@ pub enum AppEvent {
     Lv1 { generation: u64, event: Lv1Event },
     Fade { generation: u64, event: FadeEvent },
     Scenes { generation: u64, event: ScenesEvent },
+    CueLists(CueListsEvent),
     Show(ShowEvent),
     Settings(SettingsEvent),
 }

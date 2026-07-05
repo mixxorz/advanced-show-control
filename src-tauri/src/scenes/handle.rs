@@ -8,7 +8,7 @@ pub struct ScenesHandle {
 }
 
 impl ScenesHandle {
-    pub(super) fn new(tx: mpsc::Sender<ScenesCommand>) -> Self {
+    pub(crate) fn new(tx: mpsc::Sender<ScenesCommand>) -> Self {
         Self { tx }
     }
 
