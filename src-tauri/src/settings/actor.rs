@@ -25,15 +25,16 @@ impl SettingsActorTask {
 pub fn build_settings_actor(
     settings_dir: PathBuf,
     event_bus: AppEventBus,
-) -> (SettingsHandle, SettingsActorTask) {
+) -> (SettingsHandle, SettingsActorTask, AppSettings) {
     let (tx, rx) = mpsc::channel(32);
     let state = SettingsState::load(settings_dir);
+    let initial_settings = state.settings();
     let task = SettingsActorTask {
         rx,
         event_bus,
         state,
     };
-    (SettingsHandle::new(tx), task)
+    (SettingsHandle::new(tx), task, initial_settings)
 }
 
 async fn run_settings_actor(
@@ -191,7 +192,7 @@ mod tests {
     async fn actor_loads_defaults_when_file_is_missing() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("missing");
-        let (handle, task) = build_settings_actor(dir, event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         assert_eq!(get_settings(&handle).await, AppSettings::default());
@@ -203,7 +204,7 @@ mod tests {
         let dir = temp_settings_dir("invalid");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("settings.json"), "not json").unwrap();
-        let (handle, task) = build_settings_actor(dir, event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         assert_eq!(get_settings(&handle).await, AppSettings::default());
@@ -219,7 +220,7 @@ mod tests {
             r#"{"autoSaveSessions":true,"keyboardShortcuts":{"cue":{"key":"K"}}}"#,
         )
         .unwrap();
-        let (handle, task) = build_settings_actor(dir, event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         let settings = get_settings(&handle).await;
@@ -234,7 +235,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("replace");
-        let (handle, task) = build_settings_actor(dir.clone(), event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir.clone(), event_bus);
         task.spawn();
 
         let (reply, rx) = oneshot::channel();
@@ -271,7 +272,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("unchanged");
-        let (handle, task) = build_settings_actor(dir.clone(), event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir.clone(), event_bus);
         task.spawn();
 
         let (reply, rx) = oneshot::channel();

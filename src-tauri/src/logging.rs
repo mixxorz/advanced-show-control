@@ -18,6 +18,8 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::diagnostics::diagnostic_log_path;
 use crate::projector::LogSeverity;
+use crate::runtime::events::{AppEvent, log_lagged_subscriber};
+use crate::settings::{AppSettings, SettingsEvent};
 
 const UI_SINK_TARGET: &str = "advanced_show_control_tauri::logging::ui_sink";
 
@@ -91,6 +93,36 @@ impl LoggingRuntime {
         self.diagnostic_file_gate
             .set_extensive_diagnostics_enabled(enabled);
     }
+
+    pub fn apply_settings(&self, settings: &AppSettings) {
+        apply_settings_to_diagnostic_file_gate(&self.diagnostic_file_gate, settings);
+    }
+
+    pub fn spawn_settings_watcher(&self, mut events: broadcast::Receiver<AppEvent>) {
+        let gate = self.diagnostic_file_gate.clone();
+        tauri::async_runtime::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings })) => {
+                        apply_settings_to_diagnostic_file_gate(&gate, &settings);
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("logging-settings", count);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            tracing::debug!(
+                event = "logging_settings_watcher_stopped",
+                "Logging settings watcher stopped"
+            );
+        });
+    }
+}
+
+fn apply_settings_to_diagnostic_file_gate(gate: &DiagnosticFileGate, settings: &AppSettings) {
+    gate.set_extensive_diagnostics_enabled(settings.enable_extensive_diagnostics);
 }
 
 pub fn init_logging<R: Runtime>(
@@ -454,6 +486,25 @@ mod tests {
 
         gate.set_extensive_diagnostics_enabled(true);
 
+        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
+    }
+
+    #[test]
+    fn diagnostic_file_gate_tracks_extensive_diagnostics_setting() {
+        let gate = DiagnosticFileGate::bootstrap_debug();
+        let disabled = crate::settings::AppSettings {
+            enable_extensive_diagnostics: false,
+            ..Default::default()
+        };
+        let enabled = crate::settings::AppSettings {
+            enable_extensive_diagnostics: true,
+            ..Default::default()
+        };
+
+        apply_settings_to_diagnostic_file_gate(&gate, &disabled);
+        assert_eq!(gate.min_level(), LevelFilter::INFO);
+
+        apply_settings_to_diagnostic_file_gate(&gate, &enabled);
         assert_eq!(gate.min_level(), LevelFilter::DEBUG);
     }
 

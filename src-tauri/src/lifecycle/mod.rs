@@ -608,7 +608,7 @@ impl Default for AppLifecycle {
     fn default() -> Self {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
-        let (settings, settings_task) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
@@ -754,7 +754,7 @@ mod tests {
 
     fn lifecycle_for_test(event_bus: AppEventBus) -> AppLifecycle {
         let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
-        let (settings, settings_task) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
