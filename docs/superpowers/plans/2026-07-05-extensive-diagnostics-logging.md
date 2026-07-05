@@ -656,5 +656,5 @@ If no docs changed, do not create an empty commit.
 ## Self-Review Notes
 
 - Spec coverage: Tasks cover persisted settings, bootstrap `DEBUG`, post-settings `INFO+` default, dynamic `DEBUG+` setting, unchanged UI log behavior, UI toggle, and verification.
-- Placeholder scan: No implementation step relies on an undefined future task. The one branch in Task 3 gives an explicit fallback if `SettingsHandle` lacks blocking startup access.
+- Placeholder scan: No implementation step relies on an undefined future task. Task 3 uses an explicit `build_settings_actor` return-value change so startup can apply loaded settings without adding actor-handle convenience methods.
 - Type consistency: Rust uses `enable_extensive_diagnostics`; TypeScript uses `enableExtensiveDiagnostics`, matching serde camelCase behavior.
