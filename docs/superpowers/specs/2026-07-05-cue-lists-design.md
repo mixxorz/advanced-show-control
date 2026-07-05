@@ -25,7 +25,7 @@ Out of scope:
 
 - Cue entry custom names, notes, colors, or per-entry metadata.
 - Add buttons for scene-to-cue-list insertion. Scene insertion is drag-and-drop only.
-- Delete confirmation dialogs for cue entries or cue lists.
+- Delete confirmation dialogs for cue entries. Cue-list deletion does require confirmation.
 - Separate cue-list files outside `.ascs`.
 - Recalling a cue from a non-active cue list.
 - Event automation, external control, Stream Deck integration, or documentation-site work.
@@ -106,10 +106,10 @@ Shutdown
 
 Behavior:
 
-- Creating the first cue list makes it active and leaves `cuedCueEntryId` null.
-- Creating later cue lists does not automatically change the active cue list.
+- Creating any cue list makes it active and leaves `cuedCueEntryId` null.
 - Renaming trims names and rejects blank names.
-- Deleting cue lists and cue entries happens immediately without confirmation.
+- Deleting cue entries happens immediately without confirmation.
+- Deleting cue lists requires an app-owned confirmation modal before sending `DeleteCueList`.
 - `SetActiveCueList` clears `cuedCueEntryId`, including when the active list is set to null.
 - `AddSceneToActiveCueList` requires an active cue list and inserts a new entry at the requested position.
 - `CueEntry` sets the entry that the global Go action recalls. It does not recall LV1.
@@ -170,6 +170,7 @@ The scene library shows app scene configs in console order and supports dragging
 The main pane header contains:
 
 - Cue-list dropdown for `activeCueListId`.
+- `New Cue List` action.
 - `Manage Cue Lists` button.
 - Cued/next/status text.
 
@@ -177,7 +178,11 @@ The main pane does not add a local Go button. The existing app Go action recalls
 
 The cue list body shows numbered cue entries, highlights the cued cue, marks invalid/missing scene references, and supports drag-and-drop reordering. Clicking an entry cues it without recalling LV1.
 
-`Manage Cue Lists` opens a modal for creating, renaming, deleting, and drag-reordering cue lists. Delete is immediate with no confirmation.
+`New Cue List` is available both from the main cue-list controls and from inside `Manage Cue Lists`. Both entry points open the same app-owned modal that asks for the cue-list name. The app must not use `window.alert`, `window.confirm`, or `window.prompt`; prompts and confirmations are React/Tauri UI, not browser-native dialogs.
+
+`Manage Cue Lists` opens a modal for creating, renaming, deleting, and drag-reordering cue lists. Cue-list deletion opens an app-owned confirmation modal. Cue-entry deletion remains immediate with no confirmation.
+
+Modal components should be reused where practical. Do not duplicate modal implementations unless the interaction is different enough that reuse would make the component harder to understand.
 
 On narrow layouts, the scene library stacks above the active cue list while preserving the same responsibilities.
 
