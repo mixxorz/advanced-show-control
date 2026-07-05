@@ -6,6 +6,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::cue_lists::{CueListsHandle, build_cue_lists_actor};
 use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
@@ -23,6 +24,7 @@ pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
     pub scene_recall_fader: Option<ScenesHandle>,
+    pub cue_lists: Option<CueListsHandle>,
 }
 
 impl RuntimeHandles {
@@ -38,6 +40,7 @@ impl RuntimeHandles {
         self.scene_recall_fader = None;
         self.lv1 = None;
         self.fade = None;
+        self.cue_lists = None;
     }
 }
 
@@ -53,6 +56,7 @@ struct BuiltConnectedRuntime {
     fade_task: crate::fade::FadeEngineTask,
     scene_recall_fader: ScenesHandle,
     scene_recall_task: crate::scenes::ScenesTask,
+    cue_lists_task: crate::cue_lists::CueListsTask,
 }
 
 impl BuiltConnectedRuntime {
@@ -63,6 +67,7 @@ impl BuiltConnectedRuntime {
     fn spawn_lv1_and_fade(self) -> StartedConnectedRuntime {
         self.lv1_task.spawn();
         self.fade_task.spawn();
+        self.cue_lists_task.spawn();
         StartedConnectedRuntime {
             lv1: self.lv1,
             scene_recall_fader: self.scene_recall_fader,
@@ -94,8 +99,10 @@ fn build_connected_runtime(
     let (fade, fade_task, fade_peers) =
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-        build_scenes_actor(generation, runtime_generation, event_bus);
+        build_scenes_actor(generation, runtime_generation, event_bus.clone());
+    let (cue_lists, cue_lists_task) = build_cue_lists_actor(event_bus, scene_recall_fader.clone());
     show_peers.set_scenes(scene_recall_fader.clone());
+    show_peers.set_cue_lists(cue_lists.clone());
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -106,6 +113,7 @@ fn build_connected_runtime(
         fade_task,
         scene_recall_fader,
         scene_recall_task,
+        cue_lists_task,
     }
 }
 
@@ -574,6 +582,20 @@ impl AppLifecycle {
                 selected_scene_internal_id: None,
             }
         };
+        let initial_cue_lists_state = if let Some(cue_lists_handle) = self.show_peers.cue_lists() {
+            let (reply, rx) = oneshot::channel();
+            cue_lists_handle
+                .send(crate::cue_lists::CueListsCommand::InitialProjectionState { reply })
+                .await
+                .map_err(|_| "Cue lists state is unavailable".to_string())?;
+            rx.await
+                .map_err(|_| "Cue lists state reply channel is closed".to_string())?
+        } else {
+            crate::cue_lists::CueListsProjectionState {
+                document: crate::cue_lists::CueListDocument::default(),
+                last_recall_status: None,
+            }
+        };
         let settings_handle = self.current_settings().await;
         let (reply, rx) = oneshot::channel();
         settings_handle
@@ -595,6 +617,7 @@ impl AppLifecycle {
                 generation,
                 initial_show_state,
                 initial_scenes_state,
+                initial_cue_lists_state,
                 initial_settings,
                 events: self.event_bus.subscribe(),
                 logs,

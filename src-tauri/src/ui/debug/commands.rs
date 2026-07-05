@@ -161,6 +161,9 @@ pub async fn debug_smoke_load_unlinked_scene_session(
             scope_toggles: ShowFileSceneScopeToggles::default(),
         }],
         cued_scene_internal_id: None,
+        cue_lists: Vec::new(),
+        active_cue_list_id: None,
+        cued_cue_entry_id: None,
     };
     write_show_file(&path, &file, &backup_dir)?;
 

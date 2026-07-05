@@ -3,6 +3,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
 
+use crate::cue_lists::{CueListsEvent, CueListsProjectionState};
 use crate::logging::UiLogEvent;
 use crate::projector::AppViewState;
 use crate::runtime::events::log_lagged_subscriber;
@@ -20,6 +21,7 @@ pub struct ProjectorInputs<R: Runtime> {
     pub generation: u64,
     pub initial_show_state: ShowProjectionState,
     pub initial_scenes_state: ScenesProjectionState,
+    pub initial_cue_lists_state: CueListsProjectionState,
     pub initial_settings: AppSettings,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
@@ -32,6 +34,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
             generation,
             initial_show_state,
             initial_scenes_state,
+            initial_cue_lists_state,
             initial_settings,
             mut events,
             mut logs,
@@ -47,6 +50,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
         cache.set_active_generation(generation);
         cache.apply_show_state(initial_show_state);
         cache.apply_scenes_state(initial_scenes_state);
+        cache.apply_cue_lists_state(initial_cue_lists_state);
         cache.apply_settings(initial_settings);
         let mut interval = tokio::time::interval(PROJECTOR_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -129,7 +133,10 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
             cache.apply_settings(settings.clone());
             true
         }
-        AppEvent::CueLists(_) => false,
+        AppEvent::CueLists(CueListsEvent::StateChanged { state, .. }) => {
+            cache.apply_cue_lists_state(state.clone());
+            true
+        }
     }
 }
 
@@ -167,6 +174,10 @@ mod tests {
                 scene_configs: Vec::new(),
                 cued_scene_internal_id: None,
                 selected_scene_internal_id: None,
+            },
+            initial_cue_lists_state: CueListsProjectionState {
+                document: crate::cue_lists::CueListDocument::default(),
+                last_recall_status: None,
             },
             initial_settings: AppSettings::default(),
             events,
@@ -295,6 +306,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cue_lists_event_marks_cache_dirty_and_projects_cue_lists() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let (_log_tx, log_rx) = broadcast::channel(8);
+        let received = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+        let received_events = received.clone();
+        handle.listen_any("app-status-changed", move |event| {
+            let payload: serde_json::Value = serde_json::from_str(event.payload())
+                .expect("app-status-changed payload should be valid JSON");
+            received_events.lock().unwrap().push(payload);
+        });
+
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
+
+        event_bus.publish(AppEvent::CueLists(CueListsEvent::StateChanged {
+            reason: crate::cue_lists::CueListsProjectionReason::CueListState,
+            state: CueListsProjectionState {
+                document: crate::cue_lists::CueListDocument {
+                    cue_lists: vec![crate::cue_lists::CueList {
+                        id: uuid::Uuid::from_u128(1),
+                        name: "Main".to_string(),
+                        entries: vec![],
+                    }],
+                    active_cue_list_id: Some(uuid::Uuid::from_u128(1)),
+                    cued_cue_entry_id: None,
+                },
+                last_recall_status: Some("recalling".to_string()),
+            },
+            persisted_cue_list_edit: true,
+        }));
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+
+        projector.abort();
+        let snapshots = received.lock().unwrap();
+        assert!(snapshots.iter().any(|snapshot| {
+            snapshot["cueLists"]
+                .as_array()
+                .is_some_and(|lists| lists.iter().any(|list| list["name"] == "Main"))
+        }));
+    }
+
+    #[tokio::test]
     async fn projector_emits_initial_show_state() {
         let app = mock_app();
         let handle = app.handle().clone();
@@ -327,6 +381,10 @@ mod tests {
                 scene_configs: Vec::new(),
                 cued_scene_internal_id: None,
                 selected_scene_internal_id: None,
+            },
+            initial_cue_lists_state: CueListsProjectionState {
+                document: crate::cue_lists::CueListDocument::default(),
+                last_recall_status: None,
             },
             initial_settings: AppSettings::default(),
             events: event_bus.subscribe(),

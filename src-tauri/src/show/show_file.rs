@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+use crate::cue_lists::{CueList, CueListDocument};
 use crate::lv1::{Lv1StateSnapshot, PanMode};
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
 
-pub const SHOW_FILE_SCHEMA_VERSION: u32 = 1;
+pub const SHOW_FILE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -15,6 +16,12 @@ pub struct ShowFile {
     pub scene_configs: Vec<ShowFileSceneConfig>,
     #[serde(default)]
     pub cued_scene_internal_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub cue_lists: Vec<CueList>,
+    #[serde(default)]
+    pub active_cue_list_id: Option<uuid::Uuid>,
+    #[serde(default)]
+    pub cued_cue_entry_id: Option<uuid::Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -86,19 +93,28 @@ impl LoadValidationReport {
 
 pub struct ImportedShowFile {
     pub snapshot: SceneDocument,
+    pub cue_list_snapshot: CueListDocument,
     pub lockout: bool,
     pub selected_scene_internal_id: Option<String>,
     pub report: LoadValidationReport,
     pub generated_internal_scene_ids: bool,
 }
 
-pub fn export_show_file(snapshot: SceneDocument, lockout: bool, saved_at: String) -> ShowFile {
+pub fn export_show_file(
+    snapshot: SceneDocument,
+    cue_list_snapshot: CueListDocument,
+    lockout: bool,
+    saved_at: String,
+) -> ShowFile {
     ShowFile {
         schema_version: SHOW_FILE_SCHEMA_VERSION,
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         saved_at,
         safety: ShowFileSafety { lockout },
         cued_scene_internal_id: snapshot.cued_scene_internal_id,
+        cue_lists: cue_list_snapshot.cue_lists,
+        active_cue_list_id: cue_list_snapshot.active_cue_list_id,
+        cued_cue_entry_id: cue_list_snapshot.cued_cue_entry_id,
         scene_configs: snapshot
             .scene_configs
             .into_iter()
@@ -115,11 +131,17 @@ pub fn import_show_file(
         return Err("Open a session after LV1 scenes are loaded".to_string());
     }
 
-    if file.schema_version != SHOW_FILE_SCHEMA_VERSION {
+    if file.schema_version != 1 && file.schema_version != SHOW_FILE_SCHEMA_VERSION {
         return Err(format!(
             "Unsupported session schema version {}",
             file.schema_version
         ));
+    }
+
+    if file.schema_version == 1 {
+        file.cue_lists = Vec::new();
+        file.active_cue_list_id = None;
+        file.cued_cue_entry_id = None;
     }
 
     file.scene_configs
@@ -148,6 +170,11 @@ pub fn import_show_file(
         selected_scene_internal_id,
         report: LoadValidationReport::default(),
         generated_internal_scene_ids,
+        cue_list_snapshot: CueListDocument {
+            cue_lists: std::mem::take(&mut file.cue_lists),
+            active_cue_list_id: file.active_cue_list_id,
+            cued_cue_entry_id: file.cued_cue_entry_id,
+        },
     })
 }
 
@@ -229,6 +256,7 @@ fn is_blank_scene_config(config: &ShowFileSceneConfig) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue_lists::{CueEntry, CueList, CueListDocument};
     use crate::lv1::{ConnectionStatus, SceneListEntry};
 
     #[test]
@@ -263,7 +291,12 @@ mod tests {
             }],
         };
 
-        let file = export_show_file(snapshot, true, "saved".to_string());
+        let file = export_show_file(
+            snapshot,
+            CueListDocument::default(),
+            true,
+            "saved".to_string(),
+        );
 
         assert_eq!(file.schema_version, SHOW_FILE_SCHEMA_VERSION);
         assert_eq!(file.saved_at, "saved");
@@ -293,6 +326,9 @@ mod tests {
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
             cued_scene_internal_id: Some(cued_scene_internal_id),
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
             scene_configs: vec![
                 ShowFileSceneConfig {
                     internal_scene_id: Some(intro_internal_scene_id),
@@ -346,6 +382,9 @@ mod tests {
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
             cued_scene_internal_id: None,
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
             scene_configs: vec![ShowFileSceneConfig {
                 internal_scene_id: None,
                 scene_index: Some(1),
@@ -381,5 +420,36 @@ mod tests {
             )
         );
         assert!(imported.generated_internal_scene_ids);
+    }
+
+    #[test]
+    fn export_show_file_contains_cue_list_document() {
+        let cue_list_id = uuid::Uuid::from_u128(0x77777777777747778777777777777777);
+        let cue_entry_id = uuid::Uuid::from_u128(0x88888888888848888888888888888888);
+        let scene_id = uuid::Uuid::from_u128(0x99999999999949998999999999999999);
+        let scene_document = SceneDocument {
+            scene_configs: vec![],
+            selected_scene_internal_id: None,
+            cued_scene_internal_id: None,
+        };
+        let cue_document = CueListDocument {
+            cue_lists: vec![CueList {
+                id: cue_list_id,
+                name: "Main".to_string(),
+                entries: vec![CueEntry {
+                    id: cue_entry_id,
+                    scene_internal_id: scene_id,
+                }],
+            }],
+            active_cue_list_id: Some(cue_list_id),
+            cued_cue_entry_id: Some(cue_entry_id),
+        };
+
+        let file = export_show_file(scene_document, cue_document, false, "saved".to_string());
+
+        assert_eq!(file.schema_version, 2);
+        assert_eq!(file.cue_lists[0].name, "Main");
+        assert_eq!(file.active_cue_list_id, Some(cue_list_id));
+        assert_eq!(file.cued_cue_entry_id, Some(cue_entry_id));
     }
 }

@@ -272,11 +272,14 @@ mod tests {
 
     fn show_file() -> ShowFile {
         ShowFile {
-            schema_version: 1,
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
             cued_scene_internal_id: None,
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
             scene_configs: vec![ShowFileSceneConfig {
                 internal_scene_id: Some(uuid::Uuid::from_u128(0x11111111111141118111111111111111)),
                 scene_index: Some(1),

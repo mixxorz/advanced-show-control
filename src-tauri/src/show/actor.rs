@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
 
+use crate::cue_lists::{CueListDocument, CueListsCommand, CueListsEvent, CueListsHandle};
 use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent, log_lagged_subscriber};
@@ -21,6 +22,7 @@ use super::{LoadShowFileResult, NewShowFileResult, ShowCommandResult};
 pub struct ShowActorPeers {
     lv1: Arc<Mutex<Option<(u64, Lv1ActorHandle)>>>,
     scenes: Arc<Mutex<Option<ScenesHandle>>>,
+    cue_lists: Arc<Mutex<Option<CueListsHandle>>>,
 }
 
 impl ShowActorPeers {
@@ -30,6 +32,10 @@ impl ShowActorPeers {
 
     pub fn set_scenes(&self, scenes: ScenesHandle) {
         *self.scenes.lock().expect("show peer lock poisoned") = Some(scenes);
+    }
+
+    pub fn set_cue_lists(&self, cue_lists: CueListsHandle) {
+        *self.cue_lists.lock().expect("show peer lock poisoned") = Some(cue_lists);
     }
 
     pub fn clear_lv1(&self, generation: u64) {
@@ -52,6 +58,14 @@ impl ShowActorPeers {
 
     pub fn scenes(&self) -> Option<ScenesHandle> {
         self.scenes
+            .lock()
+            .expect("show peer lock poisoned")
+            .as_ref()
+            .cloned()
+    }
+
+    pub fn cue_lists(&self) -> Option<CueListsHandle> {
+        self.cue_lists
             .lock()
             .expect("show peer lock poisoned")
             .as_ref()
@@ -144,6 +158,13 @@ fn handle_app_event(
             state.mark_dirty();
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
         }
+        AppEvent::CueLists(CueListsEvent::StateChanged {
+            persisted_cue_list_edit: true,
+            ..
+        }) => {
+            state.mark_dirty();
+            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+        }
         _ => {}
     }
 }
@@ -220,6 +241,7 @@ async fn handle_command(
                     false,
                 )
                 .await?;
+                replace_cue_list_document(peers, CueListDocument::default(), false).await?;
                 state.reset_for_new_show();
                 publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
                 tracing::info!(event = "session_created", "New session created");
@@ -236,8 +258,10 @@ async fn handle_command(
             let result = async {
                 let saved_at = crate::time::current_timestamp_millis();
                 let scene_document = current_scene_document(peers).await?;
+                let cue_list_document = current_cue_list_document(peers).await?;
                 let file = crate::show::show_file::export_show_file(
                     scene_document,
+                    cue_list_document,
                     state.lockout(),
                     saved_at.clone(),
                 );
@@ -429,6 +453,7 @@ async fn load_show_file_from_dto(
         false,
     )
     .await?;
+    replace_cue_list_document(peers, imported.cue_list_snapshot, false).await?;
     state.set_lockout(imported.lockout);
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
@@ -470,6 +495,19 @@ async fn current_scene_document(peers: &ShowActorPeers) -> Result<SceneDocument,
         .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
 }
 
+async fn current_cue_list_document(peers: &ShowActorPeers) -> Result<CueListDocument, String> {
+    let cue_lists = peers
+        .cue_lists()
+        .ok_or_else(|| "Show blocked: cue lists state is unavailable".to_string())?;
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    cue_lists
+        .send(CueListsCommand::GetCueListDocument { reply })
+        .await
+        .map_err(|_| "Show blocked: cue lists state is unavailable".to_string())?;
+    rx.await
+        .map_err(|_| "Show blocked: cue lists state is unavailable".to_string())
+}
+
 async fn replace_scene_document(
     peers: &ShowActorPeers,
     document: SceneDocument,
@@ -493,10 +531,33 @@ async fn replace_scene_document(
         .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
 }
 
+async fn replace_cue_list_document(
+    peers: &ShowActorPeers,
+    document: CueListDocument,
+    persisted_cue_list_edit: bool,
+) -> Result<crate::cue_lists::CueListsCommandResult, String> {
+    let cue_lists = peers
+        .cue_lists()
+        .ok_or_else(|| "Show blocked: cue lists state is unavailable".to_string())?;
+    let (reply, rx) = tokio::sync::oneshot::channel();
+    cue_lists
+        .send(CueListsCommand::ReplaceCueListDocument {
+            document,
+            persisted_cue_list_edit,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| "Show blocked: cue lists state is unavailable".to_string())?;
+    rx.await
+        .map_err(|_| "Show blocked: cue lists state is unavailable".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
+    use crate::cue_lists::build_cue_lists_actor;
+    use crate::cue_lists::{CueListsEvent, CueListsProjectionReason, CueListsProjectionState};
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
@@ -526,6 +587,9 @@ mod tests {
             safety: ShowFileSafety { lockout: false },
             scene_configs: scenes,
             cued_scene_internal_id: None,
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
         }
     }
 
@@ -559,6 +623,10 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), AppEventBus::default());
         task.spawn();
         peers.set_scenes(scenes);
+        let (cue_lists, task) =
+            build_cue_lists_actor(AppEventBus::default(), peers.scenes().unwrap());
+        task.spawn();
+        peers.set_cue_lists(cue_lists);
         peers
     }
 
@@ -780,6 +848,9 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
+        let (cue_lists, task) = build_cue_lists_actor(event_bus.clone(), scenes.clone());
+        task.spawn();
+        peers.set_cue_lists(cue_lists.clone());
 
         let scenes_document = crate::scenes::SceneDocument {
             scene_configs: vec![scene_config(11, Some(3), "Scene From Scenes", 2_500)],
@@ -823,6 +894,9 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
+        let (cue_lists, task) = build_cue_lists_actor(event_bus.clone(), scenes.clone());
+        task.spawn();
+        peers.set_cue_lists(cue_lists.clone());
         let new_lv1 = lv1_snapshot(vec![SceneListEntry {
             index: 1,
             name: "Intro".to_string(),
@@ -846,6 +920,9 @@ mod tests {
             safety: crate::show::show_file::ShowFileSafety { lockout: false },
             scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
             cued_scene_internal_id: None,
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
         };
         crate::show_file::write_show_file(&path, &file, &crate::show_file::backup_folder())
             .unwrap();
@@ -962,6 +1039,9 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
+        let (cue_lists, task) = build_cue_lists_actor(event_bus.clone(), scenes.clone());
+        task.spawn();
+        peers.set_cue_lists(cue_lists.clone());
         event_bus.publish(crate::runtime::events::AppEvent::Runtime(
             RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 1 },
         ));
@@ -1005,5 +1085,42 @@ mod tests {
         let scene_document = get_scene_document(&scenes).await;
         assert_eq!(scene_document.scene_configs.len(), 2);
         assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
+    }
+
+    #[tokio::test]
+    async fn persisted_cue_list_edit_marks_show_file_dirty() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = ShowState::default();
+
+        super::handle_app_event(
+            crate::runtime::events::AppEvent::CueLists(CueListsEvent::StateChanged {
+                reason: CueListsProjectionReason::CueListState,
+                state: CueListsProjectionState {
+                    document: crate::cue_lists::CueListDocument::default(),
+                    last_recall_status: None,
+                },
+                persisted_cue_list_edit: true,
+            }),
+            &mut 1,
+            &mut state,
+            &event_bus,
+        );
+
+        let dirty_state = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
+                    reason: ShowProjectionReason::FileMetadata,
+                    state,
+                }) = events.recv().await.unwrap()
+                {
+                    break state;
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert!(dirty_state.show_file_dirty);
     }
 }

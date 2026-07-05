@@ -1,6 +1,7 @@
 use serde::Serialize;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::cue_lists::CueList;
 use crate::scenes::SceneConfig;
 use crate::settings::AppSettings;
 
@@ -69,6 +70,10 @@ pub struct AppViewState {
     pub fade_state: AppFadeState,
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
+    pub cue_lists: Vec<CueList>,
+    pub active_cue_list_id: Option<String>,
+    pub cued_cue_entry_id: Option<String>,
+    pub last_cue_recall_status: Option<String>,
     pub settings: AppSettings,
     pub cued_scene_internal_id: Option<String>,
     pub selected_scene_internal_id: Option<String>,
