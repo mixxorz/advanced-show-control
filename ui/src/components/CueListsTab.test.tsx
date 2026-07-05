@@ -17,8 +17,35 @@ describe("CueListsTab", () => {
     );
     expect(screen.getByText("Intro")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /Intro/i }),
+      screen.getByRole("button", { name: "Cue 1: Intro" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Cued: Cue 1: Intro")).toBeInTheDocument();
+    expect(screen.getByText("Next: Cue 2: Main")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Intro$/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows next cue relative to the currently cued entry", () => {
+    renderWithAppProviders(<CueListsTab />, {
+      appState: {
+        ...cueListStateFixture,
+        cuedCueEntryId: "cue-2",
+        cueLists: [
+          {
+            ...cueListStateFixture.cueLists[0],
+            entries: [
+              ...cueListStateFixture.cueLists[0].entries,
+              { id: "cue-3", sceneInternalId: "scene-intro" },
+            ],
+          },
+          ...cueListStateFixture.cueLists.slice(1),
+        ],
+      },
+    });
+
+    expect(screen.getByText("Cued: Cue 2: Main")).toBeInTheDocument();
+    expect(screen.getByText("Next: Cue 3: Intro")).toBeInTheDocument();
   });
 
   it("adds a scene by dragging it onto a cue-list drop zone", () => {

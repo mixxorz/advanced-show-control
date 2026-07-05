@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
-import type { CueEntry, CueList } from "../types";
+import type { CueEntry, CueList, SceneConfig } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
 import { CueListManageModal } from "./CueListManageModal";
 import { CueListNameModal } from "./CueListNameModal";
@@ -22,6 +22,19 @@ export function CueListsTab() {
   );
   const [showNewCueListModal, setShowNewCueListModal] = useState(false);
   const [showManageCueListsModal, setShowManageCueListsModal] = useState(false);
+  const cuedEntryIndex = activeCueList
+    ? activeCueList.entries.findIndex(
+        (entry) => entry.id === appState.cuedCueEntryId,
+      )
+    : -1;
+  const cuedEntry =
+    cuedEntryIndex >= 0
+      ? (activeCueList?.entries[cuedEntryIndex] ?? null)
+      : null;
+  const nextEntry =
+    cuedEntryIndex >= 0
+      ? (activeCueList?.entries[cuedEntryIndex + 1] ?? null)
+      : null;
 
   return (
     <div className="grid h-full min-h-0 gap-3 lg:grid-cols-[1fr_2fr]">
@@ -80,10 +93,20 @@ export function CueListsTab() {
         </div>
         <div className="border-b border-console-line-soft px-4 py-2 text-sm text-console-secondary">
           <span className="mr-3">
-            Cued: {appState.cuedCueEntryId ?? "None"}
+            Cued:{" "}
+            {formatCueEntryLabel(
+              cuedEntry,
+              cuedEntryIndex,
+              appState.sceneConfigs,
+            )}
           </span>
           <span className="mr-3">
-            Next: {activeCueList?.entries[1]?.id ?? "None"}
+            Next:{" "}
+            {formatCueEntryLabel(
+              nextEntry,
+              cuedEntryIndex + 1,
+              appState.sceneConfigs,
+            )}
           </span>
           <span>Status: {appState.lastCueRecallStatus ?? "idle"}</span>
         </div>
@@ -92,6 +115,7 @@ export function CueListsTab() {
             activeCueList={activeCueList}
             activeCueListIndex={activeCueListIndex}
             cueLists={appState.cueLists}
+            sceneConfigs={appState.sceneConfigs}
             onDropScene={(sceneInternalId, insertIndex) =>
               void commands.addSceneToActiveCueList?.(
                 sceneInternalId,
@@ -152,6 +176,7 @@ function CueListPane(props: {
   activeCueList: CueList | null;
   activeCueListIndex: number;
   cueLists: CueList[];
+  sceneConfigs: SceneConfig[];
   onDropScene?: (
     sceneInternalId: string,
     insertIndex: number,
@@ -174,6 +199,7 @@ function CueListPane(props: {
             index={index}
             onCueEntry={props.onCueEntry}
             onDeleteCueEntry={props.onDeleteCueEntry}
+            sceneConfigs={props.sceneConfigs}
           />
           <CueListDropZone
             insertIndex={index + 1}
@@ -248,7 +274,14 @@ function CueEntryRow(props: {
   index: number;
   onCueEntry?: (cueEntryId: string | null) => void | Promise<void>;
   onDeleteCueEntry?: (cueEntryId: string) => void | Promise<void>;
+  sceneConfigs: SceneConfig[];
 }) {
+  const label = formatCueEntryLabel(
+    props.entry,
+    props.index,
+    props.sceneConfigs,
+  );
+
   return (
     <div className="flex items-center justify-between gap-3 rounded-console-control border border-console-line bg-console-section px-3 py-2">
       <button
@@ -256,7 +289,7 @@ function CueEntryRow(props: {
         onClick={() => void props.onCueEntry?.(props.entry.id)}
         type="button"
       >
-        Cue {props.index + 1}
+        {label}
       </button>
       <div className="flex items-center gap-2">
         <ConsoleButton
@@ -269,4 +302,19 @@ function CueEntryRow(props: {
       </div>
     </div>
   );
+}
+
+function formatCueEntryLabel(
+  entry: CueEntry | null,
+  index: number,
+  sceneConfigs: SceneConfig[],
+) {
+  if (!entry || index < 0) {
+    return "None";
+  }
+
+  const scene = sceneConfigs.find(
+    (sceneConfig) => sceneConfig.internalSceneId === entry.sceneInternalId,
+  );
+  return `Cue ${index + 1}: ${scene?.sceneName ?? "Missing scene"}`;
 }
