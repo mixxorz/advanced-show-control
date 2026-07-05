@@ -1,5 +1,9 @@
 use std::error::Error;
 use std::fs;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 use tauri::Runtime;
 use tokio::sync::broadcast;
 use tracing::{Event, Level, Subscriber};
@@ -40,9 +44,53 @@ pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
     }
 }
 
+#[derive(Clone)]
+pub struct DiagnosticFileGate {
+    extensive_diagnostics_enabled: Arc<AtomicBool>,
+}
+
+impl DiagnosticFileGate {
+    fn bootstrap_debug() -> Self {
+        Self {
+            extensive_diagnostics_enabled: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    pub fn set_extensive_diagnostics_enabled(&self, enabled: bool) {
+        self.extensive_diagnostics_enabled
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    fn min_level(&self) -> LevelFilter {
+        if self.extensive_diagnostics_enabled.load(Ordering::Relaxed) {
+            LevelFilter::DEBUG
+        } else {
+            LevelFilter::INFO
+        }
+    }
+}
+
+impl<S> tracing_subscriber::layer::Filter<S> for DiagnosticFileGate {
+    fn enabled(
+        &self,
+        meta: &tracing::Metadata<'_>,
+        ctx: &tracing_subscriber::layer::Context<'_, S>,
+    ) -> bool {
+        tracing_subscriber::layer::Filter::enabled(&self.min_level(), meta, ctx)
+    }
+}
+
 pub struct LoggingRuntime {
     pub guard: WorkerGuard,
     pub ui_logs: broadcast::Sender<UiLogEvent>,
+    diagnostic_file_gate: DiagnosticFileGate,
+}
+
+impl LoggingRuntime {
+    pub fn set_extensive_diagnostics_enabled(&self, enabled: bool) {
+        self.diagnostic_file_gate
+            .set_extensive_diagnostics_enabled(enabled);
+    }
 }
 
 pub fn init_logging<R: Runtime>(
@@ -62,10 +110,12 @@ pub fn init_logging<R: Runtime>(
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| default_env_filter());
 
+    let diagnostic_file_gate = DiagnosticFileGate::bootstrap_debug();
+
     let file_layer = fmt::layer()
         .json()
         .with_writer(non_blocking)
-        .with_filter(LevelFilter::DEBUG);
+        .with_filter(diagnostic_file_gate.clone());
 
     let stdout_layer = fmt::layer()
         .with_target(false)
@@ -87,6 +137,7 @@ pub fn init_logging<R: Runtime>(
     Ok(LoggingRuntime {
         guard,
         ui_logs: ui_tx,
+        diagnostic_file_gate,
     })
 }
 
@@ -379,6 +430,31 @@ mod tests {
         assert_eq!(ui_severity(&Level::INFO), Some(LogSeverity::Info));
         assert_eq!(ui_severity(&Level::WARN), Some(LogSeverity::Warning));
         assert_eq!(ui_severity(&Level::ERROR), Some(LogSeverity::Error));
+    }
+
+    #[test]
+    fn diagnostic_file_gate_starts_with_debug_enabled() {
+        let gate = DiagnosticFileGate::bootstrap_debug();
+
+        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
+    }
+
+    #[test]
+    fn diagnostic_file_gate_drops_debug_after_settings_disable_it() {
+        let gate = DiagnosticFileGate::bootstrap_debug();
+
+        gate.set_extensive_diagnostics_enabled(false);
+
+        assert_eq!(gate.min_level(), LevelFilter::INFO);
+    }
+
+    #[test]
+    fn diagnostic_file_gate_allows_debug_after_settings_enable_it() {
+        let gate = DiagnosticFileGate::bootstrap_debug();
+
+        gate.set_extensive_diagnostics_enabled(true);
+
+        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
     }
 
     #[test]
