@@ -42,4 +42,21 @@ describe("AppShell", () => {
       screen.queryByRole("button", { name: "Sessions" }),
     ).not.toBeInTheDocument();
   });
+
+  it("renders the cue lists tab in the playlists slot", () => {
+    renderWithAppProviders(
+      <AppShell
+        activeTab="playlists"
+        onOpenConnection={vi.fn()}
+        onResume={vi.fn()}
+        onSelectTab={vi.fn()}
+        showConnection={false}
+      />,
+      { appState: connectedAppState },
+    );
+
+    expect(
+      screen.getByRole("heading", { name: /Cue List/i }),
+    ).toBeInTheDocument();
+  });
 });

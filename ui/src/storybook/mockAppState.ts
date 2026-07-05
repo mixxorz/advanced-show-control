@@ -2,6 +2,7 @@ import {
   disconnectedAppViewState,
   type AppLogEntry,
   type AppViewState,
+  type CueList,
   type ChannelConfig,
   type SceneConfig,
 } from "../types";
@@ -207,6 +208,10 @@ function makeBaseDisconnectedAppState(
     lastEventAt: null,
     sceneConfigs: [],
     selectedSceneInternalId: null,
+    cueLists: overrides.cueLists ?? [],
+    activeCueListId: overrides.activeCueListId ?? null,
+    cuedCueEntryId: overrides.cuedCueEntryId ?? null,
+    lastCueRecallStatus: overrides.lastCueRecallStatus ?? null,
     showFileName: "Untitled Session",
     showFilePath: null,
     showFileDirty: false,
@@ -223,6 +228,22 @@ function makeConnectedAppState(
   const logs = makeLogs();
   const scenes = makeSceneSummaries();
   const connectedLv1Identity = makeConnectedIdentity();
+  const cueLists: CueList[] = [
+    {
+      id: "cue-list-main",
+      name: "Main",
+      entries: [
+        {
+          id: "cue-1",
+          sceneInternalId: sceneConfigs[0]?.internalSceneId ?? "scene-verse",
+        },
+        {
+          id: "cue-2",
+          sceneInternalId: sceneConfigs[1]?.internalSceneId ?? "scene-chorus",
+        },
+      ],
+    },
+  ];
 
   return makeBaseDisconnectedAppState({
     connection: "connected",
@@ -237,6 +258,10 @@ function makeConnectedAppState(
     lastEventAt: "20:15:01",
     sceneConfigs,
     selectedSceneInternalId: sceneConfigs[0]?.internalSceneId ?? null,
+    cueLists,
+    activeCueListId: cueLists[0]?.id ?? null,
+    cuedCueEntryId: cueLists[0]?.entries[0]?.id ?? null,
+    lastCueRecallStatus: "recalling",
     showFileName: "Sunday Service.ascs",
     showFilePath: "/Users/engineer/Sessions/Sunday Service.ascs",
     showFileDirty: true,
@@ -256,6 +281,27 @@ export const unlinkedDraftScene: SceneConfig = makeUnlinkedDraftScene();
 export const connectedAppState: AppViewState = makeConnectedAppState();
 
 export const mockAppState: AppViewState = connectedAppState;
+
+export const cueListStateFixture: AppViewState = makeConnectedAppState([
+  {
+    internalSceneId: "scene-intro",
+    sceneIndex: 0,
+    sceneName: "Intro",
+    durationMs: 1500,
+    scopeToggles: { faders: true, pan: false },
+    scopedChannels: [],
+    channelConfigs: makeChannelConfigs(),
+  },
+  {
+    internalSceneId: "scene-main",
+    sceneIndex: 1,
+    sceneName: "Main",
+    durationMs: 2200,
+    scopeToggles: { faders: true, pan: false },
+    scopedChannels: [],
+    channelConfigs: makeChannelConfigs(),
+  },
+]);
 
 export const connectedWithDuplicateScenesAppState: AppViewState =
   makeConnectedAppState([

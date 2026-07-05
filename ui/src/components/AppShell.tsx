@@ -3,6 +3,7 @@ import type { AppSettings } from "../types";
 import { BottomStatusBar } from "./BottomStatusBar";
 import { ConnectionModal } from "./ConnectionModal";
 import { ConsoleLogsTab } from "./ConsoleLogsTab";
+import { CueListsTab } from "./CueListsTab";
 import { PlaceholderTab } from "./PlaceholderTab";
 import { SettingsTab } from "./SettingsTab";
 import { SceneTab } from "./SceneTab";
@@ -30,9 +31,7 @@ export function AppShell(props: {
         />
         <section className="min-h-0 overflow-hidden p-3">
           {props.activeTab === "scenes" && <SceneTab />}
-          {props.activeTab === "playlists" && (
-            <PlaceholderTab name="Cue Lists" />
-          )}
+          {props.activeTab === "playlists" && <CueListsTab />}
           {props.activeTab === "events" && <PlaceholderTab name="Events" />}
           {props.activeTab === "logs" && <ConsoleLogsTab />}
           {props.activeTab === "settings" && (

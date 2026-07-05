@@ -98,6 +98,17 @@ export type SceneConfig = {
   scopedChannels: ChannelRef[];
 };
 
+export type CueEntry = {
+  id: string;
+  sceneInternalId: string;
+};
+
+export type CueList = {
+  id: string;
+  name: string;
+  entries: CueEntry[];
+};
+
 export type AppLogEntry = {
   id: number;
   timestamp: string;
@@ -123,6 +134,10 @@ export type AppViewState = {
   lastEventAt: string | null;
   sceneConfigs: SceneConfig[];
   selectedSceneInternalId: string | null;
+  cueLists: CueList[];
+  activeCueListId: string | null;
+  cuedCueEntryId: string | null;
+  lastCueRecallStatus: string | null;
   showFileName: string;
   showFilePath: string | null;
   showFileDirty: boolean;
@@ -163,6 +178,10 @@ export const disconnectedAppViewState: AppViewState = {
   lastEventAt: null,
   sceneConfigs: [],
   selectedSceneInternalId: null,
+  cueLists: [],
+  activeCueListId: null,
+  cuedCueEntryId: null,
+  lastCueRecallStatus: null,
   showFileName: "Untitled Session",
   showFilePath: null,
   showFileDirty: false,
