@@ -46,6 +46,7 @@ describe("SettingsTab", () => {
         autoCueNextSceneOnGo: false,
         timeDisplay: "twentyFourHour" as const,
         faderOverrideSensitivity: 9,
+        enableExtensiveDiagnostics: false,
       },
     };
 
@@ -99,6 +100,19 @@ describe("SettingsTab", () => {
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
       autoCueNextSceneOnGo: true,
+    });
+  });
+
+  it("updates extensive diagnostics while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Extensive diagnostics"));
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      enableExtensiveDiagnostics: true,
     });
   });
 

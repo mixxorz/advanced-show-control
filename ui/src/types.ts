@@ -35,6 +35,7 @@ export type AppSettings = {
   autoCueNextSceneOnGo: boolean;
   timeDisplay: TimeDisplayFormat;
   faderOverrideSensitivity: number;
+  enableExtensiveDiagnostics: boolean;
 };
 
 export type TcpConnectLatencyResult = {
@@ -149,6 +150,7 @@ export const disconnectedAppViewState: AppViewState = {
     autoCueNextSceneOnGo: false,
     timeDisplay: "twentyFourHour",
     faderOverrideSensitivity: 9,
+    enableExtensiveDiagnostics: false,
   },
   connection: "disconnected",
   discoveredLv1Systems: [],
