@@ -249,6 +249,42 @@ mod tests {
     }
 
     #[test]
+    fn adding_scene_to_active_cue_list_inserts_at_requested_position() {
+        let mut state = CueListsState::default();
+        state.create_cue_list("List".to_string()).unwrap();
+
+        let first = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
+        let second = state.add_scene_to_active_cue_list(id(11), 0).unwrap();
+
+        let document = state.document();
+        let entries = &document.cue_lists[0].entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, second.id);
+        assert_eq!(entries[0].scene_internal_id, id(11));
+        assert_eq!(entries[1].id, first.id);
+        assert_eq!(entries[1].scene_internal_id, id(10));
+    }
+
+    #[test]
+    fn adding_scene_to_active_cue_list_clamps_out_of_range_insert_index_to_end() {
+        let mut state = CueListsState::default();
+        state.create_cue_list("List".to_string()).unwrap();
+
+        let first = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
+        let second = state
+            .add_scene_to_active_cue_list(id(11), usize::MAX)
+            .unwrap();
+
+        let document = state.document();
+        let entries = &document.cue_lists[0].entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].id, first.id);
+        assert_eq!(entries[0].scene_internal_id, id(10));
+        assert_eq!(entries[1].id, second.id);
+        assert_eq!(entries[1].scene_internal_id, id(11));
+    }
+
+    #[test]
     fn changing_active_cue_list_clears_cued_entry() {
         let mut state = CueListsState::default();
         let first = state.create_cue_list("First".to_string()).unwrap().id;
@@ -278,6 +314,28 @@ mod tests {
     }
 
     #[test]
+    fn reordering_cue_lists_preserves_active_list_by_id_and_changes_order() {
+        let mut state = CueListsState::default();
+        let first = state.create_cue_list("First".to_string()).unwrap().id;
+        let second = state.create_cue_list("Second".to_string()).unwrap().id;
+        let third = state.create_cue_list("Third".to_string()).unwrap().id;
+
+        state.set_active_cue_list(Some(second)).unwrap();
+        state.reorder_cue_lists(vec![third, first, second]).unwrap();
+
+        let document = state.document();
+        assert_eq!(document.active_cue_list_id, Some(second));
+        assert_eq!(
+            document
+                .cue_lists
+                .iter()
+                .map(|list| list.id)
+                .collect::<Vec<_>>(),
+            vec![third, first, second]
+        );
+    }
+
+    #[test]
     fn cueing_entry_from_inactive_list_is_rejected() {
         let mut state = CueListsState::default();
         let first = state.create_cue_list("First".to_string()).unwrap().id;
@@ -291,6 +349,28 @@ mod tests {
         assert_eq!(err, "Cue blocked: cue entry is not in the active cue list");
         assert_eq!(state.document().cued_cue_entry_id, None);
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn reordering_cue_entries_preserves_cued_entry_by_id_and_changes_order() {
+        let mut state = CueListsState::default();
+        state.create_cue_list("List".to_string()).unwrap();
+        let first = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
+        let second = state.add_scene_to_active_cue_list(id(11), 1).unwrap();
+        let third = state.add_scene_to_active_cue_list(id(12), 2).unwrap();
+
+        state.cue_entry(Some(second.id)).unwrap();
+        state
+            .reorder_cue_entries(vec![third.id, first.id, second.id])
+            .unwrap();
+
+        let document = state.document();
+        let entries = &document.cue_lists[0].entries;
+        assert_eq!(document.cued_cue_entry_id, Some(second.id));
+        assert_eq!(
+            entries.iter().map(|entry| entry.id).collect::<Vec<_>>(),
+            vec![third.id, first.id, second.id]
+        );
     }
 
     #[test]
