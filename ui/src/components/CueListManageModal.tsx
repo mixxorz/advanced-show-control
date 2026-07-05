@@ -48,7 +48,52 @@ export function CueListManageModal(props: { onClose: () => void }) {
                     {cueList.entries.length} cues
                   </div>
                 </div>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
+                  <ConsoleButton
+                    disabled={
+                      appState.cueLists.findIndex(
+                        (list) => list.id === cueList.id,
+                      ) <= 0
+                    }
+                    onClick={() => {
+                      const fromIndex = appState.cueLists.findIndex(
+                        (list) => list.id === cueList.id,
+                      );
+                      const orderedIds = appState.cueLists.map(
+                        (list) => list.id,
+                      );
+                      const [movedId] = orderedIds.splice(fromIndex, 1);
+                      orderedIds.splice(fromIndex - 1, 0, movedId);
+                      void commands.reorderCueLists?.(orderedIds);
+                    }}
+                    size="small"
+                    variant="secondary"
+                  >
+                    Up
+                  </ConsoleButton>
+                  <ConsoleButton
+                    disabled={
+                      appState.cueLists.findIndex(
+                        (list) => list.id === cueList.id,
+                      ) >=
+                      appState.cueLists.length - 1
+                    }
+                    onClick={() => {
+                      const fromIndex = appState.cueLists.findIndex(
+                        (list) => list.id === cueList.id,
+                      );
+                      const orderedIds = appState.cueLists.map(
+                        (list) => list.id,
+                      );
+                      const [movedId] = orderedIds.splice(fromIndex, 1);
+                      orderedIds.splice(fromIndex + 1, 0, movedId);
+                      void commands.reorderCueLists?.(orderedIds);
+                    }}
+                    size="small"
+                    variant="secondary"
+                  >
+                    Down
+                  </ConsoleButton>
                   <ConsoleButton
                     onClick={() => setPendingRename(cueList.id)}
                     size="small"

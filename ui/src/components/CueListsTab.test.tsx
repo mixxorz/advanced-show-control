@@ -16,6 +16,9 @@ describe("CueListsTab", () => {
       "cue-list-main",
     );
     expect(screen.getByText("Intro")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Intro/i }),
+    ).not.toBeInTheDocument();
   });
 
   it("adds a scene by dragging it onto a cue-list drop zone", () => {
@@ -26,19 +29,16 @@ describe("CueListsTab", () => {
       commands: { addSceneToActiveCueList },
     });
 
-    fireEvent.dragStart(screen.getByRole("button", { name: /Intro/i }), {
+    fireEvent.dragStart(screen.getByText("Intro"), {
       dataTransfer: {
         setData: vi.fn(),
       },
     });
-    fireEvent.drop(
-      screen.getByRole("button", { name: /Drop scene at position 2/i }),
-      {
-        dataTransfer: {
-          getData: () => "scene-intro",
-        },
+    fireEvent.drop(screen.getByLabelText(/Drop scene at position 2/i), {
+      dataTransfer: {
+        getData: () => "scene-intro",
       },
-    );
+    });
 
     expect(addSceneToActiveCueList).toHaveBeenCalledWith("scene-intro", 1);
   });

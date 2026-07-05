@@ -142,8 +142,6 @@ function SceneLibraryRow(props: {
           props.scene.internalSceneId,
         );
       }}
-      role="button"
-      tabIndex={0}
     >
       {props.scene.sceneName}
     </div>
@@ -239,7 +237,6 @@ function CueListDropZone(props: {
           void props.onDropScene?.(sceneInternalId, props.insertIndex);
         }
       }}
-      role="button"
     >
       Drop scene here
     </div>

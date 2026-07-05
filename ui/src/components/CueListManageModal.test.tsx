@@ -20,6 +20,12 @@ describe("CueListManageModal", () => {
       commands,
     });
 
+    await user.click(screen.getAllByRole("button", { name: /Up/i })[1]);
+    expect(commands.reorderCueLists).toHaveBeenCalledWith([
+      "cue-list-verse",
+      "cue-list-main",
+    ]);
+
     await user.click(screen.getByRole("button", { name: /New Cue List/i }));
     await user.type(screen.getByLabelText(/Cue list name/i), "Bridge");
     await user.click(screen.getByRole("button", { name: /Create/i }));
@@ -54,6 +60,5 @@ describe("CueListManageModal", () => {
     expect(commands.deleteCueList).toHaveBeenCalledWith("cue-list-main");
 
     await user.click(screen.getByRole("button", { name: /Close/i }));
-    expect(commands.reorderCueLists).not.toHaveBeenCalled();
   });
 });
