@@ -56,7 +56,7 @@ function renderEditor(
 }
 
 describe("SceneEditor", () => {
-  it("disables Store Cue and Recall for unlinked scenes", () => {
+  it("disables Store and Recall for unlinked scenes", () => {
     renderEditor({
       ...connectedAppState,
       selectedSceneInternalId:
@@ -67,7 +67,6 @@ describe("SceneEditor", () => {
     });
 
     expect(screen.getByRole("button", { name: "Store" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Recall" })).toBeDisabled();
   });
 
