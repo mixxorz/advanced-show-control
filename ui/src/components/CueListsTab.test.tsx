@@ -1,7 +1,10 @@
 import { fireEvent, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import { cueListStateFixture } from "../storybook/mockAppState";
+import {
+  cueListStateFixture,
+  cueListWithMissingSceneReferenceAppState,
+} from "../storybook/mockAppState";
 import { renderWithAppProviders } from "../test/render";
 import { CueListsTab } from "./CueListsTab";
 
@@ -46,6 +49,17 @@ describe("CueListsTab", () => {
 
     expect(screen.getByText("Cued: Cue 2: Main")).toBeInTheDocument();
     expect(screen.getByText("Next: Cue 3: Intro")).toBeInTheDocument();
+  });
+
+  it("marks cue entries with missing scene references", () => {
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListWithMissingSceneReferenceAppState,
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Cue 2: Missing scene" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Cued: Cue 2: Missing scene")).toBeInTheDocument();
   });
 
   it("adds a scene by dragging it onto a cue-list drop zone", () => {
