@@ -111,16 +111,16 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
         }
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
         AppEvent::Fade { generation, event } => cache.apply_fade_event(*generation, event),
-        AppEvent::Scenes {
-            generation,
-            event: ScenesEvent::StateChanged { state, .. },
-        } => {
-            if !cache.is_active_generation(*generation) {
-                return false;
+        AppEvent::Scenes { generation, event } => match event {
+            ScenesEvent::StateChanged { state, .. } => {
+                if !cache.is_active_generation(*generation) {
+                    return false;
+                }
+                cache.apply_scenes_state(state.clone());
+                true
             }
-            cache.apply_scenes_state(state.clone());
-            true
-        }
+            _ => false,
+        },
         AppEvent::Show(ShowEvent::StateChanged { state, .. }) => {
             cache.apply_show_state(state.clone());
             true
@@ -129,7 +129,7 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
             cache.apply_settings(settings.clone());
             true
         }
-        _ => false,
+        AppEvent::CueLists(_) => false,
     }
 }
 
