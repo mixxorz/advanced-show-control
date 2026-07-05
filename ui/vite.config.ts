@@ -6,6 +6,7 @@ import { defineConfig } from "vite";
 const debugEntry = process.env.VITE_DEBUG_ENTRY === "1";
 
 export default defineConfig({
+  base: debugEntry ? "./" : undefined,
   plugins: [react(), tailwindcss()],
   clearScreen: false,
   server: {

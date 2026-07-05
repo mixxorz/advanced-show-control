@@ -289,7 +289,7 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.recallCuedCue).toHaveBeenCalledWith();
   });
 
-  it("smoke tests creating a cue list through the rendered app with Enter", async () => {
+  it("wires cue list creation through the rendered app with Enter", async () => {
     const user = userEvent.setup();
     const services = makeServices({
       createCueList: vi.fn(async () => undefined),
@@ -310,7 +310,7 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.createCueList).toHaveBeenCalledWith("Bridge");
   });
 
-  it("smoke tests dragging a scene into the active cue list through the rendered app", async () => {
+  it("wires dragging a scene into the active cue list through the rendered app", async () => {
     const services = makeServices({
       addSceneToActiveCueList: vi.fn(async () => undefined),
       startupAutoConnectLv1: vi.fn(async () => undefined),

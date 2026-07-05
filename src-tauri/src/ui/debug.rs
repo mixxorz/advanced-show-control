@@ -52,6 +52,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::lifecycle::reconnect_timed_out,
             crate::ui::commands::fade::abort_all_fades,
             crate::ui::commands::show::set_lockout,
+            crate::ui::commands::cue_lists::create_cue_list,
             commands::debug_smoke_log,
             commands::debug_smoke_exit_app,
             commands::debug_smoke_set_channel_gain,

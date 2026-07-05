@@ -5,7 +5,9 @@ mod handle;
 mod state;
 mod types;
 
-pub use actor::{CueListsTask, build_cue_lists_actor};
+#[cfg(test)]
+pub use actor::build_cue_lists_actor_with_scenes;
+pub use actor::{CueListsPeers, CueListsTask, build_cue_lists_actor};
 pub use commands::{CueListsCommand, CueListsCommandResult, CueRecallResult};
 pub use events::{CueListsEvent, CueListsProjectionReason, CueListsProjectionState};
 pub use handle::CueListsHandle;

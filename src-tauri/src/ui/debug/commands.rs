@@ -29,7 +29,19 @@ impl SmokeReport {
         if let Some(parent) = report.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&report.path, "LV1 debug smoke report\n\n");
+        match std::fs::write(&report.path, "LV1 debug smoke report\n\n") {
+            Ok(()) => tracing::info!(
+                event = "debug_smoke_report_started",
+                path = %report.path.display(),
+                "Debug smoke report started"
+            ),
+            Err(error) => tracing::error!(
+                event = "debug_smoke_report_start_failed",
+                path = %report.path.display(),
+                error = %error,
+                "Debug smoke report start failed"
+            ),
+        }
         report
     }
 

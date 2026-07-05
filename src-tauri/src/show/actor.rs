@@ -554,7 +554,7 @@ async fn replace_cue_list_document(
 mod tests {
     use uuid::Uuid;
 
-    use crate::cue_lists::build_cue_lists_actor;
+    use crate::cue_lists::build_cue_lists_actor_with_scenes;
     use crate::cue_lists::{CueListsEvent, CueListsProjectionReason, CueListsProjectionState};
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
@@ -620,8 +620,8 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), AppEventBus::default());
         task.spawn();
         peers.set_scenes(scenes);
-        let (cue_lists, task) =
-            build_cue_lists_actor(AppEventBus::default(), peers.scenes().unwrap());
+        let (cue_lists, task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(AppEventBus::default(), peers.scenes().unwrap());
         task.spawn();
         peers.set_cue_lists(cue_lists);
         peers
@@ -845,7 +845,8 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task) = build_cue_lists_actor(event_bus.clone(), scenes.clone());
+        let (cue_lists, task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
         task.spawn();
         peers.set_cue_lists(cue_lists.clone());
 
@@ -890,7 +891,8 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task) = build_cue_lists_actor(event_bus.clone(), scenes.clone());
+        let (cue_lists, task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
         task.spawn();
         peers.set_cue_lists(cue_lists.clone());
         let new_lv1 = lv1_snapshot(vec![SceneListEntry {
@@ -1032,7 +1034,8 @@ mod tests {
             build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task) = build_cue_lists_actor(event_bus.clone(), scenes.clone());
+        let (cue_lists, task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
         task.spawn();
         peers.set_cue_lists(cue_lists.clone());
         event_bus.publish(crate::runtime::events::AppEvent::Runtime(

@@ -1,3 +1,5 @@
+use std::sync::{Arc, Mutex};
+
 use tokio::sync::{mpsc, oneshot};
 
 use crate::runtime::errors::AppCommandError;
@@ -11,35 +13,68 @@ use super::{
 
 pub struct CueListsTask {
     event_bus: AppEventBus,
-    scenes: ScenesHandle,
+    peers: CueListsPeers,
     command_rx: mpsc::Receiver<CueListsCommand>,
+}
+
+#[derive(Clone, Default)]
+pub struct CueListsPeers {
+    scenes: Arc<Mutex<Option<ScenesHandle>>>,
+}
+
+impl CueListsPeers {
+    pub fn set_scenes(&self, scenes: ScenesHandle) {
+        *self.scenes.lock().expect("cue lists peers lock poisoned") = Some(scenes);
+    }
+
+    pub fn clear_scenes(&self) {
+        *self.scenes.lock().expect("cue lists peers lock poisoned") = None;
+    }
+
+    fn scenes(&self) -> Option<ScenesHandle> {
+        self.scenes
+            .lock()
+            .expect("cue lists peers lock poisoned")
+            .clone()
+    }
 }
 
 impl CueListsTask {
     pub fn spawn(self) {
-        tokio::spawn(run_cue_lists_actor(self));
+        tauri::async_runtime::spawn(run_cue_lists_actor(self));
     }
 }
 
 pub fn build_cue_lists_actor(
     event_bus: AppEventBus,
-    scenes: ScenesHandle,
-) -> (CueListsHandle, CueListsTask) {
+) -> (CueListsHandle, CueListsTask, CueListsPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
+    let peers = CueListsPeers::default();
     (
         CueListsHandle::new(command_tx),
         CueListsTask {
             event_bus,
-            scenes,
+            peers: peers.clone(),
             command_rx,
         },
+        peers,
     )
+}
+
+#[cfg(test)]
+pub fn build_cue_lists_actor_with_scenes(
+    event_bus: AppEventBus,
+    scenes: ScenesHandle,
+) -> (CueListsHandle, CueListsTask, CueListsPeers) {
+    let (handle, task, peers) = build_cue_lists_actor(event_bus);
+    peers.set_scenes(scenes);
+    (handle, task, peers)
 }
 
 async fn run_cue_lists_actor(task: CueListsTask) {
     let CueListsTask {
         event_bus,
-        scenes,
+        peers,
         mut command_rx,
     } = task;
     let mut state = CueListsState::default();
@@ -234,7 +269,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 },
             ),
             CueListsCommand::RecallCuedCue { reply } => {
-                let result = recall_cued_cue(&scenes, &mut state).await;
+                let result = recall_cued_cue(&peers, &mut state).await;
                 if result.is_ok() {
                     publish_state(
                         &event_bus,
@@ -290,9 +325,10 @@ fn projection_state(state: &CueListsState) -> CueListsProjectionState {
 }
 
 async fn recall_cued_cue(
-    scenes: &ScenesHandle,
+    peers: &CueListsPeers,
     state: &mut CueListsState,
 ) -> Result<CueRecallResult, AppCommandError> {
+    let scenes = peers.scenes().ok_or(AppCommandError::ScenesUnavailable)?;
     let entry = state.cued_entry().map_err(AppCommandError::CommandFailed)?;
     let (reply, rx) = oneshot::channel();
     scenes
@@ -345,7 +381,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let (scenes, _rx) = fake_scenes_handle();
-        let (handle, task) = build_cue_lists_actor(event_bus.clone(), scenes);
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus.clone(), scenes);
         task.spawn();
 
         let (reply, rx) = oneshot::channel();
@@ -380,7 +416,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let (scenes, mut scene_rx) = fake_scenes_handle();
-        let (handle, task) = build_cue_lists_actor(event_bus, scenes);
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
         task.spawn();
 
         let scene_id = Uuid::from_u128(0x11111111111141118111111111111111);

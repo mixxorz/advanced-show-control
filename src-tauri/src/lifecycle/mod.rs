@@ -6,7 +6,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 
-use crate::cue_lists::{CueListsHandle, build_cue_lists_actor};
+use crate::cue_lists::{CueListsHandle, CueListsPeers, build_cue_lists_actor};
 use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
@@ -24,7 +24,6 @@ pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
     pub scene_recall_fader: Option<ScenesHandle>,
-    pub cue_lists: Option<CueListsHandle>,
 }
 
 impl RuntimeHandles {
@@ -40,7 +39,6 @@ impl RuntimeHandles {
         self.scene_recall_fader = None;
         self.lv1 = None;
         self.fade = None;
-        self.cue_lists = None;
     }
 }
 
@@ -56,7 +54,6 @@ struct BuiltConnectedRuntime {
     fade_task: crate::fade::FadeEngineTask,
     scene_recall_fader: ScenesHandle,
     scene_recall_task: crate::scenes::ScenesTask,
-    cue_lists_task: crate::cue_lists::CueListsTask,
 }
 
 impl BuiltConnectedRuntime {
@@ -67,7 +64,6 @@ impl BuiltConnectedRuntime {
     fn spawn_lv1_and_fade(self) -> StartedConnectedRuntime {
         self.lv1_task.spawn();
         self.fade_task.spawn();
-        self.cue_lists_task.spawn();
         StartedConnectedRuntime {
             lv1: self.lv1,
             scene_recall_fader: self.scene_recall_fader,
@@ -88,6 +84,7 @@ fn build_connected_runtime(
     identity: &crate::connection_state::Lv1SystemIdentity,
     _show: ShowStateHandle,
     show_peers: ShowActorPeers,
+    cue_lists_peers: CueListsPeers,
     event_bus: AppEventBus,
 ) -> BuiltConnectedRuntime {
     let (lv1, lv1_task) = build_actor(
@@ -100,9 +97,9 @@ fn build_connected_runtime(
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
         build_scenes_actor(generation, runtime_generation, event_bus.clone());
-    let (cue_lists, cue_lists_task) = build_cue_lists_actor(event_bus, scene_recall_fader.clone());
+    let _ = event_bus;
     show_peers.set_scenes(scene_recall_fader.clone());
-    show_peers.set_cue_lists(cue_lists.clone());
+    cue_lists_peers.set_scenes(scene_recall_fader.clone());
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -113,7 +110,6 @@ fn build_connected_runtime(
         fade_task,
         scene_recall_fader,
         scene_recall_task,
-        cue_lists_task,
     }
 }
 
@@ -146,6 +142,8 @@ pub struct AppLifecycle {
     event_bus: AppEventBus,
     show: ShowStateHandle,
     show_peers: ShowActorPeers,
+    cue_lists: CueListsHandle,
+    cue_lists_peers: CueListsPeers,
     settings: SettingsHandle,
 }
 
@@ -157,6 +155,9 @@ impl AppLifecycle {
         settings: SettingsHandle,
     ) -> Self {
         let runtime_generation = RuntimeGeneration::new();
+        let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
+        show_peers.set_cue_lists(cue_lists.clone());
+        cue_lists_task.spawn();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
@@ -170,6 +171,8 @@ impl AppLifecycle {
             event_bus,
             show,
             show_peers,
+            cue_lists,
+            cue_lists_peers,
             settings,
         }
     }
@@ -220,6 +223,7 @@ impl AppLifecycle {
         }
         inner.handles.abort_all();
         self.show_peers.clear_lv1(generation);
+        self.cue_lists_peers.clear_scenes();
         inner.runtime_generation.set(inner.generation).await;
         inner.generation = inner.generation.saturating_add(1);
         let generation = inner.generation;
@@ -267,6 +271,7 @@ impl AppLifecycle {
             &identity,
             self.show.clone(),
             self.show_peers.clone(),
+            self.cue_lists_peers.clone(),
             event_bus.clone(),
         );
         let handles = built_runtime.runtime_targets();
@@ -358,6 +363,7 @@ impl AppLifecycle {
         let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
             build_scenes_actor(generation, runtime_generation, event_bus);
         scene_recall_peers.set_peers(lv1, fade);
+        self.cue_lists_peers.set_scenes(scene_recall_fader.clone());
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
         scene_recall_task.spawn();
@@ -481,7 +487,7 @@ impl AppLifecycle {
     }
 
     pub async fn current_cue_lists(&self) -> Option<CueListsHandle> {
-        self.inner.lock().await.handles.cue_lists.clone()
+        Some(self.cue_lists.clone())
     }
 
     pub(crate) async fn connected_lv1_identity(
@@ -700,6 +706,7 @@ mod tests {
     use super::*;
     use crate::connection_state::Lv1SystemIdentity;
     use crate::connection_state::ReconnectState;
+    use crate::cue_lists::CueListsEvent;
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
@@ -850,6 +857,7 @@ mod tests {
             &identity,
             lifecycle.show.clone(),
             lifecycle.show_peers.clone(),
+            lifecycle.cue_lists_peers.clone(),
             event_bus,
         );
 
@@ -1119,6 +1127,62 @@ mod tests {
                 .scene_recall_fader
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_installs_cue_lists_handle_for_commands() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus);
+
+        assert!(lifecycle.current_cue_lists().await.is_some());
+        assert!(lifecycle.show_peers.cue_lists().is_some());
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_cue_list_command_mutates_and_publishes_projection_without_lv1() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus);
+
+        let command_handle = lifecycle
+            .current_cue_lists()
+            .await
+            .expect("current cue lists should be available to command adapters");
+        let (reply, rx) = oneshot::channel();
+        command_handle
+            .send(crate::cue_lists::CueListsCommand::CreateCueList {
+                name: "Smoke Cue List".to_string(),
+                reply: Some(reply),
+            })
+            .await
+            .expect("create cue list command should send");
+        let created = rx
+            .await
+            .expect("create cue list reply should arrive")
+            .expect("create cue list should succeed")
+            .cue_list
+            .expect("create cue list should return cue list");
+
+        loop {
+            if let AppEvent::CueLists(CueListsEvent::StateChanged { state, .. }) =
+                events.recv().await.unwrap()
+            {
+                assert_eq!(state.document.active_cue_list_id, Some(created.id));
+                assert!(
+                    state
+                        .document
+                        .cue_lists
+                        .iter()
+                        .any(|list| { list.id == created.id && list.name == "Smoke Cue List" })
+                );
+                break;
+            }
+        }
+
+        command_handle
+            .send(crate::cue_lists::CueListsCommand::Shutdown)
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]
