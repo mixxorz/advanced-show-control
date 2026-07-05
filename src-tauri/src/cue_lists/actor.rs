@@ -235,6 +235,14 @@ async fn run_cue_lists_actor(task: CueListsTask) {
             ),
             CueListsCommand::RecallCuedCue { reply } => {
                 let result = recall_cued_cue(&scenes, &mut state).await;
+                if result.is_ok() {
+                    publish_state(
+                        &event_bus,
+                        &state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                    );
+                }
                 let _ = reply.send(result);
             }
             CueListsCommand::Shutdown => break,
@@ -370,6 +378,7 @@ mod tests {
     #[tokio::test]
     async fn recall_cued_cue_routes_through_scenes_and_advances_on_success() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let (scenes, mut scene_rx) = fake_scenes_handle();
         let (handle, task) = build_cue_lists_actor(event_bus, scenes);
         task.spawn();
@@ -429,6 +438,20 @@ mod tests {
         assert_eq!(result.recalled_entry_id, entry.id);
         assert_eq!(result.next_cued_entry_id, None);
         recall_task.await.unwrap();
+
+        loop {
+            if let AppEvent::CueLists(CueListsEvent::StateChanged {
+                reason,
+                persisted_cue_list_edit,
+                state,
+            }) = events.recv().await.unwrap()
+            {
+                assert_eq!(reason, CueListsProjectionReason::CueListState);
+                assert!(persisted_cue_list_edit);
+                assert!(state.document.cued_cue_entry_id.is_none());
+                break;
+            }
+        }
 
         handle.send(CueListsCommand::Shutdown).await.unwrap();
     }
