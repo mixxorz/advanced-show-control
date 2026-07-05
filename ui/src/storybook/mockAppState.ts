@@ -243,6 +243,16 @@ function makeConnectedAppState(
         },
       ],
     },
+    {
+      id: "cue-list-verse",
+      name: "Verse",
+      entries: [
+        {
+          id: "cue-3",
+          sceneInternalId: sceneConfigs[0]?.internalSceneId ?? "scene-verse",
+        },
+      ],
+    },
   ];
 
   return makeBaseDisconnectedAppState({

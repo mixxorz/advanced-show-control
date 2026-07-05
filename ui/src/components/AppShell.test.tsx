@@ -58,5 +58,6 @@ describe("AppShell", () => {
     expect(
       screen.getByRole("heading", { name: /Cue List/i }),
     ).toBeInTheDocument();
+    expect(screen.getByLabelText(/Active cue list/i)).toBeInTheDocument();
   });
 });

@@ -1,12 +1,15 @@
 import { useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import { ConfirmModal } from "./ConfirmModal";
+import { CueListNameModal } from "./CueListNameModal";
 import { ConsoleButton } from "./ConsoleButton";
 
 export function CueListManageModal(props: { onClose: () => void }) {
   const { appState } = useAppState();
   const commands = useAppCommands();
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [pendingRename, setPendingRename] = useState<string | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
 
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6">
@@ -24,6 +27,14 @@ export function CueListManageModal(props: { onClose: () => void }) {
 
         <div className="min-h-0 flex-1 overflow-auto py-4">
           <div className="space-y-3">
+            <div className="flex justify-end">
+              <ConsoleButton
+                onClick={() => setShowCreateModal(true)}
+                size="small"
+              >
+                New Cue List
+              </ConsoleButton>
+            </div>
             {appState.cueLists.map((cueList) => (
               <div
                 className="flex items-center justify-between gap-3 rounded-console-control border border-console-line bg-console-section px-4 py-3"
@@ -37,13 +48,22 @@ export function CueListManageModal(props: { onClose: () => void }) {
                     {cueList.entries.length} cues
                   </div>
                 </div>
-                <ConsoleButton
-                  onClick={() => setPendingDelete(cueList.id)}
-                  size="small"
-                  variant="ghost-danger"
-                >
-                  Delete {cueList.name}
-                </ConsoleButton>
+                <div className="flex gap-2">
+                  <ConsoleButton
+                    onClick={() => setPendingRename(cueList.id)}
+                    size="small"
+                    variant="secondary"
+                  >
+                    Rename
+                  </ConsoleButton>
+                  <ConsoleButton
+                    onClick={() => setPendingDelete(cueList.id)}
+                    size="small"
+                    variant="ghost-danger"
+                  >
+                    Delete
+                  </ConsoleButton>
+                </div>
               </div>
             ))}
           </div>
@@ -59,6 +79,34 @@ export function CueListManageModal(props: { onClose: () => void }) {
           </ConsoleButton>
         </div>
       </section>
+
+      {showCreateModal && (
+        <CueListNameModal
+          initialName=""
+          onCancel={() => setShowCreateModal(false)}
+          onSubmit={async (name) => {
+            await commands.createCueList?.(name);
+            setShowCreateModal(false);
+          }}
+          submitLabel="Create"
+          title="New Cue List"
+        />
+      )}
+
+      {pendingRename && (
+        <CueListNameModal
+          initialName={
+            appState.cueLists.find((list) => list.id === pendingRename)?.name
+          }
+          onCancel={() => setPendingRename(null)}
+          onSubmit={async (name) => {
+            await commands.renameCueList?.(pendingRename, name);
+            setPendingRename(null);
+          }}
+          submitLabel="Rename"
+          title="Rename Cue List"
+        />
+      )}
 
       {pendingDelete && (
         <ConfirmModal

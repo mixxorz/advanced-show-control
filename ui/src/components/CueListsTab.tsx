@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import type { CueEntry, CueList } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
@@ -13,6 +13,13 @@ export function CueListsTab() {
     appState.cueLists.find(
       (cueList) => cueList.id === appState.activeCueListId,
     ) ?? null;
+  const activeCueListIndex = useMemo(
+    () =>
+      appState.cueLists.findIndex(
+        (cueList) => cueList.id === activeCueList?.id,
+      ),
+    [activeCueList?.id, appState.cueLists],
+  );
   const [showNewCueListModal, setShowNewCueListModal] = useState(false);
   const [showManageCueListsModal, setShowManageCueListsModal] = useState(false);
 
@@ -32,10 +39,30 @@ export function CueListsTab() {
       </Panel>
 
       <Panel className="flex min-h-0 flex-col overflow-hidden">
-        <div className="flex items-center justify-between gap-3 border-b border-console-line px-4 py-3">
-          <h2 className="text-lg font-normal uppercase text-console-primary">
-            Cue List
-          </h2>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-console-line px-4 py-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <h2 className="text-lg font-normal uppercase text-console-primary">
+              Cue List
+            </h2>
+            <label className="flex min-w-0 items-center gap-2 text-sm text-console-secondary">
+              Active
+              <select
+                aria-label="Active cue list"
+                className="min-w-0 rounded-console-control border border-console-line bg-console-section px-3 py-2 text-sm text-console-primary outline-none focus:border-console-line-strong"
+                onChange={(event) =>
+                  void commands.setActiveCueList?.(event.target.value || null)
+                }
+                value={activeCueList?.id ?? ""}
+              >
+                <option value="">None</option>
+                {appState.cueLists.map((cueList) => (
+                  <option key={cueList.id} value={cueList.id}>
+                    {cueList.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <div className="flex gap-2">
             <ConsoleButton
               onClick={() => setShowNewCueListModal(true)}
@@ -63,8 +90,22 @@ export function CueListsTab() {
         <div className="min-h-0 flex-1 overflow-auto p-3">
           <CueListPane
             activeCueList={activeCueList}
-            onDeleteCueEntry={commands.removeCueEntry}
+            activeCueListIndex={activeCueListIndex}
+            cueLists={appState.cueLists}
+            onDropScene={(sceneInternalId, insertIndex) =>
+              void commands.addSceneToActiveCueList?.(
+                sceneInternalId,
+                insertIndex,
+              )
+            }
+            onMoveCueList={(fromIndex, toIndex) => {
+              const orderedIds = appState.cueLists.map((cueList) => cueList.id);
+              const [movedId] = orderedIds.splice(fromIndex, 1);
+              orderedIds.splice(toIndex, 0, movedId);
+              void commands.reorderCueLists?.(orderedIds);
+            }}
             onCueEntry={commands.cueEntry}
+            onDeleteCueEntry={commands.removeCueEntry}
           />
         </div>
       </Panel>
@@ -91,9 +132,8 @@ export function CueListsTab() {
 function SceneLibraryRow(props: {
   scene: { internalSceneId: string; sceneName: string };
 }) {
-  const commands = useAppCommands();
   return (
-    <button
+    <div
       className="mb-2 flex w-full items-center rounded-console-control border border-console-line bg-console-section px-3 py-2 text-left text-console-primary hover:border-console-line-strong hover:bg-console-control"
       draggable
       onDragStart={(event) => {
@@ -102,18 +142,23 @@ function SceneLibraryRow(props: {
           props.scene.internalSceneId,
         );
       }}
-      onClick={() =>
-        void commands.addSceneToActiveCueList?.(props.scene.internalSceneId, 0)
-      }
-      type="button"
+      role="button"
+      tabIndex={0}
     >
       {props.scene.sceneName}
-    </button>
+    </div>
   );
 }
 
 function CueListPane(props: {
   activeCueList: CueList | null;
+  activeCueListIndex: number;
+  cueLists: CueList[];
+  onDropScene?: (
+    sceneInternalId: string,
+    insertIndex: number,
+  ) => void | Promise<void>;
+  onMoveCueList?: (fromIndex: number, toIndex: number) => void | Promise<void>;
   onCueEntry?: (cueEntryId: string | null) => void | Promise<void>;
   onDeleteCueEntry?: (cueEntryId: string) => void | Promise<void>;
 }) {
@@ -123,15 +168,80 @@ function CueListPane(props: {
 
   return (
     <div className="space-y-2">
+      <CueListDropZone insertIndex={0} onDropScene={props.onDropScene} />
       {props.activeCueList.entries.map((entry, index) => (
-        <CueEntryRow
-          entry={entry}
-          key={entry.id}
-          index={index}
-          onCueEntry={props.onCueEntry}
-          onDeleteCueEntry={props.onDeleteCueEntry}
-        />
+        <div key={entry.id} className="space-y-2">
+          <CueEntryRow
+            entry={entry}
+            index={index}
+            onCueEntry={props.onCueEntry}
+            onDeleteCueEntry={props.onDeleteCueEntry}
+          />
+          <CueListDropZone
+            insertIndex={index + 1}
+            onDropScene={props.onDropScene}
+          />
+        </div>
       ))}
+      <div className="flex gap-2 pt-2">
+        <ConsoleButton
+          disabled={props.activeCueListIndex <= 0}
+          onClick={() =>
+            void props.onMoveCueList?.(
+              props.activeCueListIndex,
+              Math.max(0, props.activeCueListIndex - 1),
+            )
+          }
+          size="small"
+          variant="secondary"
+        >
+          Move Up
+        </ConsoleButton>
+        <ConsoleButton
+          disabled={
+            props.activeCueListIndex < 0 ||
+            props.activeCueListIndex >= props.cueLists.length - 1
+          }
+          onClick={() =>
+            void props.onMoveCueList?.(
+              props.activeCueListIndex,
+              Math.min(props.cueLists.length - 1, props.activeCueListIndex + 1),
+            )
+          }
+          size="small"
+          variant="secondary"
+        >
+          Move Down
+        </ConsoleButton>
+      </div>
+    </div>
+  );
+}
+
+function CueListDropZone(props: {
+  insertIndex: number;
+  onDropScene?: (
+    sceneInternalId: string,
+    insertIndex: number,
+  ) => void | Promise<void>;
+}) {
+  return (
+    <div
+      aria-label={`Drop scene at position ${props.insertIndex + 1}`}
+      className="rounded-console-control border border-dashed border-console-line px-3 py-2 text-sm text-console-secondary"
+      onDragOver={(event) => event.preventDefault()}
+      onDrop={(event) => {
+        event.preventDefault();
+        const sceneInternalId = event.dataTransfer.getData(
+          "application/x-asc-scene-id",
+        );
+        if (sceneInternalId) {
+          void props.onDropScene?.(sceneInternalId, props.insertIndex);
+        }
+      }}
+      role="button"
+    >
+      Drop scene here
     </div>
   );
 }
