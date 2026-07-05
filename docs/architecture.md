@@ -28,7 +28,7 @@ The runtime consists of the following primary components:
 | `fade`      | Executes active fade timing, overlap behavior, and LV1 parameter writes.                                                                  |
 | `settings`  | Maintains app-level preferences, loads/saves app-config `settings.json`, validates normalized settings replacements, and publishes settings projection facts. |
 | `scenes`    | Performs scene recall automation and recall policy enforcement.                                                                           |
-| `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, and application-managed scene configuration state. |
+| `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, cue-list state, and application-managed scene configuration state. |
 | `lifecycle` | Constructs the connected runtime, wires actor peers, installs handles, tears down runtime state, and owns generation changes.             |
 | `projector` | Maintains the backend-to-frontend projection cache and emits `app-status-changed`.                                                        |
 | `ui`        | Performs Tauri setup and provides thin frontend command adapters.                                                                         |
@@ -127,6 +127,7 @@ Runtime(RuntimeLifecycleEvent)
 Lv1 { generation, event }
 Fade { generation, event }
 Scenes { generation, event }
+CueLists { generation, event }
 Show(ShowEvent)
 ```
 
@@ -321,7 +322,22 @@ The module owns the following responsibilities:
 
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 
-### 13.4 `show`
+### 13.4 `cue_lists`
+
+The `cue_lists` module owns cue-list state and cue-list workflow behavior.
+
+The module owns the following responsibilities:
+
+1. Cue-list documents and ordering.
+2. Cue-list entry creation, deletion, and reordering.
+3. Active cue-list selection.
+4. Cued cue-entry tracking.
+5. Cue-list recall status projection.
+6. Cue-list persistence hooks within the show document.
+
+The module publishes `CueListsEvent` facts and accepts `CueListsCommand` requests.
+
+### 13.5 `show`
 
 The `show` module owns show-level application state and persistence.
 
@@ -344,7 +360,7 @@ The module owns the following responsibilities:
 
 The module publishes `ShowEvent` facts and accepts `ShowCommand` requests.
 
-### 13.5 `lifecycle`
+### 13.6 `lifecycle`
 
 The `lifecycle` module owns runtime lifetime.
 
@@ -359,7 +375,7 @@ The module owns the following responsibilities:
 7. Runtime handle cleanup.
 8. Reconnect state changes that cross actor boundaries.
 
-### 13.6 `projector`
+### 13.7 `projector`
 
 The `projector` module owns frontend state projection.
 
@@ -371,7 +387,7 @@ The module owns the following responsibilities:
 4. 10 hertz dirty-cache throttling.
 5. User-interface log cache entries.
 
-### 13.7 `ui`
+### 13.8 `ui`
 
 The `ui` module owns Tauri setup and frontend command boundaries.
 
@@ -382,7 +398,7 @@ The module owns the following responsibilities:
 3. Frontend serialization boundaries.
 4. Thin command adapter modules.
 
-### 13.8 `runtime`
+### 13.9 `runtime`
 
 The `runtime` module owns shared runtime primitives.
 
@@ -453,6 +469,7 @@ Important directories are defined as follows:
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `src-tauri/src/lv1/`       | LV1 protocol, TCP actor, discovery, mirror state, and LV1 commands.                                                             |
 | `src-tauri/src/fade/`      | Fade engine actor, fade state, interpolation, fader law, and fade events.                                                       |
+| `src-tauri/src/cue_lists/`  | Cue-list actor, cue-list commands, cue-list events, and cue-list workflow policy.                                               |
 | `src-tauri/src/scenes/`    | Scene recall actor, recall commands, recall events, and recall policy.                                                          |
 | `src-tauri/src/show/`      | Show actor, show document state, scene configuration state, show-file input/output, discovery state, and show projection facts. |
 | `src-tauri/src/lifecycle/` | Runtime connection lifecycle and actor graph wiring.                                                                            |

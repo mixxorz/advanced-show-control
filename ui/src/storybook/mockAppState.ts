@@ -313,6 +313,50 @@ export const cueListStateFixture: AppViewState = makeConnectedAppState([
   },
 ]);
 
+export const cueListWithMissingSceneReferenceAppState: AppViewState =
+  makeConnectedAppState([makeStoredVerseScene(), makeStoredChorusScene()]);
+
+cueListWithMissingSceneReferenceAppState.cueLists = [
+  {
+    id: "cue-list-main",
+    name: "Main",
+    entries: [
+      { id: "cue-1", sceneInternalId: "scene-verse" },
+      { id: "cue-2", sceneInternalId: "scene-missing" },
+      { id: "cue-3", sceneInternalId: "scene-chorus" },
+    ],
+  },
+];
+
+cueListWithMissingSceneReferenceAppState.activeCueListId = "cue-list-main";
+cueListWithMissingSceneReferenceAppState.cuedCueEntryId = "cue-2";
+cueListWithMissingSceneReferenceAppState.lastCueRecallStatus = "missing scene";
+
+export const cueListManageModalAppState: AppViewState = makeConnectedAppState();
+
+cueListManageModalAppState.cueLists = [
+  {
+    id: "cue-list-open",
+    name: "Open",
+    entries: [{ id: "cue-1", sceneInternalId: "scene-verse" }],
+  },
+  {
+    id: "cue-list-mid",
+    name: "Mid Set",
+    entries: [
+      { id: "cue-2", sceneInternalId: "scene-chorus" },
+      { id: "cue-3", sceneInternalId: "scene-verse" },
+    ],
+  },
+  {
+    id: "cue-list-close",
+    name: "Close",
+    entries: [],
+  },
+];
+
+cueListManageModalAppState.activeCueListId = "cue-list-mid";
+
 export const connectedWithDuplicateScenesAppState: AppViewState =
   makeConnectedAppState([
     makeStoredVerseScene(),

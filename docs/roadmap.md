@@ -32,7 +32,7 @@ The app owns app-managed scene fade behavior, scoped channel targets, fade durat
 - Projector state emission is bounded by dirty-state batching and a fixed projection interval so routine LV1 updates do not flood the frontend.
 - Balance and width reports no longer cancel pan-family fades directly, reducing known false-positive manual override reports while preserving pan override cancellation behavior.
 - Frontend testing is in place with Vitest unit tests, Storybook interaction/browser tests, and Playwright visual checks.
-- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists and Events remain post-MVP placeholders, while Settings now has completed app-level controls backed by startup-loaded app config `settings.json`, saved immediately on change, and projected through `SettingsEvent::StateChanged` and the app-status projector.
+- The real frontend shell exists with Scenes, Logs, Settings, Cue Lists, and Events navigation; Cue Lists is implemented with dedicated cue-list management and recall UI, while Events remains a post-MVP placeholder. Settings now has completed app-level controls backed by startup-loaded app config `settings.json`, saved immediately on change, and projected through `SettingsEvent::StateChanged` and the app-status projector.
 - The Scenes tab supports scene status, current/cued/selected scene display, duplicate-name warnings, scene recall navigation, scope editing, duration editing, stored target review, and channel-scope controls.
 - Connection controls are implemented through the connection modal, including discovery results, connect selection, disconnect, connected/unavailable states, and reconnect overlay behavior.
 - The Logs tab shows projected frontend-facing operational logs.
@@ -89,6 +89,8 @@ The immediate goal is to reach a live-viable MVP. This scope is intentionally la
 ## Release 2: Cue Lists
 
 After the scene-fading MVP, the next major release is cue list support. Cue lists let engineers build show-order lists from the LV1 scene library without changing the order of scenes on the console.
+
+Cue-list implementation is now in place in the frontend and backend architecture. Remaining Release 2 work should be tracked as follow-on hardening, documentation, and any future polish rather than as core feature discovery.
 
 Core goals:
 
