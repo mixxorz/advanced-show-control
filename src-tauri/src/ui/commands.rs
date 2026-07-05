@@ -12,7 +12,7 @@ pub use lifecycle::{
     probe_lv1_tcp_connect_latency, reconnect_timed_out, startup_auto_connect_lv1,
 };
 pub use scenes::{
-    cue_scene, delete_scene_config, link_scene_config, recall_scene, select_scene_config,
+    delete_scene_config, link_scene_config, recall_scene, select_scene_config,
     set_all_channels_scoped, set_channel_scoped, set_scene_duration_ms,
     set_scene_scope_faders_enabled, set_scene_scope_pan_enabled, store_scene_config,
 };

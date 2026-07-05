@@ -16,9 +16,8 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
 
 export function SceneListView(props: {
   currentScene: SceneSummary | null;
-  cuedSceneInternalId?: string | null;
+  selectedSceneInternalId?: string | null;
   scenes: SceneConfig[];
-  selectedSceneInternalId: string | null;
   onSelectScene: (internalSceneId: string) => void;
   onRecallScene?: (internalSceneId: string) => void;
 }) {
@@ -83,7 +82,7 @@ export function SceneListView(props: {
           props.scenes.map((scene) => (
             <SceneListRow
               currentScene={props.currentScene}
-              cued={scene.internalSceneId === props.cuedSceneInternalId}
+              cued={scene.internalSceneId === props.selectedSceneInternalId}
               key={scene.internalSceneId}
               onSelect={() => props.onSelectScene(scene.internalSceneId)}
               scene={scene}
@@ -103,11 +102,10 @@ export function SceneList() {
   return (
     <SceneListView
       currentScene={appState.currentScene}
-      cuedSceneInternalId={appState.cuedSceneInternalId ?? null}
+      selectedSceneInternalId={appState.selectedSceneInternalId ?? null}
       onRecallScene={commands.recallScene}
       onSelectScene={commands.selectScene}
       scenes={appState.sceneConfigs}
-      selectedSceneInternalId={appState.selectedSceneInternalId}
     />
   );
 }

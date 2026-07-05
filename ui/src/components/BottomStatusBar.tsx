@@ -14,7 +14,7 @@ function formatClock(date: Date) {
 
 function cuedSceneLabel(appState: AppViewState) {
   const cued = appState.sceneConfigs.find(
-    (scene) => scene.internalSceneId === appState.cuedSceneInternalId,
+    (scene) => scene.internalSceneId === appState.selectedSceneInternalId,
   );
   return cued ? cued.sceneName : "---";
 }
@@ -53,7 +53,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
     : "---";
   const mode = modeDisplay(props.appState);
   const canGo = Boolean(
-    props.appState.cuedSceneInternalId && commands.recallScene,
+    props.appState.selectedSceneInternalId && commands.recallScene,
   );
 
   return (
@@ -63,8 +63,8 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
           disabled={!canGo}
           fullWidth
           onClick={() => {
-            if (props.appState.cuedSceneInternalId) {
-              commands.recallScene?.(props.appState.cuedSceneInternalId);
+            if (props.appState.selectedSceneInternalId) {
+              commands.recallScene?.(props.appState.selectedSceneInternalId);
             }
           }}
           size="big"
@@ -75,7 +75,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
       </div>
       <StatusCell
         label="Cued"
-        tone={props.appState.cuedSceneInternalId ? "cued" : "default"}
+        tone={props.appState.selectedSceneInternalId ? "cued" : "default"}
         value={cuedSceneLabel(props.appState)}
       />
       <StatusCell label="Current" tone="current" value={currentScene} />

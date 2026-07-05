@@ -13,7 +13,6 @@ import { SceneListView } from "./SceneList";
 
 type SceneListStoryArgs = {
   appState?: AppViewState;
-  cuedSceneInternalId?: string | null;
 };
 
 const sceneNames = [
@@ -50,7 +49,6 @@ const manySceneConfigs = sceneNames.map((name, index) =>
 
 const manyScenesAppState: AppViewState = {
   ...connectedAppState,
-  cuedSceneInternalId: manySceneConfigs[5].internalSceneId,
   currentScene: { index: 2, name: "S01: The Wonderful Blood" },
   sceneConfigs: manySceneConfigs,
   selectedSceneInternalId: manySceneConfigs[6].internalSceneId,
@@ -72,13 +70,11 @@ const meta: Meta<SceneListStoryArgs> = {
   ],
   args: {
     appState: manyScenesAppState,
-    cuedSceneInternalId: manyScenesAppState.cuedSceneInternalId,
   },
   render: (args) => (
     <MockAppProviders appState={args.appState}>
       <SceneListView
         currentScene={args.appState?.currentScene ?? null}
-        cuedSceneInternalId={args.cuedSceneInternalId}
         onRecallScene={() => {}}
         onSelectScene={() => {}}
         scenes={args.appState?.sceneConfigs ?? []}
@@ -102,7 +98,10 @@ export const ActiveSelected: Story = {
 
 export const CuedSelected: Story = {
   args: {
-    cuedSceneInternalId: manySceneConfigs[6].internalSceneId,
+    appState: {
+      ...manyScenesAppState,
+      selectedSceneInternalId: manySceneConfigs[6].internalSceneId,
+    },
   },
 };
 

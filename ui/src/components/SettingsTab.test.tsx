@@ -43,7 +43,6 @@ describe("SettingsTab", () => {
             },
           },
         },
-        autoCueNextSceneOnGo: false,
         timeDisplay: "twentyFourHour" as const,
         faderOverrideSensitivity: 9,
       },
@@ -86,19 +85,6 @@ describe("SettingsTab", () => {
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
       autoLoadLastShowFile: true,
-    });
-  });
-
-  it("updates auto-cue while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Auto cue next scene on GO"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      autoCueNextSceneOnGo: true,
     });
   });
 

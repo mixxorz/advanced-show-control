@@ -15,8 +15,6 @@ pub struct ShowFile {
     pub safety: ShowFileSafety,
     pub scene_configs: Vec<ShowFileSceneConfig>,
     #[serde(default)]
-    pub cued_scene_internal_id: Option<uuid::Uuid>,
-    #[serde(default)]
     pub cue_lists: Vec<CueList>,
     #[serde(default)]
     pub active_cue_list_id: Option<uuid::Uuid>,
@@ -111,7 +109,6 @@ pub fn export_show_file(
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         saved_at,
         safety: ShowFileSafety { lockout },
-        cued_scene_internal_id: snapshot.cued_scene_internal_id,
         cue_lists: cue_list_snapshot.cue_lists,
         active_cue_list_id: cue_list_snapshot.active_cue_list_id,
         cued_cue_entry_id: cue_list_snapshot.cued_cue_entry_id,
@@ -160,7 +157,6 @@ pub fn import_show_file(
         .map(|config| config.internal_scene_id.to_string());
     let snapshot = SceneDocument {
         scene_configs,
-        cued_scene_internal_id: file.cued_scene_internal_id,
         selected_scene_internal_id: selected_scene_internal_id.clone(),
     };
 
@@ -262,9 +258,7 @@ mod tests {
     #[test]
     fn export_show_file_contains_current_configs() {
         let internal_scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
-        let cued_scene_internal_id = uuid::Uuid::from_u128(0x55555555555545558555555555555555);
         let snapshot = SceneDocument {
-            cued_scene_internal_id: Some(cued_scene_internal_id),
             selected_scene_internal_id: None,
             scene_configs: vec![SceneConfig {
                 internal_scene_id,
@@ -301,7 +295,6 @@ mod tests {
         assert_eq!(file.schema_version, SHOW_FILE_SCHEMA_VERSION);
         assert_eq!(file.saved_at, "saved");
         assert!(file.safety.lockout);
-        assert_eq!(file.cued_scene_internal_id, Some(cued_scene_internal_id));
         assert_eq!(
             file.scene_configs[0].internal_scene_id,
             Some(internal_scene_id)
@@ -317,7 +310,6 @@ mod tests {
 
     #[test]
     fn import_show_file_preserves_missing_and_unlinked_scenes() {
-        let cued_scene_internal_id = uuid::Uuid::from_u128(0x66666666666646668666666666666666);
         let intro_internal_scene_id = uuid::Uuid::from_u128(0x22222222222242228222222222222222);
         let missing_internal_scene_id = uuid::Uuid::from_u128(0x33333333333343338333333333333333);
         let mut file = ShowFile {
@@ -325,7 +317,6 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
-            cued_scene_internal_id: Some(cued_scene_internal_id),
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -368,10 +359,6 @@ mod tests {
         assert_eq!(imported.snapshot.scene_configs[0].scene_name, "Intro");
         assert_eq!(imported.snapshot.scene_configs[1].scene_index, Some(2));
         assert_eq!(imported.snapshot.scene_configs[1].scene_name, "Missing");
-        assert_eq!(
-            imported.snapshot.cued_scene_internal_id,
-            Some(cued_scene_internal_id)
-        );
     }
 
     #[test]
@@ -381,7 +368,6 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
-            cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -430,7 +416,6 @@ mod tests {
         let scene_document = SceneDocument {
             scene_configs: vec![],
             selected_scene_internal_id: None,
-            cued_scene_internal_id: None,
         };
         let cue_document = CueListDocument {
             cue_lists: vec![CueList {

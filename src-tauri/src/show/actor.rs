@@ -224,7 +224,6 @@ async fn handle_command(
                             Vec::new(),
                             &lv1.scene_list,
                         ),
-                        cued_scene_internal_id: None,
                         selected_scene_internal_id: None,
                     }
                 } else {
@@ -443,7 +442,6 @@ async fn load_show_file_from_dto(
         });
     let scene_document = SceneDocument {
         scene_configs: aligned_scene_configs.clone(),
-        cued_scene_internal_id: imported.snapshot.cued_scene_internal_id,
         selected_scene_internal_id: selected_scene_internal_id.clone(),
     };
     replace_scene_document(
@@ -586,7 +584,6 @@ mod tests {
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
             scene_configs: scenes,
-            cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -854,7 +851,6 @@ mod tests {
 
         let scenes_document = crate::scenes::SceneDocument {
             scene_configs: vec![scene_config(11, Some(3), "Scene From Scenes", 2_500)],
-            cued_scene_internal_id: None,
             selected_scene_internal_id: Some("selected-from-scenes".to_string()),
         };
         let (reply, rx) = tokio::sync::oneshot::channel();
@@ -919,7 +915,6 @@ mod tests {
             saved_at: "123".to_string(),
             safety: crate::show::show_file::ShowFileSafety { lockout: false },
             scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
-            cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -965,7 +960,6 @@ mod tests {
                     reason: crate::scenes::ScenesProjectionReason::SceneState,
                     state: crate::scenes::ScenesProjectionState {
                         scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
-                        cued_scene_internal_id: None,
                         selected_scene_internal_id: None,
                     },
                     persisted_scene_edit: true,
@@ -998,7 +992,6 @@ mod tests {
                     reason: crate::scenes::ScenesProjectionReason::FileReplacement,
                     state: crate::scenes::ScenesProjectionState {
                         scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
-                        cued_scene_internal_id: None,
                         selected_scene_internal_id: None,
                     },
                     persisted_scene_edit: false,

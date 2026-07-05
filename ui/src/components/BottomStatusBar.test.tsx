@@ -14,7 +14,6 @@ describe("BottomStatusBar", () => {
     renderBottomStatusBar({
       ...connectedAppState,
       currentScene: null,
-      cuedSceneInternalId: null,
       sceneConfigs: [],
     });
 

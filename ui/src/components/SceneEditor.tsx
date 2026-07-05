@@ -18,7 +18,7 @@ export function SceneEditor() {
     <div className="flex h-full min-h-0 flex-col gap-3">
       <SelectedSceneHeader
         currentScene={appState.currentScene}
-        cued={selected.internalSceneId === appState.cuedSceneInternalId}
+        cued={selected.internalSceneId === appState.selectedSceneInternalId}
         scene={selected}
       />
       {selected.sceneIndex === null ? (

@@ -6,19 +6,19 @@ import {
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { BottomStatusBar } from "./BottomStatusBar";
 
-const cuedConnectedAppState = {
+const selectedConnectedAppState = {
   ...connectedAppState,
-  cuedSceneInternalId:
+  selectedSceneInternalId:
     connectedAppState.sceneConfigs[1]?.internalSceneId ?? null,
 };
 
 const safeAppState = {
-  ...cuedConnectedAppState,
+  ...selectedConnectedAppState,
   lockout: true,
 };
 
 const fadingAppState = {
-  ...cuedConnectedAppState,
+  ...selectedConnectedAppState,
   fadeState: "running" as const,
 };
 
@@ -29,7 +29,7 @@ const meta: Meta<typeof BottomStatusBar> = {
     layout: "fullscreen",
   },
   args: {
-    appState: cuedConnectedAppState,
+    appState: selectedConnectedAppState,
   },
   render: (args) => (
     <MockAppProviders appState={args.appState}>

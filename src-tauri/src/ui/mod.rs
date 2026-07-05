@@ -46,7 +46,6 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::open_show_file_dialog,
             commands::show::save_show_file,
             commands::show::save_show_file_as_dialog,
-            commands::scenes::cue_scene,
             commands::scenes::delete_scene_config,
             commands::scenes::link_scene_config,
             commands::scenes::recall_scene,
@@ -85,7 +84,6 @@ mod tests {
         let _ = super::commands::lifecycle::disconnect_lv1;
         let _ = super::commands::lifecycle::probe_lv1_tcp_connect_latency;
         let _ = super::commands::scenes::recall_scene;
-        let _ = super::commands::scenes::cue_scene;
         let _ = super::commands::scenes::delete_scene_config;
         let _ = super::commands::scenes::link_scene_config;
         let _ = super::commands::scenes::select_scene_config;

@@ -30,7 +30,6 @@ export type AppRuntimeServices = {
   refreshLv1Discovery: () => Promise<unknown>;
   saveShowFile: () => Promise<unknown>;
   saveShowFileAs: () => Promise<unknown>;
-  cueScene: (internalSceneId: string) => Promise<unknown>;
   recallScene: (internalSceneId: string) => Promise<unknown>;
   probeLv1TcpConnectLatency: (
     identity: Lv1SystemIdentity,
@@ -251,8 +250,6 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       ),
     deleteSceneConfig: (internalSceneId) =>
       void runCommand(() => services.deleteSceneConfig(internalSceneId)),
-    cueScene: (internalSceneId) =>
-      runCommand(() => services.cueScene(internalSceneId)),
     recallScene: (internalSceneId) =>
       runCommand(() => services.recallScene(internalSceneId)),
     probeLv1TcpConnectLatency: (identity, timeoutMs) =>

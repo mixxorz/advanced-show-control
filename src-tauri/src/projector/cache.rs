@@ -34,7 +34,6 @@ pub struct ProjectionCache {
     active_cue_list_id: Option<String>,
     cued_cue_entry_id: Option<String>,
     last_cue_recall_status: Option<String>,
-    cued_scene_internal_id: Option<String>,
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
@@ -69,7 +68,6 @@ impl ProjectionCache {
             cued_cue_entry_id: None,
             last_cue_recall_status: None,
             settings: AppSettings::default(),
-            cued_scene_internal_id: None,
             show_file_path: None,
             show_file_dirty: false,
             show_file_last_saved_at: None,
@@ -105,7 +103,6 @@ impl ProjectionCache {
 
     pub fn apply_scenes_state(&mut self, state: ScenesProjectionState) {
         self.scene_configs = state.scene_configs;
-        self.cued_scene_internal_id = state.cued_scene_internal_id;
         self.selected_scene_internal_id = state.selected_scene_internal_id;
     }
 
@@ -337,7 +334,6 @@ impl ProjectionCache {
             active_cue_list_id: self.active_cue_list_id.clone(),
             cued_cue_entry_id: self.cued_cue_entry_id.clone(),
             last_cue_recall_status: self.last_cue_recall_status.clone(),
-            cued_scene_internal_id: self.cued_scene_internal_id.clone(),
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             show_file_name: self
                 .show_file_path
@@ -463,7 +459,6 @@ mod tests {
             cued_cue_entry_id: None,
             last_cue_recall_status: None,
             settings: AppSettings::default(),
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
             show_file_name: "Untitled Session".to_string(),
             show_file_path: None,
@@ -603,7 +598,6 @@ mod tests {
                 scoped_channels: vec![],
                 scope_toggles: Default::default(),
             }],
-            cued_scene_internal_id: Some("cue-id".to_string()),
             selected_scene_internal_id: Some("selected-id".to_string()),
         });
 
@@ -611,7 +605,6 @@ mod tests {
 
         assert!(snapshot.lockout);
         assert_eq!(snapshot.scene_configs.len(), 1);
-        assert_eq!(snapshot.cued_scene_internal_id.as_deref(), Some("cue-id"));
         assert_eq!(
             snapshot.selected_scene_internal_id.as_deref(),
             Some("selected-id")

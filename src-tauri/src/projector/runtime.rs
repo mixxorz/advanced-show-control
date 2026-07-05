@@ -172,7 +172,6 @@ mod tests {
             },
             initial_scenes_state: ScenesProjectionState {
                 scene_configs: Vec::new(),
-                cued_scene_internal_id: None,
                 selected_scene_internal_id: None,
             },
             initial_cue_lists_state: CueListsProjectionState {
@@ -288,7 +287,6 @@ mod tests {
                         scoped_channels: vec![],
                         scope_toggles: Default::default(),
                     }],
-                    cued_scene_internal_id: Some("cue-id".to_string()),
                     selected_scene_internal_id: Some("selected-id".to_string()),
                 },
                 persisted_scene_edit: false,
@@ -379,7 +377,6 @@ mod tests {
             },
             initial_scenes_state: ScenesProjectionState {
                 scene_configs: Vec::new(),
-                cued_scene_internal_id: None,
                 selected_scene_internal_id: None,
             },
             initial_cue_lists_state: CueListsProjectionState {

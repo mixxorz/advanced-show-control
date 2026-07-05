@@ -8,7 +8,6 @@ import { AppCommandsContext, AppStateContext } from "./appContextValues";
 
 export type AppCommands = {
   abortAll: () => void;
-  cueScene?: (internalSceneId: string) => void;
   disconnect: () => void | Promise<void>;
   newShowFile: () => void;
   openShowFile: () => void;

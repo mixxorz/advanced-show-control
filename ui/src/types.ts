@@ -32,7 +32,6 @@ export type AppSettings = {
   autoLoadLastShowFile: boolean;
   autoSaveSessions: boolean;
   keyboardShortcuts: KeyboardShortcutSettings;
-  autoCueNextSceneOnGo: boolean;
   timeDisplay: TimeDisplayFormat;
   faderOverrideSensitivity: number;
 };
@@ -123,7 +122,6 @@ export type AppViewState = {
   logs: AppLogEntry[];
   lastEventAt: string | null;
   sceneConfigs: SceneConfig[];
-  cuedSceneInternalId: string | null;
   selectedSceneInternalId: string | null;
   showFileName: string;
   showFilePath: string | null;
@@ -146,7 +144,6 @@ export const disconnectedAppViewState: AppViewState = {
         modifiers: { shift: false, control: false, alt: false, meta: false },
       },
     },
-    autoCueNextSceneOnGo: false,
     timeDisplay: "twentyFourHour",
     faderOverrideSensitivity: 9,
   },
@@ -165,7 +162,6 @@ export const disconnectedAppViewState: AppViewState = {
   logs: [],
   lastEventAt: null,
   sceneConfigs: [],
-  cuedSceneInternalId: null,
   selectedSceneInternalId: null,
   showFileName: "Untitled Session",
   showFilePath: null,

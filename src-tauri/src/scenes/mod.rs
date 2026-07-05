@@ -10,7 +10,7 @@ mod types;
 
 pub use actor::{ScenesPeers, ScenesTask, build_scenes_actor};
 pub use commands::{
-    CueSceneResult, RecallSceneResult, ScenesCommand, ScenesCommandResult, SelectedSceneResult,
+    RecallSceneResult, ScenesCommand, ScenesCommandResult, SelectedSceneResult,
     validate_recall_scene_request,
 };
 pub use events::{ScenesEvent, ScenesProjectionReason, ScenesProjectionState};

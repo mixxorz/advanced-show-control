@@ -26,7 +26,6 @@ const services: AppRuntimeServices = {
     ),
   newShowFile: () => invoke<void>("new_show_file"),
   openShowFile: () => invoke<void>("open_show_file_dialog"),
-  cueScene: (internalSceneId) => invoke<void>("cue_scene", { internalSceneId }),
   recallScene: (internalSceneId) =>
     invoke<void>("recall_scene", { internalSceneId }),
   probeLv1TcpConnectLatency,

@@ -22,7 +22,6 @@ function makeServices(
     }),
     newShowFile: vi.fn(async () => undefined),
     openShowFile: vi.fn(async () => undefined),
-    cueScene: vi.fn(async () => undefined),
     recallScene: vi.fn(async () => undefined),
     probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
     reconnectTimedOut: vi.fn(async () => undefined),
@@ -268,11 +267,9 @@ describe("AppRuntime connection lifecycle", () => {
       ).not.toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: "Cue" }));
     await user.click(screen.getByRole("button", { name: "Recall" }));
     await user.click(screen.getByRole("button", { name: "GO" }));
 
-    expect(services.cueScene).toHaveBeenCalledWith(scene.internalSceneId);
     expect(services.recallScene).toHaveBeenCalledWith(scene.internalSceneId);
     expect(services.recallScene).toHaveBeenCalledTimes(1);
   });

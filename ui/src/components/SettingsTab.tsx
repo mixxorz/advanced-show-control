@@ -115,23 +115,6 @@ export function SettingsTab(props: {
                 />
               </SettingRow>
               <SettingRow
-                help="After GO recalls a scene, automatically cue the following scene in the active cue list."
-                label="Auto cue next scene on GO"
-                onHelpChange={setActiveHelp}
-              >
-                <ToggleControl
-                  label="Auto cue next scene on GO"
-                  checked={settings.autoCueNextSceneOnGo}
-                  onChange={(checked) =>
-                    update((current) => ({
-                      ...current,
-                      autoCueNextSceneOnGo: checked,
-                    }))
-                  }
-                />
-              </SettingRow>
-
-              <SettingRow
                 help="Choose whether times are displayed with a 12-hour or 24-hour clock."
                 label="Time display"
                 onHelpChange={setActiveHelp}

@@ -75,7 +75,6 @@ pub struct AppViewState {
     pub cued_cue_entry_id: Option<String>,
     pub last_cue_recall_status: Option<String>,
     pub settings: AppSettings,
-    pub cued_scene_internal_id: Option<String>,
     pub selected_scene_internal_id: Option<String>,
     pub show_file_name: String,
     pub show_file_path: Option<String>,

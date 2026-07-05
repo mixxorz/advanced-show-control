@@ -578,7 +578,6 @@ impl AppLifecycle {
         } else {
             crate::scenes::ScenesProjectionState {
                 scene_configs: Vec::new(),
-                cued_scene_internal_id: None,
                 selected_scene_internal_id: None,
             }
         };

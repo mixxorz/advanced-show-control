@@ -56,7 +56,6 @@ const shellSceneConfigs = shellSceneNames.map((name, index) =>
 
 const sceneTabAppState: AppViewState = {
   ...connectedAppState,
-  cuedSceneInternalId: shellSceneConfigs[5].internalSceneId,
   currentScene: { index: 2, name: "S01: The Wonderful Blood" },
   sceneConfigs: shellSceneConfigs,
   selectedSceneInternalId: shellSceneConfigs[6].internalSceneId,
@@ -68,7 +67,6 @@ const offlineSceneTabAppState: AppViewState = {
   connectedLv1Identity: null,
   currentScene: null,
   discoveredLv1Systems: discoveredSystemsAppState.discoveredLv1Systems,
-  cuedSceneInternalId: null,
 };
 
 const meta: Meta<AppShellStoryArgs> = {
@@ -106,11 +104,6 @@ function StatefulAppShellStory(props: {
 
   const commands: AppCommands = {
     ...mockAppCommands,
-    cueScene: (internalSceneId) =>
-      setAppState((state) => ({
-        ...state,
-        cuedSceneInternalId: internalSceneId,
-      })),
     recallScene: (internalSceneId) =>
       setAppState((state) => {
         const scene = state.sceneConfigs.find(

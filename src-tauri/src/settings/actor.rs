@@ -77,13 +77,12 @@ async fn handle_command(
 
 fn log_settings_updated(settings: &AppSettings) {
     tracing::info!(
-        event = "settings_updated",
-        auto_load_last_show_file = settings.auto_load_last_show_file,
-        auto_save_sessions = settings.auto_save_sessions,
-        auto_cue_next_scene_on_go = settings.auto_cue_next_scene_on_go,
-        time_display = time_display_label(&settings.time_display),
-        fader_override_sensitivity = settings.fader_override_sensitivity,
-        go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
+            event = "settings_updated",
+            auto_load_last_show_file = settings.auto_load_last_show_file,
+            auto_save_sessions = settings.auto_save_sessions,
+            time_display = time_display_label(&settings.time_display),
+            fader_override_sensitivity = settings.fader_override_sensitivity,
+            go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
         cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
         "Settings updated"
     );

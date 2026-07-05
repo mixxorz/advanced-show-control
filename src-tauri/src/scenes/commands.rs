@@ -56,10 +56,6 @@ pub enum ScenesCommand {
         scoped: bool,
         reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
     },
-    CueScene {
-        internal_scene_id: Uuid,
-        reply: Option<oneshot::Sender<Result<CueSceneResult, String>>>,
-    },
     SelectSceneConfig {
         internal_scene_id: Uuid,
         reply: Option<oneshot::Sender<Result<SelectedSceneResult, String>>>,
@@ -84,12 +80,6 @@ pub enum ScenesCommand {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ScenesCommandResult {
     pub changed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CueSceneResult {
-    pub changed: bool,
-    pub scene: SceneConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -174,7 +164,6 @@ mod tests {
     fn validate_recall_scene_request_uses_internal_scene_id() {
         let id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
         let scenes = SceneDocument {
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
             scene_configs: vec![scene_config(id, Some(1))],
         };
@@ -188,7 +177,6 @@ mod tests {
     fn validate_recall_scene_request_rejects_unlinked_scene() {
         let id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
         let scenes = SceneDocument {
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
             scene_configs: vec![scene_config(id, None)],
         };

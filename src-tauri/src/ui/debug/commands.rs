@@ -160,7 +160,6 @@ pub async fn debug_smoke_load_unlinked_scene_session(
             scoped_channels: Vec::new(),
             scope_toggles: ShowFileSceneScopeToggles::default(),
         }],
-        cued_scene_internal_id: None,
         cue_lists: Vec::new(),
         active_cue_list_id: None,
         cued_cue_entry_id: None,
