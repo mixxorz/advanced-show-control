@@ -83,6 +83,7 @@ fn log_settings_updated(settings: &AppSettings) {
         auto_cue_next_scene_on_go = settings.auto_cue_next_scene_on_go,
         time_display = time_display_label(&settings.time_display),
         fader_override_sensitivity = settings.fader_override_sensitivity,
+        enable_extensive_diagnostics = settings.enable_extensive_diagnostics,
         go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
         cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
         "Settings updated"
@@ -119,8 +120,55 @@ mod tests {
     use super::{SettingsCommand, SettingsCommandResult, SettingsHandle, build_settings_actor};
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::settings::{AppSettings, SettingsEvent};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct CapturedLogEvent {
+        event: Option<String>,
+        enable_extensive_diagnostics: Option<bool>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogEvents(Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>);
+
+    impl<S> Layer<S> for CapturedLogEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedLogEvent::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedLogEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "event" {
+                self.event = Some(value.to_string());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            match field.name() {
+                "event" => {
+                    self.event = Some(format!("{value:?}").trim_matches('"').to_string());
+                }
+                "enable_extensive_diagnostics" => {
+                    self.enable_extensive_diagnostics = Some(format!("{value:?}") == "true");
+                }
+                _ => {}
+            }
+        }
+    }
 
     fn temp_settings_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -245,5 +293,23 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn actor_logs_extensive_diagnostics_setting_on_update() {
+        let captured = CapturedLogEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        super::log_settings_updated(&AppSettings {
+            enable_extensive_diagnostics: true,
+            ..Default::default()
+        });
+
+        let events = captured.0.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.event.as_deref() == Some("settings_updated")
+                && event.enable_extensive_diagnostics == Some(true)
+        }));
     }
 }

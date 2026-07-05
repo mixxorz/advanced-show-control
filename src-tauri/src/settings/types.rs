@@ -13,6 +13,7 @@ mod tests {
         assert!(!settings.auto_cue_next_scene_on_go);
         assert_eq!(settings.time_display, TimeDisplayFormat::TwentyFourHour);
         assert_eq!(settings.fader_override_sensitivity, 9);
+        assert!(!settings.enable_extensive_diagnostics);
     }
 
     #[test]
@@ -60,6 +61,7 @@ mod tests {
 
         assert_eq!(settings.keyboard_shortcuts.go.key, "Space");
         assert_eq!(settings.keyboard_shortcuts.cue.key, "C");
+        assert!(!settings.enable_extensive_diagnostics);
     }
 }
 
@@ -75,6 +77,7 @@ pub struct AppSettings {
     pub auto_cue_next_scene_on_go: bool,
     pub time_display: TimeDisplayFormat,
     pub fader_override_sensitivity: u8,
+    pub enable_extensive_diagnostics: bool,
 }
 
 impl Default for AppSettings {
@@ -86,6 +89,7 @@ impl Default for AppSettings {
             auto_cue_next_scene_on_go: false,
             time_display: TimeDisplayFormat::TwentyFourHour,
             fader_override_sensitivity: 9,
+            enable_extensive_diagnostics: false,
         }
     }
 }
