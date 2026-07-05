@@ -5,6 +5,7 @@ import { ConsoleButton } from "./ConsoleButton";
 import { CueListManageModal } from "./CueListManageModal";
 import { CueListNameModal } from "./CueListNameModal";
 import { Panel } from "./Panel";
+import { SceneListView } from "./SceneList";
 
 export function CueListsTab() {
   const { appState } = useAppState();
@@ -38,18 +39,21 @@ export function CueListsTab() {
 
   return (
     <div className="grid h-full min-h-0 gap-3 lg:grid-cols-[1fr_2fr]">
-      <Panel className="flex min-h-0 flex-col overflow-hidden">
-        <div className="border-b border-console-line px-4 py-3">
-          <h2 className="text-lg font-normal uppercase text-console-primary">
-            Scene Library
-          </h2>
-        </div>
-        <div className="min-h-0 flex-1 overflow-auto p-3">
-          {appState.sceneConfigs.map((scene) => (
-            <SceneLibraryRow key={scene.internalSceneId} scene={scene} />
-          ))}
-        </div>
-      </Panel>
+      <SceneListView
+        currentScene={appState.currentScene}
+        draggable
+        onSceneDragStart={(scene, event) => {
+          event.dataTransfer.setData(
+            "application/x-asc-scene-id",
+            scene.internalSceneId,
+          );
+        }}
+        onSelectScene={() => undefined}
+        scenes={appState.sceneConfigs}
+        selectedSceneInternalId={null}
+        showRecallControls={false}
+        title="Scene Library"
+      />
 
       <Panel className="flex min-h-0 flex-col overflow-hidden">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-console-line px-4 py-3">
@@ -149,25 +153,6 @@ export function CueListsTab() {
       {showManageCueListsModal && (
         <CueListManageModal onClose={() => setShowManageCueListsModal(false)} />
       )}
-    </div>
-  );
-}
-
-function SceneLibraryRow(props: {
-  scene: { internalSceneId: string; sceneName: string };
-}) {
-  return (
-    <div
-      className="mb-2 flex w-full items-center rounded-console-control border border-console-line bg-console-section px-3 py-2 text-left text-console-primary hover:border-console-line-strong hover:bg-console-control"
-      draggable
-      onDragStart={(event) => {
-        event.dataTransfer.setData(
-          "application/x-asc-scene-id",
-          props.scene.internalSceneId,
-        );
-      }}
-    >
-      {props.scene.sceneName}
     </div>
   );
 }

@@ -23,11 +23,22 @@ export type AppRuntimeServices = {
   attemptReconnectLv1: () => Promise<unknown>;
   connectLv1System: (identity: Lv1SystemIdentity) => Promise<unknown>;
   disconnectLv1: () => Promise<unknown>;
+  addSceneToActiveCueList: (
+    sceneInternalId: string,
+    insertIndex: number,
+  ) => Promise<unknown>;
+  createCueList: (name: string) => Promise<unknown>;
+  cueEntry: (cueEntryId: string | null) => Promise<unknown>;
+  deleteCueList: (cueListId: string) => Promise<unknown>;
   listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
   newShowFile: () => Promise<unknown>;
   openShowFile: () => Promise<unknown>;
+  removeCueEntry: (cueEntryId: string) => Promise<unknown>;
   recallCuedCue: () => Promise<unknown>;
   reconnectTimedOut: (attempt: number) => Promise<unknown>;
+  renameCueList: (cueListId: string, name: string) => Promise<unknown>;
+  reorderCueEntries: (orderedEntryIds: string[]) => Promise<unknown>;
+  reorderCueLists: (orderedIds: string[]) => Promise<unknown>;
   refreshLv1Discovery: () => Promise<unknown>;
   saveShowFile: () => Promise<unknown>;
   saveShowFileAs: () => Promise<unknown>;
@@ -41,6 +52,7 @@ export type AppRuntimeServices = {
     internalSceneId: string,
     scoped: boolean,
   ) => Promise<unknown>;
+  setActiveCueList: (cueListId: string | null) => Promise<unknown>;
   setChannelScoped: (
     internalSceneId: string,
     group: number,
@@ -239,9 +251,27 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       // open so the engineer can immediately choose another console.
       setConnectionModalMode("manual");
     },
+    addSceneToActiveCueList: (sceneInternalId, insertIndex) =>
+      void runCommand(() =>
+        services.addSceneToActiveCueList(sceneInternalId, insertIndex),
+      ),
+    createCueList: (name) =>
+      void runCommand(() => services.createCueList(name)),
+    cueEntry: (cueEntryId) =>
+      void runCommand(() => services.cueEntry(cueEntryId)),
+    deleteCueList: (cueListId) =>
+      void runCommand(() => services.deleteCueList(cueListId)),
     newShowFile: () => runCommand(() => services.newShowFile()),
     openShowFile: () => runCommand(() => services.openShowFile()),
+    removeCueEntry: (cueEntryId) =>
+      void runCommand(() => services.removeCueEntry(cueEntryId)),
     recallCuedCue: () => void runCommand(() => services.recallCuedCue()),
+    renameCueList: (cueListId, name) =>
+      void runCommand(() => services.renameCueList(cueListId, name)),
+    reorderCueEntries: (orderedEntryIds) =>
+      void runCommand(() => services.reorderCueEntries(orderedEntryIds)),
+    reorderCueLists: (orderedIds) =>
+      void runCommand(() => services.reorderCueLists(orderedIds)),
     linkSceneConfig: (sourceInternalSceneId, targetSceneIndex, overwrite) =>
       void runCommand(() =>
         services.linkSceneConfig(
@@ -260,6 +290,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     saveShowFileAs: () => runCommand(() => services.saveShowFileAs()),
     selectScene: (internalSceneId: string) =>
       runCommand(() => services.selectSceneConfig(internalSceneId)),
+    setActiveCueList: (cueListId) =>
+      void runCommand(() => services.setActiveCueList(cueListId)),
     selectSystem: async (identity) => {
       setCommandError(null);
       try {

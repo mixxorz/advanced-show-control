@@ -1,4 +1,10 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -16,20 +22,29 @@ function makeServices(
     attemptReconnectLv1: vi.fn(async () => undefined),
     connectLv1System: vi.fn(async () => undefined),
     disconnectLv1: vi.fn(async () => undefined),
+    addSceneToActiveCueList: vi.fn(async () => undefined),
+    createCueList: vi.fn(async () => undefined),
+    cueEntry: vi.fn(async () => undefined),
+    deleteCueList: vi.fn(async () => undefined),
     listenForAppStatus: vi.fn(async (listener) => {
       listener(connectedAppState);
       return () => {};
     }),
     newShowFile: vi.fn(async () => undefined),
     openShowFile: vi.fn(async () => undefined),
+    removeCueEntry: vi.fn(async () => undefined),
     recallCuedCue: vi.fn(async () => undefined),
     recallScene: vi.fn(async () => undefined),
+    renameCueList: vi.fn(async () => undefined),
+    reorderCueEntries: vi.fn(async () => undefined),
+    reorderCueLists: vi.fn(async () => undefined),
     probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
     reconnectTimedOut: vi.fn(async () => undefined),
     refreshLv1Discovery: vi.fn(async () => undefined),
     saveShowFile: vi.fn(async () => undefined),
     saveShowFileAs: vi.fn(async () => undefined),
     selectSceneConfig: vi.fn(async () => undefined),
+    setActiveCueList: vi.fn(async () => undefined),
     setAllChannelsScoped: vi.fn(async () => undefined),
     setChannelScoped: vi.fn(async () => undefined),
     setLockout: vi.fn(async () => undefined),
@@ -272,6 +287,62 @@ describe("AppRuntime connection lifecycle", () => {
 
     expect(services.recallScene).toHaveBeenCalledTimes(1);
     expect(services.recallCuedCue).toHaveBeenCalledWith();
+  });
+
+  it("smoke tests creating a cue list through the rendered app with Enter", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      createCueList: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "New Cue List" }));
+    await user.type(screen.getByLabelText("Cue list name"), "Bridge{Enter}");
+
+    expect(services.createCueList).toHaveBeenCalledWith("Bridge");
+  });
+
+  it("smoke tests dragging a scene into the active cue list through the rendered app", async () => {
+    const services = makeServices({
+      addSceneToActiveCueList: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Cue Lists" }));
+
+    const dataTransfer = {
+      getData: vi.fn(() => connectedAppState.sceneConfigs[0].internalSceneId),
+      setData: vi.fn(),
+    };
+    const sceneLibraryRow = screen
+      .getAllByRole("button", { name: /S01: The Wonderful Blood/i })
+      .find((button) => button.getAttribute("draggable") === "true");
+    expect(sceneLibraryRow).toBeDefined();
+
+    fireEvent.dragStart(sceneLibraryRow!, { dataTransfer });
+    fireEvent.drop(screen.getByLabelText("Drop scene at position 1"), {
+      dataTransfer,
+    });
+
+    expect(services.addSceneToActiveCueList).toHaveBeenCalledWith(
+      connectedAppState.sceneConfigs[0].internalSceneId,
+      0,
+    );
   });
 
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {

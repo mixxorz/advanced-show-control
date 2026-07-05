@@ -1,3 +1,4 @@
+import type { DragEvent } from "react";
 import type { SceneConfig, SceneSummary } from "../types";
 import { formatSceneDurationSummary, formatSceneNumber } from "../format";
 
@@ -6,7 +7,9 @@ export function SceneListRow(props: {
   cued: boolean;
   scene: SceneConfig;
   selected: boolean;
+  draggable?: boolean;
   onSelect: () => void;
+  onDragStart?: (event: DragEvent<HTMLButtonElement>) => void;
 }) {
   const unlinked = props.scene.sceneIndex === null;
   const current =
@@ -57,6 +60,8 @@ export function SceneListRow(props: {
           ? `grid w-full grid-cols-[1.25rem_3rem_1fr_4rem] items-center border border-accent-orange-active ${leftBorderClass} bg-accent-orange-soft py-1.5 pr-3 pl-0 text-left text-console-primary`
           : `grid w-full grid-cols-[1.25rem_3rem_1fr_4rem] items-center border border-transparent border-b-console-line-soft/60 ${leftBorderClass} py-1.5 pr-3 pl-0 text-left text-console-secondary hover:bg-console-section hover:text-console-primary`
       }
+      draggable={props.draggable}
+      onDragStart={props.onDragStart}
       onClick={props.onSelect}
     >
       <span className="flex justify-start overflow-visible">

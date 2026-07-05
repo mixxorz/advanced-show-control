@@ -11,6 +11,10 @@ export function CueListNameModal(props: {
   const [name, setName] = useState(props.initialName ?? "");
   const { onCancel } = props;
 
+  function submitName() {
+    void props.onSubmit(name);
+  }
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -33,32 +37,36 @@ export function CueListNameModal(props: {
         <h2 className="text-lg font-normal uppercase text-console-primary">
           {props.title}
         </h2>
-        <label className="mt-4 block text-sm uppercase tracking-[0.08em] text-console-secondary">
-          Cue list name
-          <input
-            aria-label="Cue list name"
-            autoFocus
-            className="mt-2 w-full rounded-console-control border border-console-line bg-console-section px-3 py-2 text-base text-console-primary outline-none focus:border-console-line-strong"
-            onChange={(event) => setName(event.target.value)}
-            value={name}
-          />
-        </label>
-        <div className="mt-6 flex justify-end gap-3">
-          <ConsoleButton
-            onClick={props.onCancel}
-            size="small"
-            variant="secondary"
-          >
-            Cancel
-          </ConsoleButton>
-          <ConsoleButton
-            onClick={() => void props.onSubmit(name)}
-            size="small"
-            variant="primary"
-          >
-            {props.submitLabel}
-          </ConsoleButton>
-        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            submitName();
+          }}
+        >
+          <label className="mt-4 block text-sm uppercase tracking-[0.08em] text-console-secondary">
+            Cue list name
+            <input
+              aria-label="Cue list name"
+              autoFocus
+              className="mt-2 w-full rounded-console-control border border-console-line bg-console-section px-3 py-2 text-base text-console-primary outline-none focus:border-console-line-strong"
+              onChange={(event) => setName(event.target.value)}
+              value={name}
+            />
+          </label>
+          <div className="mt-6 flex justify-end gap-3">
+            <ConsoleButton
+              onClick={props.onCancel}
+              size="small"
+              type="button"
+              variant="secondary"
+            >
+              Cancel
+            </ConsoleButton>
+            <ConsoleButton size="small" type="submit" variant="primary">
+              {props.submitLabel}
+            </ConsoleButton>
+          </div>
+        </form>
       </section>
     </div>
   );
