@@ -26,6 +26,7 @@ export type AppRuntimeServices = {
   listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
   newShowFile: () => Promise<unknown>;
   openShowFile: () => Promise<unknown>;
+  recallCuedCue: () => Promise<unknown>;
   reconnectTimedOut: (attempt: number) => Promise<unknown>;
   refreshLv1Discovery: () => Promise<unknown>;
   saveShowFile: () => Promise<unknown>;
@@ -240,6 +241,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     },
     newShowFile: () => runCommand(() => services.newShowFile()),
     openShowFile: () => runCommand(() => services.openShowFile()),
+    recallCuedCue: () => void runCommand(() => services.recallCuedCue()),
     linkSceneConfig: (sourceInternalSceneId, targetSceneIndex, overwrite) =>
       void runCommand(() =>
         services.linkSceneConfig(

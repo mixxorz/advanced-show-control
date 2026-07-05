@@ -52,9 +52,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
     ? props.appState.currentScene.name
     : "---";
   const mode = modeDisplay(props.appState);
-  const canGo = Boolean(
-    props.appState.selectedSceneInternalId && commands.recallScene,
-  );
+  const canGo = Boolean(commands.recallCuedCue);
 
   return (
     <footer className="mx-3 mb-3 grid grid-cols-1 overflow-hidden rounded-console-panel border border-console-line bg-console-chrome md:grid-cols-[0.7fr_1.4fr_1.4fr_0.9fr_0.8fr]">
@@ -63,9 +61,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
           disabled={!canGo}
           fullWidth
           onClick={() => {
-            if (props.appState.selectedSceneInternalId) {
-              commands.recallScene?.(props.appState.selectedSceneInternalId);
-            }
+            commands.recallCuedCue?.();
           }}
           size="big"
           variant="primary"

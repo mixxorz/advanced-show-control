@@ -22,6 +22,7 @@ function makeServices(
     }),
     newShowFile: vi.fn(async () => undefined),
     openShowFile: vi.fn(async () => undefined),
+    recallCuedCue: vi.fn(async () => undefined),
     recallScene: vi.fn(async () => undefined),
     probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
     reconnectTimedOut: vi.fn(async () => undefined),
@@ -258,7 +259,6 @@ describe("AppRuntime connection lifecycle", () => {
     const services = makeServices({
       startupAutoConnectLv1: vi.fn(async () => undefined),
     });
-    const scene = connectedAppState.sceneConfigs[0];
     render(<AppRuntime services={services} />);
 
     await waitFor(() => {
@@ -270,8 +270,8 @@ describe("AppRuntime connection lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Recall" }));
     await user.click(screen.getByRole("button", { name: "GO" }));
 
-    expect(services.recallScene).toHaveBeenCalledWith(scene.internalSceneId);
     expect(services.recallScene).toHaveBeenCalledTimes(1);
+    expect(services.recallCuedCue).toHaveBeenCalledWith();
   });
 
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {

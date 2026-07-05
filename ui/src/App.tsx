@@ -5,6 +5,7 @@ import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
 import type { AppViewState } from "./types";
 import {
   attemptReconnectLv1,
+  recallCuedCue,
   connectLv1System,
   deleteSceneConfig,
   linkSceneConfig,
@@ -26,6 +27,7 @@ const services: AppRuntimeServices = {
     ),
   newShowFile: () => invoke<void>("new_show_file"),
   openShowFile: () => invoke<void>("open_show_file_dialog"),
+  recallCuedCue,
   recallScene: (internalSceneId) =>
     invoke<void>("recall_scene", { internalSceneId }),
   probeLv1TcpConnectLatency,

@@ -1,11 +1,16 @@
 //! Tauri command adapter exports.
 
+pub(crate) mod cue_lists;
 pub(crate) mod fade;
 pub(crate) mod lifecycle;
 pub(crate) mod scenes;
 pub(crate) mod settings;
 pub(crate) mod show;
 
+pub use cue_lists::{
+    add_scene_to_active_cue_list, create_cue_list, cue_entry, delete_cue_list, recall_cued_cue,
+    remove_cue_entry, rename_cue_list, reorder_cue_entries, reorder_cue_lists, set_active_cue_list,
+};
 pub use fade::abort_all_fades;
 pub use lifecycle::{
     attempt_reconnect_lv1, connect_lv1_system, disconnect_lv1, frontend_ready,

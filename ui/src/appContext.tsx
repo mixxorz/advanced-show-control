@@ -11,6 +11,7 @@ export type AppCommands = {
   disconnect: () => void | Promise<void>;
   newShowFile: () => void;
   openShowFile: () => void;
+  recallCuedCue: () => void | Promise<void>;
   linkSceneConfig?: (
     sourceInternalSceneId: string,
     targetSceneIndex: number,

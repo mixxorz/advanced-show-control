@@ -480,6 +480,10 @@ impl AppLifecycle {
         self.inner.lock().await.handles.scene_recall_fader.clone()
     }
 
+    pub async fn current_cue_lists(&self) -> Option<CueListsHandle> {
+        self.inner.lock().await.handles.cue_lists.clone()
+    }
+
     pub(crate) async fn connected_lv1_identity(
         &self,
     ) -> Option<crate::connection_state::Lv1SystemIdentity> {
