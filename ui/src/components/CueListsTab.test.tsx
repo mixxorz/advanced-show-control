@@ -1,4 +1,4 @@
-import { fireEvent, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -60,28 +60,6 @@ describe("CueListsTab", () => {
       screen.getByRole("button", { name: "Cue 2: Missing scene" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Cued: Cue 2: Missing scene")).toBeInTheDocument();
-  });
-
-  it("adds a scene by dragging it onto a cue-list drop zone", () => {
-    const addSceneToActiveCueList = vi.fn();
-
-    renderWithAppProviders(<CueListsTab />, {
-      appState: cueListStateFixture,
-      commands: { addSceneToActiveCueList },
-    });
-
-    fireEvent.dragStart(screen.getByText("Intro"), {
-      dataTransfer: {
-        setData: vi.fn(),
-      },
-    });
-    fireEvent.drop(screen.getByLabelText(/Drop scene at position 2/i), {
-      dataTransfer: {
-        getData: () => "scene-intro",
-      },
-    });
-
-    expect(addSceneToActiveCueList).toHaveBeenCalledWith("scene-intro", 1);
   });
 
   it("switches the active cue list from the header selector", async () => {

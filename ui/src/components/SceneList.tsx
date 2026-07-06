@@ -1,4 +1,3 @@
-import type { DragEvent } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import type { SceneConfig, SceneSummary } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
@@ -17,15 +16,11 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
 
 export function SceneListView(props: {
   currentScene: SceneSummary | null;
-  draggable?: boolean;
+  draggableScenes?: boolean;
   selectedSceneInternalId?: string | null;
   scenes: SceneConfig[];
   showRecallControls?: boolean;
   title?: string;
-  onSceneDragStart?: (
-    scene: SceneConfig,
-    event: DragEvent<HTMLButtonElement>,
-  ) => void;
   onSelectScene: (internalSceneId: string) => void;
   onRecallScene?: (internalSceneId: string) => void;
 }) {
@@ -95,9 +90,20 @@ export function SceneListView(props: {
             <SceneListRow
               currentScene={props.currentScene}
               cued={scene.internalSceneId === props.selectedSceneInternalId}
-              draggable={props.draggable}
+              dragData={
+                props.draggableScenes
+                  ? {
+                      kind: "scene",
+                      sceneInternalId: scene.internalSceneId,
+                    }
+                  : undefined
+              }
+              dragId={
+                props.draggableScenes
+                  ? `scene:${scene.internalSceneId}`
+                  : undefined
+              }
               key={scene.internalSceneId}
-              onDragStart={(event) => props.onSceneDragStart?.(scene, event)}
               onSelect={() => props.onSelectScene(scene.internalSceneId)}
               scene={scene}
               selected={scene.internalSceneId === props.selectedSceneInternalId}

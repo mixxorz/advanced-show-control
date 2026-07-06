@@ -1,10 +1,4 @@
-import {
-  act,
-  fireEvent,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
@@ -12,6 +6,20 @@ import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
 import { connectedAppState } from "./storybook/mockAppState";
 import { createDeferred } from "./test/deferred";
 import { disconnectedAppViewState, type AppViewState } from "./types";
+
+function rect(bounds: { top: number; bottom: number }): DOMRect {
+  return {
+    bottom: bounds.bottom,
+    height: bounds.bottom - bounds.top,
+    left: 0,
+    right: 100,
+    toJSON: () => ({}),
+    top: bounds.top,
+    width: 100,
+    x: 0,
+    y: bounds.top,
+  };
+}
 
 function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
@@ -325,24 +333,35 @@ describe("AppRuntime connection lifecycle", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Cue Lists" }));
 
-    const dataTransfer = {
-      getData: vi.fn(() => connectedAppState.sceneConfigs[0].internalSceneId),
-      setData: vi.fn(),
-    };
-    const sceneLibraryRow = screen
-      .getAllByRole("button", { name: /S01: The Wonderful Blood/i })
-      .find((button) => button.getAttribute("draggable") === "true");
+    const sceneLibraryRow = screen.getAllByRole("button", {
+      name: /S01: The Wonderful Blood/i,
+    })[0];
+    const dropZone = screen.getByLabelText("Drop scene at position 1");
     expect(sceneLibraryRow).toBeDefined();
 
-    fireEvent.dragStart(sceneLibraryRow!, { dataTransfer });
-    fireEvent.drop(screen.getByLabelText("Drop scene at position 1"), {
-      dataTransfer,
-    });
-
-    expect(services.addSceneToActiveCueList).toHaveBeenCalledWith(
-      connectedAppState.sceneConfigs[0].internalSceneId,
-      0,
+    vi.spyOn(sceneLibraryRow, "getBoundingClientRect").mockReturnValue(
+      rect({ top: 10, bottom: 30 }),
     );
+    vi.spyOn(dropZone, "getBoundingClientRect").mockReturnValue(
+      rect({ top: 50, bottom: 70 }),
+    );
+
+    await userEvent.pointer([
+      {
+        coords: { clientX: 10, clientY: 20 },
+        keys: "[MouseLeft>]",
+        target: sceneLibraryRow,
+      },
+      { coords: { clientX: 10, clientY: 60 }, target: dropZone },
+      { keys: "[/MouseLeft]", target: dropZone },
+    ]);
+
+    await waitFor(() => {
+      expect(services.addSceneToActiveCueList).toHaveBeenCalledWith(
+        connectedAppState.sceneConfigs[0].internalSceneId,
+        0,
+      );
+    });
   });
 
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {
