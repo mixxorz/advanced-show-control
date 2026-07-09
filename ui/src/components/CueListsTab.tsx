@@ -208,6 +208,10 @@ export function CueListsTab() {
                 cuedCueEntryId={appState.cuedCueEntryId}
                 selectedCueEntryId={selectedCueEntryId}
                 onSelectCueEntry={setSelectedCueEntryId}
+                onCueEntry={(cueEntryId) => {
+                  void commands.cueEntry?.(cueEntryId);
+                  setSelectedCueEntryId(null);
+                }}
                 onDeleteCueEntry={commands.removeCueEntry}
               />
             </div>
@@ -304,6 +308,7 @@ function CueListPane(props: {
   cuedCueEntryId: string | null;
   selectedCueEntryId: string | null;
   onSelectCueEntry?: (cueEntryId: string | null) => void;
+  onCueEntry?: (cueEntryId: string) => void | Promise<void>;
   onDeleteCueEntry?: (cueEntryId: string) => void | Promise<void>;
 }) {
   const listDroppable = useDroppable({ id: sceneDropZoneId });
@@ -333,6 +338,7 @@ function CueListPane(props: {
             selected={entry.id === props.selectedCueEntryId}
             key={entry.id}
             onSelectCueEntry={props.onSelectCueEntry}
+            onCueEntry={props.onCueEntry}
             onDeleteCueEntry={props.onDeleteCueEntry}
             sceneConfigs={props.sceneConfigs}
           />
@@ -354,6 +360,7 @@ function CueEntryRow(props: {
   cued: boolean;
   selected: boolean;
   onSelectCueEntry?: (cueEntryId: string | null) => void;
+  onCueEntry?: (cueEntryId: string) => void | Promise<void>;
   onDeleteCueEntry?: (cueEntryId: string) => void | Promise<void>;
   sceneConfigs: SceneConfig[];
 }) {
@@ -418,6 +425,7 @@ function CueEntryRow(props: {
           }
         }}
         onClick={() => props.onSelectCueEntry?.(props.entry.id)}
+        onDoubleClick={() => void props.onCueEntry?.(props.entry.id)}
         style={{
           opacity: sortable.isDragging ? 0.55 : 1,
           transform: CSS.Transform.toString(

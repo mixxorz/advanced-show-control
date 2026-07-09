@@ -49,6 +49,23 @@ describe("CueListsTab", () => {
     expect(cueButton).toBeDisabled();
   });
 
+  it("cues a cue entry directly on double click", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    const cueButton = screen.getByRole("button", { name: "Cue" });
+
+    await user.dblClick(screen.getByRole("button", { name: /Main.*002/i }));
+
+    expect(cueEntry).toHaveBeenCalledWith("cue-2");
+    expect(cueButton).toBeDisabled();
+  });
+
   it("opens cue list management from the panel header", async () => {
     const user = userEvent.setup();
 
