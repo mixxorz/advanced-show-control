@@ -167,7 +167,10 @@ export function CueListsTab() {
               <div className="flex gap-2">
                 <ConsoleButton
                   disabled={!selectedCueEntryId}
-                  onClick={() => void commands.cueEntry?.(selectedCueEntryId)}
+                  onClick={() => {
+                    void commands.cueEntry?.(selectedCueEntryId);
+                    setSelectedCueEntryId(null);
+                  }}
                   size="small"
                   variant="ghost-primary"
                 >

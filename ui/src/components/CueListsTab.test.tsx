@@ -46,6 +46,7 @@ describe("CueListsTab", () => {
 
     await user.click(cueButton);
     expect(cueEntry).toHaveBeenCalledWith("cue-2");
+    expect(cueButton).toBeDisabled();
   });
 
   it("opens cue list management from the panel header", async () => {
