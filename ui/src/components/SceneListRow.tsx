@@ -12,6 +12,7 @@ export function SceneListRow(props: {
   selected: boolean;
   dragId?: string;
   dragData?: Data;
+  dragOverlayOnly?: boolean;
   onSelect: () => void;
 }) {
   const draggable = useDraggable({
@@ -70,7 +71,10 @@ export function SceneListRow(props: {
       }
       ref={draggable.setNodeRef}
       style={{
-        transform: CSS.Translate.toString(draggable.transform),
+        opacity: props.dragOverlayOnly && draggable.isDragging ? 0.45 : 1,
+        transform: props.dragOverlayOnly
+          ? undefined
+          : CSS.Translate.toString(draggable.transform),
       }}
       {...draggable.attributes}
       {...draggable.listeners}

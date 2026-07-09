@@ -9,46 +9,55 @@ import { renderWithAppProviders } from "../test/render";
 import { CueListsTab } from "./CueListsTab";
 
 describe("CueListsTab", () => {
-  it("renders the scene library and active cue list selector", () => {
+  it("renders the scene library and active cue list", () => {
     renderWithAppProviders(<CueListsTab />, { appState: cueListStateFixture });
 
     expect(
-      screen.getByRole("heading", { name: /Scene Library/i }),
+      screen.getByRole("heading", { name: /Scene library/i }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(/Active cue list/i)).toHaveValue(
-      "cue-list-main",
-    );
-    expect(screen.getByText("Intro")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Main" })).toBeInTheDocument();
+    expect(screen.getAllByText("Scene Name")).toHaveLength(2);
+    expect(screen.getAllByText("#")).toHaveLength(2);
     expect(
-      screen.getByRole("button", { name: "Cue 1: Intro" }),
+      screen.getByRole("button", { name: /Intro.*001/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Cued: Cue 1: Intro")).toBeInTheDocument();
-    expect(screen.getByText("Next: Cue 2: Main")).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: /^Intro$/i }),
-    ).not.toBeInTheDocument();
+      screen.getByRole("button", { name: /Main.*002/i }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/Active cue list/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Cued: Cue 1: Intro/i)).not.toBeInTheDocument();
   });
 
-  it("shows next cue relative to the currently cued entry", () => {
+  it("selects a cue entry before cueing it", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+
     renderWithAppProviders(<CueListsTab />, {
-      appState: {
-        ...cueListStateFixture,
-        cuedCueEntryId: "cue-2",
-        cueLists: [
-          {
-            ...cueListStateFixture.cueLists[0],
-            entries: [
-              ...cueListStateFixture.cueLists[0].entries,
-              { id: "cue-3", sceneInternalId: "scene-intro" },
-            ],
-          },
-          ...cueListStateFixture.cueLists.slice(1),
-        ],
-      },
+      appState: cueListStateFixture,
+      commands: { cueEntry },
     });
 
-    expect(screen.getByText("Cued: Cue 2: Main")).toBeInTheDocument();
-    expect(screen.getByText("Next: Cue 3: Intro")).toBeInTheDocument();
+    const cueButton = screen.getByRole("button", { name: "Cue" });
+    expect(cueButton).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    expect(cueEntry).not.toHaveBeenCalled();
+    expect(cueButton).toBeEnabled();
+
+    await user.click(cueButton);
+    expect(cueEntry).toHaveBeenCalledWith("cue-2");
+  });
+
+  it("opens cue list management from the panel header", async () => {
+    const user = userEvent.setup();
+
+    renderWithAppProviders(<CueListsTab />, { appState: cueListStateFixture });
+
+    await user.click(screen.getByRole("button", { name: /Manage Cue Lists/i }));
+
+    expect(
+      screen.getByRole("dialog", { name: /Manage Cue Lists/i }),
+    ).toBeInTheDocument();
   });
 
   it("marks cue entries with missing scene references", () => {
@@ -57,26 +66,8 @@ describe("CueListsTab", () => {
     });
 
     expect(
-      screen.getByRole("button", { name: "Cue 2: Missing scene" }),
+      screen.getByRole("button", { name: /Missing scene.*---/i }),
     ).toBeInTheDocument();
-    expect(screen.getByText("Cued: Cue 2: Missing scene")).toBeInTheDocument();
-  });
-
-  it("switches the active cue list from the header selector", async () => {
-    const user = userEvent.setup();
-    const setActiveCueList = vi.fn();
-
-    renderWithAppProviders(<CueListsTab />, {
-      appState: cueListStateFixture,
-      commands: { setActiveCueList },
-    });
-
-    await user.selectOptions(
-      screen.getByLabelText(/Active cue list/i),
-      "cue-list-verse",
-    );
-
-    expect(setActiveCueList).toHaveBeenCalledWith("cue-list-verse");
   });
 
   it("removes cue entries immediately without opening a confirmation modal", async () => {
@@ -94,22 +85,5 @@ describe("CueListsTab", () => {
     expect(
       screen.queryByRole("dialog", { name: /Delete Cue/i }),
     ).not.toBeInTheDocument();
-  });
-
-  it("moves the active cue list with the reorder controls", async () => {
-    const user = userEvent.setup();
-    const reorderCueLists = vi.fn();
-
-    renderWithAppProviders(<CueListsTab />, {
-      appState: cueListStateFixture,
-      commands: { reorderCueLists },
-    });
-
-    await user.click(screen.getByRole("button", { name: /Move Down/i }));
-
-    expect(reorderCueLists).toHaveBeenCalledWith([
-      "cue-list-verse",
-      "cue-list-main",
-    ]);
   });
 });

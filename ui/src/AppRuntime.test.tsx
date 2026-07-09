@@ -7,20 +7,6 @@ import { connectedAppState } from "./storybook/mockAppState";
 import { createDeferred } from "./test/deferred";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 
-function rect(bounds: { top: number; bottom: number }): DOMRect {
-  return {
-    bottom: bounds.bottom,
-    height: bounds.bottom - bounds.top,
-    left: 0,
-    right: 100,
-    toJSON: () => ({}),
-    top: bounds.top,
-    width: 100,
-    x: 0,
-    y: bounds.top,
-  };
-}
-
 function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
 ): AppRuntimeServices {
@@ -312,15 +298,17 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
     await user.click(screen.getByRole("button", { name: "New Cue List" }));
     await user.type(screen.getByLabelText("Cue list name"), "Bridge{Enter}");
 
     expect(services.createCueList).toHaveBeenCalledWith("Bridge");
   });
 
-  it("wires dragging a scene into the active cue list through the rendered app", async () => {
+  it("wires cue entry removal through the rendered app", async () => {
+    const user = userEvent.setup();
     const services = makeServices({
-      addSceneToActiveCueList: vi.fn(async () => undefined),
+      removeCueEntry: vi.fn(async () => undefined),
       startupAutoConnectLv1: vi.fn(async () => undefined),
     });
     render(<AppRuntime services={services} />);
@@ -331,37 +319,10 @@ describe("AppRuntime connection lifecycle", () => {
       ).not.toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Remove cue 1" }));
 
-    const sceneLibraryRow = screen.getAllByRole("button", {
-      name: /S01: The Wonderful Blood/i,
-    })[0];
-    const dropZone = screen.getByLabelText("Drop scene at position 1");
-    expect(sceneLibraryRow).toBeDefined();
-
-    vi.spyOn(sceneLibraryRow, "getBoundingClientRect").mockReturnValue(
-      rect({ top: 10, bottom: 30 }),
-    );
-    vi.spyOn(dropZone, "getBoundingClientRect").mockReturnValue(
-      rect({ top: 50, bottom: 70 }),
-    );
-
-    await userEvent.pointer([
-      {
-        coords: { clientX: 10, clientY: 20 },
-        keys: "[MouseLeft>]",
-        target: sceneLibraryRow,
-      },
-      { coords: { clientX: 10, clientY: 60 }, target: dropZone },
-      { keys: "[/MouseLeft]", target: dropZone },
-    ]);
-
-    await waitFor(() => {
-      expect(services.addSceneToActiveCueList).toHaveBeenCalledWith(
-        connectedAppState.sceneConfigs[0].internalSceneId,
-        0,
-      );
-    });
+    expect(services.removeCueEntry).toHaveBeenCalledWith("cue-1");
   });
 
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {

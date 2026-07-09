@@ -13,8 +13,16 @@ function formatClock(date: Date) {
 }
 
 function cuedSceneLabel(appState: AppViewState) {
+  const activeCueList = appState.cueLists.find(
+    (cueList) => cueList.id === appState.activeCueListId,
+  );
+  const cuedCueEntry = activeCueList?.entries.find(
+    (entry) => entry.id === appState.cuedCueEntryId,
+  );
+  const cuedSceneInternalId =
+    cuedCueEntry?.sceneInternalId ?? appState.selectedSceneInternalId;
   const cued = appState.sceneConfigs.find(
-    (scene) => scene.internalSceneId === appState.selectedSceneInternalId,
+    (scene) => scene.internalSceneId === cuedSceneInternalId,
   );
   return cued ? cued.sceneName : "---";
 }
@@ -71,7 +79,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
       </div>
       <StatusCell
         label="Cued"
-        tone={props.appState.selectedSceneInternalId ? "cued" : "default"}
+        tone={cuedSceneLabel(props.appState) !== "---" ? "cued" : "default"}
         value={cuedSceneLabel(props.appState)}
       />
       <StatusCell label="Current" tone="current" value={currentScene} />

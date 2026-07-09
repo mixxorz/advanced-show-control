@@ -31,7 +31,7 @@ export function AppShell(props: {
         />
         <section className="min-h-0 overflow-hidden p-3">
           {props.activeTab === "scenes" && <SceneTab />}
-          {props.activeTab === "playlists" && <CueListsTab />}
+          {props.activeTab === "cue-lists" && <CueListsTab />}
           {props.activeTab === "events" && <PlaceholderTab name="Events" />}
           {props.activeTab === "logs" && <ConsoleLogsTab />}
           {props.activeTab === "settings" && (

@@ -75,7 +75,6 @@ const meta: Meta<SceneListStoryArgs> = {
     <MockAppProviders appState={args.appState}>
       <SceneListView
         currentScene={args.appState?.currentScene ?? null}
-        onRecallScene={() => {}}
         onSelectScene={() => {}}
         scenes={args.appState?.sceneConfigs ?? []}
         selectedSceneInternalId={args.appState?.selectedSceneInternalId ?? null}

@@ -58,9 +58,10 @@ export const DeleteConfirmationOpen: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const deleteButtons = canvas.getAllByRole("button", { name: "Delete" });
 
-    await userEvent.click(deleteButtons[1]);
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Delete Mid Set" }),
+    );
 
     await expect(
       canvas.getByRole("dialog", { name: "Delete Cue List" }),

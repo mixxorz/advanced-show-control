@@ -6,25 +6,24 @@ import { renderWithAppProviders } from "../test/render";
 import { CueListManageModal } from "./CueListManageModal";
 
 describe("CueListManageModal", () => {
-  it("supports create, rename, reorder, and delete flows", async () => {
+  it("supports activate, create, rename, and delete flows", async () => {
     const user = userEvent.setup();
+    const onClose = vi.fn();
     const commands = {
       createCueList: vi.fn(),
       renameCueList: vi.fn(),
       deleteCueList: vi.fn(),
-      reorderCueLists: vi.fn(),
+      setActiveCueList: vi.fn(),
     };
 
-    renderWithAppProviders(<CueListManageModal onClose={vi.fn()} />, {
+    renderWithAppProviders(<CueListManageModal onClose={onClose} />, {
       appState: cueListStateFixture,
       commands,
     });
 
-    await user.click(screen.getAllByRole("button", { name: /Up/i })[1]);
-    expect(commands.reorderCueLists).toHaveBeenCalledWith([
-      "cue-list-verse",
-      "cue-list-main",
-    ]);
+    await user.click(screen.getByRole("button", { name: /^Verse$/i }));
+    expect(commands.setActiveCueList).toHaveBeenCalledWith("cue-list-verse");
+    expect(onClose).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: /New Cue List/i }));
     await user.type(screen.getByLabelText(/Cue list name/i), "Bridge");
@@ -59,6 +58,9 @@ describe("CueListManageModal", () => {
     );
     expect(commands.deleteCueList).toHaveBeenCalledWith("cue-list-main");
 
-    await user.click(screen.getByRole("button", { name: /Close/i }));
+    await user.click(
+      screen.getByRole("button", { name: /Close manage cue lists modal/i }),
+    );
+    expect(onClose).toHaveBeenCalledTimes(2);
   });
 });

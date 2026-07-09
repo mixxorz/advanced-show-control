@@ -1,9 +1,10 @@
 import { useEffect } from "react";
+import type { ReactNode } from "react";
 import { ConsoleButton } from "./ConsoleButton";
 
 export function ConfirmModal(props: {
   title: string;
-  message: string;
+  message: ReactNode;
   confirmLabel: string;
   cancelLabel: string;
   onConfirm: () => void;

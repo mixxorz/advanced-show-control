@@ -43,10 +43,10 @@ describe("AppShell", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("renders the cue lists tab in the playlists slot", () => {
+  it("renders the cue lists tab in the cue-lists slot", () => {
     renderWithAppProviders(
       <AppShell
-        activeTab="playlists"
+        activeTab="cue-lists"
         onOpenConnection={vi.fn()}
         onResume={vi.fn()}
         onSelectTab={vi.fn()}
@@ -55,9 +55,9 @@ describe("AppShell", () => {
       { appState: connectedAppState },
     );
 
+    expect(screen.getByRole("heading", { name: "Main" })).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", { name: /Cue List/i }),
+      screen.getByRole("button", { name: /Manage Cue Lists/i }),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText(/Active cue list/i)).toBeInTheDocument();
   });
 });
