@@ -14,6 +14,7 @@ In scope:
 - Update `AGENTS.md` so future agents know to inspect GitHub Milestones and Issues for roadmap context.
 - Update any repo docs that tell contributors to add future work to `docs/roadmap.md`.
 - Add GitHub issue templates for epics, feature/tasks, and bugs.
+- Add a project-local opencode skill for opening GitHub issues in this repository.
 - Add lightweight label guidance for issue classification.
 - Create or prepare the initial GitHub roadmap structure from the current roadmap content.
 - Fold Cue Lists into the MVP milestone.
@@ -25,6 +26,7 @@ Out of scope:
 - Adding bots or issue synchronization scripts.
 - Implementing any product feature listed by the migrated issues.
 - Recreating a roadmap mirror in another repository document.
+- Creating the project-local opencode skill before the implementation phase.
 
 ## Source Of Truth
 
@@ -184,6 +186,28 @@ The bug template should ask for:
 - Testing and verification.
 
 Each template should explicitly ask whether the issue touches LV1 state, scene recall, fade execution, fader writes, lockout, disconnect or reconnect handling, generation guards, stale state, or manual override behavior.
+
+## Project-Local Opening Issue Skill
+
+Add a project-local opencode skill at `.opencode/skills/opening-issues/SKILL.md`.
+
+The skill should trigger when a user asks to open, create, file, or draft a GitHub issue for this repository. It should also trigger when future work, backlog work, roadmap work, milestone work, or acceptance criteria are being turned into an issue.
+
+The skill should require agents to:
+
+- Inspect existing GitHub milestones and related issues before creating a new issue when `gh` credentials are available.
+- Ask one concise clarifying question if the requested issue lacks enough scope, milestone, or acceptance criteria to create a useful tracker item.
+- Choose the right issue shape: epic, feature/task, bug, docs, chore, or release work.
+- Assign or recommend the appropriate milestone.
+- Include clear acceptance criteria.
+- Include a safety impact section for any work touching LV1 state, scene recall, fade execution, fader writes, lockout, disconnect or reconnect handling, generation guards, stale state, or manual override behavior.
+- Include testing or verification expectations appropriate to the issue.
+- Link related docs, specs, plans, or existing issues when known.
+- Avoid creating duplicate issues; if a likely duplicate exists, comment, update, or reference it instead of opening a new issue unless the user explicitly wants a separate issue.
+
+The skill should make `gh issue create` the preferred creation path when repository credentials are available. If credentials are missing, it should produce a ready-to-paste issue title, body, labels, and milestone instead of claiming the issue was created.
+
+Because opencode loads skills at startup, implementation should tell the user to restart opencode after adding the skill.
 
 ## Labels
 
