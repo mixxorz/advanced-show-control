@@ -198,6 +198,16 @@ export function shortcutMatchesEvent(
   );
 }
 
+export function isActionShortcutBlocked(event: AppKeyboardEvent) {
+  const target = event.originalEvent.target;
+  return (
+    target instanceof Element &&
+    target.closest(
+      'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"]',
+    ) !== null
+  );
+}
+
 function keyFromCode(code: string) {
   if (code.startsWith("Key") && code.length === 4) {
     return code.slice(3);

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  isActionShortcutBlocked,
   KeyboardProvider,
   shortcutKeyFromEvent,
   shortcutMatchesEvent,
@@ -9,6 +10,43 @@ import {
 } from "./keyboard";
 
 describe("KeyboardProvider", () => {
+  it.each([
+    ["input", document.createElement("input"), true],
+    ["textarea", document.createElement("textarea"), true],
+    ["select", document.createElement("select"), true],
+    ["content-editable descendant", createContentEditableDescendant(), true],
+    ["button", document.createElement("button"), false],
+    ["dialog descendant", createDialogDescendant(), true],
+  ])(
+    "classifies a %s target for action shortcuts",
+    (_description, target, expected) => {
+      let blocked = false;
+      const listener = (originalEvent: KeyboardEvent) => {
+        blocked = isActionShortcutBlocked({
+          code: originalEvent.code,
+          key: originalEvent.key,
+          modifiers: {
+            shift: originalEvent.shiftKey,
+            control: originalEvent.ctrlKey,
+            alt: originalEvent.altKey,
+            meta: originalEvent.metaKey,
+          },
+          repeat: originalEvent.repeat,
+          originalEvent,
+        });
+      };
+      window.addEventListener("keydown", listener);
+      const root = target.parentElement ?? target;
+      document.body.append(root);
+
+      fireEvent.keyDown(target, { key: "c", code: "KeyC" });
+
+      root.remove();
+      window.removeEventListener("keydown", listener);
+      expect(blocked).toBe(expected);
+    },
+  );
+
   it("dispatches enabled handlers by priority and stops after handled", () => {
     const low = vi.fn(() => "handled" as const);
     const high = vi.fn(() => "handled" as const);
@@ -350,4 +388,20 @@ function fireKeyDown(key: string, init: KeyboardEventInit = {}) {
       }),
     );
   });
+}
+
+function createContentEditableDescendant() {
+  const editor = document.createElement("div");
+  editor.setAttribute("contenteditable", "true");
+  const descendant = document.createElement("span");
+  editor.append(descendant);
+  return descendant;
+}
+
+function createDialogDescendant() {
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  const descendant = document.createElement("span");
+  dialog.append(descendant);
+  return descendant;
 }

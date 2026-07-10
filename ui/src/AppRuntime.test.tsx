@@ -317,6 +317,28 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.createCueList).toHaveBeenCalledWith("Bridge");
   });
 
+  it("does not recall a cue while typing the configured GO key in the cue-list name dialog", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "New Cue List" }));
+    await user.type(screen.getByLabelText("Cue list name"), "Verse 2");
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Cue list name")).toHaveValue("Verse 2");
+  });
+
   it("wires cue entry removal through the rendered app", async () => {
     const user = userEvent.setup();
     const services = makeServices({

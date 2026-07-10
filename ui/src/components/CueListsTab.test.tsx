@@ -74,6 +74,31 @@ describe("CueListsTab", () => {
     expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
   });
 
+  it("does not cue the selected entry from an editable dialog field", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "New Cue List" }));
+    const input = screen.getByLabelText("Cue list name");
+    const event = new KeyboardEvent("keydown", {
+      key: "c",
+      code: "KeyC",
+      bubbles: true,
+      cancelable: true,
+    });
+
+    act(() => input.dispatchEvent(event));
+
+    expect(cueEntry).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+  });
+
   it("consumes repeated Cue keydowns without cueing the selected entry", async () => {
     const user = userEvent.setup();
     const cueEntry = vi.fn();

@@ -21,7 +21,11 @@ import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import { formatSceneNumber } from "../format";
-import { shortcutMatchesEvent, useKeyboardHandler } from "../keyboard";
+import {
+  isActionShortcutBlocked,
+  shortcutMatchesEvent,
+  useKeyboardHandler,
+} from "../keyboard";
 import type { CueEntry, CueList, SceneConfig } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
 import { ConsoleIconButton } from "./ConsoleIconButton";
@@ -66,6 +70,9 @@ export function CueListsTab() {
     id: "cue-list-cue-shortcut",
     priority: CUE_SHORTCUT_PRIORITY,
     handleKeyDown: (event) => {
+      if (isActionShortcutBlocked(event)) {
+        return "ignored";
+      }
       if (shortcutMatchesEvent(appState.settings.keyboardShortcuts.go, event)) {
         return "handled";
       }

@@ -7,6 +7,7 @@ import {
 import { AppShell, type MainTab } from "./components/AppShell";
 import { formatSessionWindowTitle } from "./sessionTitle";
 import {
+  isActionShortcutBlocked,
   KeyboardProvider,
   shortcutMatchesEvent,
   useKeyboardHandler,
@@ -100,6 +101,9 @@ function AppShortcutHandler(props: {
     id: "app-go-shortcut",
     priority: GO_SHORTCUT_PRIORITY,
     handleKeyDown: (event) => {
+      if (isActionShortcutBlocked(event)) {
+        return "ignored";
+      }
       if (
         !shortcutMatchesEvent(
           props.appState.settings.keyboardShortcuts.go,
