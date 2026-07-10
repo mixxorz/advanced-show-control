@@ -1,0 +1,125 @@
+name: Nightly Release
+
+on:
+  schedule:
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: nightly-release
+  cancel-in-progress: false
+
+jobs:
+  metadata:
+    name: Resolve nightly metadata
+    runs-on: ubuntu-latest
+    outputs:
+      should_release: ${{ steps.metadata.outputs.should_release }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      previous_tag: ${{ steps.metadata.outputs.previous_tag }}
+    steps:
+      - name: Check out repository with tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve nightly metadata
+        id: metadata
+        shell: bash
+        run: |
+          release_tag="nightly-$(TZ=Asia/Manila date +%F)"
+          current_sha="${GITHUB_SHA}"
+          echo "release_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+
+          if existing_sha="$(git rev-parse -q --verify "refs/tags/${release_tag}^{commit}")"; then
+            if [[ "$existing_sha" == "$current_sha" ]]; then
+              echo "Nightly ${release_tag} already represents ${current_sha}; skipping."
+              echo "previous_tag=${release_tag}" >> "$GITHUB_OUTPUT"
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
+            echo "Nightly tag ${release_tag} already exists at ${existing_sha}, not ${current_sha}; refusing to move it." >&2
+            exit 1
+          fi
+
+          mapfile -t nightly_tags < <(git tag --list 'nightly-[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]' --sort=-refname)
+          previous_tag="${nightly_tags[0]:-}"
+          echo "previous_tag=${previous_tag}" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "$previous_tag" ]]; then
+            previous_sha="$(git rev-parse "${previous_tag}^{commit}")"
+            if [[ "$previous_sha" == "$current_sha" ]]; then
+              echo "No changes since ${previous_tag} at ${current_sha}; skipping."
+              echo "should_release=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "Publishing ${release_tag} for ${current_sha}."
+          echo "should_release=true" >> "$GITHUB_OUTPUT"
+
+  build-release-artifacts:
+    name: Build nightly release artifacts
+    needs: metadata
+    if: needs.metadata.outputs.should_release == 'true'
+    uses: ./.github/workflows/build-release-artifacts.yml
+    with:
+      release_id: ${{ needs.metadata.outputs.release_tag }}
+
+  create-release:
+    name: Create nightly prerelease
+    runs-on: ubuntu-latest
+    needs:
+      - metadata
+      - build-release-artifacts
+    if: needs.metadata.outputs.should_release == 'true'
+    steps:
+      - name: Check out repository with tags
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build nightly release notes
+        env:
+          PREVIOUS_TAG: ${{ needs.metadata.outputs.previous_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          # shellcheck disable=SC2016
+          {
+            printf 'Automated nightly build from `main` at commit `%s`.\n\n' "$SOURCE_SHA"
+            if [[ -n "$PREVIOUS_TAG" ]]; then
+              printf '## Changes since %s\n\n' "$PREVIOUS_TAG"
+              git log --pretty=format="- %s (%h)" "${PREVIOUS_TAG}..${SOURCE_SHA}"
+              printf '\n'
+            else
+              printf 'This is the first nightly release.\n'
+            fi
+            printf '\n---\n\nThese artifacts are unsigned. The macOS artifact is not notarized.\n'
+          } > release-notes.md
+
+      - name: Download staged release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/release
+          merge-multiple: true
+
+      - name: Create nightly prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.release_tag }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          release_date="${RELEASE_TAG#nightly-}"
+          gh release create "$RELEASE_TAG" \
+            --target "$SOURCE_SHA" \
+            --title "Advanced Show Control Nightly ${release_date}" \
+            --notes-file release-notes.md \
+            --prerelease \
+            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_Windows_x64_Setup.zip" \
+            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_macOS_universal.dmg"
