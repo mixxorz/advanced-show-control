@@ -194,7 +194,8 @@ export function shortcutMatchesEvent(
   event: AppKeyboardEvent,
 ) {
   return (
-    shortcutKeysEqual(shortcut.key, shortcutKeyFromEvent(event)) &&
+    (shortcutKeysEqual(shortcut.key, shortcutKeyFromEvent(event)) ||
+      shortcutKeysEqual(shortcut.key, event.key)) &&
     shortcut.modifiers.shift === event.modifiers.shift &&
     shortcut.modifiers.control === event.modifiers.control &&
     shortcut.modifiers.alt === event.modifiers.alt &&

@@ -416,6 +416,42 @@ describe("KeyboardProvider", () => {
     expect(matches).toEqual([true]);
   });
 
+  it("matches persisted Unicode shortcut labels against character keys", () => {
+    expect(
+      shortcutMatchesEvent(
+        {
+          key: "É",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+        },
+        {
+          key: "é",
+          code: "KeyE",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+          repeat: false,
+          originalEvent: new KeyboardEvent("keydown"),
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps physical code matching primary over character keys", () => {
+    expect(
+      shortcutMatchesEvent(
+        {
+          key: "Q",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+        },
+        {
+          key: "a",
+          code: "KeyQ",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+          repeat: false,
+          originalEvent: new KeyboardEvent("keydown"),
+        },
+      ),
+    ).toBe(true);
+  });
+
   it.each([
     ["i", "I"],
     ["é", "É"],
