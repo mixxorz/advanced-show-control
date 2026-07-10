@@ -9,7 +9,7 @@ This change wires shortcut behavior without changing the persisted settings shap
 ## Goals
 
 - Execute the saved `GO` keyboard shortcut from the React keyboard layer.
-- Execute the saved `Cue` keyboard shortcut from the React keyboard layer.
+- Execute the saved `Cue` keyboard shortcut for the selected cue-list entry from the React keyboard layer.
 - Detect shortcut assignment conflicts when capturing `GO` or `Cue` shortcuts, including conflicts with fixed File menu accelerators.
 - Add standard native keyboard accelerators for New Session, Open Session, Save Session, and Save As.
 - Keep shortcut capture higher priority than execution so editing a shortcut never triggers an app action.
@@ -20,7 +20,7 @@ This change wires shortcut behavior without changing the persisted settings shap
 - Do not add shortcut conflict resolution beyond rejecting a newly captured duplicate.
 - Do not add global OS-level shortcuts that fire while the app is unfocused.
 - Do not change Rust settings types or settings persistence.
-- Do not implement Cue Lists behavior for auto-advance or cue-list-specific GO semantics.
+- Do not implement Cue Lists auto-advance behavior.
 
 ## Recommended Approach
 
@@ -32,9 +32,9 @@ Standard file shortcuts stay in the native Tauri File menu. The menu already own
 
 ## User Interaction
 
-`GO` uses the saved `settings.keyboardShortcuts.go` shortcut. When pressed while the app window is focused, it recalls the currently cued scene if one exists and recall is available. This matches the bottom status bar `GO` button.
+`GO` uses the saved `settings.keyboardShortcuts.go` shortcut. When pressed while the app window is focused, it recalls the currently cued entry from the active cue list if that entry resolves to a scene. This matches the bottom status bar `GO` button and calls the existing `recallCuedCue` command.
 
-`Cue` uses the saved `settings.keyboardShortcuts.cue` shortcut. When pressed while the app window is focused, it cues the currently selected scene if one exists, the scene is linked to an LV1 scene, and cue is available. This matches the selected scene header's Cue button behavior.
+`Cue` uses the saved `settings.keyboardShortcuts.cue` shortcut. When pressed while the Cue Lists tab is active, it cues the currently selected cue-list entry if one exists. This matches the Cue Lists tab's Cue button and calls the existing `cueEntry` command.
 
 Shortcut capture remains modal within the keyboard layer. While a shortcut input is capturing, the capture handler consumes delivered key events before the execution handler sees them.
 
@@ -49,14 +49,15 @@ The native File menu exposes these accelerators:
 
 ## Frontend Architecture
 
-Add a focused-window shortcut execution hook near the app runtime where both projected state and app commands are available.
+Split shortcut execution according to existing UI state ownership. `AppRuntime` owns the global `GO` handler because projected cue-list state and `recallCuedCue` are available there. `CueListsTab` owns the `Cue` handler because cue-list entry selection is local UI state there; selection should not be lifted solely for shortcut execution.
 
-The handler should:
+The handlers should:
 
 - Register with `KeyboardProvider` at a priority below shortcut capture.
+- Give `GO` a higher priority than `Cue`.
 - Compare keydown events against the projected `AppSettings.keyboardShortcuts` values using the same comparable key labels that shortcut capture stores.
-- Return `handled` only when it actually dispatches an app action.
-- Return `ignored` for unmatched shortcuts or unavailable actions so other handlers and normal browser behavior can continue.
+- Consume a matching `GO` shortcut even when GO is unavailable so a duplicate Cue binding can never run instead.
+- Return `handled` only when `Cue` actually dispatches; unmatched or unavailable Cue shortcuts remain ignored.
 
 The handler should not call Tauri commands directly. It should call the existing `AppCommands` methods that already route through `AppRuntime` error handling.
 
@@ -75,7 +76,7 @@ For matching, `CmdOrCtrl` means `meta: true` on macOS and `control: true` on non
 
 A keyboard event matches a saved shortcut when the comparable key label and all four modifier booleans are equal. The implementation should share key-label normalization with shortcut capture so execution uses the same conventions as stored settings: `Space`, `Enter`, uppercase letters, and unshifted digit keys with `shift: true`.
 
-If two configured shortcuts are identical because of a pre-existing or manually edited settings file, `GO` should take precedence over `Cue` because it is the primary show-operation action. New duplicates or fixed-file-shortcut conflicts captured through Settings are rejected before persistence.
+If two configured shortcuts are identical because of a pre-existing or manually edited settings file, `GO` takes strict precedence over `Cue` because it is the primary show-operation action. A key matching GO is consumed even when no valid cue is available, so Cue never runs as a fallback. New duplicates or fixed-file-shortcut conflicts captured through Settings are rejected before persistence.
 
 ## Native Menu Architecture
 
@@ -85,7 +86,7 @@ This keeps file operations native and avoids a second React implementation of me
 
 ## Error Handling And Safety
 
-Unavailable shortcut actions are ignored instead of forcing a command. For example, `GO` does nothing when there is no cued scene, and `Cue` does nothing when the selected scene is unlinked or missing.
+Unavailable shortcut actions do not force a command. `GO` consumes its matching key without dispatching when the active cue list, cued entry, or referenced scene is unavailable. `Cue` is ignored when the Cue Lists tab has no selected entry.
 
 Any command failure from a dispatched shortcut flows through the same `AppRuntime` command error state used by button clicks. Shortcut execution must not bypass lockout, scene identity validation, stale-state checks, generation guards, or backend command validation.
 
@@ -95,12 +96,12 @@ Native file accelerator failures continue to be logged through the existing menu
 
 Add frontend tests for:
 
-- Pressing the configured `GO` shortcut recalls the cued scene.
-- Pressing the configured `GO` shortcut does nothing when no scene is cued.
-- Pressing the configured `Cue` shortcut cues the selected linked scene.
-- Pressing the configured `Cue` shortcut does nothing for no selection or an unlinked selected scene.
+- Pressing the configured `GO` shortcut recalls the cued cue-list entry.
+- Pressing the configured `GO` shortcut does nothing when the active cue list, cued entry, or referenced scene is unavailable.
+- Pressing the configured `Cue` shortcut in the Cue Lists tab cues the selected entry.
+- Pressing the configured `Cue` shortcut does nothing when no cue-list entry is selected.
 - Shortcut capture preempts shortcut execution.
-- `GO` wins when `GO` and `Cue` are configured to the same shortcut.
+- `GO` wins when `GO` and `Cue` are configured to the same shortcut, including when GO is unavailable.
 - Capturing a shortcut already assigned to the other action leaves settings unchanged and shows inline red conflict text beside the capture control.
 - Capturing a shortcut reserved by a fixed File menu accelerator leaves settings unchanged and shows inline red conflict text naming the file action.
 - Conflict text clears after a successful non-conflicting capture.
