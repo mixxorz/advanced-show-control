@@ -141,8 +141,6 @@ pub fn import_show_file(
         file.cued_cue_entry_id = None;
     }
 
-    file.scene_configs
-        .retain(|config| !is_blank_scene_config(config));
     let generated_internal_scene_ids = file
         .scene_configs
         .iter()
@@ -240,13 +238,6 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
             pan: config.scope_toggles.pan,
         },
     }
-}
-
-fn is_blank_scene_config(config: &ShowFileSceneConfig) -> bool {
-    config.duration_ms == 0
-        && config.channel_configs.is_empty()
-        && config.scoped_channels.is_empty()
-        && config.scope_toggles == ShowFileSceneScopeToggles::default()
 }
 
 #[cfg(test)]
@@ -388,6 +379,48 @@ mod tests {
         assert_eq!(imported.snapshot.scene_configs[0].scene_name, "Intro");
         assert_eq!(imported.snapshot.scene_configs[1].scene_index, Some(2));
         assert_eq!(imported.snapshot.scene_configs[1].scene_name, "Missing");
+    }
+
+    #[test]
+    fn import_show_file_preserves_blank_scene_config_identity() {
+        let scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
+        let mut file = ShowFile {
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
+            app_version: "test".to_string(),
+            saved_at: "123".to_string(),
+            safety: ShowFileSafety { lockout: false },
+            scene_configs: vec![ShowFileSceneConfig {
+                internal_scene_id: Some(scene_id),
+                scene_index: Some(1),
+                scene_name: "Intro".to_string(),
+                duration_ms: 0,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: ShowFileSceneScopeToggles::default(),
+            }],
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
+        };
+        let lv1 = Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            channels: Vec::new(),
+        };
+
+        let imported = import_show_file(&mut file, &lv1).unwrap();
+
+        assert_eq!(imported.snapshot.scene_configs.len(), 1);
+        assert_eq!(
+            imported.snapshot.scene_configs[0].internal_scene_id,
+            scene_id
+        );
+        assert_eq!(imported.snapshot.scene_configs[0].scene_index, Some(1));
+        assert_eq!(imported.snapshot.scene_configs[0].scene_name, "Intro");
     }
 
     #[test]
