@@ -585,6 +585,37 @@ describe("AppRuntime connection lifecycle", () => {
     expect(repeatedGo.defaultPrevented).toBe(true);
   });
 
+  it("consumes non-repeat GO keydowns while a cue recall is in flight", async () => {
+    const recall = createDeferred<void>();
+    const services = makeServices({
+      recallCuedCue: vi.fn(() => recall.promise),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const firstGo = pressGoShortcut();
+    const secondGo = pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(firstGo.defaultPrevented).toBe(true);
+    expect(secondGo.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      recall.resolve();
+      await recall.promise;
+    });
+
+    const laterGo = pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(2);
+    expect(laterGo.defaultPrevented).toBe(true);
+  });
+
   it("releases the GO shortcut after a cue recall failure", async () => {
     const services = makeServices({
       recallCuedCue: vi
