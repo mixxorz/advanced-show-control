@@ -375,6 +375,45 @@ describe("KeyboardProvider", () => {
 
     expect(matches).toEqual([true, false]);
   });
+
+  it("matches lowercase projected shortcut keys against keydown events", () => {
+    const matches: boolean[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "matcher",
+        priority: 1,
+        handleKeyDown: (event) => {
+          matches.push(
+            shortcutMatchesEvent(
+              {
+                key: "c",
+                modifiers: {
+                  shift: false,
+                  control: false,
+                  alt: false,
+                  meta: false,
+                },
+              },
+              event,
+            ),
+          );
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("c", { code: "KeyC" });
+
+    expect(matches).toEqual([true]);
+  });
 });
 
 function fireKeyDown(key: string, init: KeyboardEventInit = {}) {

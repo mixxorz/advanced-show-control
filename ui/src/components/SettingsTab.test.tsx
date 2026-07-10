@@ -356,6 +356,32 @@ describe("SettingsTab", () => {
     expect(screen.getByText("Already assigned to Cue")).toBeInTheDocument();
   });
 
+  it("rejects a captured shortcut that differs from Cue only by key case", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: {
+        ...disconnectedAppViewState,
+        settings: {
+          ...disconnectedAppViewState.settings,
+          keyboardShortcuts: {
+            ...disconnectedAppViewState.settings.keyboardShortcuts,
+            cue: {
+              ...disconnectedAppViewState.settings.keyboardShortcuts.cue,
+              key: "c",
+            },
+          },
+        },
+      },
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    fireEvent.keyDown(window, { key: "C", code: "KeyC" });
+
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("Already assigned to Cue")).toBeInTheDocument();
+  });
+
   it("rejects a captured shortcut reserved by a fixed File menu accelerator", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,

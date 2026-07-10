@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useAppState } from "../appHooks";
 import { replaceAppSettings } from "../commands";
-import { useShortcutCapture } from "../keyboard";
+import { shortcutKeysEqual, useShortcutCapture } from "../keyboard";
 import type { AppSettings, KeyboardShortcut } from "../types";
 import { KeyboardShortcutInput } from "./KeyboardShortcutInput";
 import { Panel } from "./Panel";
@@ -254,7 +254,7 @@ function shortcutConflictLabel(
 
 function shortcutsEqual(left: KeyboardShortcut, right: KeyboardShortcut) {
   return (
-    left.key === right.key &&
+    shortcutKeysEqual(left.key, right.key) &&
     left.modifiers.shift === right.modifiers.shift &&
     left.modifiers.control === right.modifiers.control &&
     left.modifiers.alt === right.modifiers.alt &&

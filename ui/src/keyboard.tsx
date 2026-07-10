@@ -185,12 +185,16 @@ export function shortcutKeyFromEvent(event: AppKeyboardEvent) {
   return key.length === 1 ? key.toUpperCase() : key;
 }
 
+export function shortcutKeysEqual(left: string, right: string) {
+  return left.toLocaleUpperCase() === right.toLocaleUpperCase();
+}
+
 export function shortcutMatchesEvent(
   shortcut: KeyboardShortcut,
   event: AppKeyboardEvent,
 ) {
   return (
-    shortcut.key === shortcutKeyFromEvent(event) &&
+    shortcutKeysEqual(shortcut.key, shortcutKeyFromEvent(event)) &&
     shortcut.modifiers.shift === event.modifiers.shift &&
     shortcut.modifiers.control === event.modifiers.control &&
     shortcut.modifiers.alt === event.modifiers.alt &&
