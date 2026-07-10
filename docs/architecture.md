@@ -147,6 +147,8 @@ Actors that must call other actors receive peer handles through peer-wiring stru
 
 Peer installation is runtime construction work. It is not a mailbox command.
 
+Peer installation is generation-safe: `lifecycle` only installs peers into the still-current runtime generation, so stale connect work cannot wire an older actor graph into a newer one.
+
 `lifecycle` performs peer installation while it owns the unspawned actor tasks.
 
 The following peer relationships are defined:
@@ -332,8 +334,9 @@ The module owns the following responsibilities:
 2. Cue-list entry creation, deletion, and reordering.
 3. Active cue-list selection.
 4. Cued cue-entry tracking.
-5. Cue-list recall status projection.
-6. Cue-list persistence hooks within the show document.
+5. Cue-list reconciliation against the active runtime generation so missing entries can be preserved, surfaced, and resolved without inventing frontend-only state.
+6. Cue-list recall status projection.
+7. Cue-list persistence hooks within the show document.
 
 The module publishes `CueListsEvent` facts and accepts `CueListsCommand` requests.
 

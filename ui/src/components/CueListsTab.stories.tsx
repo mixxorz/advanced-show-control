@@ -3,7 +3,7 @@ import { expect, userEvent, within } from "storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import {
   connectedAppState,
-  cueListWithMissingSceneReferenceAppState,
+  missingSceneCueState,
 } from "../storybook/mockAppState";
 import type { AppViewState } from "../types";
 import { CueListsTab } from "./CueListsTab";
@@ -76,9 +76,9 @@ export const ActiveListWithDuplicates: Story = {
   },
 };
 
-export const MissingSceneReference: Story = {
+export const MissingCuedScene: Story = {
   args: {
-    appState: cueListWithMissingSceneReferenceAppState,
+    appState: missingSceneCueState,
   },
 };
 
