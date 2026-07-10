@@ -99,7 +99,9 @@ export function CueListManageModal(props: { onClose: () => void }) {
                     onDelete={() => setPendingDelete(cueList.id)}
                     onRename={() => setPendingRename(cueList.id)}
                     onSelect={() => {
-                      void commands.setActiveCueList?.(cueList.id);
+                      if (cueList.id !== appState.activeCueListId) {
+                        void commands.setActiveCueList?.(cueList.id);
+                      }
                       props.onClose();
                     }}
                   />

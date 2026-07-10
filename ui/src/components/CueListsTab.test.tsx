@@ -5,6 +5,7 @@ import {
   cueListStateFixture,
   cueListWithMissingSceneReferenceAppState,
 } from "../storybook/mockAppState";
+import { MockAppProviders } from "../storybook/MockAppProviders";
 import { renderWithAppProviders } from "../test/render";
 import { CueListsTab } from "./CueListsTab";
 
@@ -49,6 +50,59 @@ describe("CueListsTab", () => {
     expect(cueButton).toBeDisabled();
   });
 
+  it("disables Cue when the selected entry disappears", async () => {
+    const user = userEvent.setup();
+    const appState = {
+      ...cueListStateFixture,
+      cueLists: cueListStateFixture.cueLists.map((cueList) =>
+        cueList.id === "cue-list-main"
+          ? {
+              ...cueList,
+              entries: cueList.entries.filter((entry) => entry.id !== "cue-2"),
+            }
+          : cueList,
+      ),
+    };
+    const { rerender } = renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+
+    rerender(
+      <MockAppProviders appState={appState}>
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+
+    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
+  });
+
+  it("disables Cue when the active list changes", async () => {
+    const user = userEvent.setup();
+    const { rerender } = renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...cueListStateFixture,
+          activeCueListId: "cue-list-verse",
+          cuedCueEntryId: null,
+        }}
+      >
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+
+    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
+  });
+
   it("cues a cue entry directly on double click", async () => {
     const user = userEvent.setup();
     const cueEntry = vi.fn();
@@ -76,6 +130,33 @@ describe("CueListsTab", () => {
     expect(
       screen.getByRole("dialog", { name: /Manage Cue Lists/i }),
     ).toBeInTheDocument();
+  });
+
+  it("does not cue a stale selected entry after the active list changes", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+    const { rerender } = renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...cueListStateFixture,
+          activeCueListId: "cue-list-verse",
+          cuedCueEntryId: null,
+        }}
+      >
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Cue" }));
+
+    expect(cueEntry).not.toHaveBeenCalled();
   });
 
   it("marks cue entries with missing scene references", () => {

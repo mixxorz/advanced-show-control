@@ -25,6 +25,13 @@ describe("CueListManageModal", () => {
     expect(commands.setActiveCueList).toHaveBeenCalledWith("cue-list-verse");
     expect(onClose).toHaveBeenCalledTimes(1);
 
+    commands.setActiveCueList.mockClear();
+    onClose.mockClear();
+
+    await user.click(screen.getByRole("button", { name: /^Main$/i }));
+    expect(commands.setActiveCueList).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+
     await user.click(screen.getByRole("button", { name: /New Cue List/i }));
     await user.type(screen.getByLabelText(/Cue list name/i), "Bridge");
     await user.click(screen.getByRole("button", { name: /Create/i }));

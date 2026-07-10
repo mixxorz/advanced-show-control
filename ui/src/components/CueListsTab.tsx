@@ -55,6 +55,10 @@ export function CueListsTab() {
     appState.cueLists.find(
       (cueList) => cueList.id === appState.activeCueListId,
     ) ?? null;
+  const selectedCueEntry =
+    activeCueList?.entries.find((entry) => entry.id === selectedCueEntryId) ??
+    null;
+
   const cuedEntryIndex = activeCueList
     ? activeCueList.entries.findIndex(
         (entry) => entry.id === appState.cuedCueEntryId,
@@ -166,9 +170,9 @@ export function CueListsTab() {
               </h2>
               <div className="flex gap-2">
                 <ConsoleButton
-                  disabled={!selectedCueEntryId}
+                  disabled={selectedCueEntry === null}
                   onClick={() => {
-                    void commands.cueEntry?.(selectedCueEntryId);
+                    void commands.cueEntry?.(selectedCueEntry?.id ?? null);
                     setSelectedCueEntryId(null);
                   }}
                   size="small"
