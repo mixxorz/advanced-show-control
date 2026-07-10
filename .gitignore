@@ -22,6 +22,7 @@ logs/
 # Tooling
 .superpowers/
 .worktrees
+sdd/
 opencode.json
 tags
 
