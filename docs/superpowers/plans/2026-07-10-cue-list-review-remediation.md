@@ -297,7 +297,7 @@ git commit -m "fix: reconcile cues with scene state"
 
 ---
 
-### Task 3: Normalize Session Loads And Report Legacy Cue Loss
+### Task 3: Normalize Session Loads
 
 **Files:**
 - Modify: `src-tauri/src/show/show_file.rs:7-175`
@@ -307,16 +307,16 @@ git commit -m "fix: reconcile cues with scene state"
 - Test: `src-tauri/src/show/actor.rs:553-1122`
 
 **Interfaces:**
-- Consumes: schema-v1 `cuedSceneInternalId`, aligned `SceneDocument`, and imported `CueListDocument`.
-- Produces: `LoadValidationReport.legacy_cue_cleared: bool` and `ReplaceCueListDocument { valid_scene_ids }`.
+- Consumes: aligned `SceneDocument` and imported `CueListDocument`.
+- Produces: `ReplaceCueListDocument { valid_scene_ids }`.
 
 - [ ] **Step 1: Add failing import and actor tests**
 
-Add a legacy field to the in-memory DTO and deserialize real schema-v1 JSON:
+Verify schema-v1 scene-level cue state is ignored without producing cue-list state:
 
 ```rust
 #[test]
-fn import_schema_v1_reports_unmigratable_cued_scene() {
+fn import_schema_v1_silently_ignores_legacy_cued_scene() {
     let json = r#"{
       "schemaVersion":1,
       "appVersion":"0.1.0",
@@ -328,7 +328,7 @@ fn import_schema_v1_reports_unmigratable_cued_scene() {
     let mut file: ShowFile = serde_json::from_str(json).unwrap();
     let imported = import_show_file(&mut file, &lv1_with_scene()).unwrap();
 
-    assert!(imported.report.legacy_cue_cleared);
+    assert!(!imported.report.removed_anything());
     assert!(imported.cue_list_snapshot.cue_lists.is_empty());
 }
 ```
@@ -344,18 +344,9 @@ cargo nextest run -p advanced-show-control show::show_file::tests
 cargo nextest run -p advanced-show-control show::actor::tests
 ```
 
-Expected: no legacy field/report exists and cue replacement does not receive final valid scene IDs.
+Expected: cue replacement does not receive final valid scene IDs.
 
-- [ ] **Step 3: Implement migration reporting and deterministic replacement**
-
-Add to `ShowFile`:
-
-```rust
-#[serde(default)]
-pub legacy_cued_scene_internal_id: Option<uuid::Uuid>,
-```
-
-Use `#[serde(rename = "cuedSceneInternalId")]` if `rename_all` does not produce the exact legacy key after naming the field. Add `legacy_cue_cleared: bool` to `LoadValidationReport`, include it in `removed_anything`, and set it before clearing schema-v1 cue-list fields.
+- [ ] **Step 3: Implement deterministic replacement**
 
 After scene alignment in `load_show_file_from_dto`, derive:
 
@@ -367,14 +358,7 @@ let valid_scene_ids = aligned_scene_configs
 replace_cue_list_document(peers, cue_list_snapshot, valid_scene_ids, false).await?;
 ```
 
-Update `replace_cue_list_document` and every command constructor to pass the vector. Emit one load warning at the show actor seam when `legacy_cue_cleared` is true:
-
-```rust
-tracing::warn!(
-    event = "legacy_cue_migration_skipped",
-    "The pre-armed scene cue from this older session could not be migrated because it has no cue-list entry."
-);
-```
+Update `replace_cue_list_document` and every command constructor to pass the vector. Do not deserialize or report the former schema-v1 scene-level cue field.
 
 - [ ] **Step 4: Run targeted tests and verify GREEN**
 
@@ -385,7 +369,7 @@ cargo nextest run -p advanced-show-control show
 cargo nextest run -p advanced-show-control cue_lists
 ```
 
-Expected: all show and cue-list tests pass, including legacy warning/report coverage.
+Expected: all show and cue-list tests pass, including silent schema-v1 cue discard coverage.
 
 - [ ] **Step 5: Commit session reconciliation**
 

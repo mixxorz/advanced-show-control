@@ -14,8 +14,6 @@ pub struct ShowFile {
     pub saved_at: String,
     pub safety: ShowFileSafety,
     pub scene_configs: Vec<ShowFileSceneConfig>,
-    #[serde(default, rename = "cuedSceneInternalId")]
-    pub legacy_cued_scene_internal_id: Option<uuid::Uuid>,
     #[serde(default)]
     pub cue_lists: Vec<CueList>,
     #[serde(default)]
@@ -83,12 +81,11 @@ pub struct ShowFileChannelRef {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LoadValidationReport {
     pub removed_scenes: Vec<String>,
-    pub legacy_cue_cleared: bool,
 }
 
 impl LoadValidationReport {
     pub fn removed_anything(&self) -> bool {
-        !self.removed_scenes.is_empty() || self.legacy_cue_cleared
+        !self.removed_scenes.is_empty()
     }
 }
 
@@ -112,7 +109,6 @@ pub fn export_show_file(
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         saved_at,
         safety: ShowFileSafety { lockout },
-        legacy_cued_scene_internal_id: None,
         cue_lists: cue_list_snapshot.cue_lists,
         active_cue_list_id: cue_list_snapshot.active_cue_list_id,
         cued_cue_entry_id: cue_list_snapshot.cued_cue_entry_id,
@@ -145,11 +141,6 @@ pub fn import_show_file(
         file.cued_cue_entry_id = None;
     }
 
-    let legacy_cue_cleared = file.legacy_cued_scene_internal_id.is_some();
-    if legacy_cue_cleared {
-        file.legacy_cued_scene_internal_id = None;
-    }
-
     file.scene_configs
         .retain(|config| !is_blank_scene_config(config));
     let generated_internal_scene_ids = file
@@ -173,10 +164,7 @@ pub fn import_show_file(
         snapshot,
         lockout: file.safety.lockout,
         selected_scene_internal_id,
-        report: LoadValidationReport {
-            legacy_cue_cleared,
-            ..LoadValidationReport::default()
-        },
+        report: LoadValidationReport::default(),
         generated_internal_scene_ids,
         cue_list_snapshot: CueListDocument {
             cue_lists: std::mem::take(&mut file.cue_lists),
@@ -321,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn import_schema_v1_reports_unmigratable_cued_scene() {
+    fn import_schema_v1_silently_ignores_legacy_cued_scene() {
         let json = r#"{
           "schemaVersion":1,
           "appVersion":"0.1.0",
@@ -345,9 +333,8 @@ mod tests {
         )
         .unwrap();
 
-        assert!(imported.report.legacy_cue_cleared);
+        assert!(!imported.report.removed_anything());
         assert!(imported.cue_list_snapshot.cue_lists.is_empty());
-        assert!(file.legacy_cued_scene_internal_id.is_none());
     }
 
     #[test]
@@ -359,7 +346,6 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
-            legacy_cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -411,7 +397,6 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
-            legacy_cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,

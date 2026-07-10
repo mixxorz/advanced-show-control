@@ -482,9 +482,6 @@ async fn load_show_file_from_dto(
             )
         );
     }
-    if report.legacy_cue_cleared {
-        log_legacy_cue_migration_skipped();
-    }
     tracing::info!(event = "session_opened", "Session loaded");
     Ok(LoadShowFileResult {
         selected_scene_internal_id,
@@ -565,17 +562,11 @@ async fn replace_cue_list_document(
         .map_err(|_| "Show blocked: cue lists state is unavailable".to_string())
 }
 
-fn log_legacy_cue_migration_skipped() {
-    tracing::warn!(
-        event = "legacy_cue_migration_skipped",
-        "The pre-armed scene cue from this older session could not be migrated because it has no cue-list entry."
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use uuid::Uuid;
 
+    use super::load_show_file_from_dto;
     use crate::cue_lists::{
         CueListsCommand, CueListsEvent, CueListsProjectionReason, CueListsProjectionState,
         build_cue_lists_actor_with_scenes,
@@ -583,21 +574,12 @@ mod tests {
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
+    use crate::scenes::{SceneConfig, SceneScopeToggles};
     use crate::scenes::{ScenesCommand, build_scenes_actor};
     use crate::show::commands::ShowCommand;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::handle::ShowStateHandle;
-    use tracing::dispatcher;
-
-    use super::load_show_file_from_dto;
-    use crate::scenes::{SceneConfig, SceneScopeToggles};
     use crate::show::{ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowState};
-    use std::sync::{Arc, Mutex};
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
 
     fn lv1_snapshot(scenes: Vec<SceneListEntry>) -> Lv1StateSnapshot {
         Lv1StateSnapshot {
@@ -614,7 +596,6 @@ mod tests {
             app_version: "test".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
-            legacy_cued_scene_internal_id: None,
             scene_configs: scenes,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
@@ -700,46 +681,6 @@ mod tests {
                 }
                 _ => continue,
             }
-        }
-    }
-
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CapturedLogEvent {
-        level: Option<String>,
-        event: Option<String>,
-        message: Option<String>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedLogEvents(Arc<Mutex<Vec<CapturedLogEvent>>>);
-
-    impl<S> Layer<S> for CapturedLogEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent {
-                level: Some(event.metadata().level().as_str().to_string()),
-                ..Default::default()
-            };
-            event.record(&mut visitor);
-            self.0.lock().unwrap().push(visitor);
-        }
-    }
-
-    impl Visit for CapturedLogEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.event = Some(value.to_string()),
-                "message" => self.message = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let value = format!("{value:?}");
-            self.record_str(field, value.trim_matches('"'));
         }
     }
 
@@ -961,103 +902,6 @@ mod tests {
         assert_eq!(cue_document.cued_cue_entry_id, None);
     }
 
-    #[test]
-    fn connected_load_emits_legacy_cue_migration_warning_once_when_legacy_cue_was_cleared() {
-        let event_bus = AppEventBus::default();
-        let mut state = ShowState::default();
-        let path = std::path::PathBuf::from("session.show");
-        let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
-        file.legacy_cued_scene_internal_id =
-            Some(Uuid::from_u128(0x99999999999949998999999999999999));
-
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let dispatch = tracing::Dispatch::new(subscriber);
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        dispatcher::with_default(&dispatch, || {
-            runtime.block_on(async {
-                let peers = show_actor_peers();
-                load_show_file_from_dto(
-                    &mut state,
-                    &event_bus,
-                    &peers,
-                    path,
-                    &mut file,
-                    &lv1_snapshot(vec![SceneListEntry {
-                        index: 1,
-                        name: "Intro".to_string(),
-                    }]),
-                )
-                .await
-                .expect("load should succeed");
-            });
-        });
-
-        let logs = logs.lock().unwrap();
-        let warnings: Vec<_> = logs
-            .iter()
-            .filter(|log| log.level.as_deref() == Some("WARN"))
-            .collect();
-        assert_eq!(warnings.len(), 1);
-        assert_eq!(
-            warnings[0].event.as_deref(),
-            Some("legacy_cue_migration_skipped")
-        );
-        assert_eq!(
-            warnings[0].message.as_deref(),
-            Some(
-                "The pre-armed scene cue from this older session could not be migrated because it has no cue-list entry."
-            )
-        );
-    }
-
-    #[test]
-    fn connected_load_does_not_emit_legacy_cue_migration_warning_when_no_legacy_cue_was_cleared() {
-        let event_bus = AppEventBus::default();
-        let mut state = ShowState::default();
-        let path = std::path::PathBuf::from("session.show");
-        let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
-
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let dispatch = tracing::Dispatch::new(subscriber);
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        dispatcher::with_default(&dispatch, || {
-            runtime.block_on(async {
-                let peers = show_actor_peers();
-                load_show_file_from_dto(
-                    &mut state,
-                    &event_bus,
-                    &peers,
-                    path,
-                    &mut file,
-                    &lv1_snapshot(vec![SceneListEntry {
-                        index: 1,
-                        name: "Intro".to_string(),
-                    }]),
-                )
-                .await
-                .expect("load should succeed");
-            });
-        });
-
-        let logs = logs.lock().unwrap();
-        assert!(
-            logs.iter()
-                .all(|log| log.event.as_deref() != Some("legacy_cue_migration_skipped"))
-        );
-    }
-
     #[tokio::test]
     async fn save_queries_scenes_for_the_scene_document() {
         let event_bus = AppEventBus::default();
@@ -1137,7 +981,6 @@ mod tests {
             app_version: "test".to_string(),
             saved_at: "123".to_string(),
             safety: crate::show::show_file::ShowFileSafety { lockout: false },
-            legacy_cued_scene_internal_id: None,
             scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
             cue_lists: Vec::new(),
             active_cue_list_id: None,
@@ -1208,7 +1051,6 @@ mod tests {
             app_version: "test".to_string(),
             saved_at: "123".to_string(),
             safety: crate::show::show_file::ShowFileSafety { lockout: false },
-            legacy_cued_scene_internal_id: None,
             scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
             cue_lists: vec![crate::cue_lists::CueList {
                 id: cue_list_id,

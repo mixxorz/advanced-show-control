@@ -16,7 +16,7 @@ This work covers:
 - active-list and local-selection behavior;
 - cue status presentation in the footer and scene editor;
 - native button event forwarding;
-- session-load normalization and schema-v1 migration visibility.
+- session-load normalization.
 
 This work does not prune missing-scene cue entries, change cue-position persistence, refactor unrelated cue-list command adapters, or optimize cue-row rendering.
 
@@ -53,7 +53,7 @@ If the active cue-list ID is invalid, both active and cued IDs are cleared. If o
 
 Schema-v2 session files continue to store cue lists, the active cue-list ID, and the cued cue-entry ID.
 
-Schema-v1 files may contain the former `cuedSceneInternalId`, but they contain no cue list or cue-entry identity to which that scene can be mapped safely. Loading schema v1 therefore does not synthesize a cue list. If the old field is present, the load validation report records that the pre-armed scene cue could not be migrated, and a visible warning explains that the cue was cleared.
+Schema-v1 files contain no cue-list document. Loading schema v1 therefore starts with empty cue-list state and silently ignores the former scene-level cue field.
 
 Session import reconciliation occurs against the final post-import scene document, after blank-scene pruning, internal-ID generation, and scene alignment. This avoids validating cue references against scene IDs that will not be installed.
 
@@ -104,8 +104,6 @@ The cue-lists actor emits one warning when reconciliation clears an invalid curr
 - structured fields: cue-list ID, cue-entry ID, and missing scene internal ID when available;
 - user-facing message: `Cued entry cleared because its scene is unavailable.`
 
-Schema-v1 cue migration loss emits a warning at the session-load ownership seam rather than duplicating the cue-lists reconciliation warning. The load report and log message identify that an old pre-armed scene cue could not be migrated because schema v1 had no cue-list entry.
-
 No log is emitted for preserved non-cued missing entries or same-list activation no-ops.
 
 ## Testing Strategy
@@ -119,7 +117,7 @@ All behavior changes follow test-driven development.
 - Replacing a document preserves a valid active and cued entry.
 - Setting the already-active cue list is a no-op and preserves the cue.
 - Changing active cue lists clears the cue.
-- Schema-v1 import reports an unmigratable legacy scene cue.
+- Schema-v1 import silently ignores the former scene-level cue field.
 
 ### Rust Actor Tests
 
@@ -155,5 +153,5 @@ Run focused Rust and frontend tests during each red-green cycle. Before completi
 7. The footer and scene editor display cue status only from cue-list state.
 8. Native button event handlers used to isolate drag and delete interactions are preserved.
 9. A stale runtime generation cannot replace the current cue recall peer.
-10. Schema-v1 pre-armed cue loss is reported rather than silently discarded.
+10. Schema-v1 scene-level cue state is silently discarded.
 11. Successful GO advancement continues to mark the show dirty.
