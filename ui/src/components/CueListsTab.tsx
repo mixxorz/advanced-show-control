@@ -18,7 +18,7 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { Trash2 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import { formatSceneNumber } from "../format";
 import type { CueEntry, CueList, SceneConfig } from "../types";
@@ -58,6 +58,15 @@ export function CueListsTab() {
   const selectedCueEntry =
     activeCueList?.entries.find((entry) => entry.id === selectedCueEntryId) ??
     null;
+
+  useEffect(() => {
+    if (
+      selectedCueEntryId !== null &&
+      !activeCueList?.entries.some((entry) => entry.id === selectedCueEntryId)
+    ) {
+      queueMicrotask(() => setSelectedCueEntryId(null));
+    }
+  }, [activeCueList, selectedCueEntryId]);
 
   const cuedEntryIndex = activeCueList
     ? activeCueList.entries.findIndex(

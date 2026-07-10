@@ -159,6 +159,43 @@ describe("CueListsTab", () => {
     expect(cueEntry).not.toHaveBeenCalled();
   });
 
+  it("clears the local cue selection when it leaves the active list and keeps Cue disabled after returning", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+    const { rerender } = renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...cueListStateFixture,
+          activeCueListId: "cue-list-verse",
+          cuedCueEntryId: null,
+        }}
+      >
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+
+    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
+
+    rerender(
+      <MockAppProviders appState={cueListStateFixture}>
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+
+    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+  });
+
   it("marks cue entries with missing scene references", () => {
     renderWithAppProviders(<CueListsTab />, {
       appState: cueListWithMissingSceneReferenceAppState,

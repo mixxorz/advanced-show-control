@@ -425,10 +425,11 @@ async fn load_show_file_from_dto(
     let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
     let report = imported.report.clone();
     let imported_scene_configs = imported.snapshot.scene_configs;
+    let imported_cue_list_snapshot = imported.cue_list_snapshot.clone();
     let aligned_scene_configs =
         crate::scenes::align_scene_configs(imported_scene_configs.clone(), &lv1.scene_list);
     let alignment_changed = aligned_scene_configs != imported_scene_configs;
-    let should_mark_dirty =
+    let mut should_mark_dirty =
         report.removed_anything() || imported.generated_internal_scene_ids || alignment_changed;
     let selected_scene_internal_id = selected_scene_internal_id
         .filter(|selected| {
@@ -457,6 +458,10 @@ async fn load_show_file_from_dto(
         .map(|scene| scene.internal_scene_id)
         .collect();
     replace_cue_list_document(peers, imported.cue_list_snapshot, valid_scene_ids, false).await?;
+    let reconciled_cue_list_document = current_cue_list_document(peers).await?;
+    if reconciled_cue_list_document != imported_cue_list_snapshot {
+        should_mark_dirty = true;
+    }
     state.set_lockout(imported.lockout);
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
@@ -571,8 +576,10 @@ fn log_legacy_cue_migration_skipped() {
 mod tests {
     use uuid::Uuid;
 
-    use crate::cue_lists::build_cue_lists_actor_with_scenes;
-    use crate::cue_lists::{CueListsEvent, CueListsProjectionReason, CueListsProjectionState};
+    use crate::cue_lists::{
+        CueListsCommand, CueListsEvent, CueListsProjectionReason, CueListsProjectionState,
+        build_cue_lists_actor_with_scenes,
+    };
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
@@ -664,6 +671,17 @@ mod tests {
         let (reply, rx) = tokio::sync::oneshot::channel();
         handle
             .send(ScenesCommand::GetSceneDocument { reply })
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
+
+    async fn get_cue_list_document(
+        handle: &crate::cue_lists::CueListsHandle,
+    ) -> crate::cue_lists::CueListDocument {
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        handle
+            .send(CueListsCommand::GetCueListDocument { reply })
             .await
             .unwrap();
         rx.await.unwrap()
@@ -1151,6 +1169,80 @@ mod tests {
             scene_document.selected_scene_internal_id,
             Some(Uuid::from_u128(1).to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn load_marks_dirty_when_cue_reconciliation_clears_invalid_active_cue() {
+        let event_bus = AppEventBus::default();
+        let (show, peers) = show_actor(event_bus.clone());
+        let mut events = event_bus.subscribe();
+        let (scenes, task, _peers) =
+            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        task.spawn();
+        peers.set_scenes(scenes.clone());
+        let (cue_lists, task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
+        task.spawn();
+        peers.set_cue_lists(cue_lists.clone());
+        let new_lv1 = lv1_snapshot(vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }]);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let handle = crate::lv1::test_actor_handle(tx);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let crate::lv1::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(new_lv1.clone());
+                }
+            }
+        });
+        peers.set_lv1(1, handle);
+
+        let path = std::env::temp_dir().join(format!("show-load-cue-{}.ascs", Uuid::new_v4()));
+        let cue_list_id = Uuid::new_v4();
+        let cue_entry_id = Uuid::new_v4();
+        let missing_scene_id = Uuid::new_v4();
+        let file = crate::show::show_file::ShowFile {
+            schema_version: crate::show::SHOW_FILE_SCHEMA_VERSION,
+            app_version: "test".to_string(),
+            saved_at: "123".to_string(),
+            safety: crate::show::show_file::ShowFileSafety { lockout: false },
+            legacy_cued_scene_internal_id: None,
+            scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
+            cue_lists: vec![crate::cue_lists::CueList {
+                id: cue_list_id,
+                name: "Main".to_string(),
+                entries: vec![crate::cue_lists::CueEntry {
+                    id: cue_entry_id,
+                    scene_internal_id: missing_scene_id,
+                }],
+            }],
+            active_cue_list_id: Some(cue_list_id),
+            cued_cue_entry_id: Some(cue_entry_id),
+        };
+        crate::show_file::write_show_file(&path, &file, &crate::show_file::backup_folder())
+            .unwrap();
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::LoadShowFileFromPath {
+            path: path.clone(),
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+
+        assert!(rx.await.unwrap().is_ok());
+
+        let state = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_file_metadata_event(&mut events),
+        )
+        .await
+        .unwrap();
+        assert!(state.show_file_dirty);
+        let cue_document = get_cue_list_document(&cue_lists).await;
+        assert_eq!(cue_document.cued_cue_entry_id, None);
     }
 
     #[tokio::test]

@@ -104,7 +104,10 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                         reply,
                     } => {
                         let valid_scene_ids = valid_scene_ids.into_iter().collect::<HashSet<_>>();
-                        state.replace_document(document, valid_scene_ids);
+                        let reconciliation = state.replace_document(document, valid_scene_ids);
+                        let persisted_cue_list_edit = persisted_cue_list_edit
+                            || reconciliation.active_cue_list_cleared
+                            || reconciliation.cued_entry_cleared.is_some();
                         publish_state(
                             &event_bus,
                             &state,
@@ -759,6 +762,106 @@ mod tests {
 
         assert_eq!(document.cue_lists[0].name, "Main Updated");
         assert_eq!(document.cued_cue_entry_id, Some(entry.id));
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_document_marks_persisted_edit_when_invalid_cue_is_cleared() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (scenes, _rx) = fake_scenes_handle();
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
+        task.spawn();
+
+        let scene_id = Uuid::from_u128(0x33333333333343338333333333333333);
+        let cue_list_id = Uuid::from_u128(0x44444444444444448444444444444444);
+        let cue_entry_id = Uuid::from_u128(0x55555555555545558555555555555555);
+
+        let replacement = super::super::CueListDocument {
+            cue_lists: vec![super::super::CueList {
+                id: cue_list_id,
+                name: "Main".to_string(),
+                entries: vec![super::super::CueEntry {
+                    id: cue_entry_id,
+                    scene_internal_id: scene_id,
+                }],
+            }],
+            active_cue_list_id: Some(cue_list_id),
+            cued_cue_entry_id: Some(cue_entry_id),
+        };
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::ReplaceCueListDocument {
+                document: replacement,
+                valid_scene_ids: vec![],
+                persisted_cue_list_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap();
+
+        loop {
+            if let AppEvent::CueLists(CueListsEvent::StateChanged {
+                reason: CueListsProjectionReason::FileReplacement,
+                persisted_cue_list_edit,
+                state,
+            }) = events.recv().await.unwrap()
+            {
+                assert!(persisted_cue_list_edit);
+                assert_eq!(state.document.cued_cue_entry_id, None);
+                break;
+            }
+        }
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_document_marks_persisted_edit_when_invalid_active_list_is_cleared() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (scenes, _rx) = fake_scenes_handle();
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
+        task.spawn();
+
+        let cue_list_id = Uuid::from_u128(0x66666666666646668666666666666666);
+        let replacement = super::super::CueListDocument {
+            cue_lists: vec![super::super::CueList {
+                id: cue_list_id,
+                name: "Main".to_string(),
+                entries: Vec::new(),
+            }],
+            active_cue_list_id: Some(Uuid::from_u128(0x77777777777747778777777777777777)),
+            cued_cue_entry_id: None,
+        };
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::ReplaceCueListDocument {
+                document: replacement,
+                valid_scene_ids: vec![],
+                persisted_cue_list_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap();
+
+        loop {
+            if let AppEvent::CueLists(CueListsEvent::StateChanged {
+                reason: CueListsProjectionReason::FileReplacement,
+                persisted_cue_list_edit,
+                state,
+            }) = events.recv().await.unwrap()
+            {
+                assert!(persisted_cue_list_edit);
+                assert_eq!(state.document.active_cue_list_id, None);
+                break;
+            }
+        }
 
         handle.send(CueListsCommand::Shutdown).await.unwrap();
     }
