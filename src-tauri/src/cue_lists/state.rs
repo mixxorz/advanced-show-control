@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use super::{CueEntry, CueList, CueListDocument};
@@ -7,14 +8,31 @@ pub struct CueListsState {
     document: CueListDocument,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClearedCueEntry {
+    pub cue_list_id: Uuid,
+    pub cue_entry_id: Uuid,
+    pub scene_internal_id: Uuid,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CueListReconciliation {
+    pub active_cue_list_cleared: bool,
+    pub cued_entry_cleared: Option<ClearedCueEntry>,
+}
+
 impl CueListsState {
     pub fn document(&self) -> CueListDocument {
         self.document.clone()
     }
 
-    pub fn replace_document(&mut self, document: CueListDocument) {
+    pub fn replace_document(
+        &mut self,
+        document: CueListDocument,
+        valid_scene_ids: impl IntoIterator<Item = Uuid>,
+    ) -> CueListReconciliation {
         self.document = document;
-        self.clear_invalid_cue();
+        self.reconcile(valid_scene_ids)
     }
 
     pub fn create_cue_list(&mut self, name: String) -> Result<CueList, String> {
@@ -72,15 +90,18 @@ impl CueListsState {
         Ok(())
     }
 
-    pub fn set_active_cue_list(&mut self, cue_list_id: Option<Uuid>) -> Result<(), String> {
+    pub fn set_active_cue_list(&mut self, cue_list_id: Option<Uuid>) -> Result<bool, String> {
         if let Some(id) = cue_list_id
             && !self.document.cue_lists.iter().any(|list| list.id == id)
         {
             return Err("Cue list not found".to_string());
         }
+        if self.document.active_cue_list_id == cue_list_id {
+            return Ok(false);
+        }
         self.document.active_cue_list_id = cue_list_id;
         self.document.cued_cue_entry_id = None;
-        Ok(())
+        Ok(true)
     }
 
     pub fn add_scene_to_active_cue_list(
@@ -200,6 +221,49 @@ impl CueListsState {
         }
     }
 
+    pub fn reconcile(
+        &mut self,
+        valid_scene_ids: impl IntoIterator<Item = Uuid>,
+    ) -> CueListReconciliation {
+        let valid_scene_ids = valid_scene_ids.into_iter().collect::<HashSet<_>>();
+        let mut result = CueListReconciliation::default();
+        let active_id = self.document.active_cue_list_id;
+        let active =
+            active_id.and_then(|id| self.document.cue_lists.iter().find(|list| list.id == id));
+
+        if let Some(active_id) = active_id
+            && active.is_none()
+        {
+            if let Some(cued_id) = self.document.cued_cue_entry_id {
+                result.cued_entry_cleared = Some(ClearedCueEntry {
+                    cue_list_id: active_id,
+                    cue_entry_id: cued_id,
+                    scene_internal_id: Uuid::nil(),
+                });
+            }
+            self.document.active_cue_list_id = None;
+            self.document.cued_cue_entry_id = None;
+            result.active_cue_list_cleared = true;
+            return result;
+        }
+
+        if let (Some(list), Some(cued_id)) = (active, self.document.cued_cue_entry_id)
+            && let Some(entry) = list.entries.iter().find(|entry| entry.id == cued_id)
+            && !valid_scene_ids.contains(&entry.scene_internal_id)
+        {
+            result.cued_entry_cleared = Some(ClearedCueEntry {
+                cue_list_id: list.id,
+                cue_entry_id: entry.id,
+                scene_internal_id: entry.scene_internal_id,
+            });
+            self.document.cued_cue_entry_id = None;
+        } else {
+            self.clear_invalid_cue();
+        }
+
+        result
+    }
+
     fn active_cue_list(&self) -> Option<&CueList> {
         self.document
             .active_cue_list_id
@@ -234,6 +298,17 @@ mod tests {
 
     fn id(value: u128) -> Uuid {
         Uuid::from_u128(value)
+    }
+
+    fn state_with_two_entries() -> CueListsState {
+        let mut state = CueListsState::default();
+        let first = state.create_cue_list("First".to_string()).unwrap().id;
+        let second = state.create_cue_list("Second".to_string()).unwrap().id;
+        let entry = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
+        state.cue_entry(Some(entry.id)).unwrap();
+        state.set_active_cue_list(Some(first)).unwrap();
+        state.set_active_cue_list(Some(second)).unwrap();
+        state
     }
 
     #[test]
@@ -388,5 +463,63 @@ mod tests {
         let recalled = state.advance_after_successful_recall().unwrap();
         assert_eq!(recalled.id, second.id);
         assert_eq!(state.document().cued_cue_entry_id, None);
+    }
+
+    #[test]
+    fn replacing_document_clears_invalid_active_and_cued_ids() {
+        let mut state = CueListsState::default();
+        let document = CueListDocument {
+            cue_lists: vec![],
+            active_cue_list_id: Some(id(1)),
+            cued_cue_entry_id: Some(id(2)),
+        };
+
+        let result = state.replace_document(document, [id(10)]);
+
+        assert!(result.active_cue_list_cleared);
+        assert!(result.cued_entry_cleared.is_some());
+        assert_eq!(state.document().active_cue_list_id, None);
+        assert_eq!(state.document().cued_cue_entry_id, None);
+    }
+
+    #[test]
+    fn reconciliation_preserves_missing_entry_but_clears_current_cue() {
+        let list_id = id(1);
+        let entry_id = id(2);
+        let missing_scene_id = id(3);
+        let mut state = CueListsState::default();
+        let document = CueListDocument {
+            cue_lists: vec![CueList {
+                id: list_id,
+                name: "Main".to_string(),
+                entries: vec![CueEntry {
+                    id: entry_id,
+                    scene_internal_id: missing_scene_id,
+                }],
+            }],
+            active_cue_list_id: Some(list_id),
+            cued_cue_entry_id: Some(entry_id),
+        };
+
+        let result = state.replace_document(document, [id(99)]);
+
+        assert_eq!(
+            result.cued_entry_cleared.unwrap().scene_internal_id,
+            missing_scene_id
+        );
+        assert_eq!(state.document().cue_lists[0].entries.len(), 1);
+        assert_eq!(state.document().cued_cue_entry_id, None);
+    }
+
+    #[test]
+    fn setting_already_active_list_preserves_cue_and_reports_unchanged() {
+        let mut state = state_with_two_entries();
+        let active = state.document().active_cue_list_id.unwrap();
+        let cued = state.document().cued_cue_entry_id;
+
+        let changed = state.set_active_cue_list(Some(active)).unwrap();
+
+        assert!(!changed);
+        assert_eq!(state.document().cued_cue_entry_id, cued);
     }
 }

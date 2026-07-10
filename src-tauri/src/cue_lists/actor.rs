@@ -92,7 +92,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 persisted_cue_list_edit,
                 reply,
             } => {
-                state.replace_document(document);
+                state.replace_document(document, std::iter::empty());
                 publish_state(
                     &event_bus,
                     &state,
@@ -113,6 +113,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .create_cue_list(name)
@@ -133,6 +134,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .rename_cue_list(cue_list_id, name)
@@ -149,6 +151,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .delete_cue_list(cue_list_id)
@@ -165,6 +168,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .reorder_cue_lists(ordered_ids)
@@ -180,12 +184,13 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &event_bus,
                 &mut state,
                 CueListsProjectionReason::CueListState,
+                false,
                 true,
-                |state| {
+                |state: &mut CueListsState| {
                     state
                         .set_active_cue_list(cue_list_id)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
+                        .map(|changed| CueListsCommandResult {
+                            changed,
                             cue_list: None,
                             entry: None,
                         })
@@ -200,6 +205,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &event_bus,
                 &mut state,
                 CueListsProjectionReason::CueListState,
+                true,
                 true,
                 |state| {
                     state
@@ -220,6 +226,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .remove_cue_entry(cue_entry_id)
@@ -239,6 +246,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .reorder_cue_entries(ordered_entry_ids)
@@ -258,6 +266,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 &mut state,
                 CueListsProjectionReason::CueListState,
                 true,
+                false,
                 |state| {
                     state
                         .cue_entry(cue_entry_id)
@@ -291,12 +300,13 @@ fn respond_mutation<F>(
     state: &mut CueListsState,
     reason: CueListsProjectionReason,
     persisted_cue_list_edit: bool,
+    publish_only_when_changed: bool,
     mutate: F,
 ) where
     F: FnOnce(&mut CueListsState) -> Result<CueListsCommandResult, String>,
 {
     let result = mutate(state);
-    if result.is_ok() {
+    if result.as_ref().is_ok() && (!publish_only_when_changed || result.as_ref().unwrap().changed) {
         publish_state(event_bus, state, reason, persisted_cue_list_edit);
     }
     if let Some(reply) = reply {
