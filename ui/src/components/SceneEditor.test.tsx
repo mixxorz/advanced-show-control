@@ -100,6 +100,34 @@ describe("SceneEditor", () => {
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
   });
 
+  it("marks the selected scene as cued only when the active cue list points to it", () => {
+    const selectedScene = connectedAppState.sceneConfigs[0];
+
+    const { rerender } = renderEditor({
+      ...connectedAppState,
+      selectedSceneInternalId: selectedScene.internalSceneId,
+      activeCueListId: "cue-list-main",
+      cuedCueEntryId: "cue-2",
+    });
+
+    expect(screen.getByLabelText("Selected scene")).not.toHaveClass(
+      "text-status-cued",
+    );
+
+    rerender(
+      editorTree({
+        ...connectedAppState,
+        selectedSceneInternalId: selectedScene.internalSceneId,
+        activeCueListId: "cue-list-main",
+        cuedCueEntryId: "cue-1",
+      }),
+    );
+
+    expect(screen.getByLabelText("Selected scene")).toHaveClass(
+      "text-status-cued",
+    );
+  });
+
   it("confirms overwrite in-app when linking to a scene with an existing config", async () => {
     const user = userEvent.setup();
     const linkSceneConfig = vi.fn();

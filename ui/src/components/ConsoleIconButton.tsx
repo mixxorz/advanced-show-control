@@ -3,18 +3,21 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 type ConsoleIconButtonVariant = "secondary" | "ghost-danger";
 type ConsoleIconButtonSize = "small" | "default";
 
-export function ConsoleIconButton(
-  props: {
-    "aria-label": string;
-    children: ReactNode;
-    disabled?: boolean;
-    onClick?: ButtonHTMLAttributes<HTMLButtonElement>["onClick"];
-    size?: ConsoleIconButtonSize;
-    variant?: ConsoleIconButtonVariant;
-  } & ButtonHTMLAttributes<HTMLButtonElement>,
-) {
-  const variant = props.variant ?? "secondary";
-  const size = props.size ?? "default";
+type ConsoleIconButtonProps = {
+  "aria-label": string;
+  children: ReactNode;
+  size?: ConsoleIconButtonSize;
+  variant?: ConsoleIconButtonVariant;
+} & ButtonHTMLAttributes<HTMLButtonElement>;
+
+export function ConsoleIconButton({
+  size = "default",
+  variant = "secondary",
+  children,
+  type = "button",
+  className,
+  ...buttonProps
+}: ConsoleIconButtonProps) {
   const sizeClass = {
     small: "h-8 w-8",
     default: "h-11 w-11",
@@ -28,13 +31,11 @@ export function ConsoleIconButton(
 
   return (
     <button
-      aria-label={props["aria-label"]}
-      className={`inline-grid place-items-center rounded-console-control bg-transparent disabled:text-console-disabled ${sizeClass} ${variantClass}`}
-      disabled={props.disabled}
-      onClick={props.onClick}
-      type={props.type ?? "button"}
+      {...buttonProps}
+      className={`inline-grid place-items-center rounded-console-control bg-transparent disabled:text-console-disabled ${sizeClass} ${variantClass}${className ? ` ${className}` : ""}`}
+      type={type}
     >
-      {props.children}
+      {children}
     </button>
   );
 }
