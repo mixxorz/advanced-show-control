@@ -102,6 +102,8 @@ it("consumes GO without recalling when no cue-list entry is cued", async () => {
 
 Also add equivalent unavailable cases for a missing active list, missing cued entry, and cued entry whose `sceneInternalId` is absent from `sceneConfigs`.
 
+Delete the obsolete selected-scene Cue shortcut tests and the old duplicate-precedence test; Task 2 replaces them with cue-list entry coverage. Update the capture-preemption assertion to check that `recallCuedCue` was not called instead of checking `recallScene`.
+
 - [ ] **Step 2: Run the GO tests and verify RED**
 
 Run: `npm --prefix ui run test -- AppRuntime.test.tsx`
@@ -154,7 +156,7 @@ function AppShortcutHandler(props: {
 
 Run: `npm --prefix ui run test -- AppRuntime.test.tsx && npm --prefix ui run typecheck`
 
-Expected: GO tests pass. Typecheck may still report obsolete Cue test references until Task 2 replaces them, but `AppRuntime.tsx` must have no type errors.
+Expected: PASS. Task 1 removes the obsolete Cue cases so both the full `AppRuntime` test file and typecheck are green before Task 2 begins.
 
 - [ ] **Step 5: Commit Task 1**
 
