@@ -92,7 +92,12 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                 persisted_cue_list_edit,
                 reply,
             } => {
-                state.replace_document(document, std::iter::empty());
+                let valid_scene_ids = document
+                    .cue_lists
+                    .iter()
+                    .flat_map(|list| list.entries.iter().map(|entry| entry.scene_internal_id))
+                    .collect::<std::collections::HashSet<_>>();
+                state.replace_document(document, valid_scene_ids);
                 publish_state(
                     &event_bus,
                     &state,
@@ -306,7 +311,9 @@ fn respond_mutation<F>(
     F: FnOnce(&mut CueListsState) -> Result<CueListsCommandResult, String>,
 {
     let result = mutate(state);
-    if result.as_ref().is_ok() && (!publish_only_when_changed || result.as_ref().unwrap().changed) {
+    if result.as_ref().is_ok()
+        && (!publish_only_when_changed || result.as_ref().is_ok_and(|result| result.changed))
+    {
         publish_state(event_bus, state, reason, persisted_cue_list_edit);
     }
     if let Some(reply) = reply {
@@ -417,6 +424,82 @@ mod tests {
                 break;
             }
         }
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replacement_document_uses_incoming_scene_ids_to_preserve_valid_cues() {
+        let event_bus = AppEventBus::default();
+        let (scenes, _rx) = fake_scenes_handle();
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
+        task.spawn();
+
+        let scene_id = Uuid::from_u128(0x22222222222242228222222222222222);
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::CreateCueList {
+                name: "Main".to_string(),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let cue_list = rx.await.unwrap().unwrap().cue_list.unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::AddSceneToActiveCueList {
+                scene_internal_id: scene_id,
+                insert_index: 0,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let entry = rx.await.unwrap().unwrap().entry.unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::CueEntry {
+                cue_entry_id: Some(entry.id),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        rx.await.unwrap().unwrap();
+
+        let replacement = super::super::CueListDocument {
+            cue_lists: vec![super::super::CueList {
+                id: cue_list.id,
+                name: "Main Updated".to_string(),
+                entries: vec![super::super::CueEntry {
+                    id: entry.id,
+                    scene_internal_id: scene_id,
+                }],
+            }],
+            active_cue_list_id: Some(cue_list.id),
+            cued_cue_entry_id: Some(entry.id),
+        };
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::ReplaceCueListDocument {
+                document: replacement,
+                persisted_cue_list_edit: true,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::GetCueListDocument { reply })
+            .await
+            .unwrap();
+        let document = rx.await.unwrap();
+
+        assert_eq!(document.cue_lists[0].name, "Main Updated");
+        assert_eq!(document.cued_cue_entry_id, Some(entry.id));
 
         handle.send(CueListsCommand::Shutdown).await.unwrap();
     }

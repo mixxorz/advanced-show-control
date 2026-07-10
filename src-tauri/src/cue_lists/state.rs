@@ -231,16 +231,9 @@ impl CueListsState {
         let active =
             active_id.and_then(|id| self.document.cue_lists.iter().find(|list| list.id == id));
 
-        if let Some(active_id) = active_id
+        if let Some(_active_id) = active_id
             && active.is_none()
         {
-            if let Some(cued_id) = self.document.cued_cue_entry_id {
-                result.cued_entry_cleared = Some(ClearedCueEntry {
-                    cue_list_id: active_id,
-                    cue_entry_id: cued_id,
-                    scene_internal_id: Uuid::nil(),
-                });
-            }
             self.document.active_cue_list_id = None;
             self.document.cued_cue_entry_id = None;
             result.active_cue_list_cleared = true;
@@ -477,7 +470,7 @@ mod tests {
         let result = state.replace_document(document, [id(10)]);
 
         assert!(result.active_cue_list_cleared);
-        assert!(result.cued_entry_cleared.is_some());
+        assert!(result.cued_entry_cleared.is_none());
         assert_eq!(state.document().active_cue_list_id, None);
         assert_eq!(state.document().cued_cue_entry_id, None);
     }
