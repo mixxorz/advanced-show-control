@@ -314,13 +314,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                         valid_scene_ids = scenes_state.scene_configs.iter().map(|scene| scene.internal_scene_id).collect();
                         let reconciliation = state.reconcile(valid_scene_ids.iter().copied());
                         if let Some(cleared) = reconciliation.cued_entry_cleared {
-                            tracing::warn!(
-                                event = "cue_cleared_missing_scene",
-                                cue_list_id = %cleared.cue_list_id,
-                                cue_entry_id = %cleared.cue_entry_id,
-                                scene_internal_id = %cleared.scene_internal_id,
-                                "Cued entry cleared because its scene is unavailable."
-                            );
+                            log_cue_cleared_missing_scene(&cleared);
                             publish_state(&event_bus, &state, CueListsProjectionReason::CueListState, persisted_scene_edit);
                         }
                     }
@@ -378,6 +372,16 @@ fn projection_state(state: &CueListsState) -> CueListsProjectionState {
     }
 }
 
+fn log_cue_cleared_missing_scene(cleared: &crate::cue_lists::state::ClearedCueEntry) {
+    tracing::warn!(
+        event = "cue_cleared_missing_scene",
+        cue_list_id = %cleared.cue_list_id,
+        cue_entry_id = %cleared.cue_entry_id,
+        scene_internal_id = %cleared.scene_internal_id,
+        "Cued entry cleared because its scene is unavailable."
+    );
+}
+
 async fn recall_cued_cue(
     peers: &CueListsPeers,
     state: &mut CueListsState,
@@ -408,14 +412,17 @@ async fn recall_cued_cue(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue_lists::{CueListDocument, state::ClearedCueEntry};
     use crate::runtime::events::AppEvent;
     use crate::scenes::{RecallSceneResult, SceneConfig, SceneScopeToggles, ScenesCommand};
-    use std::io::Write;
-    use std::sync::OnceLock;
+    use std::sync::Mutex;
     use tokio::sync::{mpsc, oneshot};
-    use tracing_subscriber::fmt;
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::registry;
+    use tracing::dispatcher;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
     use uuid::Uuid;
 
     fn scene_config(id: Uuid) -> SceneConfig {
@@ -433,13 +440,6 @@ mod tests {
     fn fake_scenes_handle() -> (crate::scenes::ScenesHandle, mpsc::Receiver<ScenesCommand>) {
         let (tx, rx) = mpsc::channel(8);
         (crate::scenes::ScenesHandle::new(tx), rx)
-    }
-
-    fn captured_logs() -> Arc<Mutex<Vec<u8>>> {
-        static CAPTURED: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
-        CAPTURED
-            .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
-            .clone()
     }
 
     fn id(value: u128) -> Uuid {
@@ -484,16 +484,72 @@ mod tests {
         entry
     }
 
-    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+    async fn current_document(handle: &CueListsHandle) -> CueListDocument {
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::GetCueListDocument { reply })
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
 
-    impl Write for CapturedWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
+    async fn wait_for_cued_entry_id(
+        handle: &CueListsHandle,
+        expected: Option<Uuid>,
+    ) -> CueListDocument {
+        for _ in 0..50 {
+            let document = current_document(handle).await;
+            if document.cued_cue_entry_id == expected {
+                return document;
+            }
+            tokio::task::yield_now().await;
+        }
+        current_document(handle).await
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct CapturedWarnEvent {
+        level: Option<String>,
+        event: Option<String>,
+        message: Option<String>,
+        cue_list_id: Option<String>,
+        cue_entry_id: Option<String>,
+        scene_internal_id: Option<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedWarnEvents(Arc<Mutex<Vec<CapturedWarnEvent>>>);
+
+    impl<S> Layer<S> for CapturedWarnEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedWarnEvent {
+                level: Some(event.metadata().level().as_str().to_string()),
+                ..Default::default()
+            };
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedWarnEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            match field.name() {
+                "event" => self.event = Some(value.to_string()),
+                "message" => self.message = Some(value.to_string()),
+                "cue_list_id" => self.cue_list_id = Some(value.to_string()),
+                "cue_entry_id" => self.cue_entry_id = Some(value.to_string()),
+                "scene_internal_id" => self.scene_internal_id = Some(value.to_string()),
+                _ => {}
+            }
         }
 
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            let value = format!("{value:?}");
+            self.record_str(field, value.trim_matches('"'));
         }
     }
 
@@ -518,13 +574,7 @@ mod tests {
             },
         });
 
-        tokio::task::yield_now().await;
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(CueListsCommand::GetCueListDocument { reply })
-            .await
-            .unwrap();
-        let document = rx.await.unwrap();
+        let document = wait_for_cued_entry_id(&handle, None).await;
         assert_eq!(document.cued_cue_entry_id, None);
         assert_eq!(document.cue_lists[0].entries.len(), 1);
         assert_eq!(document.cue_lists[0].entries[0].id, fixture.id);
@@ -567,51 +617,38 @@ mod tests {
         handle.send(CueListsCommand::Shutdown).await.unwrap();
     }
 
-    #[tokio::test]
-    async fn invalid_current_cue_logs_clear_warning() {
-        let captured = captured_logs();
-        captured.lock().unwrap().clear();
-        static INIT: std::sync::Once = std::sync::Once::new();
-        INIT.call_once(|| {
-            let subscriber = registry().with(fmt::layer().with_target(false).with_writer({
-                let captured = captured_logs();
-                move || CapturedWriter(captured.clone())
-            }));
-            tracing::subscriber::set_global_default(subscriber).unwrap();
+    #[test]
+    fn invalid_current_cue_logs_clear_warning() {
+        let captured = CapturedWarnEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        let cue_list_id = Uuid::from_u128(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);
+        let cue_entry_id = Uuid::from_u128(0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb);
+        let scene_internal_id = Uuid::from_u128(0xcccccccccccccccccccccccccccccccc);
+
+        dispatcher::with_default(&dispatch, || {
+            log_cue_cleared_missing_scene(&ClearedCueEntry {
+                cue_list_id,
+                cue_entry_id,
+                scene_internal_id,
+            });
         });
 
-        let event_bus = AppEventBus::default();
-        let (handle, task, _) = build_cue_lists_actor(event_bus.clone());
-        task.spawn();
-
-        let fixture = create_and_cue_entry(&handle, id(10)).await;
-        event_bus.publish_runtime_generation_changed(7);
-        event_bus.publish(AppEvent::Scenes {
-            generation: 7,
-            event: crate::scenes::ScenesEvent::StateChanged {
-                reason: crate::scenes::ScenesProjectionReason::SceneState,
-                state: crate::scenes::ScenesProjectionState {
-                    scene_configs: vec![],
-                    selected_scene_internal_id: None,
-                },
-                persisted_scene_edit: true,
-            },
-        });
-
-        let _ = fixture;
-        tokio::task::yield_now().await;
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(CueListsCommand::GetCueListDocument { reply })
-            .await
-            .unwrap();
-        let document = rx.await.unwrap();
-        assert_eq!(document.cued_cue_entry_id, None);
-        handle.send(CueListsCommand::Shutdown).await.unwrap();
-
-        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
-        assert!(output.contains("cue_cleared_missing_scene"));
-        assert!(output.contains("Cued entry cleared because its scene is unavailable."));
+        let logs = logs.lock().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(
+            logs[0],
+            CapturedWarnEvent {
+                level: Some("WARN".to_string()),
+                event: Some("cue_cleared_missing_scene".to_string()),
+                message: Some("Cued entry cleared because its scene is unavailable.".to_string()),
+                cue_list_id: Some(cue_list_id.to_string()),
+                cue_entry_id: Some(cue_entry_id.to_string()),
+                scene_internal_id: Some(scene_internal_id.to_string()),
+            }
+        );
     }
 
     #[tokio::test]
