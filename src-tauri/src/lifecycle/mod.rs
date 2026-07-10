@@ -84,7 +84,7 @@ fn build_connected_runtime(
     identity: &crate::connection_state::Lv1SystemIdentity,
     _show: ShowStateHandle,
     show_peers: ShowActorPeers,
-    cue_lists_peers: CueListsPeers,
+    _cue_lists_peers: CueListsPeers,
     event_bus: AppEventBus,
 ) -> BuiltConnectedRuntime {
     let (lv1, lv1_task) = build_actor(
@@ -99,7 +99,6 @@ fn build_connected_runtime(
         build_scenes_actor(generation, runtime_generation, event_bus.clone());
     let _ = event_bus;
     show_peers.set_scenes(scene_recall_fader.clone());
-    cue_lists_peers.set_scenes(scene_recall_fader.clone());
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -306,6 +305,8 @@ impl AppLifecycle {
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
+        self.cue_lists_peers
+            .set_scenes(started_runtime.scene_recall_fader.clone());
         self.install_scene_recall_fader(generation, started_runtime.scene_recall_fader)
             .await;
         started_runtime.scene_recall_task.spawn();
@@ -363,6 +364,7 @@ impl AppLifecycle {
         let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
             build_scenes_actor(generation, runtime_generation, event_bus);
         scene_recall_peers.set_peers(lv1, fade);
+        self.show_peers.set_scenes(scene_recall_fader.clone());
         self.cue_lists_peers.set_scenes(scene_recall_fader.clone());
         self.install_scene_recall_fader(generation, scene_recall_fader)
             .await;
@@ -839,7 +841,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_runtime_installs_scenes_peer_on_show() {
+    async fn building_runtime_does_not_install_cue_list_peer_before_acceptance() {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let identity = Lv1SystemIdentity {
@@ -862,6 +864,43 @@ mod tests {
         );
 
         assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_connected_runtime_installs_scene_peers() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            address: "127.0.0.1".parse().unwrap(),
+            host: Some("localhost".to_string()),
+            port: 9000,
+        };
+
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let connect_result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity,
+                ConnectFailureMode::PreserveConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(connect_result.is_ok());
+        assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_some());
     }
 
     #[tokio::test]
