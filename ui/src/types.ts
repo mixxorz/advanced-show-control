@@ -34,6 +34,7 @@ export type AppSettings = {
   keyboardShortcuts: KeyboardShortcutSettings;
   timeDisplay: TimeDisplayFormat;
   faderOverrideSensitivity: number;
+  enableExtensiveDiagnostics: boolean;
 };
 
 export type TcpConnectLatencyResult = {
@@ -161,6 +162,7 @@ export const disconnectedAppViewState: AppViewState = {
     },
     timeDisplay: "twentyFourHour",
     faderOverrideSensitivity: 9,
+    enableExtensiveDiagnostics: false,
   },
   connection: "disconnected",
   discoveredLv1Systems: [],

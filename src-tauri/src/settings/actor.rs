@@ -25,15 +25,16 @@ impl SettingsActorTask {
 pub fn build_settings_actor(
     settings_dir: PathBuf,
     event_bus: AppEventBus,
-) -> (SettingsHandle, SettingsActorTask) {
+) -> (SettingsHandle, SettingsActorTask, AppSettings) {
     let (tx, rx) = mpsc::channel(32);
     let state = SettingsState::load(settings_dir);
+    let initial_settings = state.settings();
     let task = SettingsActorTask {
         rx,
         event_bus,
         state,
     };
-    (SettingsHandle::new(tx), task)
+    (SettingsHandle::new(tx), task, initial_settings)
 }
 
 async fn run_settings_actor(
@@ -77,12 +78,13 @@ async fn handle_command(
 
 fn log_settings_updated(settings: &AppSettings) {
     tracing::info!(
-            event = "settings_updated",
-            auto_load_last_show_file = settings.auto_load_last_show_file,
-            auto_save_sessions = settings.auto_save_sessions,
-            time_display = time_display_label(&settings.time_display),
-            fader_override_sensitivity = settings.fader_override_sensitivity,
-            go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
+        event = "settings_updated",
+        auto_load_last_show_file = settings.auto_load_last_show_file,
+        auto_save_sessions = settings.auto_save_sessions,
+        time_display = time_display_label(&settings.time_display),
+        fader_override_sensitivity = settings.fader_override_sensitivity,
+        enable_extensive_diagnostics = settings.enable_extensive_diagnostics,
+        go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
         cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
         "Settings updated"
     );
@@ -118,8 +120,55 @@ mod tests {
     use super::{SettingsCommand, SettingsCommandResult, SettingsHandle, build_settings_actor};
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::settings::{AppSettings, SettingsEvent};
+    use std::sync::Arc;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct CapturedLogEvent {
+        event: Option<String>,
+        enable_extensive_diagnostics: Option<bool>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedLogEvents(Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>);
+
+    impl<S> Layer<S> for CapturedLogEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut visitor = CapturedLogEvent::default();
+            event.record(&mut visitor);
+            self.0.lock().unwrap().push(visitor);
+        }
+    }
+
+    impl Visit for CapturedLogEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            if field.name() == "event" {
+                self.event = Some(value.to_string());
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            match field.name() {
+                "event" => {
+                    self.event = Some(format!("{value:?}").trim_matches('"').to_string());
+                }
+                "enable_extensive_diagnostics" => {
+                    self.enable_extensive_diagnostics = Some(format!("{value:?}") == "true");
+                }
+                _ => {}
+            }
+        }
+    }
 
     fn temp_settings_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -142,7 +191,7 @@ mod tests {
     async fn actor_loads_defaults_when_file_is_missing() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("missing");
-        let (handle, task) = build_settings_actor(dir, event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         assert_eq!(get_settings(&handle).await, AppSettings::default());
@@ -154,7 +203,7 @@ mod tests {
         let dir = temp_settings_dir("invalid");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("settings.json"), "not json").unwrap();
-        let (handle, task) = build_settings_actor(dir, event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         assert_eq!(get_settings(&handle).await, AppSettings::default());
@@ -170,7 +219,7 @@ mod tests {
             r#"{"autoSaveSessions":true,"keyboardShortcuts":{"cue":{"key":"K"}}}"#,
         )
         .unwrap();
-        let (handle, task) = build_settings_actor(dir, event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         let settings = get_settings(&handle).await;
@@ -185,7 +234,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("replace");
-        let (handle, task) = build_settings_actor(dir.clone(), event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir.clone(), event_bus);
         task.spawn();
 
         let (reply, rx) = oneshot::channel();
@@ -222,7 +271,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("unchanged");
-        let (handle, task) = build_settings_actor(dir.clone(), event_bus);
+        let (handle, task, _initial_settings) = build_settings_actor(dir.clone(), event_bus);
         task.spawn();
 
         let (reply, rx) = oneshot::channel();
@@ -244,5 +293,23 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn actor_logs_extensive_diagnostics_setting_on_update() {
+        let captured = CapturedLogEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        super::log_settings_updated(&AppSettings {
+            enable_extensive_diagnostics: true,
+            ..Default::default()
+        });
+
+        let events = captured.0.lock().unwrap();
+        assert!(events.iter().any(|event| {
+            event.event.as_deref() == Some("settings_updated")
+                && event.enable_extensive_diagnostics == Some(true)
+        }));
     }
 }

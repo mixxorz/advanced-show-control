@@ -9,7 +9,7 @@ This document is the source of truth for day-to-day implementation conventions i
 - Follow existing module patterns unless the task is specifically to improve structure.
 - Do not add backward-compatibility code unless persisted data, shipped behavior, external consumers, or an explicit requirement need it.
 - Keep docs current when behavior, architecture, or project phase changes.
-- Add future ideas to the appropriate release section in `docs/roadmap.md` instead of expanding current scope.
+- File or reference GitHub issues for future ideas instead of expanding current implementation scope.
 
 ## Rust Backend
 

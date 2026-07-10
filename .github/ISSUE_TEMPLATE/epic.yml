@@ -1,0 +1,67 @@
+name: Epic
+description: Track a large feature area that will be split into focused issues.
+title: "Epic: "
+labels:
+  - "type: epic"
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What larger outcome does this epic track?
+    validations:
+      required: true
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      description: Use the GitHub milestone that owns this roadmap work.
+      placeholder: "MVP: Scene Fades + Cue Lists"
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: What should be true when this epic is complete?
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in scope and explicitly out of scope?
+    validations:
+      required: true
+  - type: textarea
+    id: child-issues
+    attributes:
+      label: Child Issues
+      description: Link focused implementation issues. Leave unchecked until child issues exist.
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: What observable outcomes close this epic?
+      value: |
+        - [ ]
+    validations:
+      required: true
+  - type: textarea
+    id: safety-impact
+    attributes:
+      label: Safety Impact
+      description: State whether this touches LV1 state, scene recall, fade execution, fader writes, lockout, disconnect/reconnect handling, generation guards, stale state, or manual override behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: related-docs
+    attributes:
+      label: Related Docs Or Specs
+      description: Link related specs, plans, docs, or issues.
+    validations:
+      required: false

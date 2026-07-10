@@ -41,10 +41,15 @@ Current architecture is actor-oriented:
 
 Read these files before substantial work:
 
-- `docs/roadmap.md` for product intent, safety model, current MVP roadmap, and deferred work.
 - `docs/architecture.md` for runtime architecture.
 - `docs/coding-conventions.md` for logging, testing, frontend, verification, and commit conventions.
 - `docs/lv1-osc.md` for LV1 protocol details when touching protocol behavior.
+
+Roadmap and actionable work live in GitHub Milestones and Issues:
+
+- Use `gh` to inspect milestones and issues when planning work.
+- Read milestone descriptions for release scope, safety notes, and exit criteria.
+- Treat issues as the source of truth for actionable tasks.
 
 ## Agent Developer Guidance
 
@@ -56,7 +61,7 @@ Read these files before substantial work:
 - Do not make broad refactors while implementing a feature unless they are required for the feature and covered by tests.
 - Do not add backward-compatibility code unless there is a concrete need.
 - Keep docs current when behavior, architecture, or project phase changes.
-- Add future ideas to the appropriate release section in `docs/roadmap.md` instead of expanding the current scope.
+- File or reference GitHub issues for future ideas instead of adding roadmap items to repository docs.
 - For UI work, preserve the existing design language unless the task is to redesign it.
 - For frontend styling, define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables. Avoid hard-coded Tailwind values when a reusable token is appropriate.
 

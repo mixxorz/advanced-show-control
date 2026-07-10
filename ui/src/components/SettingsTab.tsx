@@ -152,6 +152,22 @@ export function SettingsTab(props: {
                   }
                 />
               </SettingRow>
+              <SettingRow
+                help="Write detailed debug diagnostics to disk. Enable only while troubleshooting because log files can grow quickly."
+                label="Extensive diagnostics"
+                onHelpChange={setActiveHelp}
+              >
+                <ToggleControl
+                  label="Extensive diagnostics"
+                  checked={settings.enableExtensiveDiagnostics}
+                  onChange={(checked) =>
+                    update((current) => ({
+                      ...current,
+                      enableExtensiveDiagnostics: checked,
+                    }))
+                  }
+                />
+              </SettingRow>
             </SettingsSection>
 
             <SettingsSection title="Keyboard Shortcuts">

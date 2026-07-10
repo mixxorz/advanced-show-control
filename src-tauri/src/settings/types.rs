@@ -12,6 +12,7 @@ mod tests {
         assert_eq!(settings.keyboard_shortcuts.cue.key, "C");
         assert_eq!(settings.time_display, TimeDisplayFormat::TwentyFourHour);
         assert_eq!(settings.fader_override_sensitivity, 9);
+        assert!(!settings.enable_extensive_diagnostics);
     }
 
     #[test]
@@ -59,6 +60,7 @@ mod tests {
 
         assert_eq!(settings.keyboard_shortcuts.go.key, "Space");
         assert_eq!(settings.keyboard_shortcuts.cue.key, "C");
+        assert!(!settings.enable_extensive_diagnostics);
     }
 }
 
@@ -73,6 +75,7 @@ pub struct AppSettings {
     pub keyboard_shortcuts: KeyboardShortcutSettings,
     pub time_display: TimeDisplayFormat,
     pub fader_override_sensitivity: u8,
+    pub enable_extensive_diagnostics: bool,
 }
 
 impl Default for AppSettings {
@@ -83,6 +86,7 @@ impl Default for AppSettings {
             keyboard_shortcuts: KeyboardShortcutSettings::default(),
             time_display: TimeDisplayFormat::TwentyFourHour,
             fader_override_sensitivity: 9,
+            enable_extensive_diagnostics: false,
         }
     }
 }
