@@ -7,6 +7,18 @@ import { connectedAppState } from "./storybook/mockAppState";
 import { createDeferred } from "./test/deferred";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 
+function pressGoShortcut(init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", {
+    key: " ",
+    code: "Space",
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  act(() => window.dispatchEvent(event));
+  return event;
+}
+
 function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
 ): AppRuntimeServices {
@@ -305,6 +317,28 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.createCueList).toHaveBeenCalledWith("Bridge");
   });
 
+  it("does not recall a cue while typing the configured GO key in the cue-list name dialog", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "New Cue List" }));
+    await user.type(screen.getByLabelText("Cue list name"), "Verse 2 ");
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Cue list name")).toHaveValue("Verse 2 ");
+  });
+
   it("wires cue entry removal through the rendered app", async () => {
     const user = userEvent.setup();
     const services = makeServices({
@@ -323,6 +357,92 @@ describe("AppRuntime connection lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Remove cue 1" }));
 
     expect(services.removeCueEntry).toHaveBeenCalledWith("cue-1");
+  });
+
+  it("does not execute shortcuts while shortcut capture is active", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Settings" }));
+    await user.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+      ).toHaveTextContent("...");
+    });
+
+    await act(async () => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: " ",
+          code: "Space",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+  });
+
+  it("does not cue a selected entry when an unavailable GO shortcut has the same binding", async () => {
+    const user = userEvent.setup();
+    const appState = {
+      ...connectedAppState,
+      cuedCueEntryId: null,
+      settings: {
+        ...connectedAppState.settings,
+        keyboardShortcuts: {
+          ...connectedAppState.settings.keyboardShortcuts,
+          go: connectedAppState.settings.keyboardShortcuts.cue,
+        },
+      },
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    const services = makeServices({
+      listenForAppStatus: vi.fn(async (listener) => {
+        listener(appState);
+        return () => {};
+      }),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(
+      screen.getByRole("button", { name: /S02.*Holy Forever.*005/i }),
+    );
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(services.cueEntry).not.toHaveBeenCalled();
   });
 
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {
@@ -440,5 +560,257 @@ describe("AppRuntime connection lifecycle", () => {
         "Advanced Show Control - Sunday Service *",
       );
     });
+  });
+
+  it("recalls the cued cue-list entry when the configured GO shortcut is pressed", async () => {
+    const services = makeServices();
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(services.recallScene).not.toHaveBeenCalled();
+  });
+
+  it("consumes repeated GO keydowns after a cue recall completes", async () => {
+    const recall = createDeferred<void>();
+    const services = makeServices({
+      recallCuedCue: vi.fn(() => recall.promise),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const firstGo = pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(firstGo.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      recall.resolve();
+      await recall.promise;
+    });
+
+    const repeatedGo = pressGoShortcut({ repeat: true });
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(repeatedGo.defaultPrevented).toBe(true);
+  });
+
+  it("consumes non-repeat GO keydowns while a cue recall is in flight", async () => {
+    const recall = createDeferred<void>();
+    const services = makeServices({
+      recallCuedCue: vi.fn(() => recall.promise),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const firstGo = pressGoShortcut();
+    const secondGo = pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(firstGo.defaultPrevented).toBe(true);
+    expect(secondGo.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      recall.resolve();
+      await recall.promise;
+    });
+
+    const laterGo = pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(2);
+    expect(laterGo.defaultPrevented).toBe(true);
+  });
+
+  it("releases the GO shortcut after a cue recall failure", async () => {
+    const services = makeServices({
+      recallCuedCue: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("recall failed"))
+        .mockResolvedValue(undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      pressGoShortcut();
+      await Promise.resolve();
+    });
+
+    pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(2);
+  });
+
+  it("consumes GO without recalling when no active cue list is projected", async () => {
+    const services = makeServices();
+    const appState = {
+      ...connectedAppState,
+      activeCueListId: null,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => window.dispatchEvent(event));
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("consumes GO without recalling when no cue entry is cued", async () => {
+    const services = makeServices();
+    const appState = {
+      ...connectedAppState,
+      cuedCueEntryId: null,
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => window.dispatchEvent(event));
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("consumes GO without recalling when the cued cue entry is missing from scene configs", async () => {
+    const services = makeServices();
+    const appState = {
+      ...connectedAppState,
+      cuedCueEntryId: "cue-2",
+      sceneConfigs: connectedAppState.sceneConfigs.filter(
+        (scene) => scene.internalSceneId !== "scene-chorus",
+      ),
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => window.dispatchEvent(event));
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
+  it("consumes GO without recalling when the cued cue entry is missing from the active list", async () => {
+    const services = makeServices();
+    const appState = {
+      ...connectedAppState,
+      cuedCueEntryId: "missing-cue-entry",
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    render(
+      <AppRuntime
+        services={makeServices({
+          ...services,
+          listenForAppStatus: vi.fn(async (listener) => {
+            listener(appState);
+            return () => {};
+          }),
+        })}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      key: " ",
+      code: "Space",
+      bubbles: true,
+      cancelable: true,
+    });
+    act(() => window.dispatchEvent(event));
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
   });
 });

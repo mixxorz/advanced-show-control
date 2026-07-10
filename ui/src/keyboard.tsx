@@ -15,6 +15,7 @@ export type AppKeyboardEvent = {
   code: string;
   key: string;
   modifiers: KeyboardShortcutModifiers;
+  repeat: boolean;
   originalEvent: KeyboardEvent;
 };
 
@@ -96,7 +97,7 @@ export function KeyboardProvider(props: { children: ReactNode }) {
 
         clearCapture();
         current.onCapture({
-          key: normalizeCapturedKey(event),
+          key: shortcutKeyFromEvent(event),
           modifiers: event.modifiers,
         });
         return "handled";
@@ -173,14 +174,43 @@ function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
       alt: event.altKey,
       meta: event.metaKey,
     },
+    repeat: event.repeat,
     originalEvent: event,
   };
 }
 
-function normalizeCapturedKey(event: AppKeyboardEvent) {
+export function shortcutKeyFromEvent(event: AppKeyboardEvent) {
   const key =
     keyFromCode(event.code) ?? printableCodeFallback(event) ?? event.key;
   return key.length === 1 ? key.toUpperCase() : key;
+}
+
+export function shortcutKeysEqual(left: string, right: string) {
+  return left.toUpperCase() === right.toUpperCase();
+}
+
+export function shortcutMatchesEvent(
+  shortcut: KeyboardShortcut,
+  event: AppKeyboardEvent,
+) {
+  return (
+    (shortcutKeysEqual(shortcut.key, shortcutKeyFromEvent(event)) ||
+      shortcutKeysEqual(shortcut.key, event.key)) &&
+    shortcut.modifiers.shift === event.modifiers.shift &&
+    shortcut.modifiers.control === event.modifiers.control &&
+    shortcut.modifiers.alt === event.modifiers.alt &&
+    shortcut.modifiers.meta === event.modifiers.meta
+  );
+}
+
+export function isActionShortcutBlocked(event: AppKeyboardEvent) {
+  const target = event.originalEvent.target;
+  return (
+    target instanceof Element &&
+    target.closest(
+      'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"]',
+    ) !== null
+  );
 }
 
 function keyFromCode(code: string) {

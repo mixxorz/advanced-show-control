@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useAppState } from "../appHooks";
 import { replaceAppSettings } from "../commands";
-import { useShortcutCapture } from "../keyboard";
+import { shortcutKeysEqual, useShortcutCapture } from "../keyboard";
 import type { AppSettings, KeyboardShortcut } from "../types";
 import { KeyboardShortcutInput } from "./KeyboardShortcutInput";
 import { Panel } from "./Panel";
@@ -16,6 +16,10 @@ export function SettingsTab(props: {
   const shortcutCapture = useShortcutCapture();
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
+  const [shortcutConflict, setShortcutConflict] = useState<{
+    action: "go" | "cue";
+    message: string;
+  } | null>(null);
   const [draftSettings, setDraftSettings] = useState<AppSettings | null>(null);
   const replaceRequestId = useRef(0);
   const settings =
@@ -45,6 +49,16 @@ export function SettingsTab(props: {
   }
 
   function updateShortcut(action: "go" | "cue", shortcut: KeyboardShortcut) {
+    const conflict = shortcutConflictLabel(action, shortcut, settings);
+    if (conflict) {
+      setShortcutConflict({
+        action,
+        message: `Already assigned to ${conflict}`,
+      });
+      return;
+    }
+
+    setShortcutConflict(null);
     update((current) => ({
       ...current,
       keyboardShortcuts: {
@@ -176,12 +190,18 @@ export function SettingsTab(props: {
                   label="GO keyboard shortcut"
                   shortcut={settings.keyboardShortcuts.go}
                   isCapturing={shortcutCapture.isCapturing("go")}
-                  onStartCapture={() =>
+                  conflictMessage={
+                    shortcutConflict?.action === "go"
+                      ? shortcutConflict.message
+                      : undefined
+                  }
+                  onStartCapture={() => {
+                    setShortcutConflict(null);
                     shortcutCapture.startCapture({
                       id: "go",
                       onCapture: (shortcut) => updateShortcut("go", shortcut),
-                    })
-                  }
+                    });
+                  }}
                 />
               </SettingRow>
               <SettingRow label="CUE" onHelpChange={setActiveHelp}>
@@ -189,12 +209,18 @@ export function SettingsTab(props: {
                   label="Cue keyboard shortcut"
                   shortcut={settings.keyboardShortcuts.cue}
                   isCapturing={shortcutCapture.isCapturing("cue")}
-                  onStartCapture={() =>
+                  conflictMessage={
+                    shortcutConflict?.action === "cue"
+                      ? shortcutConflict.message
+                      : undefined
+                  }
+                  onStartCapture={() => {
+                    setShortcutConflict(null);
                     shortcutCapture.startCapture({
                       id: "cue",
                       onCapture: (shortcut) => updateShortcut("cue", shortcut),
-                    })
-                  }
+                    });
+                  }}
                 />
               </SettingRow>
             </SettingsSection>
@@ -207,6 +233,65 @@ export function SettingsTab(props: {
 
 function settingsEqual(left: AppSettings, right: AppSettings) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function shortcutConflictLabel(
+  action: "go" | "cue",
+  shortcut: KeyboardShortcut,
+  settings: AppSettings,
+) {
+  const otherAction = action === "go" ? "cue" : "go";
+  if (shortcutsEqual(shortcut, settings.keyboardShortcuts[otherAction])) {
+    return otherAction === "go" ? "GO" : "Cue";
+  }
+
+  return (
+    fixedShortcutConflicts().find((item) =>
+      shortcutsEqual(shortcut, item.shortcut),
+    )?.label ?? null
+  );
+}
+
+function shortcutsEqual(left: KeyboardShortcut, right: KeyboardShortcut) {
+  return (
+    shortcutKeysEqual(left.key, right.key) &&
+    left.modifiers.shift === right.modifiers.shift &&
+    left.modifiers.control === right.modifiers.control &&
+    left.modifiers.alt === right.modifiers.alt &&
+    left.modifiers.meta === right.modifiers.meta
+  );
+}
+
+function fixedShortcutConflicts(): Array<{
+  label: string;
+  shortcut: KeyboardShortcut;
+}> {
+  return [
+    fixedCommandShortcut("New Session", "N", false),
+    fixedCommandShortcut("Open Session", "O", false),
+    fixedCommandShortcut("Save Session", "S", false),
+    fixedCommandShortcut("Save As", "S", true),
+  ];
+}
+
+function fixedCommandShortcut(
+  label: string,
+  key: string,
+  shift: boolean,
+): { label: string; shortcut: KeyboardShortcut } {
+  const isMac = navigator.platform.toLowerCase().includes("mac");
+  return {
+    label,
+    shortcut: {
+      key,
+      modifiers: {
+        shift,
+        control: !isMac,
+        alt: false,
+        meta: isMac,
+      },
+    },
+  };
 }
 
 function SettingsSection(props: { title: string; children: ReactNode }) {

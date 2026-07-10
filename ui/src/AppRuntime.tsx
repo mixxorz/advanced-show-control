@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppCommandsProvider,
   AppStateProvider,
@@ -7,7 +6,12 @@ import {
 } from "./appContext";
 import { AppShell, type MainTab } from "./components/AppShell";
 import { formatSessionWindowTitle } from "./sessionTitle";
-import { KeyboardProvider } from "./keyboard";
+import {
+  isActionShortcutBlocked,
+  KeyboardProvider,
+  shortcutMatchesEvent,
+  useKeyboardHandler,
+} from "./keyboard";
 import {
   disconnectedAppViewState,
   type AppViewState,
@@ -84,6 +88,58 @@ export type AppRuntimeServices = {
 };
 
 type ConnectionModalMode = "startup" | "manual" | null;
+
+const GO_SHORTCUT_PRIORITY = 100;
+
+function AppShortcutHandler(props: {
+  appState: AppViewState;
+  commands: AppCommands;
+}) {
+  const goRecallInFlight = useRef(false);
+
+  useKeyboardHandler({
+    id: "app-go-shortcut",
+    priority: GO_SHORTCUT_PRIORITY,
+    handleKeyDown: (event) => {
+      if (isActionShortcutBlocked(event)) {
+        return "ignored";
+      }
+      if (
+        !shortcutMatchesEvent(
+          props.appState.settings.keyboardShortcuts.go,
+          event,
+        )
+      ) {
+        return "ignored";
+      }
+      if (event.repeat) {
+        return "handled";
+      }
+
+      const activeCueList = props.appState.cueLists.find(
+        (cueList) => cueList.id === props.appState.activeCueListId,
+      );
+      const cuedEntry = activeCueList?.entries.find(
+        (entry) => entry.id === props.appState.cuedCueEntryId,
+      );
+      const cueIsValid =
+        cuedEntry !== undefined &&
+        props.appState.sceneConfigs.some(
+          (scene) => scene.internalSceneId === cuedEntry.sceneInternalId,
+        );
+
+      if (cueIsValid && !goRecallInFlight.current) {
+        goRecallInFlight.current = true;
+        void Promise.resolve(props.commands.recallCuedCue()).finally(() => {
+          goRecallInFlight.current = false;
+        });
+      }
+      return "handled";
+    },
+  });
+
+  return null;
+}
 
 export function AppRuntime(props: { services: AppRuntimeServices }) {
   const { services } = props;
@@ -265,7 +321,9 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     openShowFile: () => runCommand(() => services.openShowFile()),
     removeCueEntry: (cueEntryId) =>
       void runCommand(() => services.removeCueEntry(cueEntryId)),
-    recallCuedCue: () => void runCommand(() => services.recallCuedCue()),
+    recallCuedCue: async () => {
+      await runCommand(() => services.recallCuedCue());
+    },
     renameCueList: (cueListId, name) =>
       void runCommand(() => services.renameCueList(cueListId, name)),
     reorderCueEntries: (orderedEntryIds) =>
@@ -336,6 +394,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
 
   return (
     <KeyboardProvider>
+      <AppShortcutHandler appState={appState} commands={commands} />
       <AppStateProvider appState={appState} commandError={commandError}>
         <AppCommandsProvider commands={commands}>
           <AppShell

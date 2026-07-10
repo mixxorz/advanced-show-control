@@ -53,6 +53,45 @@ mod tests {
     }
 
     #[test]
+    fn normalization_canonicalizes_shortcut_key_labels() {
+        let named_keys = [
+            ("space", "Space"),
+            ("enter", "Enter"),
+            ("escape", "Escape"),
+            ("tab", "Tab"),
+            ("backspace", "Backspace"),
+            ("delete", "Delete"),
+            ("home", "Home"),
+            ("end", "End"),
+            ("pageup", "PageUp"),
+            ("pagedown", "PageDown"),
+            ("arrowup", "ArrowUp"),
+            ("arrowdown", "ArrowDown"),
+            ("arrowleft", "ArrowLeft"),
+            ("arrowright", "ArrowRight"),
+        ];
+
+        assert_eq!(normalize_key(" c "), Some("C".to_string()));
+        for (input, expected) in named_keys {
+            assert_eq!(
+                normalize_key(&input.to_uppercase()),
+                Some(expected.to_string())
+            );
+        }
+        assert_eq!(
+            normalize_key("  CustomKey  "),
+            Some("CustomKey".to_string())
+        );
+        assert_eq!(normalize_key("   "), None);
+    }
+
+    #[test]
+    fn normalization_uppercases_single_unicode_scalar_keys() {
+        assert_eq!(normalize_key("é"), Some("É".to_string()));
+        assert_eq!(normalize_key("ß"), Some("SS".to_string()));
+    }
+
+    #[test]
     fn partial_shortcut_settings_deserialize_with_agreed_defaults() {
         let settings: AppSettings =
             serde_json::from_str(r#"{"keyboardShortcuts":{"cue":{"key":"C"}}}"#)
@@ -157,9 +196,43 @@ impl KeyboardShortcut {
     }
 
     fn normalized_or(mut self, fallback: Self) -> Self {
-        self.key = self.key.trim().to_string();
-        if self.key.is_empty() { fallback } else { self }
+        match normalize_key(&self.key) {
+            Some(key) => {
+                self.key = key;
+                self
+            }
+            None => fallback,
+        }
     }
+}
+
+fn normalize_key(key: &str) -> Option<String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    if key.chars().count() == 1 {
+        return Some(key.to_uppercase());
+    }
+
+    let normalized = match key.to_ascii_lowercase().as_str() {
+        "space" => "Space",
+        "enter" => "Enter",
+        "escape" => "Escape",
+        "tab" => "Tab",
+        "backspace" => "Backspace",
+        "delete" => "Delete",
+        "home" => "Home",
+        "end" => "End",
+        "pageup" => "PageUp",
+        "pagedown" => "PageDown",
+        "arrowup" => "ArrowUp",
+        "arrowdown" => "ArrowDown",
+        "arrowleft" => "ArrowLeft",
+        "arrowright" => "ArrowRight",
+        _ => return Some(key.to_string()),
+    };
+    Some(normalized.to_string())
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]

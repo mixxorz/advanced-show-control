@@ -21,6 +21,11 @@ import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useAppCommands, useAppState } from "../appHooks";
 import { formatSceneNumber } from "../format";
+import {
+  isActionShortcutBlocked,
+  shortcutMatchesEvent,
+  useKeyboardHandler,
+} from "../keyboard";
 import type { CueEntry, CueList, SceneConfig } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
 import { ConsoleIconButton } from "./ConsoleIconButton";
@@ -36,6 +41,8 @@ type ActiveDrag =
   | { kind: "scene"; sceneInternalId: string }
   | { kind: "cueEntry"; cueEntryId: string }
   | null;
+
+const CUE_SHORTCUT_PRIORITY = 90;
 
 export function CueListsTab() {
   const { appState } = useAppState();
@@ -58,6 +65,30 @@ export function CueListsTab() {
   const selectedCueEntry =
     activeCueList?.entries.find((entry) => entry.id === selectedCueEntryId) ??
     null;
+
+  useKeyboardHandler({
+    id: "cue-list-cue-shortcut",
+    priority: CUE_SHORTCUT_PRIORITY,
+    handleKeyDown: (event) => {
+      if (isActionShortcutBlocked(event)) {
+        return "ignored";
+      }
+      if (shortcutMatchesEvent(appState.settings.keyboardShortcuts.go, event)) {
+        return "handled";
+      }
+      if (
+        !shortcutMatchesEvent(appState.settings.keyboardShortcuts.cue, event)
+      ) {
+        return "ignored";
+      }
+      if (event.repeat) return "handled";
+      if (selectedCueEntry === null) return "ignored";
+
+      void commands.cueEntry?.(selectedCueEntry.id);
+      setSelectedCueEntryId(null);
+      return "handled";
+    },
+  });
 
   useEffect(() => {
     let canceled = false;

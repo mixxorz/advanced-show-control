@@ -1,12 +1,53 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  isActionShortcutBlocked,
   KeyboardProvider,
+  shortcutKeyFromEvent,
+  shortcutKeysEqual,
+  shortcutMatchesEvent,
   useKeyboardHandler,
   useShortcutCapture,
 } from "./keyboard";
 
 describe("KeyboardProvider", () => {
+  it.each([
+    ["input", document.createElement("input"), true],
+    ["textarea", document.createElement("textarea"), true],
+    ["select", document.createElement("select"), true],
+    ["content-editable descendant", createContentEditableDescendant(), true],
+    ["button", document.createElement("button"), false],
+    ["dialog descendant", createDialogDescendant(), true],
+  ])(
+    "classifies a %s target for action shortcuts",
+    (_description, target, expected) => {
+      let blocked = false;
+      const listener = (originalEvent: KeyboardEvent) => {
+        blocked = isActionShortcutBlocked({
+          code: originalEvent.code,
+          key: originalEvent.key,
+          modifiers: {
+            shift: originalEvent.shiftKey,
+            control: originalEvent.ctrlKey,
+            alt: originalEvent.altKey,
+            meta: originalEvent.metaKey,
+          },
+          repeat: originalEvent.repeat,
+          originalEvent,
+        });
+      };
+      window.addEventListener("keydown", listener);
+      const root = target.parentElement ?? target;
+      document.body.append(root);
+
+      fireEvent.keyDown(target, { key: "c", code: "KeyC" });
+
+      root.remove();
+      window.removeEventListener("keydown", listener);
+      expect(blocked).toBe(expected);
+    },
+  );
+
   it("dispatches enabled handlers by priority and stops after handled", () => {
     const low = vi.fn(() => "handled" as const);
     const high = vi.fn(() => "handled" as const);
@@ -57,6 +98,32 @@ describe("KeyboardProvider", () => {
 
     expect(high).toHaveBeenCalledTimes(1);
     expect(low).toHaveBeenCalledTimes(1);
+  });
+
+  it("propagates OS key repeat state to handlers", () => {
+    const repeats: boolean[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "repeat-recorder",
+        priority: 1,
+        handleKeyDown: (event) => {
+          repeats.push(event.repeat);
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("k", { repeat: true });
+
+    expect(repeats).toEqual([true]);
   });
 
   it("captures a non-modifier key with modifiers and exits capture mode", () => {
@@ -241,6 +308,157 @@ describe("KeyboardProvider", () => {
       modifiers: { shift: true, control: false, alt: false, meta: false },
     });
   });
+
+  it("normalizes comparable shortcut keys from keydown events", () => {
+    const seen: string[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "recorder",
+        priority: 1,
+        handleKeyDown: (event) => {
+          seen.push(shortcutKeyFromEvent(event));
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown(" ", { code: "Space" });
+    fireKeyDown("q", { code: "KeyQ" });
+    fireKeyDown("@", { code: "Digit2", shiftKey: true });
+
+    expect(seen).toEqual(["Space", "Q", "2"]);
+  });
+
+  it("matches shortcuts by comparable key and modifiers", () => {
+    const matches: boolean[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "matcher",
+        priority: 1,
+        handleKeyDown: (event) => {
+          matches.push(
+            shortcutMatchesEvent(
+              {
+                key: "S",
+                modifiers: {
+                  shift: true,
+                  control: true,
+                  alt: false,
+                  meta: false,
+                },
+              },
+              event,
+            ),
+          );
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("S", { code: "KeyS", shiftKey: true, ctrlKey: true });
+    fireKeyDown("s", { code: "KeyS", ctrlKey: true });
+
+    expect(matches).toEqual([true, false]);
+  });
+
+  it("matches lowercase projected shortcut keys against keydown events", () => {
+    const matches: boolean[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "matcher",
+        priority: 1,
+        handleKeyDown: (event) => {
+          matches.push(
+            shortcutMatchesEvent(
+              {
+                key: "c",
+                modifiers: {
+                  shift: false,
+                  control: false,
+                  alt: false,
+                  meta: false,
+                },
+              },
+              event,
+            ),
+          );
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("c", { code: "KeyC" });
+
+    expect(matches).toEqual([true]);
+  });
+
+  it("matches persisted Unicode shortcut labels against character keys", () => {
+    expect(
+      shortcutMatchesEvent(
+        {
+          key: "É",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+        },
+        {
+          key: "é",
+          code: "KeyE",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+          repeat: false,
+          originalEvent: new KeyboardEvent("keydown"),
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps physical code matching primary over character keys", () => {
+    expect(
+      shortcutMatchesEvent(
+        {
+          key: "Q",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+        },
+        {
+          key: "a",
+          code: "KeyQ",
+          modifiers: { shift: false, control: false, alt: false, meta: false },
+          repeat: false,
+          originalEvent: new KeyboardEvent("keydown"),
+        },
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["i", "I"],
+    ["é", "É"],
+    ["ß", "SS"],
+  ])("matches Unicode shortcut keys case-insensitively", (left, right) => {
+    expect(shortcutKeysEqual(left, right)).toBe(true);
+  });
 });
 
 function fireKeyDown(key: string, init: KeyboardEventInit = {}) {
@@ -254,4 +472,20 @@ function fireKeyDown(key: string, init: KeyboardEventInit = {}) {
       }),
     );
   });
+}
+
+function createContentEditableDescendant() {
+  const editor = document.createElement("div");
+  editor.setAttribute("contenteditable", "true");
+  const descendant = document.createElement("span");
+  editor.append(descendant);
+  return descendant;
+}
+
+function createDialogDescendant() {
+  const dialog = document.createElement("div");
+  dialog.setAttribute("role", "dialog");
+  const descendant = document.createElement("span");
+  dialog.append(descendant);
+  return descendant;
 }
