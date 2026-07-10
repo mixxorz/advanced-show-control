@@ -14,6 +14,9 @@ This change wires shortcut behavior without changing the persisted settings shap
 - Add standard native keyboard accelerators for New Session, Open Session, Save Session, and Save As.
 - Keep shortcut capture higher priority than execution so editing a shortcut never triggers an app action.
 - Reuse existing app commands and menu handlers instead of introducing parallel command paths.
+- Treat one physical GO key press as at most one recall, including after a fast recall completes while the key remains held.
+- Do not execute GO or Cue while the keyboard event originates from an editable control or dialog.
+- Canonicalize persisted shortcut key labels so manually edited settings match capture, display, and conflict semantics.
 
 ## Non-Goals
 
@@ -37,6 +40,10 @@ Standard file shortcuts stay in the native Tauri File menu. The menu already own
 `Cue` uses the saved `settings.keyboardShortcuts.cue` shortcut. When pressed while the Cue Lists tab is active, it cues the currently selected cue-list entry if one exists. This matches the Cue Lists tab's Cue button and calls the existing `cueEntry` command.
 
 Shortcut capture remains modal within the keyboard layer. While a shortcut input is capturing, the capture handler consumes delivered key events before the execution handler sees them.
+
+Action shortcuts are inactive when the key event originates from an `input`, `textarea`, `select`, content-editable element, or an element inside a dialog. Shortcut capture remains active in those contexts because it has higher priority and is an explicit assignment mode.
+
+OS-generated repeat keydown events are consumed when they match GO or Cue but do not dispatch another action. The existing GO in-flight guard separately prevents multiple non-repeat keydowns from overlapping before command completion.
 
 If the user captures a shortcut that is already assigned to another configurable shortcut action or a fixed File menu accelerator, Settings rejects the new assignment, leaves the existing shortcut value unchanged, and shows red inline text to the right of that row's keyboard input capture box. The message should name the conflicting action, such as `Already assigned to GO`, `Already assigned to Cue`, `Already assigned to Save Session`, or `Already assigned to Save As`. The message clears when the user starts another capture, successfully saves a non-conflicting shortcut, or leaves the Settings tab.
 
@@ -76,6 +83,8 @@ For matching, `CmdOrCtrl` means `meta: true` on macOS and `control: true` on non
 
 A keyboard event matches a saved shortcut when the comparable key label and all four modifier booleans are equal. The implementation should share key-label normalization with shortcut capture so execution uses the same conventions as stored settings: `Space`, `Enter`, uppercase letters, and unshifted digit keys with `shift: true`.
 
+Rust settings normalization trims shortcut labels, uppercases one-character labels, and canonicalizes known named labels such as `space`, `enter`, and arrow keys. Empty labels still fall back to the action default. Frontend display, matching, and conflict detection consume this canonical projected representation rather than presenting a lowercase value as valid while comparing it case-sensitively.
+
 If two configured shortcuts are identical because of a pre-existing or manually edited settings file, `GO` takes strict precedence over `Cue` because it is the primary show-operation action. A key matching GO is consumed even when no valid cue is available, so Cue never runs as a fallback. New duplicates or fixed-file-shortcut conflicts captured through Settings are rejected before persistence.
 
 ## Native Menu Architecture
@@ -98,10 +107,13 @@ Add frontend tests for:
 
 - Pressing the configured `GO` shortcut recalls the cued cue-list entry.
 - Pressing the configured `GO` shortcut does nothing when the active cue list, cued entry, or referenced scene is unavailable.
+- Holding the configured `GO` shortcut dispatches at most one recall even when the first recall completes before OS key repeat begins.
 - Pressing the configured `Cue` shortcut in the Cue Lists tab cues the selected entry.
 - Pressing the configured `Cue` shortcut does nothing when no cue-list entry is selected.
+- Typing a matching shortcut in an editable control or dialog does not execute GO or Cue.
 - Shortcut capture preempts shortcut execution.
 - `GO` wins when `GO` and `Cue` are configured to the same shortcut, including when GO is unavailable.
+- Lowercase and case-variant shortcut labels loaded from settings are canonicalized before projection and execute consistently with their displayed value.
 - Capturing a shortcut already assigned to the other action leaves settings unchanged and shows inline red conflict text beside the capture control.
 - Capturing a shortcut reserved by a fixed File menu accelerator leaves settings unchanged and shows inline red conflict text naming the file action.
 - Conflict text clears after a successful non-conflicting capture.
