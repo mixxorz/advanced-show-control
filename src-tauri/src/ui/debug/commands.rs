@@ -163,6 +163,7 @@ pub async fn debug_smoke_load_unlinked_scene_session(
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         saved_at: crate::time::current_timestamp_millis(),
         safety: ShowFileSafety { lockout: false },
+        legacy_cued_scene_internal_id: None,
         scene_configs: vec![ShowFileSceneConfig {
             internal_scene_id: Some(internal_scene_id),
             scene_index: Some(99),

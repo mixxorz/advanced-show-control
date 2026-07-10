@@ -240,7 +240,8 @@ async fn handle_command(
                     false,
                 )
                 .await?;
-                replace_cue_list_document(peers, CueListDocument::default(), false).await?;
+                replace_cue_list_document(peers, CueListDocument::default(), Vec::new(), false)
+                    .await?;
                 state.reset_for_new_show();
                 publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
                 tracing::info!(event = "session_created", "New session created");
@@ -451,7 +452,11 @@ async fn load_show_file_from_dto(
         false,
     )
     .await?;
-    replace_cue_list_document(peers, imported.cue_list_snapshot, false).await?;
+    let valid_scene_ids = aligned_scene_configs
+        .iter()
+        .map(|scene| scene.internal_scene_id)
+        .collect();
+    replace_cue_list_document(peers, imported.cue_list_snapshot, valid_scene_ids, false).await?;
     state.set_lockout(imported.lockout);
     state.mark_saved(path, saved_at.clone());
     if should_mark_dirty {
@@ -532,16 +537,12 @@ async fn replace_scene_document(
 async fn replace_cue_list_document(
     peers: &ShowActorPeers,
     document: CueListDocument,
+    valid_scene_ids: Vec<uuid::Uuid>,
     persisted_cue_list_edit: bool,
 ) -> Result<crate::cue_lists::CueListsCommandResult, String> {
     let cue_lists = peers
         .cue_lists()
         .ok_or_else(|| "Show blocked: cue lists state is unavailable".to_string())?;
-    let valid_scene_ids = document
-        .cue_lists
-        .iter()
-        .flat_map(|list| list.entries.iter().map(|entry| entry.scene_internal_id))
-        .collect();
     let (reply, rx) = tokio::sync::oneshot::channel();
     cue_lists
         .send(CueListsCommand::ReplaceCueListDocument {
@@ -589,6 +590,7 @@ mod tests {
             app_version: "test".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
+            legacy_cued_scene_internal_id: None,
             scene_configs: scenes,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
@@ -844,6 +846,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connected_load_clears_missing_cued_entry_but_keeps_the_cue_list_entry() {
+        let event_bus = AppEventBus::default();
+        let mut state = ShowState::default();
+        let path = std::path::PathBuf::from("session.show");
+        let cue_list_id = Uuid::from_u128(0x55555555555545558555555555555555);
+        let entry_id = Uuid::from_u128(0x66666666666646668666666666666666);
+        let missing_scene_id = Uuid::from_u128(0x77777777777747778777777777777777);
+        let mut file = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]);
+        file.cue_lists = vec![crate::cue_lists::CueList {
+            id: cue_list_id,
+            name: "Main".to_string(),
+            entries: vec![crate::cue_lists::CueEntry {
+                id: entry_id,
+                scene_internal_id: missing_scene_id,
+            }],
+        }];
+        file.active_cue_list_id = Some(cue_list_id);
+        file.cued_cue_entry_id = Some(entry_id);
+
+        let peers = show_actor_peers();
+        load_show_file_from_dto(
+            &mut state,
+            &event_bus,
+            &peers,
+            path,
+            &mut file,
+            &lv1_snapshot(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+        )
+        .await
+        .expect("load should succeed");
+
+        let cue_document = super::current_cue_list_document(&peers).await.unwrap();
+        assert_eq!(cue_document.cue_lists[0].entries.len(), 1);
+        assert_eq!(cue_document.cue_lists[0].entries[0].id, entry_id);
+        assert_eq!(cue_document.cued_cue_entry_id, None);
+    }
+
+    #[tokio::test]
     async fn save_queries_scenes_for_the_scene_document() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
@@ -922,6 +965,7 @@ mod tests {
             app_version: "test".to_string(),
             saved_at: "123".to_string(),
             safety: crate::show::show_file::ShowFileSafety { lockout: false },
+            legacy_cued_scene_internal_id: None,
             scene_configs: vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))],
             cue_lists: Vec::new(),
             active_cue_list_id: None,

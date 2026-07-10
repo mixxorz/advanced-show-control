@@ -14,6 +14,8 @@ pub struct ShowFile {
     pub saved_at: String,
     pub safety: ShowFileSafety,
     pub scene_configs: Vec<ShowFileSceneConfig>,
+    #[serde(default, rename = "cuedSceneInternalId")]
+    pub legacy_cued_scene_internal_id: Option<uuid::Uuid>,
     #[serde(default)]
     pub cue_lists: Vec<CueList>,
     #[serde(default)]
@@ -81,11 +83,12 @@ pub struct ShowFileChannelRef {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct LoadValidationReport {
     pub removed_scenes: Vec<String>,
+    pub legacy_cue_cleared: bool,
 }
 
 impl LoadValidationReport {
     pub fn removed_anything(&self) -> bool {
-        !self.removed_scenes.is_empty()
+        !self.removed_scenes.is_empty() || self.legacy_cue_cleared
     }
 }
 
@@ -109,6 +112,7 @@ pub fn export_show_file(
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         saved_at,
         safety: ShowFileSafety { lockout },
+        legacy_cued_scene_internal_id: None,
         cue_lists: cue_list_snapshot.cue_lists,
         active_cue_list_id: cue_list_snapshot.active_cue_list_id,
         cued_cue_entry_id: cue_list_snapshot.cued_cue_entry_id,
@@ -141,6 +145,11 @@ pub fn import_show_file(
         file.cued_cue_entry_id = None;
     }
 
+    let legacy_cue_cleared = file.legacy_cued_scene_internal_id.is_some();
+    if legacy_cue_cleared {
+        file.legacy_cued_scene_internal_id = None;
+    }
+
     file.scene_configs
         .retain(|config| !is_blank_scene_config(config));
     let generated_internal_scene_ids = file
@@ -164,7 +173,10 @@ pub fn import_show_file(
         snapshot,
         lockout: file.safety.lockout,
         selected_scene_internal_id,
-        report: LoadValidationReport::default(),
+        report: LoadValidationReport {
+            legacy_cue_cleared,
+            ..LoadValidationReport::default()
+        },
         generated_internal_scene_ids,
         cue_list_snapshot: CueListDocument {
             cue_lists: std::mem::take(&mut file.cue_lists),
@@ -309,6 +321,36 @@ mod tests {
     }
 
     #[test]
+    fn import_schema_v1_reports_unmigratable_cued_scene() {
+        let json = r#"{
+          "schemaVersion":1,
+          "appVersion":"0.1.0",
+          "savedAt":"123",
+          "safety":{"lockout":false},
+          "sceneConfigs":[],
+          "cuedSceneInternalId":"00000000-0000-0000-0000-000000000001"
+        }"#;
+        let mut file: ShowFile = serde_json::from_str(json).unwrap();
+        let imported = import_show_file(
+            &mut file,
+            &Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![SceneListEntry {
+                    index: 1,
+                    name: "Intro".to_string(),
+                }],
+                channels: Vec::new(),
+            },
+        )
+        .unwrap();
+
+        assert!(imported.report.legacy_cue_cleared);
+        assert!(imported.cue_list_snapshot.cue_lists.is_empty());
+        assert!(file.legacy_cued_scene_internal_id.is_none());
+    }
+
+    #[test]
     fn import_show_file_preserves_missing_and_unlinked_scenes() {
         let intro_internal_scene_id = uuid::Uuid::from_u128(0x22222222222242228222222222222222);
         let missing_internal_scene_id = uuid::Uuid::from_u128(0x33333333333343338333333333333333);
@@ -317,6 +359,7 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
+            legacy_cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -368,6 +411,7 @@ mod tests {
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: false },
+            legacy_cued_scene_internal_id: None,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
