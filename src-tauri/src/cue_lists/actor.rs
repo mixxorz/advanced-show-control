@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::{mpsc, oneshot};
-
 use crate::runtime::errors::AppCommandError;
-use crate::runtime::events::{AppEvent, AppEventBus};
+use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+use crate::scenes::ScenesEvent;
 use crate::scenes::{RecallSceneResult, ScenesCommand, ScenesHandle};
+use tokio::sync::{mpsc, oneshot};
 
 use super::{
     CueListsCommand, CueListsCommandResult, CueListsEvent, CueListsHandle,
@@ -15,6 +16,7 @@ pub struct CueListsTask {
     event_bus: AppEventBus,
     peers: CueListsPeers,
     command_rx: mpsc::Receiver<CueListsCommand>,
+    event_rx: tokio::sync::broadcast::Receiver<AppEvent>,
 }
 
 #[derive(Clone, Default)]
@@ -49,6 +51,7 @@ pub fn build_cue_lists_actor(
     event_bus: AppEventBus,
 ) -> (CueListsHandle, CueListsTask, CueListsPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
+    let event_rx = event_bus.subscribe();
     let peers = CueListsPeers::default();
     (
         CueListsHandle::new(command_tx),
@@ -56,6 +59,7 @@ pub fn build_cue_lists_actor(
             event_bus,
             peers: peers.clone(),
             command_rx,
+            event_rx,
         },
         peers,
     )
@@ -76,225 +80,258 @@ async fn run_cue_lists_actor(task: CueListsTask) {
         event_bus,
         peers,
         mut command_rx,
+        mut event_rx,
     } = task;
     let mut state = CueListsState::default();
+    let mut active_generation = 0_u64;
+    let mut valid_scene_ids = HashSet::new();
 
-    while let Some(command) = command_rx.recv().await {
-        match command {
-            CueListsCommand::InitialProjectionState { reply } => {
-                let _ = reply.send(projection_state(&state));
-            }
-            CueListsCommand::GetCueListDocument { reply } => {
-                let _ = reply.send(state.document());
-            }
-            CueListsCommand::ReplaceCueListDocument {
-                document,
-                persisted_cue_list_edit,
-                reply,
-            } => {
-                let valid_scene_ids = document
-                    .cue_lists
-                    .iter()
-                    .flat_map(|list| list.entries.iter().map(|entry| entry.scene_internal_id))
-                    .collect::<std::collections::HashSet<_>>();
-                state.replace_document(document, valid_scene_ids);
-                publish_state(
-                    &event_bus,
-                    &state,
-                    CueListsProjectionReason::FileReplacement,
-                    persisted_cue_list_edit,
-                );
-                if let Some(reply) = reply {
-                    let _ = reply.send(CueListsCommandResult {
-                        changed: true,
-                        cue_list: None,
-                        entry: None,
-                    });
-                }
-            }
-            CueListsCommand::CreateCueList { name, reply } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .create_cue_list(name)
-                        .map(|cue_list| CueListsCommandResult {
-                            changed: true,
-                            cue_list: Some(cue_list),
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::RenameCueList {
-                cue_list_id,
-                name,
-                reply,
-            } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .rename_cue_list(cue_list_id, name)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::DeleteCueList { cue_list_id, reply } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .delete_cue_list(cue_list_id)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::ReorderCueLists { ordered_ids, reply } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .reorder_cue_lists(ordered_ids)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::SetActiveCueList { cue_list_id, reply } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                false,
-                true,
-                |state: &mut CueListsState| {
-                    state
-                        .set_active_cue_list(cue_list_id)
-                        .map(|changed| CueListsCommandResult {
-                            changed,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::AddSceneToActiveCueList {
-                scene_internal_id,
-                insert_index,
-                reply,
-            } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                true,
-                |state| {
-                    state
-                        .add_scene_to_active_cue_list(scene_internal_id, insert_index)
-                        .map(|entry| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: Some(entry),
-                        })
-                },
-            ),
-            CueListsCommand::RemoveCueEntry {
-                cue_entry_id,
-                reply,
-            } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .remove_cue_entry(cue_entry_id)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::ReorderCueEntries {
-                ordered_entry_ids,
-                reply,
-            } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .reorder_cue_entries(ordered_entry_ids)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::CueEntry {
-                cue_entry_id,
-                reply,
-            } => respond_mutation(
-                reply,
-                &event_bus,
-                &mut state,
-                CueListsProjectionReason::CueListState,
-                true,
-                false,
-                |state| {
-                    state
-                        .cue_entry(cue_entry_id)
-                        .map(|_| CueListsCommandResult {
-                            changed: true,
-                            cue_list: None,
-                            entry: None,
-                        })
-                },
-            ),
-            CueListsCommand::RecallCuedCue { reply } => {
-                let result = recall_cued_cue(&peers, &mut state).await;
-                if result.is_ok() {
-                    publish_state(
+    loop {
+        tokio::select! {
+            command = command_rx.recv() => {
+                let Some(command) = command else { break; };
+                match command {
+                    CueListsCommand::InitialProjectionState { reply } => {
+                        let _ = reply.send(projection_state(&state));
+                    }
+                    CueListsCommand::GetCueListDocument { reply } => {
+                        let _ = reply.send(state.document());
+                    }
+                    CueListsCommand::ReplaceCueListDocument {
+                        document,
+                        valid_scene_ids,
+                        persisted_cue_list_edit,
+                        reply,
+                    } => {
+                        let valid_scene_ids = valid_scene_ids.into_iter().collect::<HashSet<_>>();
+                        state.replace_document(document, valid_scene_ids);
+                        publish_state(
+                            &event_bus,
+                            &state,
+                            CueListsProjectionReason::FileReplacement,
+                            persisted_cue_list_edit,
+                        );
+                        if let Some(reply) = reply {
+                            let _ = reply.send(CueListsCommandResult {
+                                changed: true,
+                                cue_list: None,
+                                entry: None,
+                            });
+                        }
+                    }
+                    CueListsCommand::CreateCueList { name, reply } => respond_mutation(
+                        reply,
                         &event_bus,
-                        &state,
+                        &mut state,
                         CueListsProjectionReason::CueListState,
                         true,
-                    );
+                        false,
+                        |state| {
+                            state
+                                .create_cue_list(name)
+                                .map(|cue_list| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: Some(cue_list),
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::RenameCueList {
+                        cue_list_id,
+                        name,
+                        reply,
+                    } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        false,
+                        |state| {
+                            state
+                                .rename_cue_list(cue_list_id, name)
+                                .map(|_| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::DeleteCueList { cue_list_id, reply } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        false,
+                        |state| {
+                            state
+                                .delete_cue_list(cue_list_id)
+                                .map(|_| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::ReorderCueLists { ordered_ids, reply } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        false,
+                        |state| {
+                            state
+                                .reorder_cue_lists(ordered_ids)
+                                .map(|_| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::SetActiveCueList { cue_list_id, reply } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        false,
+                        true,
+                        |state: &mut CueListsState| {
+                            state
+                                .set_active_cue_list(cue_list_id)
+                                .map(|changed| CueListsCommandResult {
+                                    changed,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::AddSceneToActiveCueList {
+                        scene_internal_id,
+                        insert_index,
+                        reply,
+                    } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        true,
+                        |state| {
+                            state
+                                .add_scene_to_active_cue_list(scene_internal_id, insert_index)
+                                .map(|entry| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: Some(entry),
+                                })
+                        },
+                    ),
+                    CueListsCommand::RemoveCueEntry {
+                        cue_entry_id,
+                        reply,
+                    } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        false,
+                        |state| {
+                            state
+                                .remove_cue_entry(cue_entry_id)
+                                .map(|_| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::ReorderCueEntries {
+                        ordered_entry_ids,
+                        reply,
+                    } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        false,
+                        |state| {
+                            state
+                                .reorder_cue_entries(ordered_entry_ids)
+                                .map(|_| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::CueEntry {
+                        cue_entry_id,
+                        reply,
+                    } => respond_mutation(
+                        reply,
+                        &event_bus,
+                        &mut state,
+                        CueListsProjectionReason::CueListState,
+                        true,
+                        false,
+                        |state| {
+                            state
+                                .cue_entry(cue_entry_id)
+                                .map(|_| CueListsCommandResult {
+                                    changed: true,
+                                    cue_list: None,
+                                    entry: None,
+                                })
+                        },
+                    ),
+                    CueListsCommand::RecallCuedCue { reply } => {
+                        let result = recall_cued_cue(&peers, &mut state).await;
+                        if result.is_ok() {
+                            publish_state(
+                                &event_bus,
+                                &state,
+                                CueListsProjectionReason::CueListState,
+                                true,
+                            );
+                        }
+                        let _ = reply.send(result);
+                    }
+                    CueListsCommand::Shutdown => break,
                 }
-                let _ = reply.send(result);
             }
-            CueListsCommand::Shutdown => break,
+            event = event_rx.recv() => {
+                match event {
+                    Ok(AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })) => {
+                        active_generation = generation;
+                        valid_scene_ids.clear();
+                    }
+                    Ok(AppEvent::Scenes { generation, event: ScenesEvent::StateChanged { state: scenes_state, persisted_scene_edit, .. } }) if generation == active_generation => {
+                        valid_scene_ids = scenes_state.scene_configs.iter().map(|scene| scene.internal_scene_id).collect();
+                        let reconciliation = state.reconcile(valid_scene_ids.iter().copied());
+                        if let Some(cleared) = reconciliation.cued_entry_cleared {
+                            tracing::warn!(
+                                event = "cue_cleared_missing_scene",
+                                cue_list_id = %cleared.cue_list_id,
+                                cue_entry_id = %cleared.cue_entry_id,
+                                scene_internal_id = %cleared.scene_internal_id,
+                                "Cued entry cleared because its scene is unavailable."
+                            );
+                            publish_state(&event_bus, &state, CueListsProjectionReason::CueListState, persisted_scene_edit);
+                        }
+                    }
+                    Ok(AppEvent::Scenes { generation, .. }) if generation != active_generation => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        crate::runtime::events::log_lagged_subscriber("cue_lists", count);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    _ => {}
+                }
+            }
         }
     }
 }
@@ -373,7 +410,12 @@ mod tests {
     use super::*;
     use crate::runtime::events::AppEvent;
     use crate::scenes::{RecallSceneResult, SceneConfig, SceneScopeToggles, ScenesCommand};
+    use std::io::Write;
+    use std::sync::OnceLock;
     use tokio::sync::{mpsc, oneshot};
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::registry;
     use uuid::Uuid;
 
     fn scene_config(id: Uuid) -> SceneConfig {
@@ -391,6 +433,185 @@ mod tests {
     fn fake_scenes_handle() -> (crate::scenes::ScenesHandle, mpsc::Receiver<ScenesCommand>) {
         let (tx, rx) = mpsc::channel(8);
         (crate::scenes::ScenesHandle::new(tx), rx)
+    }
+
+    fn captured_logs() -> Arc<Mutex<Vec<u8>>> {
+        static CAPTURED: OnceLock<Arc<Mutex<Vec<u8>>>> = OnceLock::new();
+        CAPTURED
+            .get_or_init(|| Arc::new(Mutex::new(Vec::new())))
+            .clone()
+    }
+
+    fn id(value: u128) -> Uuid {
+        Uuid::from_u128(value)
+    }
+
+    async fn create_and_cue_entry(
+        handle: &CueListsHandle,
+        scene_id: Uuid,
+    ) -> crate::cue_lists::CueEntry {
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::CreateCueList {
+                name: "Main".to_string(),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await.unwrap().unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::AddSceneToActiveCueList {
+                scene_internal_id: scene_id,
+                insert_index: 0,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let entry = rx.await.unwrap().unwrap().entry.unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::CueEntry {
+                cue_entry_id: Some(entry.id),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        rx.await.unwrap().unwrap();
+
+        entry
+    }
+
+    struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl Write for CapturedWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn active_scene_fact_clears_missing_current_cue_and_publishes_persisted_edit() {
+        let event_bus = AppEventBus::default();
+        let (handle, task, _) = build_cue_lists_actor(event_bus.clone());
+        task.spawn();
+
+        let fixture = create_and_cue_entry(&handle, id(10)).await;
+
+        event_bus.publish_runtime_generation_changed(7);
+        event_bus.publish(AppEvent::Scenes {
+            generation: 7,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                reason: crate::scenes::ScenesProjectionReason::SceneState,
+                state: crate::scenes::ScenesProjectionState {
+                    scene_configs: vec![],
+                    selected_scene_internal_id: None,
+                },
+                persisted_scene_edit: true,
+            },
+        });
+
+        tokio::task::yield_now().await;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::GetCueListDocument { reply })
+            .await
+            .unwrap();
+        let document = rx.await.unwrap();
+        assert_eq!(document.cued_cue_entry_id, None);
+        assert_eq!(document.cue_lists[0].entries.len(), 1);
+        assert_eq!(document.cue_lists[0].entries[0].id, fixture.id);
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_scene_fact_does_not_clear_current_cue() {
+        let event_bus = AppEventBus::default();
+        let (handle, task, _) = build_cue_lists_actor(event_bus.clone());
+        task.spawn();
+
+        let fixture = create_and_cue_entry(&handle, id(10)).await;
+
+        event_bus.publish_runtime_generation_changed(8);
+        event_bus.publish(AppEvent::Scenes {
+            generation: 7,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                reason: crate::scenes::ScenesProjectionReason::SceneState,
+                state: crate::scenes::ScenesProjectionState {
+                    scene_configs: vec![],
+                    selected_scene_internal_id: None,
+                },
+                persisted_scene_edit: true,
+            },
+        });
+
+        tokio::task::yield_now().await;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.await.unwrap().document.cued_cue_entry_id,
+            Some(fixture.id)
+        );
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_current_cue_logs_clear_warning() {
+        let captured = captured_logs();
+        captured.lock().unwrap().clear();
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            let subscriber = registry().with(fmt::layer().with_target(false).with_writer({
+                let captured = captured_logs();
+                move || CapturedWriter(captured.clone())
+            }));
+            tracing::subscriber::set_global_default(subscriber).unwrap();
+        });
+
+        let event_bus = AppEventBus::default();
+        let (handle, task, _) = build_cue_lists_actor(event_bus.clone());
+        task.spawn();
+
+        let fixture = create_and_cue_entry(&handle, id(10)).await;
+        event_bus.publish_runtime_generation_changed(7);
+        event_bus.publish(AppEvent::Scenes {
+            generation: 7,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                reason: crate::scenes::ScenesProjectionReason::SceneState,
+                state: crate::scenes::ScenesProjectionState {
+                    scene_configs: vec![],
+                    selected_scene_internal_id: None,
+                },
+                persisted_scene_edit: true,
+            },
+        });
+
+        let _ = fixture;
+        tokio::task::yield_now().await;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::GetCueListDocument { reply })
+            .await
+            .unwrap();
+        let document = rx.await.unwrap();
+        assert_eq!(document.cued_cue_entry_id, None);
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+
+        let output = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
+        assert!(output.contains("cue_cleared_missing_scene"));
+        assert!(output.contains("Cued entry cleared because its scene is unavailable."));
     }
 
     #[tokio::test]
@@ -484,6 +705,7 @@ mod tests {
         handle
             .send(CueListsCommand::ReplaceCueListDocument {
                 document: replacement,
+                valid_scene_ids: vec![scene_id],
                 persisted_cue_list_edit: true,
                 reply: Some(reply),
             })

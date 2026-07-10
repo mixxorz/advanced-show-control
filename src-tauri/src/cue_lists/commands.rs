@@ -13,6 +13,7 @@ pub enum CueListsCommand {
     },
     ReplaceCueListDocument {
         document: CueListDocument,
+        valid_scene_ids: Vec<Uuid>,
         persisted_cue_list_edit: bool,
         reply: Option<oneshot::Sender<CueListsCommandResult>>,
     },

@@ -537,10 +537,16 @@ async fn replace_cue_list_document(
     let cue_lists = peers
         .cue_lists()
         .ok_or_else(|| "Show blocked: cue lists state is unavailable".to_string())?;
+    let valid_scene_ids = document
+        .cue_lists
+        .iter()
+        .flat_map(|list| list.entries.iter().map(|entry| entry.scene_internal_id))
+        .collect();
     let (reply, rx) = tokio::sync::oneshot::channel();
     cue_lists
         .send(CueListsCommand::ReplaceCueListDocument {
             document,
+            valid_scene_ids,
             persisted_cue_list_edit,
             reply: Some(reply),
         })
