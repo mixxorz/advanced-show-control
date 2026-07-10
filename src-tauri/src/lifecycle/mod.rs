@@ -82,9 +82,7 @@ fn build_connected_runtime(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     identity: &crate::connection_state::Lv1SystemIdentity,
-    _show: ShowStateHandle,
     show_peers: ShowActorPeers,
-    _cue_lists_peers: CueListsPeers,
     event_bus: AppEventBus,
 ) -> BuiltConnectedRuntime {
     let (lv1, lv1_task) = build_actor(
@@ -96,8 +94,7 @@ fn build_connected_runtime(
     let (fade, fade_task, fade_peers) =
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-        build_scenes_actor(generation, runtime_generation.clone(), event_bus.clone());
-    let _ = event_bus;
+        build_scenes_actor(generation, runtime_generation, event_bus);
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -276,9 +273,7 @@ impl AppLifecycle {
             generation,
             runtime_generation,
             &identity,
-            self.show.clone(),
             self.show_peers.clone(),
-            self.cue_lists_peers.clone(),
             event_bus.clone(),
         );
         let handles = built_runtime.runtime_targets();
@@ -518,8 +513,8 @@ impl AppLifecycle {
         self.inner.lock().await.handles.scene_recall_fader.clone()
     }
 
-    pub async fn current_cue_lists(&self) -> Option<CueListsHandle> {
-        Some(self.cue_lists.clone())
+    pub fn cue_lists_handle(&self) -> CueListsHandle {
+        self.cue_lists.clone()
     }
 
     pub(crate) async fn connected_lv1_identity(
@@ -887,9 +882,7 @@ mod tests {
             generation,
             runtime_generation,
             &identity,
-            lifecycle.show.clone(),
             lifecycle.show_peers.clone(),
-            lifecycle.cue_lists_peers.clone(),
             event_bus,
         );
 
@@ -1247,7 +1240,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
 
-        assert!(lifecycle.current_cue_lists().await.is_some());
+        let _command_handle = lifecycle.cue_lists_handle();
         assert!(lifecycle.show_peers.cue_lists().is_some());
     }
 
@@ -1257,10 +1250,7 @@ mod tests {
         let mut events = event_bus.subscribe();
         let lifecycle = lifecycle_for_test(event_bus);
 
-        let command_handle = lifecycle
-            .current_cue_lists()
-            .await
-            .expect("current cue lists should be available to command adapters");
+        let command_handle = lifecycle.cue_lists_handle();
         let (reply, rx) = oneshot::channel();
         command_handle
             .send(crate::cue_lists::CueListsCommand::CreateCueList {

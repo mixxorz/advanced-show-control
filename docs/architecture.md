@@ -28,7 +28,7 @@ The runtime consists of the following primary components:
 | `fade`      | Executes active fade timing, overlap behavior, and LV1 parameter writes.                                                                  |
 | `settings`  | Maintains app-level preferences, loads/saves app-config `settings.json`, validates normalized settings replacements, and publishes settings projection facts. |
 | `scenes`    | Performs scene recall automation and recall policy enforcement.                                                                           |
-| `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, cue-list state, and application-managed scene configuration state. |
+| `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, and application-managed scene configuration state. |
 | `lifecycle` | Constructs the connected runtime, wires actor peers, installs handles, tears down runtime state, and owns generation changes.             |
 | `projector` | Maintains the backend-to-frontend projection cache and emits `app-status-changed`.                                                        |
 | `ui`        | Performs Tauri setup and provides thin frontend command adapters.                                                                         |
