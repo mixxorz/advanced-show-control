@@ -1,0 +1,120 @@
+name: Build Release Artifacts
+
+on:
+  workflow_call:
+    inputs:
+      release_id:
+        description: Identifier included in release asset names
+        required: true
+        type: string
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install UI dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Build Windows app
+        run: npm run tauri -- build
+
+      - name: Stage Windows setup zip
+        shell: pwsh
+        run: |
+          $releaseId = "${{ inputs.release_id }}"
+          New-Item -ItemType Directory -Force -Path dist/release/windows | Out-Null
+          $setup = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*setup.exe" | Select-Object -First 1
+          if (-not $setup) {
+            throw "Could not find NSIS setup exe"
+          }
+          $stagedExe = "dist/release/windows/Advanced Show Control Setup.exe"
+          Copy-Item $setup.FullName $stagedExe
+          Compress-Archive -Path $stagedExe -DestinationPath "dist/release/Advanced-Show-Control_${releaseId}_Windows_x64_Setup.zip" -Force
+
+      - name: Upload Windows release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/release/Advanced-Show-Control_${{ inputs.release_id }}_Windows_x64_Setup.zip
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS universal
+    runs-on: macos-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            ui/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install root dependencies
+        run: npm ci
+
+      - name: Install UI dependencies
+        run: npm ci
+        working-directory: ui
+
+      - name: Build macOS dmg
+        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
+
+      - name: Stage macOS dmg
+        shell: bash
+        run: |
+          release_id="${{ inputs.release_id }}"
+          mkdir -p dist/release
+          shopt -s nullglob
+          dmgs=(target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          if [[ "${#dmgs[@]}" -ne 1 ]]; then
+            echo "Expected exactly one macOS dmg, found ${#dmgs[@]}" >&2
+            exit 1
+          fi
+          cp "${dmgs[0]}" "dist/release/Advanced-Show-Control_${release_id}_macOS_universal.dmg"
+
+      - name: Upload macOS release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos
+          path: dist/release/Advanced-Show-Control_${{ inputs.release_id }}_macOS_universal.dmg
+          if-no-files-found: error

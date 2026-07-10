@@ -36,124 +36,19 @@ jobs:
           fi
           echo "release_tag=${tag}" >> "$GITHUB_OUTPUT"
 
-  build-windows:
-    name: Build Windows x64
-    runs-on: windows-latest
+  build-release-artifacts:
+    name: Build release artifacts
     needs: validate-release
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            ui/package-lock.json
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Rust build outputs
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install root dependencies
-        run: npm ci
-
-      - name: Install UI dependencies
-        run: npm ci
-        working-directory: ui
-
-      - name: Build Windows app
-        run: npm run tauri -- build
-
-      - name: Stage Windows setup zip
-        shell: pwsh
-        run: |
-          $releaseTag = "${{ needs.validate-release.outputs.release_tag }}"
-          New-Item -ItemType Directory -Force -Path dist/release/windows | Out-Null
-          $setup = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*setup.exe" | Select-Object -First 1
-          if (-not $setup) {
-            throw "Could not find NSIS setup exe"
-          }
-          $stagedExe = "dist/release/windows/Advanced Show Control Setup.exe"
-          Copy-Item $setup.FullName $stagedExe
-          Compress-Archive -Path $stagedExe -DestinationPath "dist/release/Advanced-Show-Control_${releaseTag}_Windows_x64_Setup.zip" -Force
-
-      - name: Upload Windows release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-windows
-          path: dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_Windows_x64_Setup.zip
-          if-no-files-found: error
-
-  build-macos:
-    name: Build macOS universal
-    runs-on: macos-latest
-    needs: validate-release
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            ui/package-lock.json
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: aarch64-apple-darwin,x86_64-apple-darwin
-
-      - name: Cache Rust build outputs
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri -> target
-
-      - name: Install root dependencies
-        run: npm ci
-
-      - name: Install UI dependencies
-        run: npm ci
-        working-directory: ui
-
-      - name: Build macOS dmg
-        run: npm run tauri -- build --target universal-apple-darwin --bundles dmg
-
-      - name: Stage macOS dmg
-        shell: bash
-        run: |
-          release_tag="${{ needs.validate-release.outputs.release_tag }}"
-          mkdir -p dist/release
-          dmg="$(find target/universal-apple-darwin/release/bundle/dmg -maxdepth 1 -type f -name '*.dmg' | head -n 1)"
-          if [[ -z "$dmg" ]]; then
-            echo "Could not find macOS dmg" >&2
-            exit 1
-          fi
-          cp "$dmg" "dist/release/Advanced-Show-Control_${release_tag}_macOS_universal.dmg"
-
-      - name: Upload macOS release artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: release-macos
-          path: dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_macOS_universal.dmg
-          if-no-files-found: error
+    uses: ./.github/workflows/build-release-artifacts.yml
+    with:
+      release_id: ${{ needs.validate-release.outputs.release_tag }}
 
   create-release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
     needs:
       - validate-release
-      - build-windows
-      - build-macos
+      - build-release-artifacts
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
