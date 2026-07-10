@@ -333,10 +333,10 @@ describe("AppRuntime connection lifecycle", () => {
     await user.click(screen.getByRole("button", { name: "Cue Lists" }));
     await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
     await user.click(screen.getByRole("button", { name: "New Cue List" }));
-    await user.type(screen.getByLabelText("Cue list name"), "Verse 2");
+    await user.type(screen.getByLabelText("Cue list name"), "Verse 2 ");
 
     expect(services.recallCuedCue).not.toHaveBeenCalled();
-    expect(screen.getByLabelText("Cue list name")).toHaveValue("Verse 2");
+    expect(screen.getByLabelText("Cue list name")).toHaveValue("Verse 2 ");
   });
 
   it("wires cue entry removal through the rendered app", async () => {
