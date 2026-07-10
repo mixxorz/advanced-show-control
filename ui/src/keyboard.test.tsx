@@ -4,6 +4,7 @@ import {
   isActionShortcutBlocked,
   KeyboardProvider,
   shortcutKeyFromEvent,
+  shortcutKeysEqual,
   shortcutMatchesEvent,
   useKeyboardHandler,
   useShortcutCapture,
@@ -413,6 +414,14 @@ describe("KeyboardProvider", () => {
     fireKeyDown("c", { code: "KeyC" });
 
     expect(matches).toEqual([true]);
+  });
+
+  it.each([
+    ["i", "I"],
+    ["é", "É"],
+    ["ß", "SS"],
+  ])("matches Unicode shortcut keys case-insensitively", (left, right) => {
+    expect(shortcutKeysEqual(left, right)).toBe(true);
   });
 });
 

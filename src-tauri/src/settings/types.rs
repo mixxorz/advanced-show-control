@@ -86,6 +86,12 @@ mod tests {
     }
 
     #[test]
+    fn normalization_uppercases_single_unicode_scalar_keys() {
+        assert_eq!(normalize_key("é"), Some("É".to_string()));
+        assert_eq!(normalize_key("ß"), Some("SS".to_string()));
+    }
+
+    #[test]
     fn partial_shortcut_settings_deserialize_with_agreed_defaults() {
         let settings: AppSettings =
             serde_json::from_str(r#"{"keyboardShortcuts":{"cue":{"key":"C"}}}"#)
@@ -205,7 +211,7 @@ fn normalize_key(key: &str) -> Option<String> {
     if key.is_empty() {
         return None;
     }
-    if key.len() == 1 {
+    if key.chars().count() == 1 {
         return Some(key.to_uppercase());
     }
 

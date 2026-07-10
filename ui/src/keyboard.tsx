@@ -186,7 +186,7 @@ export function shortcutKeyFromEvent(event: AppKeyboardEvent) {
 }
 
 export function shortcutKeysEqual(left: string, right: string) {
-  return left.toLocaleUpperCase() === right.toLocaleUpperCase();
+  return left.toUpperCase() === right.toUpperCase();
 }
 
 export function shortcutMatchesEvent(
