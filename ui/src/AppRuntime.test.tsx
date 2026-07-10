@@ -555,6 +555,61 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.recallScene).not.toHaveBeenCalled();
   });
 
+  it("consumes repeated GO keydowns while a cue recall is pending", async () => {
+    const recall = createDeferred<void>();
+    const services = makeServices({
+      recallCuedCue: vi.fn(() => recall.promise),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const firstGo = pressGoShortcut();
+    const repeatedGo = pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(firstGo.defaultPrevented).toBe(true);
+    expect(repeatedGo.defaultPrevented).toBe(true);
+
+    await act(async () => {
+      recall.resolve();
+      await recall.promise;
+    });
+
+    pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(2);
+  });
+
+  it("releases the GO shortcut after a cue recall failure", async () => {
+    const services = makeServices({
+      recallCuedCue: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("recall failed"))
+        .mockResolvedValue(undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      pressGoShortcut();
+      await Promise.resolve();
+    });
+
+    pressGoShortcut();
+
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(2);
+  });
+
   it("consumes GO without recalling when no active cue list is projected", async () => {
     const services = makeServices();
     const appState = {

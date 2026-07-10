@@ -94,6 +94,8 @@ function AppShortcutHandler(props: {
   appState: AppViewState;
   commands: AppCommands;
 }) {
+  const goRecallInFlight = useRef(false);
+
   useKeyboardHandler({
     id: "app-go-shortcut",
     priority: GO_SHORTCUT_PRIORITY,
@@ -119,8 +121,11 @@ function AppShortcutHandler(props: {
           (scene) => scene.internalSceneId === cuedEntry.sceneInternalId,
         );
 
-      if (cueIsValid) {
-        props.commands.recallCuedCue();
+      if (cueIsValid && !goRecallInFlight.current) {
+        goRecallInFlight.current = true;
+        void Promise.resolve(props.commands.recallCuedCue()).finally(() => {
+          goRecallInFlight.current = false;
+        });
       }
       return "handled";
     },
@@ -309,7 +314,9 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     openShowFile: () => runCommand(() => services.openShowFile()),
     removeCueEntry: (cueEntryId) =>
       void runCommand(() => services.removeCueEntry(cueEntryId)),
-    recallCuedCue: () => void runCommand(() => services.recallCuedCue()),
+    recallCuedCue: async () => {
+      await runCommand(() => services.recallCuedCue());
+    },
     renameCueList: (cueListId, name) =>
       void runCommand(() => services.renameCueList(cueListId, name)),
     reorderCueEntries: (orderedEntryIds) =>
