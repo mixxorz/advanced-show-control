@@ -70,11 +70,12 @@ export function CueListsTab() {
         return "handled";
       }
       if (
-        !shortcutMatchesEvent(appState.settings.keyboardShortcuts.cue, event) ||
-        selectedCueEntry === null
+        !shortcutMatchesEvent(appState.settings.keyboardShortcuts.cue, event)
       ) {
         return "ignored";
       }
+      if (event.repeat) return "handled";
+      if (selectedCueEntry === null) return "ignored";
 
       void commands.cueEntry?.(selectedCueEntry.id);
       setSelectedCueEntryId(null);

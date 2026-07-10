@@ -108,6 +108,9 @@ function AppShortcutHandler(props: {
       ) {
         return "ignored";
       }
+      if (event.repeat) {
+        return "handled";
+      }
 
       const activeCueList = props.appState.cueLists.find(
         (cueList) => cueList.id === props.appState.activeCueListId,

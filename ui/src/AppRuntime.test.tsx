@@ -7,12 +7,13 @@ import { connectedAppState } from "./storybook/mockAppState";
 import { createDeferred } from "./test/deferred";
 import { disconnectedAppViewState, type AppViewState } from "./types";
 
-function pressGoShortcut() {
+function pressGoShortcut(init: KeyboardEventInit = {}) {
   const event = new KeyboardEvent("keydown", {
     key: " ",
     code: "Space",
     bubbles: true,
     cancelable: true,
+    ...init,
   });
   act(() => window.dispatchEvent(event));
   return event;
@@ -555,7 +556,7 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.recallScene).not.toHaveBeenCalled();
   });
 
-  it("consumes repeated GO keydowns while a cue recall is pending", async () => {
+  it("consumes repeated GO keydowns after a cue recall completes", async () => {
     const recall = createDeferred<void>();
     const services = makeServices({
       recallCuedCue: vi.fn(() => recall.promise),
@@ -569,20 +570,19 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     const firstGo = pressGoShortcut();
-    const repeatedGo = pressGoShortcut();
 
     expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
     expect(firstGo.defaultPrevented).toBe(true);
-    expect(repeatedGo.defaultPrevented).toBe(true);
 
     await act(async () => {
       recall.resolve();
       await recall.promise;
     });
 
-    pressGoShortcut();
+    const repeatedGo = pressGoShortcut({ repeat: true });
 
-    expect(services.recallCuedCue).toHaveBeenCalledTimes(2);
+    expect(services.recallCuedCue).toHaveBeenCalledTimes(1);
+    expect(repeatedGo.defaultPrevented).toBe(true);
   });
 
   it("releases the GO shortcut after a cue recall failure", async () => {

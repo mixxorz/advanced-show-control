@@ -15,6 +15,7 @@ export type AppKeyboardEvent = {
   code: string;
   key: string;
   modifiers: KeyboardShortcutModifiers;
+  repeat: boolean;
   originalEvent: KeyboardEvent;
 };
 
@@ -173,6 +174,7 @@ function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
       alt: event.altKey,
       meta: event.metaKey,
     },
+    repeat: event.repeat,
     originalEvent: event,
   };
 }

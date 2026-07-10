@@ -74,6 +74,28 @@ describe("CueListsTab", () => {
     expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
   });
 
+  it("consumes repeated Cue keydowns without cueing the selected entry", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    const event = new KeyboardEvent("keydown", {
+      key: "c",
+      code: "KeyC",
+      bubbles: true,
+      cancelable: true,
+      repeat: true,
+    });
+    act(() => window.dispatchEvent(event));
+
+    expect(cueEntry).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(true);
+  });
+
   it("does not run the Cue shortcut without a selected entry", () => {
     const cueEntry = vi.fn();
     renderWithAppProviders(<CueListsTab />, {

@@ -61,6 +61,32 @@ describe("KeyboardProvider", () => {
     expect(low).toHaveBeenCalledTimes(1);
   });
 
+  it("propagates OS key repeat state to handlers", () => {
+    const repeats: boolean[] = [];
+
+    function Harness() {
+      useKeyboardHandler({
+        id: "repeat-recorder",
+        priority: 1,
+        handleKeyDown: (event) => {
+          repeats.push(event.repeat);
+          return "handled";
+        },
+      });
+      return null;
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("k", { repeat: true });
+
+    expect(repeats).toEqual([true]);
+  });
+
   it("captures a non-modifier key with modifiers and exits capture mode", () => {
     const onCapture = vi.fn();
 
