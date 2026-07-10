@@ -96,9 +96,8 @@ fn build_connected_runtime(
     let (fade, fade_task, fade_peers) =
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-        build_scenes_actor(generation, runtime_generation, event_bus.clone());
+        build_scenes_actor(generation, runtime_generation.clone(), event_bus.clone());
     let _ = event_bus;
-    show_peers.set_scenes(scene_recall_fader.clone());
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -215,6 +214,22 @@ impl AppLifecycle {
         Ok(())
     }
 
+    async fn install_accepted_scene_recall_fader(
+        &self,
+        generation: u64,
+        handle: ScenesHandle,
+    ) -> bool {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return false;
+        }
+
+        self.show_peers.set_scenes(handle.clone());
+        self.cue_lists_peers.set_scenes(handle.clone());
+        inner.handles.scene_recall_fader = Some(handle);
+        true
+    }
+
     pub async fn clear_runtime_transaction(&self, generation: u64) {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
@@ -229,13 +244,6 @@ impl AppLifecycle {
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
-    }
-
-    async fn install_scene_recall_fader(&self, generation: u64, handle: ScenesHandle) {
-        let mut inner = self.inner.lock().await;
-        if inner.generation == generation {
-            inner.handles.scene_recall_fader = Some(handle);
-        }
     }
 
     pub async fn abort_current_runtime(&self) {
@@ -305,10 +313,22 @@ impl AppLifecycle {
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
-        self.cue_lists_peers
-            .set_scenes(started_runtime.scene_recall_fader.clone());
-        self.install_scene_recall_fader(generation, started_runtime.scene_recall_fader)
-            .await;
+        if !self
+            .install_accepted_scene_recall_fader(
+                generation,
+                started_runtime.scene_recall_fader.clone(),
+            )
+            .await
+        {
+            let mut handles = RuntimeHandles {
+                lv1: Some(started_runtime.lv1),
+                fade: None,
+                scene_recall_fader: None,
+            };
+            handles.abort_all();
+            self.clear_runtime_transaction(generation).await;
+            return Err("generation is stale".to_string());
+        }
         started_runtime.scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
@@ -361,13 +381,23 @@ impl AppLifecycle {
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(runtime_generation.clone());
         }
+        tokio::task::yield_now().await;
         let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
             build_scenes_actor(generation, runtime_generation, event_bus);
-        scene_recall_peers.set_peers(lv1, fade);
-        self.show_peers.set_scenes(scene_recall_fader.clone());
-        self.cue_lists_peers.set_scenes(scene_recall_fader.clone());
-        self.install_scene_recall_fader(generation, scene_recall_fader)
-            .await;
+        scene_recall_peers.set_peers(lv1.clone(), fade.clone());
+        if !self
+            .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
+            .await
+        {
+            let mut handles = RuntimeHandles {
+                lv1: Some(lv1),
+                fade: Some(fade),
+                scene_recall_fader: None,
+            };
+            handles.abort_all();
+            self.clear_runtime_transaction(generation).await;
+            return Err("generation is stale".to_string());
+        }
         scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
@@ -863,7 +893,7 @@ mod tests {
             event_bus,
         );
 
-        assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.show_peers.scenes().is_none());
         assert!(lifecycle.cue_lists_peers.scenes().is_none());
     }
 
@@ -901,6 +931,50 @@ mod tests {
         assert!(connect_result.is_ok());
         assert!(lifecycle.show_peers.scenes().is_some());
         assert!(lifecycle.cue_lists_peers.scenes().is_some());
+    }
+
+    #[tokio::test]
+    async fn generation_flip_before_scene_peer_install_leaves_peers_unset() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            address: "127.0.0.1".parse().unwrap(),
+            host: Some("localhost".to_string()),
+            port: 9000,
+        };
+        let (flip_tx, flip_rx) = oneshot::channel();
+        let lifecycle_for_hook = lifecycle.clone();
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity,
+                ConnectFailureMode::PreserveConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                    let lifecycle = lifecycle_for_hook.clone();
+                    tokio::spawn(async move {
+                        let _ = lifecycle.begin_connecting().await;
+                        let _ = flip_tx.send(());
+                    });
+                })),
+            )
+            .await;
+
+        assert!(flip_rx.await.is_ok());
+        assert!(matches!(result, Err(message) if message == "generation is stale"));
+        assert!(lifecycle.show_peers.scenes().is_none());
+        assert!(lifecycle.cue_lists_peers.scenes().is_none());
     }
 
     #[tokio::test]

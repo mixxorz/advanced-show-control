@@ -33,7 +33,7 @@ impl CueListsPeers {
         *self.scenes.lock().expect("cue lists peers lock poisoned") = None;
     }
 
-    pub fn scenes(&self) -> Option<ScenesHandle> {
+    pub(crate) fn scenes(&self) -> Option<ScenesHandle> {
         self.scenes
             .lock()
             .expect("cue lists peers lock poisoned")
