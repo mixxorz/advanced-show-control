@@ -1,5 +1,6 @@
 pub mod connection_preferences;
 pub mod connection_state;
+pub mod cue_lists;
 pub mod diagnostics;
 pub mod fade;
 pub mod lifecycle;

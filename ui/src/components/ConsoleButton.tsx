@@ -28,6 +28,7 @@ export function ConsoleButton(
     big: "min-h-14 min-w-24 px-7 py-3 text-2xl",
   }[size];
   const widthClass = props.fullWidth ? "w-full" : "";
+  const contentClass = size === "small" ? "translate-y-px" : "";
   const baseClass =
     "rounded-console-control border font-normal uppercase disabled:text-console-disabled";
   const className = props.active
@@ -55,7 +56,7 @@ export function ConsoleButton(
       onClick={props.onClick}
       type={props.type ?? "button"}
     >
-      {props.children}
+      <span className={`inline-block ${contentClass}`}>{props.children}</span>
     </button>
   );
 }

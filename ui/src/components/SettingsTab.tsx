@@ -129,23 +129,6 @@ export function SettingsTab(props: {
                 />
               </SettingRow>
               <SettingRow
-                help="After GO recalls a scene, automatically cue the following scene in the active cue list."
-                label="Auto cue next scene on GO"
-                onHelpChange={setActiveHelp}
-              >
-                <ToggleControl
-                  label="Auto cue next scene on GO"
-                  checked={settings.autoCueNextSceneOnGo}
-                  onChange={(checked) =>
-                    update((current) => ({
-                      ...current,
-                      autoCueNextSceneOnGo: checked,
-                    }))
-                  }
-                />
-              </SettingRow>
-
-              <SettingRow
                 help="Choose whether times are displayed with a 12-hour or 24-hour clock."
                 label="Time display"
                 onHelpChange={setActiveHelp}
@@ -179,6 +162,22 @@ export function SettingsTab(props: {
                     update((current) => ({
                       ...current,
                       faderOverrideSensitivity: value,
+                    }))
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                help="Write detailed debug diagnostics to disk. Enable only while troubleshooting because log files can grow quickly."
+                label="Extensive diagnostics"
+                onHelpChange={setActiveHelp}
+              >
+                <ToggleControl
+                  label="Extensive diagnostics"
+                  checked={settings.enableExtensiveDiagnostics}
+                  onChange={(checked) =>
+                    update((current) => ({
+                      ...current,
+                      enableExtensiveDiagnostics: checked,
                     }))
                   }
                 />

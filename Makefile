@@ -90,11 +90,12 @@ storybook:
 	npm --prefix ui run storybook
 
 probe:
-	cargo run --bin lv1-probe -- $(ARGS)
+	cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin lv1-probe -- $(ARGS)
 
 smoke:
+	@npm --prefix ui run build:debug
 	@if [ "$(VERBOSE)" = "1" ]; then \
-		npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug; \
+		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug; \
 	else \
-		npm run tauri -- dev --config src-tauri/tauri.debug.conf.json -- --bin advanced-show-control-debug >/dev/null 2>&1; \
+		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug >/dev/null 2>&1; \
 	fi

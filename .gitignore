@@ -1,6 +1,7 @@
 # Rust / Cargo
 target
 src-tauri/target/
+src-tauri/dev-tools/gen/
 **/*.rs.bk
 *.pdb
 **/mutants.out*/
@@ -21,6 +22,7 @@ logs/
 # Tooling
 .superpowers/
 .worktrees
+sdd/
 opencode.json
 tags
 

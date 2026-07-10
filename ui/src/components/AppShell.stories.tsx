@@ -7,9 +7,10 @@ import {
   type AppCommands,
 } from "../appContext";
 import { KeyboardProvider } from "../keyboard";
-import { disconnectedAppViewState } from "../types";
+import { disconnectedAppViewState, type CueEntry } from "../types";
 import {
   connectedAppState,
+  cueListStateFixture,
   discoveredSystemsAppState,
   discoveringAppState,
 } from "../storybook/mockAppState";
@@ -24,7 +25,6 @@ type AppShellStoryArgs = ComponentProps<typeof AppShell> & {
 
 const shellSceneNames = [
   "Service Start",
-  "Tuning: A",
   "S01: The Wonderful Blood",
   "S01: The Wonderful Blood - Down",
   "S02: Holy Forever",
@@ -36,6 +36,21 @@ const shellSceneNames = [
   "Response",
   "Service Close",
   "Walk Out",
+];
+
+const tuningSceneNames = [
+  "Tuning: C",
+  "Tuning: Db",
+  "Tuning: D",
+  "Tuning: Eb",
+  "Tuning: E",
+  "Tuning: F",
+  "Tuning: Gb",
+  "Tuning: G",
+  "Tuning: Ab",
+  "Tuning: A",
+  "Tuning: Bb",
+  "Tuning: B",
 ];
 
 function makeShellSceneConfig(index: number, name: string): SceneConfig {
@@ -50,16 +65,57 @@ function makeShellSceneConfig(index: number, name: string): SceneConfig {
   };
 }
 
-const shellSceneConfigs = shellSceneNames.map((name, index) =>
-  makeShellSceneConfig(index, name),
+const shellSceneConfigs = [...shellSceneNames, ...tuningSceneNames].map(
+  (name, index) => makeShellSceneConfig(index, name),
+);
+const serviceSceneConfigs = shellSceneConfigs.filter(
+  (scene) => !scene.sceneName.startsWith("Tuning:"),
+);
+const tuningSceneConfigs = shellSceneConfigs.filter((scene) =>
+  scene.sceneName.startsWith("Tuning:"),
 );
 
 const sceneTabAppState: AppViewState = {
   ...connectedAppState,
-  cuedSceneInternalId: shellSceneConfigs[5].internalSceneId,
-  currentScene: { index: 2, name: "S01: The Wonderful Blood" },
+  currentScene: { index: 1, name: "S01: The Wonderful Blood" },
   sceneConfigs: shellSceneConfigs,
   selectedSceneInternalId: shellSceneConfigs[6].internalSceneId,
+};
+
+const cueListsTabAppState: AppViewState = {
+  ...cueListStateFixture,
+  currentScene: { index: 1, name: "S01: The Wonderful Blood" },
+  sceneConfigs: shellSceneConfigs,
+  sceneCount: shellSceneConfigs.length,
+  selectedSceneInternalId: null,
+  cueLists: [
+    {
+      id: "cue-list-service",
+      name: "Service",
+      entries: serviceSceneConfigs.slice(0, 8).map((scene, index) => ({
+        id: `service-cue-${index + 1}`,
+        sceneInternalId: scene.internalSceneId,
+      })),
+    },
+    {
+      id: "cue-list-tuning",
+      name: "Tuning",
+      entries: tuningSceneConfigs.map((scene, index) => ({
+        id: `tuning-cue-${index + 1}`,
+        sceneInternalId: scene.internalSceneId,
+      })),
+    },
+    {
+      id: "cue-list-rehearsal",
+      name: "Rehearsal",
+      entries: serviceSceneConfigs.slice(2, 6).map((scene, index) => ({
+        id: `rehearsal-cue-${index + 1}`,
+        sceneInternalId: scene.internalSceneId,
+      })),
+    },
+  ],
+  activeCueListId: "cue-list-service",
+  cuedCueEntryId: "service-cue-3",
 };
 
 const offlineSceneTabAppState: AppViewState = {
@@ -68,7 +124,6 @@ const offlineSceneTabAppState: AppViewState = {
   connectedLv1Identity: null,
   currentScene: null,
   discoveredLv1Systems: discoveredSystemsAppState.discoveredLv1Systems,
-  cuedSceneInternalId: null,
 };
 
 const meta: Meta<AppShellStoryArgs> = {
@@ -106,11 +161,27 @@ function StatefulAppShellStory(props: {
 
   const commands: AppCommands = {
     ...mockAppCommands,
-    cueScene: (internalSceneId) =>
-      setAppState((state) => ({
-        ...state,
-        cuedSceneInternalId: internalSceneId,
-      })),
+    addSceneToActiveCueList: (sceneInternalId, insertIndex) =>
+      setAppState((state) => {
+        const activeCueListId = state.activeCueListId;
+        if (!activeCueListId) return state;
+
+        return {
+          ...state,
+          cueLists: state.cueLists.map((cueList) => {
+            if (cueList.id !== activeCueListId) return cueList;
+
+            const entries = [...cueList.entries];
+            entries.splice(clampInsertIndex(insertIndex, entries.length), 0, {
+              id: `story-cue-${Date.now()}`,
+              sceneInternalId,
+            });
+            return { ...cueList, entries };
+          }),
+        };
+      }),
+    cueEntry: (cueEntryId) =>
+      setAppState((state) => ({ ...state, cuedCueEntryId: cueEntryId })),
     recallScene: (internalSceneId) =>
       setAppState((state) => {
         const scene = state.sceneConfigs.find(
@@ -198,6 +269,44 @@ function StatefulAppShellStory(props: {
       ),
     setSceneScopePanEnabled: (_internalSceneId, enabled) =>
       setAppState((state) => updateSelectedSceneToggle(state, "pan", enabled)),
+    removeCueEntry: (cueEntryId) =>
+      setAppState((state) => ({
+        ...state,
+        cueLists: state.cueLists.map((cueList) => ({
+          ...cueList,
+          entries: cueList.entries.filter((entry) => entry.id !== cueEntryId),
+        })),
+        cuedCueEntryId:
+          state.cuedCueEntryId === cueEntryId ? null : state.cuedCueEntryId,
+      })),
+    reorderCueEntries: (orderedIds) =>
+      setAppState((state) => {
+        const activeCueListId = state.activeCueListId;
+        if (!activeCueListId) return state;
+
+        return {
+          ...state,
+          cueLists: state.cueLists.map((cueList) =>
+            cueList.id === activeCueListId
+              ? {
+                  ...cueList,
+                  entries: orderCueEntries(cueList.entries, orderedIds),
+                }
+              : cueList,
+          ),
+        };
+      }),
+    reorderCueLists: (orderedIds) =>
+      setAppState((state) => ({
+        ...state,
+        cueLists: orderCueLists(state.cueLists, orderedIds),
+      })),
+    setActiveCueList: (cueListId) =>
+      setAppState((state) => ({
+        ...state,
+        activeCueListId: cueListId,
+        cuedCueEntryId: null,
+      })),
     toggleLockout: () =>
       setAppState((state) => ({ ...state, lockout: !state.lockout })),
   };
@@ -223,6 +332,41 @@ function StatefulAppShellStory(props: {
       </AppCommandsProvider>
     </AppStateProvider>
   );
+}
+
+function clampInsertIndex(insertIndex: number, length: number) {
+  return Math.max(0, Math.min(insertIndex, length));
+}
+
+function orderCueEntries(entries: CueEntry[], orderedIds: string[]) {
+  const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
+  const orderedEntries = orderedIds
+    .map((id) => entriesById.get(id))
+    .filter((entry): entry is CueEntry => Boolean(entry));
+  const orderedIdSet = new Set(orderedIds);
+  return [
+    ...orderedEntries,
+    ...entries.filter((entry) => !orderedIdSet.has(entry.id)),
+  ];
+}
+
+function orderCueLists(
+  cueLists: AppViewState["cueLists"],
+  orderedIds: string[],
+) {
+  const cueListsById = new Map(
+    cueLists.map((cueList) => [cueList.id, cueList]),
+  );
+  const orderedCueLists = orderedIds
+    .map((id) => cueListsById.get(id))
+    .filter((cueList): cueList is AppViewState["cueLists"][number] =>
+      Boolean(cueList),
+    );
+  const orderedIdSet = new Set(orderedIds);
+  return [
+    ...orderedCueLists,
+    ...cueLists.filter((cueList) => !orderedIdSet.has(cueList.id)),
+  ];
 }
 
 function updateSelectedSceneToggle(
@@ -272,13 +416,30 @@ export const SceneTab: Story = {
     const canvas = within(canvasElement);
 
     await expect(
-      canvas.getByRole("heading", { name: "Scene List" }),
+      canvas.getByRole("heading", { name: "Scene library" }),
     ).toBeInTheDocument();
     await expect(
       canvas.getByRole("button", { name: "Scenes" }),
     ).toBeInTheDocument();
     await expect(
       canvas.getByRole("button", { name: "Settings" }),
+    ).toBeInTheDocument();
+  },
+};
+
+export const CueListsTab: Story = {
+  args: {
+    activeTab: "cue-lists",
+    appState: cueListsTabAppState,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+
+    await expect(
+      canvas.getByRole("heading", { name: "Scene library" }),
+    ).toBeInTheDocument();
+    await expect(
+      canvas.getByRole("heading", { name: "Service" }),
     ).toBeInTheDocument();
   },
 };

@@ -64,7 +64,6 @@ enum RecallGate {
 pub struct ScenesState {
     lockout: bool,
     scene_configs: Vec<SceneConfig>,
-    cued_scene_internal_id: Option<uuid::Uuid>,
     selected_scene_internal_id: Option<String>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
@@ -83,7 +82,6 @@ impl ScenesState {
     pub(crate) fn projection_state(&self) -> crate::scenes::ScenesProjectionState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
-            cued_scene_internal_id: self.cued_scene_internal_id.map(|id| id.to_string()),
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
         }
     }
@@ -91,16 +89,13 @@ impl ScenesState {
     pub(crate) fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
-            cued_scene_internal_id: self.cued_scene_internal_id,
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
         }
     }
 
     pub(crate) fn replace_snapshot(&mut self, snapshot: SceneDocument) {
         self.scene_configs = snapshot.scene_configs;
-        self.cued_scene_internal_id = snapshot.cued_scene_internal_id;
         self.selected_scene_internal_id = snapshot.selected_scene_internal_id;
-        self.clear_missing_cue();
     }
 
     pub(crate) fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
@@ -158,18 +153,6 @@ impl ScenesState {
         }
     }
 
-    pub(crate) fn cue_scene(&mut self, internal_scene_id: uuid::Uuid) -> Result<bool, String> {
-        if self.get_scene_config(internal_scene_id).is_none() {
-            return Err("Scene config not found".to_string());
-        }
-        let next = Some(internal_scene_id);
-        if self.cued_scene_internal_id == next {
-            return Ok(false);
-        }
-        self.cued_scene_internal_id = next;
-        Ok(true)
-    }
-
     pub(crate) fn select_scene_config(
         &mut self,
         internal_scene_id: uuid::Uuid,
@@ -182,9 +165,6 @@ impl ScenesState {
             return Ok(false);
         }
         self.selected_scene_internal_id = next;
-        if self.cued_scene_internal_id == Some(internal_scene_id) {
-            self.cued_scene_internal_id = None;
-        }
         Ok(true)
     }
 
@@ -219,9 +199,6 @@ impl ScenesState {
                 == Some(&removed_internal_scene_id.to_string())
             {
                 self.selected_scene_internal_id = None;
-            }
-            if self.cued_scene_internal_id == Some(removed_internal_scene_id) {
-                self.cued_scene_internal_id = None;
             }
         }
         let source = self
@@ -259,11 +236,9 @@ impl ScenesState {
         if self.selected_scene_internal_id.as_deref() == Some(&internal_scene_id.to_string()) {
             self.selected_scene_internal_id = None;
         }
-        if self.cued_scene_internal_id == Some(internal_scene_id) {
-            self.cued_scene_internal_id = None;
-        }
         Ok(true)
     }
+
     pub(crate) fn observe_scene_list(&mut self, scene_list: Vec<SceneListEntry>, now: Instant) {
         match self.last_scene_list.as_ref() {
             None => {
@@ -291,7 +266,6 @@ impl ScenesState {
         if align_configs {
             self.scene_configs =
                 align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
-            self.clear_missing_cue();
         }
         previous != self.scene_configs
     }
@@ -338,17 +312,6 @@ impl ScenesState {
                 baseline,
                 last_trigger,
             } => decide_armed(baseline, last_trigger, observed),
-        }
-    }
-
-    fn clear_missing_cue(&mut self) {
-        if let Some(cued_scene_internal_id) = self.cued_scene_internal_id
-            && !self
-                .scene_configs
-                .iter()
-                .any(|scene| scene.internal_scene_id == cued_scene_internal_id)
-        {
-            self.cued_scene_internal_id = None;
         }
     }
 
@@ -440,7 +403,6 @@ mod tests {
                 scoped_channels: vec![],
                 scope_toggles: Default::default(),
             }],
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
         });
         state.observe_scene_list(vec![scene_entry(3, "Song 2 -- Changed")], Instant::now());
@@ -468,7 +430,6 @@ mod tests {
                 scoped_channels: vec![],
                 scope_toggles: Default::default(),
             }],
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
         });
 
@@ -630,7 +591,6 @@ mod tests {
                 scoped_channels: vec![],
                 scope_toggles: Default::default(),
             }],
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
         });
 

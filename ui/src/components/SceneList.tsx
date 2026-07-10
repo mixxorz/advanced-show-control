@@ -1,6 +1,5 @@
 import { useAppCommands, useAppState } from "../appHooks";
 import type { SceneConfig, SceneSummary } from "../types";
-import { ConsoleButton } from "./ConsoleButton";
 import { Panel } from "./Panel";
 import { SceneListRow } from "./SceneListRow";
 
@@ -17,53 +16,21 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
 export function SceneListView(props: {
   currentScene: SceneSummary | null;
   cuedSceneInternalId?: string | null;
+  dragOverlayOnly?: boolean;
+  draggableScenes?: boolean;
+  selectedSceneInternalId?: string | null;
   scenes: SceneConfig[];
-  selectedSceneInternalId: string | null;
+  title?: string;
   onSelectScene: (internalSceneId: string) => void;
-  onRecallScene?: (internalSceneId: string) => void;
 }) {
   const duplicateNames = duplicateSceneNames(props.scenes);
-  const currentIndex = props.scenes.findIndex(
-    (scene) =>
-      props.currentScene?.index === scene.sceneIndex &&
-      props.currentScene.name === scene.sceneName,
-  );
-  const canRecallPrevious = currentIndex > 0;
-  const canRecallNext =
-    currentIndex >= 0 && currentIndex < props.scenes.length - 1;
-
-  function recallPreviousScene() {
-    if (!canRecallPrevious) return;
-    props.onRecallScene?.(props.scenes[currentIndex - 1].internalSceneId);
-  }
-
-  function recallNextScene() {
-    if (!canRecallNext) return;
-    props.onRecallScene?.(props.scenes[currentIndex + 1].internalSceneId);
-  }
 
   return (
     <Panel className="flex min-h-0 flex-col overflow-hidden">
       <div className="flex items-center justify-between gap-3 border-b border-console-line px-4 py-3">
         <h2 className="text-lg font-normal uppercase text-console-primary">
-          Scene List
+          {props.title ?? "Scene library"}
         </h2>
-        <div className="flex gap-2">
-          <ConsoleButton
-            disabled={!canRecallPrevious || !props.onRecallScene}
-            onClick={recallPreviousScene}
-            size="small"
-          >
-            Prev
-          </ConsoleButton>
-          <ConsoleButton
-            disabled={!canRecallNext || !props.onRecallScene}
-            onClick={recallNextScene}
-            size="small"
-          >
-            Next
-          </ConsoleButton>
-        </div>
       </div>
       <div className="grid grid-cols-[1.25rem_3rem_1fr_4rem] border-b border-console-line-soft py-2 pr-3 pl-0 text-sm uppercase tracking-[0.08em] text-console-secondary">
         <span aria-hidden="true" />
@@ -76,7 +43,7 @@ export function SceneListView(props: {
           Duplicate scene names: {duplicateNames.join(", ")}
         </div>
       ) : null}
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
         {props.scenes.length === 0 ? (
           <p className="p-4 text-sm text-console-muted">No scenes loaded.</p>
         ) : (
@@ -84,6 +51,20 @@ export function SceneListView(props: {
             <SceneListRow
               currentScene={props.currentScene}
               cued={scene.internalSceneId === props.cuedSceneInternalId}
+              dragData={
+                props.draggableScenes
+                  ? {
+                      kind: "scene",
+                      sceneInternalId: scene.internalSceneId,
+                    }
+                  : undefined
+              }
+              dragId={
+                props.draggableScenes
+                  ? `scene:${scene.internalSceneId}`
+                  : undefined
+              }
+              dragOverlayOnly={props.dragOverlayOnly}
               key={scene.internalSceneId}
               onSelect={() => props.onSelectScene(scene.internalSceneId)}
               scene={scene}
@@ -103,11 +84,9 @@ export function SceneList() {
   return (
     <SceneListView
       currentScene={appState.currentScene}
-      cuedSceneInternalId={appState.cuedSceneInternalId ?? null}
-      onRecallScene={commands.recallScene}
+      selectedSceneInternalId={appState.selectedSceneInternalId ?? null}
       onSelectScene={commands.selectScene}
       scenes={appState.sceneConfigs}
-      selectedSceneInternalId={appState.selectedSceneInternalId}
     />
   );
 }

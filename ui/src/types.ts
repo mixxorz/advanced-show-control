@@ -32,9 +32,9 @@ export type AppSettings = {
   autoLoadLastShowFile: boolean;
   autoSaveSessions: boolean;
   keyboardShortcuts: KeyboardShortcutSettings;
-  autoCueNextSceneOnGo: boolean;
   timeDisplay: TimeDisplayFormat;
   faderOverrideSensitivity: number;
+  enableExtensiveDiagnostics: boolean;
 };
 
 export type TcpConnectLatencyResult = {
@@ -99,6 +99,17 @@ export type SceneConfig = {
   scopedChannels: ChannelRef[];
 };
 
+export type CueEntry = {
+  id: string;
+  sceneInternalId: string;
+};
+
+export type CueList = {
+  id: string;
+  name: string;
+  entries: CueEntry[];
+};
+
 export type AppLogEntry = {
   id: number;
   timestamp: string;
@@ -123,8 +134,11 @@ export type AppViewState = {
   logs: AppLogEntry[];
   lastEventAt: string | null;
   sceneConfigs: SceneConfig[];
-  cuedSceneInternalId: string | null;
   selectedSceneInternalId: string | null;
+  cueLists: CueList[];
+  activeCueListId: string | null;
+  cuedCueEntryId: string | null;
+  lastCueRecallStatus: string | null;
   showFileName: string;
   showFilePath: string | null;
   showFileDirty: boolean;
@@ -146,9 +160,9 @@ export const disconnectedAppViewState: AppViewState = {
         modifiers: { shift: false, control: false, alt: false, meta: false },
       },
     },
-    autoCueNextSceneOnGo: false,
     timeDisplay: "twentyFourHour",
     faderOverrideSensitivity: 9,
+    enableExtensiveDiagnostics: false,
   },
   connection: "disconnected",
   discoveredLv1Systems: [],
@@ -165,8 +179,11 @@ export const disconnectedAppViewState: AppViewState = {
   logs: [],
   lastEventAt: null,
   sceneConfigs: [],
-  cuedSceneInternalId: null,
   selectedSceneInternalId: null,
+  cueLists: [],
+  activeCueListId: null,
+  cuedCueEntryId: null,
+  lastCueRecallStatus: null,
   showFileName: "Untitled Session",
   showFilePath: null,
   showFileDirty: false,

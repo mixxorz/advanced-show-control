@@ -8,16 +8,28 @@ import { AppCommandsContext, AppStateContext } from "./appContextValues";
 
 export type AppCommands = {
   abortAll: () => void;
-  cueScene?: (internalSceneId: string) => void;
+  addSceneToActiveCueList?: (
+    sceneInternalId: string,
+    insertIndex: number,
+  ) => void | Promise<void>;
+  cueEntry?: (cueEntryId: string | null) => void | Promise<void>;
+  createCueList?: (name: string) => void | Promise<void>;
+  deleteCueList?: (cueListId: string) => void | Promise<void>;
   disconnect: () => void | Promise<void>;
   newShowFile: () => void;
   openShowFile: () => void;
+  removeCueEntry?: (cueEntryId: string) => void | Promise<void>;
+  recallCuedCue: () => void | Promise<void>;
+  renameCueList?: (cueListId: string, name: string) => void | Promise<void>;
   linkSceneConfig?: (
     sourceInternalSceneId: string,
     targetSceneIndex: number,
     overwriteExisting: boolean,
   ) => void | Promise<void>;
+  reorderCueEntries?: (orderedEntryIds: string[]) => void | Promise<void>;
+  reorderCueLists?: (orderedIds: string[]) => void | Promise<void>;
   deleteSceneConfig?: (internalSceneId: string) => void | Promise<void>;
+  setActiveCueList?: (cueListId: string | null) => void | Promise<void>;
   saveShowFile: () => void;
   saveShowFileAs: () => void;
   selectScene: (internalSceneId: string) => void;

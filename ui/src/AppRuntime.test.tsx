@@ -16,20 +16,29 @@ function makeServices(
     attemptReconnectLv1: vi.fn(async () => undefined),
     connectLv1System: vi.fn(async () => undefined),
     disconnectLv1: vi.fn(async () => undefined),
+    addSceneToActiveCueList: vi.fn(async () => undefined),
+    createCueList: vi.fn(async () => undefined),
+    cueEntry: vi.fn(async () => undefined),
+    deleteCueList: vi.fn(async () => undefined),
     listenForAppStatus: vi.fn(async (listener) => {
       listener(connectedAppState);
       return () => {};
     }),
     newShowFile: vi.fn(async () => undefined),
     openShowFile: vi.fn(async () => undefined),
-    cueScene: vi.fn(async () => undefined),
+    removeCueEntry: vi.fn(async () => undefined),
+    recallCuedCue: vi.fn(async () => undefined),
     recallScene: vi.fn(async () => undefined),
+    renameCueList: vi.fn(async () => undefined),
+    reorderCueEntries: vi.fn(async () => undefined),
+    reorderCueLists: vi.fn(async () => undefined),
     probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
     reconnectTimedOut: vi.fn(async () => undefined),
     refreshLv1Discovery: vi.fn(async () => undefined),
     saveShowFile: vi.fn(async () => undefined),
     saveShowFileAs: vi.fn(async () => undefined),
     selectSceneConfig: vi.fn(async () => undefined),
+    setActiveCueList: vi.fn(async () => undefined),
     setAllChannelsScoped: vi.fn(async () => undefined),
     setChannelScoped: vi.fn(async () => undefined),
     setLockout: vi.fn(async () => undefined),
@@ -259,7 +268,6 @@ describe("AppRuntime connection lifecycle", () => {
     const services = makeServices({
       startupAutoConnectLv1: vi.fn(async () => undefined),
     });
-    const scene = connectedAppState.sceneConfigs[0];
     render(<AppRuntime services={services} />);
 
     await waitFor(() => {
@@ -268,13 +276,53 @@ describe("AppRuntime connection lifecycle", () => {
       ).not.toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole("button", { name: "Cue" }));
     await user.click(screen.getByRole("button", { name: "Recall" }));
     await user.click(screen.getByRole("button", { name: "GO" }));
 
-    expect(services.cueScene).toHaveBeenCalledWith(scene.internalSceneId);
-    expect(services.recallScene).toHaveBeenCalledWith(scene.internalSceneId);
     expect(services.recallScene).toHaveBeenCalledTimes(1);
+    expect(services.recallCuedCue).toHaveBeenCalledWith();
+  });
+
+  it("wires cue list creation through the rendered app with Enter", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      createCueList: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "New Cue List" }));
+    await user.type(screen.getByLabelText("Cue list name"), "Bridge{Enter}");
+
+    expect(services.createCueList).toHaveBeenCalledWith("Bridge");
+  });
+
+  it("wires cue entry removal through the rendered app", async () => {
+    const user = userEvent.setup();
+    const services = makeServices({
+      removeCueEntry: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(screen.getByRole("button", { name: "Remove cue 1" }));
+
+    expect(services.removeCueEntry).toHaveBeenCalledWith("cue-1");
   });
 
   it("recalls the cued scene when the configured GO shortcut is pressed", async () => {

@@ -13,14 +13,17 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
             let event_bus = AppEventBus::default();
+            let logging_runtime = logging::init_logging(app.handle())?;
+            logging_runtime.spawn_settings_watcher(event_bus.subscribe());
             let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
             let settings_dir = app.path().app_config_dir()?;
-            let (settings, settings_task) = build_settings_actor(settings_dir, event_bus.clone());
+            let (settings, settings_task, initial_settings) =
+                build_settings_actor(settings_dir, event_bus.clone());
+            logging_runtime.apply_settings(&initial_settings);
             let lifecycle =
                 AppLifecycle::new(event_bus, show.clone(), show_peers, settings.clone());
             show_task.spawn();
             settings_task.spawn();
-            let logging_runtime = logging::init_logging(app.handle())?;
             app.manage(show);
             app.manage(lifecycle);
             app.manage(settings);
@@ -52,6 +55,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::lifecycle::reconnect_timed_out,
             crate::ui::commands::fade::abort_all_fades,
             crate::ui::commands::show::set_lockout,
+            crate::ui::commands::cue_lists::create_cue_list,
             commands::debug_smoke_log,
             commands::debug_smoke_exit_app,
             commands::debug_smoke_set_channel_gain,

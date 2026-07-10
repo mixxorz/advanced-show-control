@@ -2,23 +2,18 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   connectedAppState,
   discoveringAppState,
+  cueListNoValidCueAppState,
 } from "../storybook/mockAppState";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { BottomStatusBar } from "./BottomStatusBar";
 
-const cuedConnectedAppState = {
-  ...connectedAppState,
-  cuedSceneInternalId:
-    connectedAppState.sceneConfigs[1]?.internalSceneId ?? null,
-};
-
 const safeAppState = {
-  ...cuedConnectedAppState,
+  ...connectedAppState,
   lockout: true,
 };
 
 const fadingAppState = {
-  ...cuedConnectedAppState,
+  ...connectedAppState,
   fadeState: "running" as const,
 };
 
@@ -29,7 +24,7 @@ const meta: Meta<typeof BottomStatusBar> = {
     layout: "fullscreen",
   },
   args: {
-    appState: cuedConnectedAppState,
+    appState: connectedAppState,
   },
   render: (args) => (
     <MockAppProviders appState={args.appState}>
@@ -43,6 +38,12 @@ export default meta;
 type Story = StoryObj<typeof BottomStatusBar>;
 
 export const Ready: Story = {};
+
+export const NoValidCue: Story = {
+  args: {
+    appState: cueListNoValidCueAppState,
+  },
+};
 
 export const Safe: Story = {
   args: {

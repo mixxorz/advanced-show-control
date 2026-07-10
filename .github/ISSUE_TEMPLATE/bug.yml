@@ -1,0 +1,67 @@
+name: Bug
+description: Track a defect, regression, safety block, or unexpected behavior.
+title: "Bug: "
+labels:
+  - "type: bug"
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+    validations:
+      required: true
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      description: Use the GitHub milestone that should own this fix.
+      placeholder: "MVP: Scene Fades + Cue Lists"
+    validations:
+      required: false
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current Behavior
+      description: What happens now?
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: Expected Behavior
+      description: What should happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction Steps
+      description: Provide exact steps, environment, and inputs when known.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: safety-impact
+    attributes:
+      label: Safety Impact
+      description: State whether this touches LV1 state, scene recall, fade execution, fader writes, lockout, disconnect/reconnect handling, generation guards, stale state, or manual override behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Logs Or Diagnostics
+      description: Paste relevant frontend logs, diagnostic log excerpts, screenshots, or GitHub run links.
+    validations:
+      required: false
+  - type: textarea
+    id: verification
+    attributes:
+      label: Testing And Verification
+      description: List the expected regression test or verification command.
+    validations:
+      required: true

@@ -53,7 +53,6 @@ pub struct SceneConfig {
 #[serde(rename_all = "camelCase")]
 pub struct SceneDocument {
     pub scene_configs: Vec<SceneConfig>,
-    pub cued_scene_internal_id: Option<Uuid>,
     pub selected_scene_internal_id: Option<String>,
 }
 
@@ -61,7 +60,6 @@ impl SceneDocument {
     pub fn empty() -> Self {
         Self {
             scene_configs: Vec::new(),
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
         }
     }
@@ -157,16 +155,16 @@ mod tests {
     }
 
     #[test]
-    fn empty_scene_document_has_no_cued_scene() {
+    fn empty_scene_document_has_no_selected_scene() {
         let snapshot = SceneDocument::empty();
 
-        assert_eq!(snapshot.cued_scene_internal_id, None);
+        let json = serde_json::to_value(snapshot).unwrap();
+
+        assert_eq!(json["selectedSceneInternalId"], serde_json::Value::Null);
     }
 
     #[test]
-    fn scene_document_serializes_cued_scene_internal_id_and_scene_configs() {
-        let cued_scene_internal_id =
-            Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+    fn scene_document_serializes_selected_scene_internal_id_and_scene_configs() {
         let internal_scene_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
         let document = SceneDocument {
             scene_configs: vec![SceneConfig {
@@ -178,16 +176,11 @@ mod tests {
                 scoped_channels: Vec::new(),
                 scope_toggles: SceneScopeToggles::default(),
             }],
-            cued_scene_internal_id: Some(cued_scene_internal_id),
             selected_scene_internal_id: Some("selected".to_string()),
         };
 
         let json = serde_json::to_value(document).unwrap();
 
-        assert_eq!(
-            json["cuedSceneInternalId"],
-            cued_scene_internal_id.to_string()
-        );
         assert_eq!(json["selectedSceneInternalId"], "selected");
         assert_eq!(
             json["sceneConfigs"][0]["internalSceneId"],

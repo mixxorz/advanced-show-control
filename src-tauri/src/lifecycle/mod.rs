@@ -6,6 +6,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 
+use crate::cue_lists::{CueListsHandle, CueListsPeers, build_cue_lists_actor};
 use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
@@ -81,7 +82,6 @@ fn build_connected_runtime(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     identity: &crate::connection_state::Lv1SystemIdentity,
-    _show: ShowStateHandle,
     show_peers: ShowActorPeers,
     event_bus: AppEventBus,
 ) -> BuiltConnectedRuntime {
@@ -95,7 +95,6 @@ fn build_connected_runtime(
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
     let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
         build_scenes_actor(generation, runtime_generation, event_bus);
-    show_peers.set_scenes(scene_recall_fader.clone());
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -138,6 +137,8 @@ pub struct AppLifecycle {
     event_bus: AppEventBus,
     show: ShowStateHandle,
     show_peers: ShowActorPeers,
+    cue_lists: CueListsHandle,
+    cue_lists_peers: CueListsPeers,
     settings: SettingsHandle,
 }
 
@@ -149,6 +150,9 @@ impl AppLifecycle {
         settings: SettingsHandle,
     ) -> Self {
         let runtime_generation = RuntimeGeneration::new();
+        let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
+        show_peers.set_cue_lists(cue_lists.clone());
+        cue_lists_task.spawn();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
@@ -162,6 +166,8 @@ impl AppLifecycle {
             event_bus,
             show,
             show_peers,
+            cue_lists,
+            cue_lists_peers,
             settings,
         }
     }
@@ -205,6 +211,22 @@ impl AppLifecycle {
         Ok(())
     }
 
+    async fn install_accepted_scene_recall_fader(
+        &self,
+        generation: u64,
+        handle: ScenesHandle,
+    ) -> bool {
+        let mut inner = self.inner.lock().await;
+        if inner.generation != generation {
+            return false;
+        }
+
+        self.show_peers.set_scenes(handle.clone());
+        self.cue_lists_peers.set_scenes(handle.clone());
+        inner.handles.scene_recall_fader = Some(handle);
+        true
+    }
+
     pub async fn clear_runtime_transaction(&self, generation: u64) {
         let mut inner = self.inner.lock().await;
         if inner.generation != generation {
@@ -212,19 +234,13 @@ impl AppLifecycle {
         }
         inner.handles.abort_all();
         self.show_peers.clear_lv1(generation);
+        self.cue_lists_peers.clear_scenes();
         inner.runtime_generation.set(inner.generation).await;
         inner.generation = inner.generation.saturating_add(1);
         let generation = inner.generation;
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
-    }
-
-    async fn install_scene_recall_fader(&self, generation: u64, handle: ScenesHandle) {
-        let mut inner = self.inner.lock().await;
-        if inner.generation == generation {
-            inner.handles.scene_recall_fader = Some(handle);
-        }
     }
 
     pub async fn abort_current_runtime(&self) {
@@ -257,7 +273,6 @@ impl AppLifecycle {
             generation,
             runtime_generation,
             &identity,
-            self.show.clone(),
             self.show_peers.clone(),
             event_bus.clone(),
         );
@@ -293,8 +308,22 @@ impl AppLifecycle {
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
-        self.install_scene_recall_fader(generation, started_runtime.scene_recall_fader)
-            .await;
+        if !self
+            .install_accepted_scene_recall_fader(
+                generation,
+                started_runtime.scene_recall_fader.clone(),
+            )
+            .await
+        {
+            let mut handles = RuntimeHandles {
+                lv1: Some(started_runtime.lv1),
+                fade: None,
+                scene_recall_fader: None,
+            };
+            handles.abort_all();
+            self.clear_runtime_transaction(generation).await;
+            return Err("generation is stale".to_string());
+        }
         started_runtime.scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
@@ -347,11 +376,23 @@ impl AppLifecycle {
         if let Some(before_scene_recall_start) = before_scene_recall_start {
             before_scene_recall_start(runtime_generation.clone());
         }
+        tokio::task::yield_now().await;
         let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
             build_scenes_actor(generation, runtime_generation, event_bus);
-        scene_recall_peers.set_peers(lv1, fade);
-        self.install_scene_recall_fader(generation, scene_recall_fader)
-            .await;
+        scene_recall_peers.set_peers(lv1.clone(), fade.clone());
+        if !self
+            .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
+            .await
+        {
+            let mut handles = RuntimeHandles {
+                lv1: Some(lv1),
+                fade: Some(fade),
+                scene_recall_fader: None,
+            };
+            handles.abort_all();
+            self.clear_runtime_transaction(generation).await;
+            return Err("generation is stale".to_string());
+        }
         scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
@@ -472,6 +513,10 @@ impl AppLifecycle {
         self.inner.lock().await.handles.scene_recall_fader.clone()
     }
 
+    pub fn cue_lists_handle(&self) -> CueListsHandle {
+        self.cue_lists.clone()
+    }
+
     pub(crate) async fn connected_lv1_identity(
         &self,
     ) -> Option<crate::connection_state::Lv1SystemIdentity> {
@@ -570,8 +615,21 @@ impl AppLifecycle {
         } else {
             crate::scenes::ScenesProjectionState {
                 scene_configs: Vec::new(),
-                cued_scene_internal_id: None,
                 selected_scene_internal_id: None,
+            }
+        };
+        let initial_cue_lists_state = if let Some(cue_lists_handle) = self.show_peers.cue_lists() {
+            let (reply, rx) = oneshot::channel();
+            cue_lists_handle
+                .send(crate::cue_lists::CueListsCommand::InitialProjectionState { reply })
+                .await
+                .map_err(|_| "Cue lists state is unavailable".to_string())?;
+            rx.await
+                .map_err(|_| "Cue lists state reply channel is closed".to_string())?
+        } else {
+            crate::cue_lists::CueListsProjectionState {
+                document: crate::cue_lists::CueListDocument::default(),
+                last_recall_status: None,
             }
         };
         let settings_handle = self.current_settings().await;
@@ -595,6 +653,7 @@ impl AppLifecycle {
                 generation,
                 initial_show_state,
                 initial_scenes_state,
+                initial_cue_lists_state,
                 initial_settings,
                 events: self.event_bus.subscribe(),
                 logs,
@@ -608,7 +667,7 @@ impl Default for AppLifecycle {
     fn default() -> Self {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
-        let (settings, settings_task) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
@@ -674,6 +733,7 @@ mod tests {
     use super::*;
     use crate::connection_state::Lv1SystemIdentity;
     use crate::connection_state::ReconnectState;
+    use crate::cue_lists::CueListsEvent;
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
@@ -754,7 +814,7 @@ mod tests {
 
     fn lifecycle_for_test(event_bus: AppEventBus) -> AppLifecycle {
         let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
-        let (settings, settings_task) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
@@ -806,7 +866,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_runtime_installs_scenes_peer_on_show() {
+    async fn building_runtime_does_not_install_cue_list_peer_before_acceptance() {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let identity = Lv1SystemIdentity {
@@ -822,12 +882,92 @@ mod tests {
             generation,
             runtime_generation,
             &identity,
-            lifecycle.show.clone(),
             lifecycle.show_peers.clone(),
             event_bus,
         );
 
+        assert!(lifecycle.show_peers.scenes().is_none());
+        assert!(lifecycle.cue_lists_peers.scenes().is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_connected_runtime_installs_scene_peers() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            address: "127.0.0.1".parse().unwrap(),
+            host: Some("localhost".to_string()),
+            port: 9000,
+        };
+
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let connect_result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity,
+                ConnectFailureMode::PreserveConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(connect_result.is_ok());
         assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+    }
+
+    #[tokio::test]
+    async fn generation_flip_before_scene_peer_install_leaves_peers_unset() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            address: "127.0.0.1".parse().unwrap(),
+            host: Some("localhost".to_string()),
+            port: 9000,
+        };
+        let (flip_tx, flip_rx) = oneshot::channel();
+        let lifecycle_for_hook = lifecycle.clone();
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity,
+                ConnectFailureMode::PreserveConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                    let lifecycle = lifecycle_for_hook.clone();
+                    tokio::spawn(async move {
+                        let _ = lifecycle.begin_connecting().await;
+                        let _ = flip_tx.send(());
+                    });
+                })),
+            )
+            .await;
+
+        assert!(flip_rx.await.is_ok());
+        assert!(matches!(result, Err(message) if message == "generation is stale"));
+        assert!(lifecycle.show_peers.scenes().is_none());
+        assert!(lifecycle.cue_lists_peers.scenes().is_none());
     }
 
     #[tokio::test]
@@ -1093,6 +1233,59 @@ mod tests {
                 .scene_recall_fader
                 .is_some()
         );
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_installs_cue_lists_handle_for_commands() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus);
+
+        let _command_handle = lifecycle.cue_lists_handle();
+        assert!(lifecycle.show_peers.cue_lists().is_some());
+    }
+
+    #[tokio::test]
+    async fn app_lifecycle_cue_list_command_mutates_and_publishes_projection_without_lv1() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus);
+
+        let command_handle = lifecycle.cue_lists_handle();
+        let (reply, rx) = oneshot::channel();
+        command_handle
+            .send(crate::cue_lists::CueListsCommand::CreateCueList {
+                name: "Smoke Cue List".to_string(),
+                reply: Some(reply),
+            })
+            .await
+            .expect("create cue list command should send");
+        let created = rx
+            .await
+            .expect("create cue list reply should arrive")
+            .expect("create cue list should succeed")
+            .cue_list
+            .expect("create cue list should return cue list");
+
+        loop {
+            if let AppEvent::CueLists(CueListsEvent::StateChanged { state, .. }) =
+                events.recv().await.unwrap()
+            {
+                assert_eq!(state.document.active_cue_list_id, Some(created.id));
+                assert!(
+                    state
+                        .document
+                        .cue_lists
+                        .iter()
+                        .any(|list| { list.id == created.id && list.name == "Smoke Cue List" })
+                );
+                break;
+            }
+        }
+
+        command_handle
+            .send(crate::cue_lists::CueListsCommand::Shutdown)
+            .await
+            .unwrap();
     }
 
     #[tokio::test(flavor = "current_thread")]

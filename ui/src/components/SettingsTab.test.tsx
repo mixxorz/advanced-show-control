@@ -43,9 +43,9 @@ describe("SettingsTab", () => {
             },
           },
         },
-        autoCueNextSceneOnGo: false,
         timeDisplay: "twentyFourHour" as const,
         faderOverrideSensitivity: 9,
+        enableExtensiveDiagnostics: false,
       },
     };
 
@@ -89,16 +89,16 @@ describe("SettingsTab", () => {
     });
   });
 
-  it("updates auto-cue while replacing the full settings object", () => {
+  it("updates extensive diagnostics while replacing the full settings object", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
     });
 
-    fireEvent.click(screen.getByLabelText("Auto cue next scene on GO"));
+    fireEvent.click(screen.getByLabelText("Extensive diagnostics"));
 
     expect(replaceAppSettings).toHaveBeenCalledWith({
       ...disconnectedAppViewState.settings,
-      autoCueNextSceneOnGo: true,
+      enableExtensiveDiagnostics: true,
     });
   });
 

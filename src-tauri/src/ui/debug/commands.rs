@@ -29,7 +29,19 @@ impl SmokeReport {
         if let Some(parent) = report.path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let _ = std::fs::write(&report.path, "LV1 debug smoke report\n\n");
+        match std::fs::write(&report.path, "LV1 debug smoke report\n\n") {
+            Ok(()) => tracing::info!(
+                event = "debug_smoke_report_started",
+                path = %report.path.display(),
+                "Debug smoke report started"
+            ),
+            Err(error) => tracing::error!(
+                event = "debug_smoke_report_start_failed",
+                path = %report.path.display(),
+                error = %error,
+                "Debug smoke report start failed"
+            ),
+        }
         report
     }
 
@@ -160,7 +172,9 @@ pub async fn debug_smoke_load_unlinked_scene_session(
             scoped_channels: Vec::new(),
             scope_toggles: ShowFileSceneScopeToggles::default(),
         }],
-        cued_scene_internal_id: None,
+        cue_lists: Vec::new(),
+        active_cue_list_id: None,
+        cued_cue_entry_id: None,
     };
     write_show_file(&path, &file, &backup_dir)?;
 

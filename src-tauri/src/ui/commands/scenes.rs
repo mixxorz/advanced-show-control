@@ -1,9 +1,7 @@
 use super::map_app_command_error;
 use crate::lifecycle::AppLifecycle;
 use crate::runtime::errors::AppCommandError;
-use crate::scenes::{
-    CueSceneResult, RecallSceneResult, ScenesCommand, ScenesCommandResult, SelectedSceneResult,
-};
+use crate::scenes::{RecallSceneResult, ScenesCommand, ScenesCommandResult, SelectedSceneResult};
 use tauri::State;
 use tokio::sync::oneshot;
 
@@ -123,30 +121,6 @@ pub async fn select_scene_config(
     let (reply, rx) = oneshot::channel();
     scenes
         .send(ScenesCommand::SelectSceneConfig {
-            internal_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
-}
-
-#[tauri::command]
-pub async fn cue_scene(
-    lifecycle: State<'_, AppLifecycle>,
-    internal_scene_id: uuid::Uuid,
-) -> Result<CueSceneResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::CueScene {
             internal_scene_id,
             reply: Some(reply),
         })

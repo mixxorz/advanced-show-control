@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { AppViewState } from "../types";
 import { useAppCommands } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
@@ -12,11 +12,18 @@ function formatClock(date: Date) {
   }).format(date);
 }
 
-function cuedSceneLabel(appState: AppViewState) {
-  const cued = appState.sceneConfigs.find(
-    (scene) => scene.internalSceneId === appState.cuedSceneInternalId,
+function resolveCuedScene(appState: AppViewState) {
+  const activeCueList = appState.cueLists.find(
+    (cueList) => cueList.id === appState.activeCueListId,
   );
-  return cued ? cued.sceneName : "---";
+  const cuedCueEntry = activeCueList?.entries.find(
+    (entry) => entry.id === appState.cuedCueEntryId,
+  );
+  return cuedCueEntry
+    ? (appState.sceneConfigs.find(
+        (scene) => scene.internalSceneId === cuedCueEntry.sceneInternalId,
+      ) ?? null)
+    : null;
 }
 
 function modeDisplay(appState: AppViewState): {
@@ -42,19 +49,38 @@ function modeDisplay(appState: AppViewState): {
 export function BottomStatusBar(props: { appState: AppViewState }) {
   const commands = useAppCommands();
   const [now, setNow] = useState(() => new Date());
+  const [goPending, setGoPending] = useState(false);
+  const goPendingRef = useRef(false);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
 
+  const cuedScene = resolveCuedScene(props.appState);
   const currentScene = props.appState.currentScene
     ? props.appState.currentScene.name
     : "---";
   const mode = modeDisplay(props.appState);
-  const canGo = Boolean(
-    props.appState.cuedSceneInternalId && commands.recallScene,
-  );
+  const canGo = cuedScene !== null && !goPending;
+
+  async function handleGo() {
+    if (!canGo || goPendingRef.current) {
+      return;
+    }
+
+    goPendingRef.current = true;
+    setGoPending(true);
+
+    try {
+      await commands.recallCuedCue();
+    } catch {
+      // The command error is surfaced elsewhere; the footer only clears the guard.
+    } finally {
+      goPendingRef.current = false;
+      setGoPending(false);
+    }
+  }
 
   return (
     <footer className="mx-3 mb-3 grid grid-cols-1 overflow-hidden rounded-console-panel border border-console-line bg-console-chrome md:grid-cols-[0.7fr_1.4fr_1.4fr_0.9fr_0.8fr]">
@@ -63,9 +89,7 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
           disabled={!canGo}
           fullWidth
           onClick={() => {
-            if (props.appState.cuedSceneInternalId) {
-              commands.recallScene?.(props.appState.cuedSceneInternalId);
-            }
+            void handleGo();
           }}
           size="big"
           variant="primary"
@@ -75,8 +99,8 @@ export function BottomStatusBar(props: { appState: AppViewState }) {
       </div>
       <StatusCell
         label="Cued"
-        tone={props.appState.cuedSceneInternalId ? "cued" : "default"}
-        value={cuedSceneLabel(props.appState)}
+        tone={cuedScene ? "cued" : "default"}
+        value={cuedScene?.sceneName ?? "---"}
       />
       <StatusCell label="Current" tone="current" value={currentScene} />
       <StatusCell
