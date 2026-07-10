@@ -60,12 +60,21 @@ export function CueListsTab() {
     null;
 
   useEffect(() => {
+    let canceled = false;
     if (
       selectedCueEntryId !== null &&
       !activeCueList?.entries.some((entry) => entry.id === selectedCueEntryId)
     ) {
-      queueMicrotask(() => setSelectedCueEntryId(null));
+      queueMicrotask(() => {
+        if (!canceled) {
+          setSelectedCueEntryId(null);
+        }
+      });
     }
+
+    return () => {
+      canceled = true;
+    };
   }, [activeCueList, selectedCueEntryId]);
 
   const cuedEntryIndex = activeCueList

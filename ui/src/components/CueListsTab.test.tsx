@@ -196,6 +196,45 @@ describe("CueListsTab", () => {
     expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
   });
 
+  it("cancels stale queued selection cleanup after projection changes", async () => {
+    const user = userEvent.setup();
+    const queuedCallbacks: Array<() => void> = [];
+    const queueMicrotaskSpy = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((callback) => {
+        queuedCallbacks.push(callback);
+      });
+    const { rerender } = renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...cueListStateFixture,
+          activeCueListId: "cue-list-verse",
+          cuedCueEntryId: null,
+        }}
+      >
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+    rerender(
+      <MockAppProviders appState={cueListStateFixture}>
+        <CueListsTab />
+      </MockAppProviders>,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Intro.*001/i }));
+    expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+
+    queuedCallbacks.forEach((callback) => callback());
+
+    expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+    queueMicrotaskSpy.mockRestore();
+  });
+
   it("marks cue entries with missing scene references", () => {
     renderWithAppProviders(<CueListsTab />, {
       appState: cueListWithMissingSceneReferenceAppState,
