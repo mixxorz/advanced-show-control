@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
-import { useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AppCommandsProvider,
   AppStateProvider,
@@ -89,54 +88,41 @@ export type AppRuntimeServices = {
 
 type ConnectionModalMode = "startup" | "manual" | null;
 
-const SHORTCUT_EXECUTION_PRIORITY = 100;
+const GO_SHORTCUT_PRIORITY = 100;
 
 function AppShortcutHandler(props: {
   appState: AppViewState;
   commands: AppCommands;
 }) {
   useKeyboardHandler({
-    id: "app-shortcut-execution",
-    priority: SHORTCUT_EXECUTION_PRIORITY,
+    id: "app-go-shortcut",
+    priority: GO_SHORTCUT_PRIORITY,
     handleKeyDown: (event) => {
       if (
-        shortcutMatchesEvent(
+        !shortcutMatchesEvent(
           props.appState.settings.keyboardShortcuts.go,
           event,
         )
       ) {
-        if (
-          !props.appState.cuedSceneInternalId ||
-          !props.commands.recallScene
-        ) {
-          return "ignored";
-        }
-        props.commands.recallScene(props.appState.cuedSceneInternalId);
-        return "handled";
+        return "ignored";
       }
 
-      if (
-        shortcutMatchesEvent(
-          props.appState.settings.keyboardShortcuts.cue,
-          event,
-        )
-      ) {
-        const selected = props.appState.sceneConfigs.find(
-          (scene) =>
-            scene.internalSceneId === props.appState.selectedSceneInternalId,
+      const activeCueList = props.appState.cueLists.find(
+        (cueList) => cueList.id === props.appState.activeCueListId,
+      );
+      const cuedEntry = activeCueList?.entries.find(
+        (entry) => entry.id === props.appState.cuedCueEntryId,
+      );
+      const cueIsValid =
+        cuedEntry !== undefined &&
+        props.appState.sceneConfigs.some(
+          (scene) => scene.internalSceneId === cuedEntry.sceneInternalId,
         );
-        if (
-          !selected ||
-          selected.sceneIndex === null ||
-          !props.commands.cueScene
-        ) {
-          return "ignored";
-        }
-        props.commands.cueScene(selected.internalSceneId);
-        return "handled";
-      }
 
-      return "ignored";
+      if (cueIsValid) {
+        props.commands.recallCuedCue();
+      }
+      return "handled";
     },
   });
 
@@ -394,9 +380,9 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
 
   return (
     <KeyboardProvider>
+      <AppShortcutHandler appState={appState} commands={commands} />
       <AppStateProvider appState={appState} commandError={commandError}>
         <AppCommandsProvider commands={commands}>
-          <AppShortcutHandler appState={appState} commands={commands} />
           <AppShell
             activeTab={activeTab}
             onOpenConnection={() => setConnectionModalMode("manual")}
