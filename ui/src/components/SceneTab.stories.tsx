@@ -64,7 +64,7 @@ export const StoredSceneSelected: Story = {
     const canvas = within(canvasElement);
 
     await expect(
-      canvas.getByRole("heading", { name: "Scene List" }),
+      canvas.getByRole("heading", { name: "Scene library" }),
     ).toBeInTheDocument();
     await expect(
       canvas.getByRole("button", { name: "Recall" }),

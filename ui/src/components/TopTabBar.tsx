@@ -1,11 +1,11 @@
 import { useAppCommands, useAppState } from "../appHooks";
 import { TopTab } from "./TopTab";
 
-export type MainTab = "scenes" | "playlists" | "events" | "logs" | "settings";
+export type MainTab = "scenes" | "cue-lists" | "events" | "logs" | "settings";
 
 const tabs: { id: MainTab; label: string }[] = [
   { id: "scenes", label: "Scenes" },
-  { id: "playlists", label: "Cue Lists" },
+  { id: "cue-lists", label: "Cue Lists" },
   { id: "events", label: "Events" },
   { id: "logs", label: "Logs" },
   { id: "settings", label: "Settings" },

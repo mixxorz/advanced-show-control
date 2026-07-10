@@ -93,8 +93,9 @@ probe:
 	cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin lv1-probe -- $(ARGS)
 
 smoke:
+	@npm --prefix ui run build:debug
 	@if [ "$(VERBOSE)" = "1" ]; then \
-		cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug; \
+		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug; \
 	else \
-		cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug >/dev/null 2>&1; \
+		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug >/dev/null 2>&1; \
 	fi

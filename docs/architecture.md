@@ -127,6 +127,7 @@ Runtime(RuntimeLifecycleEvent)
 Lv1 { generation, event }
 Fade { generation, event }
 Scenes { generation, event }
+CueLists { generation, event }
 Show(ShowEvent)
 ```
 
@@ -145,6 +146,8 @@ Show(ShowEvent)
 Actors that must call other actors receive peer handles through peer-wiring structures before actor tasks are spawned.
 
 Peer installation is runtime construction work. It is not a mailbox command.
+
+Peer installation is generation-safe: `lifecycle` only installs peers into the still-current runtime generation, so stale connect work cannot wire an older actor graph into a newer one.
 
 `lifecycle` performs peer installation while it owns the unspawned actor tasks.
 
@@ -321,7 +324,23 @@ The module owns the following responsibilities:
 
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 
-### 13.4 `show`
+### 13.4 `cue_lists`
+
+The `cue_lists` module owns cue-list state and cue-list workflow behavior.
+
+The module owns the following responsibilities:
+
+1. Cue-list documents and ordering.
+2. Cue-list entry creation, deletion, and reordering.
+3. Active cue-list selection.
+4. Cued cue-entry tracking.
+5. Cue-list reconciliation against the active runtime generation so missing entries can be preserved, surfaced, and resolved without inventing frontend-only state.
+6. Cue-list recall status projection.
+7. Cue-list persistence hooks within the show document.
+
+The module publishes `CueListsEvent` facts and accepts `CueListsCommand` requests.
+
+### 13.5 `show`
 
 The `show` module owns show-level application state and persistence.
 
@@ -344,7 +363,7 @@ The module owns the following responsibilities:
 
 The module publishes `ShowEvent` facts and accepts `ShowCommand` requests.
 
-### 13.5 `lifecycle`
+### 13.6 `lifecycle`
 
 The `lifecycle` module owns runtime lifetime.
 
@@ -359,7 +378,7 @@ The module owns the following responsibilities:
 7. Runtime handle cleanup.
 8. Reconnect state changes that cross actor boundaries.
 
-### 13.6 `projector`
+### 13.7 `projector`
 
 The `projector` module owns frontend state projection.
 
@@ -371,7 +390,7 @@ The module owns the following responsibilities:
 4. 10 hertz dirty-cache throttling.
 5. User-interface log cache entries.
 
-### 13.7 `ui`
+### 13.8 `ui`
 
 The `ui` module owns Tauri setup and frontend command boundaries.
 
@@ -382,7 +401,7 @@ The module owns the following responsibilities:
 3. Frontend serialization boundaries.
 4. Thin command adapter modules.
 
-### 13.8 `runtime`
+### 13.9 `runtime`
 
 The `runtime` module owns shared runtime primitives.
 
@@ -453,6 +472,7 @@ Important directories are defined as follows:
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
 | `src-tauri/src/lv1/`       | LV1 protocol, TCP actor, discovery, mirror state, and LV1 commands.                                                             |
 | `src-tauri/src/fade/`      | Fade engine actor, fade state, interpolation, fader law, and fade events.                                                       |
+| `src-tauri/src/cue_lists/`  | Cue-list actor, cue-list commands, cue-list events, and cue-list workflow policy.                                               |
 | `src-tauri/src/scenes/`    | Scene recall actor, recall commands, recall events, and recall policy.                                                          |
 | `src-tauri/src/show/`      | Show actor, show document state, scene configuration state, show-file input/output, discovery state, and show projection facts. |
 | `src-tauri/src/lifecycle/` | Runtime connection lifecycle and actor graph wiring.                                                                            |

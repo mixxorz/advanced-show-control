@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
 use crate::logging::UiLogEvent;
 use crate::lv1::{
@@ -29,7 +30,10 @@ pub struct ProjectionCache {
     selected_scene_internal_id: Option<String>,
     lockout: bool,
     scene_configs: Vec<crate::scenes::SceneConfig>,
-    cued_scene_internal_id: Option<String>,
+    cue_lists: Vec<crate::cue_lists::CueList>,
+    active_cue_list_id: Option<String>,
+    cued_cue_entry_id: Option<String>,
+    last_cue_recall_status: Option<String>,
     show_file_path: Option<PathBuf>,
     show_file_dirty: bool,
     show_file_last_saved_at: Option<String>,
@@ -59,8 +63,11 @@ impl ProjectionCache {
             selected_scene_internal_id: None,
             lockout: false,
             scene_configs: Vec::new(),
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
+            last_cue_recall_status: None,
             settings: AppSettings::default(),
-            cued_scene_internal_id: None,
             show_file_path: None,
             show_file_dirty: false,
             show_file_last_saved_at: None,
@@ -96,8 +103,14 @@ impl ProjectionCache {
 
     pub fn apply_scenes_state(&mut self, state: ScenesProjectionState) {
         self.scene_configs = state.scene_configs;
-        self.cued_scene_internal_id = state.cued_scene_internal_id;
         self.selected_scene_internal_id = state.selected_scene_internal_id;
+    }
+
+    pub fn apply_cue_lists_state(&mut self, state: CueListsProjectionState) {
+        self.cue_lists = state.document.cue_lists;
+        self.active_cue_list_id = state.document.active_cue_list_id.map(|id| id.to_string());
+        self.cued_cue_entry_id = state.document.cued_cue_entry_id.map(|id| id.to_string());
+        self.last_cue_recall_status = state.last_recall_status;
     }
 
     pub fn apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool {
@@ -317,7 +330,10 @@ impl ProjectionCache {
             fade_state: self.fade_state.clone(),
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
-            cued_scene_internal_id: self.cued_scene_internal_id.clone(),
+            cue_lists: self.cue_lists.clone(),
+            active_cue_list_id: self.active_cue_list_id.clone(),
+            cued_cue_entry_id: self.cued_cue_entry_id.clone(),
+            last_cue_recall_status: self.last_cue_recall_status.clone(),
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             show_file_name: self
                 .show_file_path
@@ -438,8 +454,11 @@ mod tests {
             fade_state: AppFadeState::Idle,
             lockout: false,
             scene_configs: Vec::new(),
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
+            last_cue_recall_status: None,
             settings: AppSettings::default(),
-            cued_scene_internal_id: None,
             selected_scene_internal_id: None,
             show_file_name: "Untitled Session".to_string(),
             show_file_path: None,
@@ -579,7 +598,6 @@ mod tests {
                 scoped_channels: vec![],
                 scope_toggles: Default::default(),
             }],
-            cued_scene_internal_id: Some("cue-id".to_string()),
             selected_scene_internal_id: Some("selected-id".to_string()),
         });
 
@@ -587,10 +605,35 @@ mod tests {
 
         assert!(snapshot.lockout);
         assert_eq!(snapshot.scene_configs.len(), 1);
-        assert_eq!(snapshot.cued_scene_internal_id.as_deref(), Some("cue-id"));
         assert_eq!(
             snapshot.selected_scene_internal_id.as_deref(),
             Some("selected-id")
+        );
+    }
+
+    #[test]
+    fn cache_applies_cue_list_projection_state() {
+        let mut cache = ProjectionCache::new();
+        let cue_list_id = uuid::Uuid::from_u128(1);
+        cache.apply_cue_lists_state(CueListsProjectionState {
+            document: crate::cue_lists::CueListDocument {
+                cue_lists: vec![crate::cue_lists::CueList {
+                    id: cue_list_id,
+                    name: "Main".to_string(),
+                    entries: vec![],
+                }],
+                active_cue_list_id: Some(cue_list_id),
+                cued_cue_entry_id: None,
+            },
+            last_recall_status: None,
+        });
+
+        let snapshot = cache.build_snapshot();
+
+        assert_eq!(snapshot.cue_lists[0].name, "Main");
+        assert_eq!(
+            snapshot.active_cue_list_id.as_deref(),
+            Some(cue_list_id.to_string().as_str())
         );
     }
 

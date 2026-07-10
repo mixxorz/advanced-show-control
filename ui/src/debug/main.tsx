@@ -13,6 +13,7 @@ const targetB = 0;
 const tolerance = 0.5;
 const timeoutMs = 15_000;
 const tests = [
+  "cue-list-create",
   "connection",
   "scene-recall",
   "fade-starts",
@@ -33,16 +34,43 @@ document.addEventListener("click", (event) => {
   }
 });
 
-void listen<AppViewState>("app-status-changed", (event) => {
-  state = event.payload;
-});
+void start();
 
-void run().then((ok) => startCloseCountdown(ok));
+async function start() {
+  void listen<AppViewState>("app-status-changed", (event) => {
+    state = event.payload;
+  });
+  await sleep(250);
+  const ok = await run();
+  startCloseCountdown(ok);
+}
 
 async function run() {
   let ok = true;
+  await log("START");
   await invoke("frontend_ready");
   try {
+    await waitFor(() => state, "initial app state");
+    await test("cue-list-create", async () => {
+      const result = await invoke<{ cueList?: { id: string; name: string } }>(
+        "create_cue_list",
+        { name: "Smoke Cue List" },
+      );
+      const cueListId = result.cueList?.id;
+      if (!cueListId)
+        throw new Error("create_cue_list did not return a cue list");
+      await waitFor(
+        () =>
+          state?.cueLists.some(
+            (list) =>
+              list.id === cueListId &&
+              list.name === "Smoke Cue List" &&
+              state?.activeCueListId === cueListId,
+          ),
+        "projected smoke cue list",
+      );
+      await log(`CUE_LIST_CREATED ${cueListId}`);
+    });
     await test("connection", async () => {
       await invoke("refresh_lv1_discovery", { timeoutMs: 5000 });
       const identity = await waitFor(

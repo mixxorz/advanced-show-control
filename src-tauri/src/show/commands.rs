@@ -72,13 +72,6 @@ pub struct ConnectCommandResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[allow(dead_code)]
-pub struct CueSceneResult {
-    pub changed: bool,
-    pub scene: SceneConfig,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
 pub struct SelectedSceneResult {
     pub scene: SceneConfig,
 }

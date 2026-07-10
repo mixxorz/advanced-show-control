@@ -49,7 +49,16 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::show::open_show_file_dialog,
             commands::show::save_show_file,
             commands::show::save_show_file_as_dialog,
-            commands::scenes::cue_scene,
+            commands::cue_lists::add_scene_to_active_cue_list,
+            commands::cue_lists::create_cue_list,
+            commands::cue_lists::cue_entry,
+            commands::cue_lists::delete_cue_list,
+            commands::cue_lists::recall_cued_cue,
+            commands::cue_lists::remove_cue_entry,
+            commands::cue_lists::rename_cue_list,
+            commands::cue_lists::reorder_cue_entries,
+            commands::cue_lists::reorder_cue_lists,
+            commands::cue_lists::set_active_cue_list,
             commands::scenes::delete_scene_config,
             commands::scenes::link_scene_config,
             commands::scenes::recall_scene,
@@ -87,8 +96,9 @@ mod tests {
         let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
         let _ = super::commands::lifecycle::disconnect_lv1;
         let _ = super::commands::lifecycle::probe_lv1_tcp_connect_latency;
+        let _ = super::commands::cue_lists::create_cue_list;
+        let _ = super::commands::cue_lists::recall_cued_cue;
         let _ = super::commands::scenes::recall_scene;
-        let _ = super::commands::scenes::cue_scene;
         let _ = super::commands::scenes::delete_scene_config;
         let _ = super::commands::scenes::link_scene_config;
         let _ = super::commands::scenes::select_scene_config;

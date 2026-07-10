@@ -81,7 +81,6 @@ fn log_settings_updated(settings: &AppSettings) {
         event = "settings_updated",
         auto_load_last_show_file = settings.auto_load_last_show_file,
         auto_save_sessions = settings.auto_save_sessions,
-        auto_cue_next_scene_on_go = settings.auto_cue_next_scene_on_go,
         time_display = time_display_label(&settings.time_display),
         fader_override_sensitivity = settings.fader_override_sensitivity,
         enable_extensive_diagnostics = settings.enable_extensive_diagnostics,

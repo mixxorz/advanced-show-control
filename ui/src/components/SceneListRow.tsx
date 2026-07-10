@@ -1,3 +1,7 @@
+/* eslint-disable react-hooks/refs -- dnd-kit exposes connector refs and drag state through hook return values used in JSX. */
+import { useDraggable } from "@dnd-kit/core";
+import type { Data } from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
 import type { SceneConfig, SceneSummary } from "../types";
 import { formatSceneDurationSummary, formatSceneNumber } from "../format";
 
@@ -6,8 +10,16 @@ export function SceneListRow(props: {
   cued: boolean;
   scene: SceneConfig;
   selected: boolean;
+  dragId?: string;
+  dragData?: Data;
+  dragOverlayOnly?: boolean;
   onSelect: () => void;
 }) {
+  const draggable = useDraggable({
+    id: props.dragId ?? `disabled-${props.scene.internalSceneId}`,
+    data: props.dragData,
+    disabled: !props.dragId,
+  });
   const unlinked = props.scene.sceneIndex === null;
   const current =
     props.currentScene?.index === props.scene.sceneIndex &&
@@ -57,6 +69,15 @@ export function SceneListRow(props: {
           ? `grid w-full grid-cols-[1.25rem_3rem_1fr_4rem] items-center border border-accent-orange-active ${leftBorderClass} bg-accent-orange-soft py-1.5 pr-3 pl-0 text-left text-console-primary`
           : `grid w-full grid-cols-[1.25rem_3rem_1fr_4rem] items-center border border-transparent border-b-console-line-soft/60 ${leftBorderClass} py-1.5 pr-3 pl-0 text-left text-console-secondary hover:bg-console-section hover:text-console-primary`
       }
+      ref={draggable.setNodeRef}
+      style={{
+        opacity: props.dragOverlayOnly && draggable.isDragging ? 0.45 : 1,
+        transform: props.dragOverlayOnly
+          ? undefined
+          : CSS.Translate.toString(draggable.transform),
+      }}
+      {...draggable.attributes}
+      {...draggable.listeners}
       onClick={props.onSelect}
     >
       <span className="flex justify-start overflow-visible">

@@ -272,11 +272,13 @@ mod tests {
 
     fn show_file() -> ShowFile {
         ShowFile {
-            schema_version: 1,
+            schema_version: SHOW_FILE_SCHEMA_VERSION,
             app_version: "0.1.0".to_string(),
             saved_at: "123".to_string(),
             safety: ShowFileSafety { lockout: true },
-            cued_scene_internal_id: None,
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
             scene_configs: vec![ShowFileSceneConfig {
                 internal_scene_id: Some(uuid::Uuid::from_u128(0x11111111111141118111111111111111)),
                 scene_index: Some(1),
@@ -388,21 +390,6 @@ mod tests {
     }
 
     #[test]
-    fn show_file_deserializes_missing_cued_scene_internal_id_as_none() {
-        let json = r#"{
-            "schemaVersion": 1,
-            "appVersion": "0.1.0",
-            "savedAt": "2026-06-18T00:00:00Z",
-            "safety": { "lockout": false },
-            "sceneConfigs": []
-        }"#;
-
-        let file: ShowFile = serde_json::from_str(json).unwrap();
-
-        assert_eq!(file.cued_scene_internal_id, None);
-    }
-
-    #[test]
     fn read_show_file_parses_json() {
         let temp_dir = temp_test_dir("read");
         let show_path = temp_dir.join("test.ascs");
@@ -420,7 +407,7 @@ mod tests {
     fn show_file_serializes_camel_case_json() {
         let json = serde_json::to_string_pretty(&show_file()).unwrap();
 
-        assert!(json.contains("\"schemaVersion\": 1"));
+        assert!(json.contains(&format!("\"schemaVersion\": {}", SHOW_FILE_SCHEMA_VERSION)));
         assert!(json.contains("\"sceneConfigs\""));
         assert!(json.contains("\"durationMs\": 4000"));
         assert!(json.contains("\"channelConfigs\""));

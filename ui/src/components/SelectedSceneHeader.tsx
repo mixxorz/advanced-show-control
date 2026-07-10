@@ -46,13 +46,6 @@ export function SelectedSceneHeader(props: {
             >
               Recall
             </ConsoleButton>
-            <ConsoleButton
-              disabled={unlinked}
-              onClick={() => commands.cueScene?.(props.scene.internalSceneId)}
-              variant="ghost-secondary"
-            >
-              Cue
-            </ConsoleButton>
           </div>
           <div className="h-11 w-px bg-console-line" />
           <SelectedSceneActions scene={props.scene} />

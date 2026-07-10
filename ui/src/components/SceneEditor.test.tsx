@@ -16,6 +16,7 @@ function makeCommands(commands: Partial<AppCommands> = {}): AppCommands {
     disconnect: vi.fn(),
     newShowFile: vi.fn(),
     openShowFile: vi.fn(),
+    recallCuedCue: vi.fn(),
     probeLv1TcpConnectLatency: vi.fn(),
     saveShowFile: vi.fn(),
     saveShowFileAs: vi.fn(),
@@ -55,7 +56,7 @@ function renderEditor(
 }
 
 describe("SceneEditor", () => {
-  it("disables Store Cue and Recall for unlinked scenes", () => {
+  it("disables Store and Recall for unlinked scenes", () => {
     renderEditor({
       ...connectedAppState,
       selectedSceneInternalId:
@@ -66,7 +67,6 @@ describe("SceneEditor", () => {
     });
 
     expect(screen.getByRole("button", { name: "Store" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Recall" })).toBeDisabled();
   });
 
@@ -98,6 +98,34 @@ describe("SceneEditor", () => {
       screen.getByRole("button", { name: "Link to scene" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument();
+  });
+
+  it("marks the selected scene as cued only when the active cue list points to it", () => {
+    const selectedScene = connectedAppState.sceneConfigs[0];
+
+    const { rerender } = renderEditor({
+      ...connectedAppState,
+      selectedSceneInternalId: selectedScene.internalSceneId,
+      activeCueListId: "cue-list-main",
+      cuedCueEntryId: "cue-2",
+    });
+
+    expect(screen.getByLabelText("Selected scene")).not.toHaveClass(
+      "text-status-cued",
+    );
+
+    rerender(
+      editorTree({
+        ...connectedAppState,
+        selectedSceneInternalId: selectedScene.internalSceneId,
+        activeCueListId: "cue-list-main",
+        cuedCueEntryId: "cue-1",
+      }),
+    );
+
+    expect(screen.getByLabelText("Selected scene")).toHaveClass(
+      "text-status-cued",
+    );
   });
 
   it("confirms overwrite in-app when linking to a scene with an existing config", async () => {
