@@ -375,6 +375,53 @@ describe("AppRuntime connection lifecycle", () => {
     expect(services.recallCuedCue).not.toHaveBeenCalled();
   });
 
+  it("does not cue a selected entry when an unavailable GO shortcut has the same binding", async () => {
+    const user = userEvent.setup();
+    const appState = {
+      ...connectedAppState,
+      cuedCueEntryId: null,
+      settings: {
+        ...connectedAppState.settings,
+        keyboardShortcuts: {
+          ...connectedAppState.settings.keyboardShortcuts,
+          go: connectedAppState.settings.keyboardShortcuts.cue,
+        },
+      },
+      stateVersion: connectedAppState.stateVersion + 1,
+    };
+    const services = makeServices({
+      listenForAppStatus: vi.fn(async (listener) => {
+        listener(appState);
+        return () => {};
+      }),
+    });
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Cue Lists" }));
+    await user.click(
+      screen.getByRole("button", { name: /S02.*Holy Forever.*005/i }),
+    );
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+    expect(services.cueEntry).not.toHaveBeenCalled();
+  });
+
   it("links a selected unlinked scene after LV1 scenes arrive in a later status event", async () => {
     const user = userEvent.setup();
     let listener: ((snapshot: AppViewState) => void) | null = null;

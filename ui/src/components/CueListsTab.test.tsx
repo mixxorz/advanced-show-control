@@ -1,4 +1,4 @@
-import { screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -48,6 +48,51 @@ describe("CueListsTab", () => {
     await user.click(cueButton);
     expect(cueEntry).toHaveBeenCalledWith("cue-2");
     expect(cueButton).toBeDisabled();
+  });
+
+  it("cues the selected cue-list entry with the configured Cue shortcut", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(cueEntry).toHaveBeenCalledWith("cue-2");
+    expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
+  });
+
+  it("does not run the Cue shortcut without a selected entry", () => {
+    const cueEntry = vi.fn();
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    act(() => {
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "c",
+          code: "KeyC",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+
+    expect(cueEntry).not.toHaveBeenCalled();
   });
 
   it("disables Cue when the selected entry disappears", async () => {
