@@ -31,6 +31,8 @@ pub(crate) struct ActiveTarget {
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
+    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
+    paused_since: Option<Instant>,
     pub(crate) expected_generation: Option<u64>,
 }
 
@@ -59,8 +61,28 @@ impl ActiveTarget {
             curve: init.curve,
             duration: init.duration,
             started_at: init.started_at,
+            paused_since: None,
             expected_generation: init.expected_generation,
         }
+    }
+
+    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
+    pub(crate) fn pause(&mut self, now: Instant) {
+        if self.paused_since.is_none() {
+            self.paused_since = Some(now);
+        }
+    }
+
+    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
+    pub(crate) fn resume(&mut self, now: Instant) {
+        if let Some(paused_since) = self.paused_since.take() {
+            self.started_at += now.duration_since(paused_since);
+        }
+    }
+
+    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
+    pub(crate) fn is_paused(&self) -> bool {
+        self.paused_since.is_some()
     }
 
     fn is_fader(&self) -> bool {
@@ -386,5 +408,30 @@ mod tests {
 
         let later = target.started_at + Duration::from_millis(200);
         assert!(target.next_send(later).is_some());
+    }
+
+    #[test]
+    fn resume_rebases_started_at_by_the_full_pause_duration() {
+        let mut target = make_channel(-20.0, -10.0, 1_000);
+        let started_at = target.started_at;
+        target.pause(started_at + Duration::from_millis(400));
+        assert!(target.is_paused());
+        target.resume(started_at + Duration::from_millis(2_400));
+
+        assert!(!target.is_paused());
+        assert!((target.value_at(started_at + Duration::from_millis(2_400)) - -16.0).abs() < 1e-10);
+        assert!(!target.is_done(started_at + Duration::from_millis(2_900)));
+        assert!(target.is_done(started_at + Duration::from_millis(3_000)));
+    }
+
+    #[test]
+    fn repeated_pause_keeps_the_original_pause_boundary() {
+        let mut target = make_channel(-20.0, -10.0, 1_000);
+        let started_at = target.started_at;
+        target.pause(started_at + Duration::from_millis(200));
+        target.pause(started_at + Duration::from_millis(600));
+        target.resume(started_at + Duration::from_millis(1_200));
+
+        assert_eq!(target.started_at, started_at + Duration::from_millis(1_000));
     }
 }
