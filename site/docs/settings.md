@@ -13,10 +13,10 @@ fails, the screen reports the error and restores the projected settings.
 | **Auto load last show file** | Displayed and stored. It is not currently wired to open a session at startup. |
 | **Auto save sessions** | Displayed and stored. It is not currently wired to save a session after changes. Use **File > Save Session** to save intentional work. |
 | **Time display** | Valid values are **12 hour** and **24 hour**. The selected value is displayed and stored. It is not currently wired to change the clock shown in the application. |
-| **Fader Override Sensitivity** | Select a value from 1 through 10. The control is displayed and stored, but the current fade engine does not consume this setting. |
-| **Extensive Diagnostics** | When enabled, diagnostic files include `DEBUG` events. When disabled, diagnostic files include `INFO`, `WARN`, and `ERROR` events. Enable it only while troubleshooting because diagnostic files can grow quickly. |
+| **Fader override sensitivity** | Select a value from 1 through 10. The control is displayed and stored, but the current fade engine does not consume this setting. |
+| **Extensive diagnostics** | When enabled, diagnostic files include `DEBUG` events. When disabled, diagnostic files include `INFO`, `WARN`, and `ERROR` events. Enable it only while troubleshooting because diagnostic files can grow quickly. |
 
-The Fader Override Sensitivity help text describes the intended scale: 10
+The Fader override sensitivity help text describes the intended scale: 10
 reacts to very small fader movements, while 1 requires a larger movement. The
 current runtime always uses its existing manual-override behavior; changing
 this stored setting does not change that behavior.
