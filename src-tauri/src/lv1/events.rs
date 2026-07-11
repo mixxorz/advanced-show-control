@@ -21,6 +21,9 @@ pub enum Lv1Event {
         /// surfaced in logs so reconnect loops are diagnosable in the field.
         reason: String,
     },
+    PingReceived {
+        sequence: u64,
+    },
     SceneChanged(SceneState),
     SceneListChanged(Vec<SceneListEntry>),
     FaderChanged {

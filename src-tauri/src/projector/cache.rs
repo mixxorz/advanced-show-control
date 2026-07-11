@@ -124,6 +124,7 @@ impl ProjectionCache {
             Lv1Event::Disconnected { .. } => {
                 self.lv1_snapshot = None;
             }
+            Lv1Event::PingReceived { .. } => return false,
             Lv1Event::SceneChanged(scene) => {
                 self.ensure_lv1_snapshot().scene = Some(scene.clone());
             }
@@ -249,6 +250,7 @@ impl ProjectionCache {
                             pan_mode: None,
                         })
                         .collect(),
+                    ping_sequence: 0,
                 })
             }
         };
@@ -361,6 +363,7 @@ impl ProjectionCache {
             scene: None,
             scene_list: Vec::new(),
             channels: Vec::new(),
+            ping_sequence: 0,
         })
     }
 

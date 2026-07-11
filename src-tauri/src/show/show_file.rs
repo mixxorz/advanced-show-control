@@ -320,6 +320,7 @@ mod tests {
                     name: "Intro".to_string(),
                 }],
                 channels: Vec::new(),
+                ping_sequence: 0,
             },
         )
         .unwrap();
@@ -369,6 +370,7 @@ mod tests {
                 name: "Intro".to_string(),
             }],
             channels: Vec::new(),
+            ping_sequence: 0,
         };
 
         let imported = import_show_file(&mut file, &lv1).unwrap();
@@ -410,6 +412,7 @@ mod tests {
                 name: "Intro".to_string(),
             }],
             channels: Vec::new(),
+            ping_sequence: 0,
         };
 
         let imported = import_show_file(&mut file, &lv1).unwrap();
@@ -451,6 +454,7 @@ mod tests {
                 name: "Intro".to_string(),
             }],
             channels: Vec::new(),
+            ping_sequence: 0,
         };
 
         let imported = import_show_file(&mut file, &lv1).unwrap();

@@ -157,6 +157,7 @@ mod tests {
                 name: "Intro".to_string(),
             }],
             channels: Vec::new(),
+            ping_sequence: 0,
         }
     }
 

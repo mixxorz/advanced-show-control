@@ -587,6 +587,7 @@ mod tests {
             scene: None,
             scene_list: scenes,
             channels: Vec::new(),
+            ping_sequence: 0,
         }
     }
 

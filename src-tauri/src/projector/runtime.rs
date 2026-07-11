@@ -143,9 +143,11 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lv1::Lv1Event;
     use crate::projector::LogSeverity;
     use crate::runtime::events::AppEventBus;
     use crate::show::{ShowEvent, ShowProjectionReason, ShowProjectionState};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use tauri::{Listener, test::mock_app};
 
@@ -215,6 +217,36 @@ mod tests {
                 .as_array()
                 .is_some_and(|logs| logs.iter().any(|entry| entry["message"] == "projected log"))
         }));
+    }
+
+    #[tokio::test]
+    async fn ping_event_does_not_emit_app_status_changed() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let event_bus = AppEventBus::default();
+        let (_log_tx, log_rx) = broadcast::channel(8);
+        let emitted = Arc::new(AtomicUsize::new(0));
+        let emitted_events = emitted.clone();
+        handle.listen_any("app-status-changed", move |_| {
+            emitted_events.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let projector = spawn_started_projector(handle, 0, event_bus.subscribe(), log_rx);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while emitted.load(Ordering::SeqCst) == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("projector did not emit its initial snapshot");
+        assert_eq!(emitted.load(Ordering::SeqCst), 1);
+
+        event_bus.publish_lv1(0, Lv1Event::PingReceived { sequence: 1 });
+        tokio::time::sleep(PROJECTOR_INTERVAL + Duration::from_millis(60)).await;
+
+        projector.abort();
+        assert_eq!(emitted.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
