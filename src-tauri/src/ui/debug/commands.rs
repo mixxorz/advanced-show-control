@@ -146,6 +146,43 @@ pub async fn debug_smoke_get_channel_gain(
 }
 
 #[tauri::command]
+pub async fn debug_smoke_load_scene_settings_session(
+    lifecycle: State<'_, AppLifecycle>,
+) -> Result<(), String> {
+    let path = std::env::temp_dir().join(format!(
+        "advanced-show-control-debug-smoke-scene-settings-{}.ascs",
+        uuid::Uuid::new_v4()
+    ));
+    let backup_dir = path
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join("backups");
+    let file = ShowFile {
+        schema_version: SHOW_FILE_SCHEMA_VERSION,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        saved_at: crate::time::current_timestamp_millis(),
+        safety: ShowFileSafety { lockout: false },
+        scene_configs: Vec::new(),
+        cue_lists: Vec::new(),
+        active_cue_list_id: None,
+        cued_cue_entry_id: None,
+    };
+    write_show_file(&path, &file, &backup_dir)?;
+
+    let show = lifecycle.current_show().await;
+    let (reply, rx) = oneshot::channel();
+    show.send(ShowCommand::LoadShowFileFromPath {
+        path,
+        reply: Some(reply),
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    rx.await
+        .map_err(|_| "show file load reply channel closed".to_string())??;
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn debug_smoke_load_unlinked_scene_session(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<String, String> {

@@ -100,7 +100,7 @@ async function run() {
       await assertEmptySceneSettings(sceneB, "Smoke B");
     });
     await test("scene-settings-copy-paste", async () => {
-      await rawReset(0, targetA);
+      await loadSceneSettingsSmokeSession();
       await invoke("store_scene_config", { internalSceneId: sceneA });
       await invoke("set_scene_scope_faders_enabled", {
         internalSceneId: sceneA,
@@ -146,11 +146,16 @@ async function run() {
         () => state?.sceneSettingsClipboardAvailable,
         "projected scene settings clipboard",
       );
+      await invoke("save_show_file");
+      await waitFor(
+        () => state && !state.showFileDirty,
+        "clean projected show file before paste",
+      );
       await invoke("paste_scene_settings", { internalSceneId: sceneB });
 
       const destination = await waitFor(() => {
         const next = sceneConfig(sceneB);
-        if (!next) return undefined;
+        if (!next || !state?.showFileDirty) return undefined;
         if (
           next.durationMs !== sourceBeforePaste.durationMs ||
           !sameValue(next.scopeToggles, sourceBeforePaste.scopeToggles) ||
@@ -458,6 +463,22 @@ async function newSceneSettingsSession() {
     }
     return next;
   }, "smoke scene configs after new show");
+  sceneA = scenes.sceneA;
+  sceneB = scenes.sceneB;
+}
+
+async function loadSceneSettingsSmokeSession() {
+  const previousSceneA = sceneA;
+  const previousSceneB = sceneB;
+  await invoke("debug_smoke_load_scene_settings_session");
+  const scenes = await waitFor(() => {
+    const next = resolveSmokeSceneIds();
+    if (!next) return undefined;
+    if (next.sceneA === previousSceneA || next.sceneB === previousSceneB) {
+      return undefined;
+    }
+    return next;
+  }, "scene settings smoke session");
   sceneA = scenes.sceneA;
   sceneB = scenes.sceneB;
 }
