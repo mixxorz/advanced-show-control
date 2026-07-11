@@ -131,6 +131,10 @@ CueLists { generation, event }
 Show(ShowEvent)
 ```
 
+`Lv1Event::PingReceived` is a generation-tagged fact containing the monotonically
+increasing sequence of an accepted LV1 keepalive ping. It is an operational fact
+for runtime consumers and does not produce frontend log traffic.
+
 `AppEventBus` shall satisfy the following rules:
 
 1. Events shall represent facts, not requests.
@@ -309,6 +313,18 @@ The module owns the following responsibilities:
 
 The module publishes `FadeEvent` facts and accepts `FadeCommand` requests.
 
+#### Post-Recall Fade Readiness
+
+Every validated timed scene recall pauses all active fade writes for the current
+runtime generation. `FadeEngine` resumes and rebases those targets only after two
+later LV1 keepalive ping facts. A newer validated recall resets the count. Five
+seconds without readiness aborts all paused fades. This relies on an unconfirmed
+real-hardware assumption; the simulator does not exhibit ping delay during recall.
+
+The barrier pauses ASC parameter writes only. It does not ignore LV1 parameter
+feedback, and normal manual override detection remains active while the barrier is
+waiting. Same-scene finishing behavior is tracked separately in #42.
+
 ### 13.3 `scenes`
 
 The `scenes` module owns scene recall automation.
@@ -461,6 +477,10 @@ The application controls live mixer faders. The backend shall implement the foll
 16. The backend shall preserve overlap behavior.
 17. The backend shall preserve same-scene behavior.
 18. The backend shall preserve disconnect behavior.
+19. Supported LV1 scene recall scope shall not move faders or pan-family controls
+    managed by ASC; ASC is the sole owner of those movements. Normal manual override
+    remains active during the post-recall ping barrier. If an LV1 scene is configured
+    to move those controls during recall, ASC behavior is unsupported and undefined.
 
 ## 16.0 Backend File Structure
 
