@@ -31,7 +31,6 @@ pub(crate) struct ActiveTarget {
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     paused_since: Option<Instant>,
     pub(crate) expected_generation: Option<u64>,
 }
@@ -66,21 +65,19 @@ impl ActiveTarget {
         }
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn pause(&mut self, now: Instant) {
         if self.paused_since.is_none() {
             self.paused_since = Some(now);
         }
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn resume(&mut self, now: Instant) {
         if let Some(paused_since) = self.paused_since.take() {
             self.started_at += now.duration_since(paused_since);
         }
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
+    #[cfg(test)]
     pub(crate) fn is_paused(&self) -> bool {
         self.paused_since.is_some()
     }

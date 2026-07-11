@@ -4,12 +4,9 @@ use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
 use crate::runtime::events::AppEventBus;
 
-#[allow(dead_code)] // Consumed by the fade actor in the next integration task.
 pub(crate) const READINESS_PINGS_REQUIRED: u8 = 2;
-#[allow(dead_code)] // Consumed by the fade actor in the next integration task.
 pub(crate) const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[allow(dead_code)] // Consumed by the fade actor in the next integration task.
 pub(crate) struct ReadinessBarrier {
     pub(crate) generation: u64,
     pub(crate) scene_index: i32,
@@ -21,7 +18,6 @@ pub(crate) struct ReadinessBarrier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed by the fade actor in the next integration task.
 pub(crate) enum PingGateProgress {
     Ignored,
     Waiting { observed: u8 },
@@ -29,7 +25,6 @@ pub(crate) enum PingGateProgress {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)] // Consumed by the fade actor in the next integration task.
 pub(crate) struct ReadinessTimeoutContext {
     pub(crate) generation: u64,
     pub(crate) scene_index: i32,
@@ -62,12 +57,10 @@ impl EngineState {
         !self.channels.is_empty()
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn start_or_reset_readiness(
         &mut self,
         generation: u64,
@@ -98,7 +91,6 @@ impl EngineState {
         }
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn observe_ping(
         &mut self,
         generation: u64,
@@ -131,14 +123,12 @@ impl EngineState {
         PingGateProgress::Released
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn readiness_deadline(&self) -> Option<tokio::time::Instant> {
         self.readiness_barrier
             .as_ref()
             .map(|barrier| barrier.deadline)
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn readiness_timeout_context(&self) -> Option<ReadinessTimeoutContext> {
         self.readiness_barrier
             .as_ref()
@@ -150,7 +140,6 @@ impl EngineState {
             })
     }
 
-    #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn is_waiting_for_readiness(&self) -> bool {
         self.readiness_barrier.is_some()
     }
