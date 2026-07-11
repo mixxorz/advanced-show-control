@@ -161,10 +161,14 @@ mod tests {
     use super::*;
     use crate::fade::curve::FadeCurve;
     use crate::fade::tick::ActiveTargetInit;
-    use crate::fade::types::{FadeParameter, FadeTargetKey};
+    use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 
     fn active_target(started_at: Instant) -> ActiveTarget {
         ActiveTarget::new(ActiveTargetInit {
+            scene: FadeSceneIdentity {
+                index: 17,
+                name: "Verse".to_string(),
+            },
             key: FadeTargetKey {
                 group: 0,
                 channel: 0,

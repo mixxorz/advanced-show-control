@@ -463,6 +463,7 @@ async fn handle_recall_scene_fade(
 
         state.channels.retain(|ch| ch.key != target.key());
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
+            scene: config.scene.clone(),
             key: target.key(),
             group: target.group,
             channel: target.channel,
@@ -736,6 +737,7 @@ mod tests {
         };
 
         ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: target.key(),
             group: target.group,
             channel: target.channel,
@@ -1793,6 +1795,7 @@ mod tests {
 
         let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
@@ -1878,6 +1881,7 @@ mod tests {
 
         let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
@@ -1913,6 +1917,7 @@ mod tests {
 
         let mut state = EngineState::new(AppEventBus::default(), 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
@@ -1930,6 +1935,7 @@ mod tests {
             expected_generation: Some(3),
         }));
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: FadeTarget {
                 group: 0,
                 channel: 1,
@@ -1967,6 +1973,7 @@ mod tests {
 
         let mut state = EngineState::new(event_bus, 0);
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: FadeTarget {
                 group: 0,
                 channel: 0,
