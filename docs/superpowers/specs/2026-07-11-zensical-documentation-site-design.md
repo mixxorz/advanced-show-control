@@ -60,8 +60,7 @@ The Application Shell guide covers:
 - Top-level navigation.
 - Connection status and controls.
 - Bottom status indicators.
-- Lockout.
-- Abort All.
+- The **SAFE** control and lockout state.
 - Window title and session state.
 - File menu behavior.
 - New, Open, Save, and Save As workflows.
@@ -130,7 +129,7 @@ Each screen guide follows a consistent structure:
 6. Empty, disconnected, blocked, and error states.
 7. Links to related troubleshooting entries.
 
-Safety is not a standalone documentation section. Guidance for lockout, Abort All, manual override, disconnects, stale or unsafe state, exact scene matching, and blocked recalls appears at the point where the user encounters the relevant action or status. The text must not overstate guarantees or supported workflows.
+Safety is not a standalone documentation section. Guidance for the **SAFE** control and lockout state, manual override, disconnects, stale or unsafe state, exact scene matching, and blocked recalls appears at the point where the user encounters the relevant action or status. The text must not overstate guarantees or supported workflows.
 
 ## Writing Standard
 
@@ -154,7 +153,7 @@ Use a formal, precise technical-manual voice throughout the site.
 
 Example:
 
-> Select **Lockout** before editing scene fade settings during show operation. Lockout prevents application-initiated recalls while enabled. It does not disable controls in LV1.
+> Select **SAFE** before editing scene fade settings during show operation. The active **SAFE** state prevents application-initiated recalls. It does not disable controls in LV1.
 
 ## Screenshot Strategy
 
@@ -221,5 +220,6 @@ Implementation is complete when:
 - Publishing internal architecture, protocol, contributor, or implementation-planning documentation.
 - Building a separate custom documentation frontend.
 - Documenting the future Event Automation release before its behavior exists on the documented revision.
+- Documenting backend-only or otherwise unreachable controls, including Abort All, unless they become available in the documented user interface.
 - Creating a screenshot for every control or state.
 - Changing application runtime behavior.
