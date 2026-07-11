@@ -132,9 +132,22 @@ Retain the existing Vitest coverage proving:
 
 No Storybook or visual regression changes are required because the visible modal states do not change.
 
+### Hardware Smoke Test
+
+Extend the debug smoke suite with a single-process startup auto-connect scenario:
+
+1. Complete the existing manual connection path so the confirmed LV1 identity is stored through production commands.
+2. Disconnect through the production disconnect command.
+3. Invoke the production `startup_auto_connect_lv1` command without restarting the debug app.
+4. Observe production `app-status-changed` snapshots until the runtime reports connected.
+5. Assert that the connected identity has the same UUID as the originally connected LV1 system.
+6. Assert that the runtime remains usable by completing the next existing production-command smoke operation.
+
+This smoke scenario verifies live discovery, safe identity matching, lifecycle reconnection, and connected-state projection. It does not claim to verify reloading `settings.json` across an app restart; settings actor persistence tests provide deterministic coverage for writing and loading the remembered identity.
+
 ## Verification
 
-Run targeted settings and lifecycle Rust tests, the `AppRuntime` frontend tests, and then the standard non-visual repository verification. Verify startup against an LV1-compatible target when practical.
+Run targeted settings and lifecycle Rust tests, the `AppRuntime` frontend tests, and then the standard non-visual repository verification. Run `make smoke` against an LV1-compatible target and inspect `logs/debug-smoke-report.txt` for the authoritative result.
 
 ## Related Work
 
