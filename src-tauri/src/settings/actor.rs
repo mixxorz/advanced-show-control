@@ -14,12 +14,36 @@ pub struct SettingsActorTask {
     rx: mpsc::Receiver<SettingsCommand>,
     event_bus: AppEventBus,
     state: SettingsState,
+    #[cfg(test)]
+    set_last_connected_lv1_gate: Option<SetLastConnectedLv1Gate>,
 }
 
 impl SettingsActorTask {
     pub fn spawn(self) {
-        tauri::async_runtime::spawn(run_settings_actor(self.rx, self.event_bus, self.state));
+        tauri::async_runtime::spawn(run_settings_actor(
+            self.rx,
+            self.event_bus,
+            self.state,
+            #[cfg(test)]
+            self.set_last_connected_lv1_gate,
+        ));
     }
+
+    #[cfg(test)]
+    pub(crate) fn pause_set_last_connected_lv1(
+        mut self,
+        received: tokio::sync::oneshot::Sender<()>,
+        release: tokio::sync::oneshot::Receiver<()>,
+    ) -> Self {
+        self.set_last_connected_lv1_gate = Some(SetLastConnectedLv1Gate { received, release });
+        self
+    }
+}
+
+#[cfg(test)]
+struct SetLastConnectedLv1Gate {
+    received: tokio::sync::oneshot::Sender<()>,
+    release: tokio::sync::oneshot::Receiver<()>,
 }
 
 pub fn build_settings_actor(
@@ -33,6 +57,8 @@ pub fn build_settings_actor(
         rx,
         event_bus,
         state,
+        #[cfg(test)]
+        set_last_connected_lv1_gate: None,
     };
     (SettingsHandle::new(tx), task, initial_settings)
 }
@@ -41,9 +67,17 @@ async fn run_settings_actor(
     mut rx: mpsc::Receiver<SettingsCommand>,
     event_bus: AppEventBus,
     mut state: SettingsState,
+    #[cfg(test)] mut set_last_connected_lv1_gate: Option<SetLastConnectedLv1Gate>,
 ) {
     while let Some(command) = rx.recv().await {
-        handle_command(command, &event_bus, &mut state).await;
+        handle_command(
+            command,
+            &event_bus,
+            &mut state,
+            #[cfg(test)]
+            &mut set_last_connected_lv1_gate,
+        )
+        .await;
     }
     tracing::debug!(event = "settings_actor_stopped", "Settings actor stopped");
 }
@@ -52,6 +86,7 @@ async fn handle_command(
     command: SettingsCommand,
     event_bus: &AppEventBus,
     state: &mut SettingsState,
+    #[cfg(test)] set_last_connected_lv1_gate: &mut Option<SetLastConnectedLv1Gate>,
 ) {
     match command {
         SettingsCommand::GetSettings { reply } => {
@@ -87,10 +122,25 @@ async fn handle_command(
         SettingsCommand::GetLastConnectedLv1 { reply } => {
             let _ = reply.send(state.last_connected_lv1());
         }
-        SettingsCommand::SetLastConnectedLv1 { identity, reply } => {
-            let result = state
-                .set_last_connected_lv1(identity)
-                .map(|changed| SettingsCommandResult { changed });
+        SettingsCommand::SetLastConnectedLv1 {
+            identity,
+            runtime_generation,
+            expected_generation,
+            reply,
+        } => {
+            #[cfg(test)]
+            if let Some(gate) = set_last_connected_lv1_gate.take() {
+                let _ = gate.received.send(());
+                let _ = gate.release.await;
+            }
+            let result = runtime_generation
+                .if_current(expected_generation, || {
+                    state
+                        .set_last_connected_lv1(identity)
+                        .map(|changed| SettingsCommandResult { changed })
+                })
+                .await
+                .unwrap_or(Ok(SettingsCommandResult { changed: false }));
             let _ = reply.send(result);
         }
     }
@@ -206,6 +256,10 @@ mod tests {
             address: address.to_string(),
             port: 50000,
         }
+    }
+
+    fn runtime_generation() -> crate::runtime::generation::RuntimeGeneration {
+        crate::runtime::generation::RuntimeGeneration::default()
     }
 
     async fn get_settings(handle: &SettingsHandle) -> AppSettings {
@@ -337,6 +391,8 @@ mod tests {
         handle
             .send(SettingsCommand::SetLastConnectedLv1 {
                 identity: identity.clone(),
+                runtime_generation: runtime_generation(),
+                expected_generation: 0,
                 reply,
             })
             .await
@@ -353,6 +409,63 @@ mod tests {
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(identity));
         assert!(dir.join("settings.json").exists());
+    }
+
+    #[tokio::test]
+    async fn actor_keeps_remembered_identity_private_across_mailbox_updates() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let dir = temp_settings_dir("remembered-identity-private");
+        let (handle, task, _) = build_settings_actor(dir, event_bus);
+        task.spawn();
+        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: identity.clone(),
+                runtime_generation: runtime_generation(),
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.await.unwrap().unwrap(),
+            SettingsCommandResult { changed: true }
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
+                .await
+                .is_err()
+        );
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::ReplaceSettings {
+                settings: AppSettings {
+                    auto_save_sessions: true,
+                    ..Default::default()
+                },
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.await.unwrap().unwrap(),
+            SettingsCommandResult { changed: true }
+        );
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            AppEvent::Settings(SettingsEvent::StateChanged { settings }) if settings.auto_save_sessions
+        ));
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), Some(identity));
     }
 
     #[tokio::test]

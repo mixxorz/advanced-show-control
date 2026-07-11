@@ -151,12 +151,11 @@ impl RuntimeInstallRejection {
 }
 
 struct LifecycleInner {
-    generation: u64,
+    generation: RuntimeGeneration,
     connecting: bool,
     frontend_ready: bool,
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
-    runtime_generation: RuntimeGeneration,
 }
 
 #[derive(Clone)]
@@ -177,19 +176,17 @@ impl AppLifecycle {
         show_peers: ShowActorPeers,
         settings: SettingsHandle,
     ) -> Self {
-        let runtime_generation = RuntimeGeneration::new();
         let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
         show_peers.set_cue_lists(cue_lists.clone());
         cue_lists_task.spawn();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
-                generation: 0,
+                generation: RuntimeGeneration::new(),
                 connecting: false,
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
                 projector: None,
-                runtime_generation,
             })),
             event_bus,
             show,
@@ -206,9 +203,8 @@ impl AppLifecycle {
 
     pub async fn begin_connecting(&self) -> Option<u64> {
         let mut inner = self.inner.lock().await;
-        inner.generation = inner.generation.saturating_add(1);
+        let generation = inner.generation.advance().await;
         inner.connecting = true;
-        let generation = inner.generation;
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
@@ -216,7 +212,7 @@ impl AppLifecycle {
     }
 
     pub async fn active_generation(&self) -> u64 {
-        self.inner.lock().await.generation
+        self.inner.lock().await.generation.current().await
     }
 
     pub async fn install_runtime_transaction(
@@ -225,7 +221,7 @@ impl AppLifecycle {
         handles: RuntimeHandles,
     ) -> Result<(), RuntimeInstallRejection> {
         let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if inner.generation.current().await != generation {
             return Err(RuntimeInstallRejection::StaleGeneration { handles });
         }
 
@@ -233,7 +229,6 @@ impl AppLifecycle {
             return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles });
         }
 
-        inner.runtime_generation.set(generation).await;
         inner.handles = handles;
         inner.connecting = false;
         Ok(())
@@ -245,7 +240,7 @@ impl AppLifecycle {
         handle: ScenesHandle,
     ) -> bool {
         let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if inner.generation.current().await != generation {
             return false;
         }
 
@@ -257,15 +252,13 @@ impl AppLifecycle {
 
     pub async fn clear_runtime_transaction(&self, generation: u64) {
         let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if inner.generation.current().await != generation {
             return;
         }
         inner.handles.abort_all();
         self.show_peers.clear_lv1(generation);
         self.cue_lists_peers.clear_scenes();
-        inner.runtime_generation.set(inner.generation).await;
-        inner.generation = inner.generation.saturating_add(1);
-        let generation = inner.generation;
+        let generation = inner.generation.advance().await;
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
@@ -280,7 +273,7 @@ impl AppLifecycle {
         let (generation, runtime_generation) = {
             let mut inner = self.inner.lock().await;
             inner.handles.abort_all();
-            (inner.generation, inner.runtime_generation.clone())
+            (inner.generation.current().await, inner.generation.clone())
         };
         self.show_peers.clear_lv1(generation);
         runtime_generation.set(generation).await;
@@ -352,12 +345,9 @@ impl AppLifecycle {
             self.clear_runtime_transaction(generation).await;
             return Err("generation is stale".to_string());
         }
-        if let Err(error) = self.remember_last_connected_lv1(identity).await {
-            tracing::error!(
-                event = "last_connected_lv1_save_failed",
-                error = %error,
-                "Connected to LV1, but the connection could not be remembered for next startup"
-            );
+        if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
+            self.log_last_connected_lv1_save_failure(generation, error)
+                .await;
         }
         started_runtime.scene_recall_task.spawn();
         let _ = app;
@@ -428,12 +418,9 @@ impl AppLifecycle {
             self.clear_runtime_transaction(generation).await;
             return Err("generation is stale".to_string());
         }
-        if let Err(error) = self.remember_last_connected_lv1(identity).await {
-            tracing::error!(
-                event = "last_connected_lv1_save_failed",
-                error = %error,
-                "Connected to LV1, but the connection could not be remembered for next startup"
-            );
+        if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
+            self.log_last_connected_lv1_save_failure(generation, error)
+                .await;
         }
         scene_recall_task.spawn();
         let _ = app;
@@ -535,7 +522,7 @@ impl AppLifecycle {
     }
 
     pub async fn current_runtime_generation(&self) -> RuntimeGeneration {
-        self.inner.lock().await.runtime_generation.clone()
+        self.inner.lock().await.generation.clone()
     }
 
     pub async fn current_show(&self) -> ShowStateHandle {
@@ -585,16 +572,36 @@ impl AppLifecycle {
 
     async fn remember_last_connected_lv1(
         &self,
+        expected_generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
     ) -> Result<(), String> {
         let (reply, rx) = oneshot::channel();
+        let runtime_generation = self.current_runtime_generation().await;
         self.settings
-            .send(SettingsCommand::SetLastConnectedLv1 { identity, reply })
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity,
+                runtime_generation,
+                expected_generation,
+                reply,
+            })
             .await
             .map_err(|_| "Settings are unavailable".to_string())?;
         rx.await
             .map_err(|_| "Settings reply channel is closed".to_string())?
             .map(|_| ())
+    }
+
+    async fn log_last_connected_lv1_save_failure(&self, generation: u64, error: String) {
+        let runtime_generation = self.current_runtime_generation().await;
+        let _ = runtime_generation
+            .if_current(generation, || {
+                tracing::error!(
+                    event = "last_connected_lv1_save_failed",
+                    error = %error,
+                    "Connected to LV1, but the connection could not be remembered for next startup"
+                );
+            })
+            .await;
     }
 
     pub async fn connect_lv1_system<R: Runtime>(
@@ -752,7 +759,7 @@ impl AppLifecycle {
             return Ok(());
         }
         inner.frontend_ready = true;
-        let generation = inner.generation;
+        let generation = inner.generation.current().await;
         inner.projector = Some(crate::projector::spawn_projector(
             crate::projector::ProjectorInputs {
                 app,
@@ -995,7 +1002,12 @@ mod tests {
     async fn set_last_connected_lv1(settings: &SettingsHandle, identity: Lv1SystemIdentity) {
         let (reply, rx) = oneshot::channel();
         settings
-            .send(SettingsCommand::SetLastConnectedLv1 { identity, reply })
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity,
+                runtime_generation: RuntimeGeneration::default(),
+                expected_generation: 0,
+                reply,
+            })
             .await
             .expect("remembered identity command should send");
         rx.await
@@ -1859,6 +1871,70 @@ mod tests {
         assert!(flip_rx.await.is_ok());
         assert!(matches!(result, Err(message) if message == "generation is stale"));
         assert_eq!(get_last_connected_lv1(&settings).await, Some(remembered));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_persistence_handoff_does_not_store_identity_or_log_an_error() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        let (settings, settings_task, _) = crate::settings::build_settings_actor(
+            settings_dir.path().to_path_buf(),
+            event_bus.clone(),
+        );
+        let (write_received_tx, write_received_rx) = oneshot::channel();
+        let (release_write_tx, release_write_rx) = oneshot::channel();
+        settings_task
+            .pause_set_last_connected_lv1(write_received_tx, release_write_rx)
+            .spawn();
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let identity = identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36");
+        let lifecycle_for_connect = lifecycle.clone();
+
+        let connect = tokio::spawn(async move {
+            lifecycle_for_connect
+                .finish_connect_transaction_inner(
+                    mock_app().handle().clone(),
+                    identity,
+                    ConnectFailureMode::ClearConnectedIdentity,
+                    generation,
+                    runtime_generation,
+                    event_bus,
+                    lv1,
+                    fade,
+                    None,
+                )
+                .await
+        });
+
+        write_received_rx
+            .await
+            .expect("settings write should be reached after scene-peer acceptance");
+        assert!(lifecycle.current_scene_recall_fader().await.is_some());
+        lifecycle.begin_connecting().await.unwrap();
+        std::fs::remove_dir_all(settings_dir.path())
+            .expect("settings directory should be removable while the write is paused");
+        std::fs::write(settings_dir.path(), "not a directory")
+            .expect("settings path should prevent a stale write");
+        release_write_tx.send(()).unwrap();
+
+        assert!(connect.await.unwrap().is_ok());
+        assert_eq!(get_last_connected_lv1(&settings).await, None);
+        assert!(
+            !logs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|log| { log.event.as_deref() == Some("last_connected_lv1_save_failed") })
+        );
     }
 
     #[tokio::test]

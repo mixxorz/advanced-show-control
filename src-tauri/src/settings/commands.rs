@@ -2,6 +2,7 @@ use serde::Serialize;
 use tokio::sync::oneshot;
 
 use crate::connection_state::Lv1SystemIdentity;
+use crate::runtime::generation::RuntimeGeneration;
 
 use super::AppSettings;
 
@@ -19,6 +20,8 @@ pub enum SettingsCommand {
     },
     SetLastConnectedLv1 {
         identity: Lv1SystemIdentity,
+        runtime_generation: RuntimeGeneration,
+        expected_generation: u64,
         reply: oneshot::Sender<Result<SettingsCommandResult, String>>,
     },
 }
