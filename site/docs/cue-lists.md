@@ -44,9 +44,11 @@ The list uses row color and direction indicators to distinguish entry state.
 | Selected | Orange row highlight and indicator | This entry is ready for **Cue**. |
 | Cued | Blue text and indicator | This entry supplies the scene shown as **Cued** in the bottom status bar. |
 | Current | Green text and indicator | The referenced scene matches the current LV1 scene. |
-| Missing scene | Warning-colored text and indicator; scene number `---` | The cue entry still exists, but its scene configuration is unavailable. |
+| Missing scene, not cued | Warning-colored text and indicator; scene number `---` | The cue entry still exists, but its scene configuration is unavailable. |
 
 An entry can be selected before it is cued. Cued state is projected from the active cue list; selecting another entry does not change the current cue until you use **Cue** or double-click that entry.
+
+Cued styling takes precedence over missing-scene styling. A missing entry that is cued uses the blue cued text and indicator shown in the missing-scene screenshot, while **Missing scene** and `---` continue to identify the unavailable reference.
 
 ## Manage Cue Lists
 
@@ -67,6 +69,8 @@ Confirming deletion removes only the app-managed cue list. It does not delete th
 ## GO
 
 The bottom status bar displays **GO**, **Cued**, **Current**, and the operating mode. **GO** recalls the cued entry from the active cue list. The **Cued** field displays `---` when no valid cued scene is available.
+
+After a successful **GO** recall, the application cues the next entry in the active list. After the last entry recalls successfully, it clears the cue; **Cued** displays `---` and the next **GO** is unavailable until an entry is cued again.
 
 **SAFE** blocks application-initiated recall. Before using **GO**, confirm that **SAFE** is not active, the displayed cued scene is the intended scene, and the console is ready for the recall. **GO** is an application recall request; it does not replace normal LV1 controls.
 
