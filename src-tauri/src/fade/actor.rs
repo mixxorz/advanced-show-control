@@ -260,7 +260,10 @@ async fn run_engine(
                             &mut fade_completed_emitted,
                         );
                     }
-                    Ok(AppEvent::Lv1 { event: Lv1Event::Disconnected { .. }, .. }) => {
+                    Ok(AppEvent::Lv1 {
+                        generation: event_generation,
+                        event: Lv1Event::Disconnected { .. },
+                    }) if event_generation == generation => {
                         if state.is_active() || state.is_waiting_for_readiness() {
                             state.cancel_all_in_place();
                             tick_interval = None;
@@ -2070,7 +2073,59 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_recall_ping_disconnect_clears_readiness_before_later_pings() {
+    async fn post_recall_ping_stale_disconnect_keeps_current_gate_and_releases_after_pings() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 6,
+            event: Lv1Event::Disconnected {
+                reason: "stale test disconnect".to_string(),
+            },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+
+        let writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+            .await
+            .expect("current fade should resume after valid pings")
+            .expect("fade write channel should remain open");
+        assert!(writes.iter().any(|write| {
+            write.group == 0 && write.channel == 0 && write.parameter == Lv1WriteParameter::FaderDb
+        }));
+        assert_no_additional_fade_abort(&mut events).await;
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_matching_disconnect_aborts_and_prevents_writes() {
         let (event_bus, engine, mut write_rx) =
             spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
                 40,
