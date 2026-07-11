@@ -132,6 +132,30 @@ Each screen guide follows a consistent structure:
 
 Safety is not a standalone documentation section. Guidance for lockout, Abort All, manual override, disconnects, stale or unsafe state, exact scene matching, and blocked recalls appears at the point where the user encounters the relevant action or status. The text must not overstate guarantees or supported workflows.
 
+## Writing Standard
+
+Use a formal, precise technical-manual voice throughout the site.
+
+- Use imperative language for procedures, such as "Select **Connect**."
+- Use impersonal declarative language for reference descriptions, such as "The status bar displays the current LV1 connection state."
+- Prefer short, literal sentences and exact user-interface labels.
+- Introduce one concept at a time.
+- Avoid promotional, conversational, playful, or vague wording.
+- State prerequisites before actions and expected results after them.
+- Distinguish requirements, recommendations, notes, warnings, and limitations.
+- Use **must** only for required actions or safety constraints, **should** for recommendations, and **may** for optional behavior.
+- Describe current behavior only. Identify unavailable or incomplete behavior explicitly.
+- Refer to Waves eMotion LV1 as **LV1** after its first use.
+- Refer to the product as **Advanced Show Control** or **the application**, never "we."
+- Keep safety notes factual and beside the relevant control or procedure.
+- Do not use vague reassurance or overstate safety guarantees.
+- Use numbered steps for sequential procedures, bullets for nonsequential facts, and tables for compact control references.
+- Format exact user-interface labels in bold, file names and paths as code, and user-entered values as code.
+
+Example:
+
+> Select **Lockout** before editing scene fade settings during show operation. Lockout prevents application-initiated recalls while enabled. It does not disable controls in LV1.
+
 ## Screenshot Strategy
 
 Use existing visual regression test screenshots as the source for application imagery. Copy selected screenshots into the `site/` directory so each documentation version contains immutable assets matching that source revision.
@@ -169,10 +193,12 @@ The `latest` documentation describes behavior on `main`. A release tag preserves
 
 Documentation should be checked against:
 
+- Frontend interaction tests as the primary source for user-visible behavior.
 - Current React components and application shell structure.
 - Storybook stories and visual regression states.
-- Frontend interaction tests.
-- Implemented backend behavior where a screen exposes safety or persistence behavior.
+- Implemented backend behavior and Rust tests only where they clarify safety, persistence, or runtime details that the frontend does not fully express.
+
+When frontend and backend sources emphasize different details, the guide should lead with the behavior visible to the user. Backend implementation details should appear only when they affect an observable result, limitation, or safety constraint.
 
 Pages must state current limitations directly. Planned behavior must not be presented as available behavior.
 
