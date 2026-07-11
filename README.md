@@ -30,6 +30,19 @@ Prefer `cargo nextest run` for Rust tests, including targeted checks such as `ca
 
 `pre-commit` runs Rust formatting and workspace-wide clippy. It does not run tests.
 
+## Documentation
+
+Install the pinned documentation dependencies and run the local site with:
+
+```bash
+make docs-install
+make docs-build
+make docs-serve
+```
+
+The published manual is available at https://mitchel.me/advanced-show-control/.
+`stable` is the latest numbered release documentation, while `latest` tracks the current `main` branch.
+
 ## License
 
 Advanced Show Control is licensed under the GNU General Public License version 3 or later. See [LICENSE](LICENSE) for details.

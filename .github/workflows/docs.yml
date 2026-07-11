@@ -1,0 +1,100 @@
+name: Documentation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+    tags:
+      - "v[0-9]+"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: documentation-pages
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out triggering revision
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install documentation dependencies
+        run: python -m pip install -r requirements-docs.txt
+
+      - name: Build documentation
+        run: zensical build --clean --strict --config-file site/zensical.toml
+
+  deploy-latest:
+    name: Deploy latest documentation
+    needs: validate
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install documentation dependencies
+        run: python -m pip install -r requirements-docs.txt
+
+      - name: Configure Git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Deploy latest
+        run: mike deploy --config-file site/zensical.toml --push --update-aliases development latest
+
+  deploy-stable:
+    name: Deploy stable documentation
+    needs: validate
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - name: Install documentation dependencies
+        run: python -m pip install -r requirements-docs.txt
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          if [[ ! "${GITHUB_REF_NAME}" =~ ^v[0-9]+$ ]]; then
+            echo "Tag '${GITHUB_REF_NAME}' is not a build-number tag like v1" >&2
+            exit 1
+          fi
+
+      - name: Configure Git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Deploy stable
+        run: |
+          mike deploy --config-file site/zensical.toml --push --update-aliases "${GITHUB_REF_NAME}" stable
+          mike set-default --config-file site/zensical.toml --push stable
