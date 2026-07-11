@@ -362,6 +362,10 @@ async fn run_connected(
                                     if let Err(reason) = enqueue_writer_bytes(&writer_tx, bytes) {
                                         return reason;
                                     }
+                                    state.ping_sequence = state.ping_sequence.saturating_add(1);
+                                    state.fan_out(Lv1Event::PingReceived {
+                                        sequence: state.ping_sequence,
+                                    });
                                     state.last_ping = Instant::now();
                                     ping_deadline.as_mut().reset(tokio::time::Instant::from_std(state.last_ping + PING_TIMEOUT));
                                     continue;

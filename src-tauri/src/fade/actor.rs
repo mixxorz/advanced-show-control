@@ -691,6 +691,7 @@ mod tests {
                             scene: None,
                             scene_list: vec![],
                             channels: vec![],
+                            ping_sequence: 0,
                         });
                     }
                     Lv1Command::WriteBatch(writes) => {
@@ -1204,6 +1205,7 @@ mod tests {
                             scene: None,
                             scene_list: vec![],
                             channels: vec![],
+                            ping_sequence: 0,
                         });
                     }
                     Lv1Command::WriteBatch(writes) => {
@@ -1287,6 +1289,7 @@ mod tests {
                             scene: None,
                             scene_list: vec![],
                             channels: vec![],
+                            ping_sequence: 0,
                         });
                     }
                     Lv1Command::WriteBatch(writes) => {
@@ -1419,6 +1422,7 @@ mod tests {
                     scene: None,
                     scene_list: vec![],
                     channels: vec![],
+                    ping_sequence: 0,
                 });
             }
         });

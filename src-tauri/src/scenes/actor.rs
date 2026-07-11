@@ -991,6 +991,7 @@ mod tests {
                             width: None,
                             pan_mode: None,
                         }],
+                        ping_sequence: 0,
                     });
                 }
             }
@@ -1821,6 +1822,7 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                ping_sequence: 0,
             };
             while let Some(command) = lv1_rx.recv().await {
                 match command {
@@ -1884,6 +1886,7 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
+                ping_sequence: 0,
             };
             while let Some(command) = lv1_rx.recv().await {
                 match command {
