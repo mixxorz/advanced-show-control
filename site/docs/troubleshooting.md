@@ -4,15 +4,15 @@ Use this page when a connection, recall, cue, save, or fade does not do what you
 
 ## No LV1 Systems Found
 
-If the console does not appear in **Connect to LV1**, you cannot connect or recall. Confirm the LV1 system is reachable, leave **Connect to LV1** open, and select it only after it shows **Available**. See [Getting Started](getting-started.md#connect-to-lv1).
+If the console does not appear in **Connect to LV1**, you cannot connect or recall. Confirm the LV1 system is reachable, leave **Connect to LV1** open, and select it only after it shows **Available**. See [Getting Started](getting-started.md#2-connect-to-lv1).
 
 ## Connection Fails Or Reconnects
 
-If the full-screen **Reconnecting...** overlay is visible, a scene fade cannot start. Wait for it to clear and for the top bar to show **Connected**. The top bar itself shows only **Connected**, **Connecting**, or **Offline**. If the connection does not return, open [Connect To LV1](application-shell.md#connect-to-lv1), select the intended available console, and confirm **Current**.
+If the full-screen **Reconnecting...** overlay is visible, a scene fade cannot start. Wait for it to clear and for the top bar to show **Connected**. The top bar itself shows only **Connected**, **Connecting**, or **Offline**. If the connection does not return, use the [Top Bar](application-shell.md#top-bar) to open the connection window, select the intended available console, and confirm **Current**.
 
 ## Scene Is Unlinked
 
-An unlinked scene fade setting shows `---`; **Store** and **Recall** are unavailable. Select the intended LV1 scene in **LV1 Scene**, select **Link to scene**, then compare its number and name. See [Scenes](scenes.md#link-or-relink-a-scene).
+An unlinked scene fade setting shows `---`; **Store** and **Recall** are unavailable. Select the intended LV1 scene in **LV1 Scene**, select **Link to scene**, then compare its number and name. See [Link A Missing Scene](scenes.md#link-a-missing-scene).
 
 ## Recall Is Disabled Or Does Not Fade
 
@@ -22,11 +22,11 @@ If **Recall** is unavailable, the setting is unlinked. If LV1 recalls but no fad
 
 If **GO** is disabled, select an active cue list, cue an entry linked to an available scene fade setting, and confirm **Cued**. Wait for a running recall to finish and confirm **SAFE** is off.
 
-If **GO** is enabled but the setting is unlinked, the recall is refused and the cue remains. Link the setting to the intended LV1 scene, compare its number and name, then use **GO** again. See [Cue Lists](cue-lists.md#cue-and-go).
+If **GO** is enabled but the setting is unlinked, the recall is refused and the cue remains. Link the setting to the intended LV1 scene, compare its number and name, then use **GO** again. See [Use GO](cue-lists.md#use-go).
 
 ## Cue Displays Missing Scene
 
-**Missing scene** and `---` mean the cue points to its original scene fade setting, which is no longer available. Restore that original setting if possible. Otherwise, remove the missing cue entry, add the replacement or restored scene fade setting to the cue list, then cue it again. If you need to relink a setting, select it, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. See [Link Or Relink A Scene](scenes.md#link-or-relink-a-scene) and [Cue Lists](cue-lists.md#build-and-run-a-cue-list). Until you replace the entry, it cannot supply **Cued** for **GO**.
+**Missing scene** and `---` mean the cue points to its original scene fade setting, which is no longer available. Restore that original setting if possible. Otherwise, remove the missing cue entry, add the replacement or restored scene fade setting to the cue list, then cue it again. If you need to relink a setting, select it, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. See [Link A Missing Scene](scenes.md#link-a-missing-scene) and [Build A Cue List](cue-lists.md#build-a-cue-list). Until you replace the entry, it cannot supply **Cued** for **GO**.
 
 ## Session Cannot Be Opened Or Saved
 

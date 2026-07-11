@@ -1,53 +1,62 @@
 # Cue Lists
 
-Use **Cue Lists** to arrange scene fade settings in recall order. A cue list points to scene fade settings; it does not change LV1 scenes.
+Cue lists put your scene fades in show order without changing the scene order in LV1. Use them to prepare the next scene, confirm it, and recall it with **GO**.
 
-## Build And Run A Cue List
+![A cue list with repeated scene entries.](assets/screenshots/cue-list.png)
 
-1. Select **Manage Cue Lists**, create a list, and select it.
-2. Drag scene fade settings from the **Scene library** into the list.
-3. Drag entries into the order you need.
-4. Select an entry and choose **Cue**, or double-click it.
-5. Confirm **Cued**, then use **GO** when you are ready.
+## Build A Cue List
 
-The same scene fade setting can appear more than once.
+1. Select **Manage Cue Lists**.
+2. Create a list and make it active.
+3. Drag scene fades from the **Scene library** into the list.
+4. Drag entries into show order.
 
-![An active cue list with repeated scene entries.](assets/screenshots/cue-list.png)
+The same scene can appear more than once. Removing an entry removes it only from the cue list; the scene fade and LV1 scene are unchanged.
 
-If no list is active, the pane shows **No active cue list.** Select or create a list before adding entries.
+If no list is active, select or create one before adding entries.
 
-## Manage Cue Lists
+## Manage Lists
 
 ![The Manage Cue Lists dialog.](assets/screenshots/manage-cue-lists.png)
 
-Use **Manage Cue Lists** to create, select, rename, reorder, or delete lists. Deleting a list removes only that cue list. Its scene fade settings and LV1 scenes remain unchanged.
+Use **Manage Cue Lists** to create, select, rename, reorder, or delete lists. Deleting a list does not delete its scenes or fade settings.
 
-## Cue And GO
+## Prepare The Next Cue
 
-Selecting an entry highlights it. Select **Cue** or double-click the entry to make it the next cue. The row turns blue and **Cued** identifies its scene.
+Select an entry, then select **Cue**. You can also double-click the entry. The cued row turns blue, and its scene name appears under **Cued** in the bottom status bar.
 
-Before **GO**, confirm **SAFE** is off and compare **Cued** with the intended LV1 scene. After a successful recall, the next entry is cued. After the last entry, **Cued** shows `---`.
+Selecting a row does not cue it. This lets you inspect or edit the list without changing the scene prepared for **GO**.
 
-**GO** is available when **Cued** points to a scene fade setting. It remains available when that setting is unlinked. If you use **GO** for an unlinked setting, the recall is refused and the cue remains in place. Link the setting to the intended LV1 scene, confirm its number and name, then use **GO** again.
+## Use GO
 
-**GO** is unavailable when there is no active list, no cued entry, the referenced scene fade setting is missing, or a recall is still running. Wait until the recall completes before using **GO** again. Holding the GO shortcut does not repeat the recall.
+Before pressing **GO**:
+
+1. Confirm that **SAFE** is off.
+2. Check the scene shown under **Cued**.
+3. Confirm that it is the transition you want to run next.
+
+After a successful **GO**, the following entry is cued automatically. After the last entry, **Cued** returns to `---`.
+
+**GO** is temporarily unavailable while a recall is in progress. It is also unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists.
+
+An unlinked scene fade can still appear under **Cued**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
 
 ## Cue Entry States
 
 | State | Meaning |
 | --- | --- |
-| Selected | The entry is ready for **Cue**. |
-| Cued | The entry supplies **Cued** in the bottom status bar. |
-| Current | Its LV1 scene matches the current LV1 scene. |
-| Missing scene | The referenced scene fade setting is unavailable. |
+| Selected | The entry you are working with. |
+| Cued | The entry prepared for **GO**. |
+| Current | Its LV1 scene is active. |
+| Missing scene | The scene fade used by this entry no longer exists. |
 
-![A cued entry whose referenced scene fade setting is missing.](assets/screenshots/missing-cue-scene.png)
-
-Select the remove control to remove an entry. This does not delete its scene fade setting or LV1 scene.
+![A cued entry whose scene fade is missing.](assets/screenshots/missing-cue-scene.png)
 
 ## Keyboard Operation
 
-The default CUE shortcut is `C`. The default GO shortcut is `Space`. Shortcuts do not operate while you are entering a cue-list name or working in a dialog. Holding either shortcut does not repeat the action.
+The default shortcut for **Cue** is `C`. The default shortcut for **GO** is `Space`.
+
+Shortcuts are paused while you enter text or work in a dialog. Holding either key does not repeat the action. You can change both shortcuts in [Settings](settings.md#keyboard-shortcuts).
 
 ## Troubleshooting
 

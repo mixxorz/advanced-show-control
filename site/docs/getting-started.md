@@ -1,63 +1,69 @@
 # Getting Started
 
-Use this procedure to install Advanced Show Control, connect to LV1, save a session, configure one scene fade setting, and verify one configured scene transition. You need a reachable Waves eMotion LV1 or LV1 Classic system.
+This guide takes you from installation to your first scene fade. Before you begin, connect the computer running Advanced Show Control to the same network as your Waves eMotion LV1 or LV1 Classic system.
 
-LV1 creates and recalls console scenes. Advanced Show Control stores the scene fade settings linked to those scenes. Rehearse the complete workflow on the intended system before show use.
+## 1. Download And Install
 
-## Download And Install
+Download [Advanced Show Control v2 for Windows](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_Windows_x64_Setup.zip) or [Advanced Show Control v2 for macOS](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_macOS_universal.dmg).
 
-1. Download [Advanced Show Control v2 for Windows](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_Windows_x64_Setup.zip) or [Advanced Show Control v2 for macOS](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_macOS_universal.dmg).
-2. On Windows, extract the ZIP archive and run the installer.
-3. On macOS, open the disk image and install the application.
-4. Approve the app through the operating system if it is blocked. The v2 downloads are unsigned, and the macOS disk image is not notarized.
+On Windows, extract the ZIP file and run the installer. On macOS, open the disk image and install the app.
 
-## Connect To LV1
+The downloads are not signed, and the macOS version is not notarized. If your computer blocks the app, approve it in your operating-system security settings and open it again.
 
-**Connect to LV1** opens on first launch and searches for consoles.
+## 2. Connect To LV1
+
+Advanced Show Control searches for LV1 systems when it opens.
 
 ![The Connect to LV1 dialog lists available and unavailable systems.](assets/screenshots/connection-systems-found.png)
 
-1. Wait for the intended console to appear as **Available**.
-2. Select its row.
-3. Confirm **Connected** and the console name in the top bar.
+1. Wait for your console to appear as **Available**.
+2. Select the console.
+3. Confirm that the top bar shows **Connected** and the correct console name.
 
-The dialog also shows address, port, and TCP latency. TCP latency is the time required to reach the console over the network; a lower value means less connection delay. You can select the console when it is **Available**. An **Unavailable** console cannot be selected. When no console is connected, do not recall a scene.
+If the console appears as **Unavailable**, check the network connection and wait for discovery to update. You can reopen this window at any time by selecting the console name in the top bar.
 
-## Create And Save A Session
+## 3. Create A Session
 
-A session stores scene fade settings and cue lists. It does not replace an LV1 show file.
+A session stores your scene fades and cue lists in an `.ascs` file.
 
-1. Choose **File > New Session** after connecting to the intended console.
+1. Choose **File > New Session**.
 2. Choose **File > Save Session**.
-3. Name and save the `.ascs` file.
+3. Name the session and save it.
 
-Save the session after each intended change.
+Advanced Show Control does not yet warn you before closing or replacing a session with unsaved changes. Save after each change you want to keep.
 
-## Configure One Fade
+## 4. Create Your First Fade
 
-Scope selects which channels and which controls, **FADER** and **PAN**, can move during the fade. Whenever Scope has no channels when you select **Store**, including after **None**, Advanced Show Control restores every current channel to Scope. It preserves the existing **FADER** and **PAN** selections. A new scene fade setting starts with **FADER** on and **PAN** off. Review Scope and remove channels or controls you do not want to move before recall.
+Create the scene in LV1 first, then use Advanced Show Control to add the fade.
 
-1. Open **Scenes** and select the required scene fade setting.
-2. Set LV1 to the mix you want the scene to reach.
-3. Select **Store** to record the fader and pan values.
-4. Select the required channels. Use **All** or **None** when useful.
-5. Enable **FADER** and, when needed, **PAN**.
-6. Set **X-Fade** from `0.1` through `120` seconds, or enter `0` for a cut.
+1. Open **Scenes** and select the scene.
+2. Set the faders and pans in LV1 to the values you want the scene to reach.
+3. Select **Store**.
+4. In **Scope**, keep only the channels you want Advanced Show Control to move.
+5. Leave **FADER** on. Turn on **PAN** if pan controls should move as well.
+6. Set **X-Fade** to the transition time you want.
 7. Save the session.
 
-Review scope after every later **Store** as well, especially if the console channel list has changed.
+!!! warning "Check scope before recall"
+    If no channels are in scope when you select **Store**, all current channels are added. Remove any channels that should not move. **Store** keeps the current **FADER** and **PAN** selections, so check those as well.
 
-## Recall And Verify
+Set **X-Fade** to `0` for an immediate cut. For a timed transition, use a value from `0.1` to `120` seconds.
 
-1. Confirm that **SAFE** is off.
-2. Compare the displayed LV1 scene number and name with the intended scene.
+## 5. Recall The Scene
+
+1. Confirm that the top bar shows **Connected** and **SAFE** is off.
+2. Check the scene number and name.
 3. Select **Recall**.
-4. Watch the scoped controls reach their stored targets. **Mode** normally changes from **Fading** to **Ready**. If you move a fader, **Mode** can return to **Ready** while other scoped controls continue moving, so observe the controls rather than **Mode** alone.
+4. Watch the scoped controls move to the stored values.
 
-The fade starts from the fader and pan positions present when you recall the scene. It moves only the controls in scope. If LV1 is offline, the setting is unlinked, or the recalled LV1 scene number and name differ from the selected setting, no fade starts. Correct the condition, confirm the intended scene, and try again.
+The fade begins at the current fader and pan positions, not at the values that were present when you stored the scene. This allows the transition to begin smoothly from the mix that is live at recall time.
 
-## Next Steps
+During a normal fade, **Mode** shows **Fading** and returns to **Ready** afterward. If you move a fader during the fade, that fader follows your movement while the other scoped controls may continue. Watch the controls themselves before you consider the transition complete.
 
-- Read [Application Shell](application-shell.md) for connection, SAFE, and status-bar operation.
-- Read [Scenes](scenes.md) before you prepare additional scene fade settings.
-- Read [Cue Lists](cue-lists.md) before you use **GO** in a show.
+If the fade does not start, confirm that LV1 is connected, **SAFE** is off, and the scene number and name match. See [Recall Is Disabled Or Does Not Fade](troubleshooting.md#recall-is-disabled-or-does-not-fade) for additional checks.
+
+## Continue Learning
+
+- [Scenes](scenes.md) explains every part of a scene fade.
+- [Cue Lists](cue-lists.md) shows how to arrange scenes in show order.
+- [Application Shell](application-shell.md) explains **SAFE**, **GO**, and the status bar.
