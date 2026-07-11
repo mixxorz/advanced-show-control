@@ -9,7 +9,7 @@ pub struct RecallPolicyInput {
     pub scene_config: Option<SceneConfig>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum RecallPolicyDecision {
     Start(FadeConfig),
     Skip { reason: String },
@@ -197,7 +197,10 @@ mod tests {
                 group: 0,
                 channel: 2,
             }],
-            scope_toggles: SceneScopeToggles::default(),
+            scope_toggles: SceneScopeToggles {
+                faders: true,
+                pan: false,
+            },
         }
     }
 
@@ -289,6 +292,35 @@ mod tests {
             scene_config: None,
         });
         assert!(matches!(decision, RecallPolicyDecision::Skip { .. }));
+    }
+
+    #[test]
+    fn skips_default_empty_scene_config_after_exact_identity_validation() {
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        let decision = decide_scene_recall(RecallPolicyInput {
+            recalled_scene: scene.clone(),
+            lv1_snapshot: snapshot(Some(scene), Vec::new()),
+            lockout: false,
+            scene_config: Some(SceneConfig {
+                internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+                scene_index: Some(1),
+                scene_name: "Intro".to_string(),
+                duration_ms: 1000,
+                channel_configs: Vec::new(),
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }),
+        });
+
+        assert_eq!(
+            decision,
+            RecallPolicyDecision::Skip {
+                reason: "no applicable targets".to_string(),
+            }
+        );
     }
 
     #[test]

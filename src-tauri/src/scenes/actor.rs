@@ -798,6 +798,11 @@ mod tests {
         assert_eq!(state.scene_configs[0].scene_name, "Smoke A");
         assert_eq!(state.scene_configs[1].scene_index, Some(1));
         assert_eq!(state.scene_configs[1].scene_name, "Smoke B");
+        for config in &state.scene_configs {
+            assert!(config.channel_configs.is_empty());
+            assert!(config.scoped_channels.is_empty());
+            assert_eq!(config.scope_toggles, SceneScopeToggles::default());
+        }
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
@@ -1657,22 +1662,21 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn skipped_recall_does_not_abort_existing_fade() {
+    async fn empty_default_config_recall_skips_without_starting_fade() {
         let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
-        let (fade, mut fade_rx, fade_starts) = fake_fade_handle();
+        let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
         let handle = build_and_spawn_scene_recall_fader_with_document(
             1,
             runtime_generation.clone(),
             lv1,
             fade,
             event_bus.clone(),
-            intro_scene_document_with_scope(crate::scenes::SceneScopeToggles {
-                faders: false,
-                pan: false,
-            }),
+            intro_scene_document_with_scope(SceneScopeToggles::default()),
         )
         .await;
         release_lv1.send(()).unwrap();
@@ -1685,11 +1689,20 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(50)).await;
         tokio::task::yield_now().await;
+        match next_scene_recall_event(&mut events).await {
+            ScenesEvent::Skipped {
+                scene_label,
+                reason,
+            } => {
+                assert_eq!(scene_label, "1: Intro");
+                assert_eq!(reason, "no applicable targets");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
         assert!(matches!(
             fade_rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
-        assert_eq!(fade_starts.load(Ordering::SeqCst), 0);
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         server.await.unwrap();
@@ -1957,7 +1970,10 @@ mod tests {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: SceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles {
+                    faders: true,
+                    pan: false,
+                },
             }],
             selected_scene_internal_id: None,
         }
