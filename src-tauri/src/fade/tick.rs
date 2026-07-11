@@ -65,20 +65,20 @@ impl ActiveTarget {
         }
     }
 
-    pub(crate) fn pause(&mut self, now: Instant) {
+    pub(super) fn pause(&mut self, now: Instant) {
         if self.paused_since.is_none() {
             self.paused_since = Some(now);
         }
     }
 
-    pub(crate) fn resume(&mut self, now: Instant) {
+    pub(super) fn resume(&mut self, now: Instant) {
         if let Some(paused_since) = self.paused_since.take() {
             self.started_at += now.duration_since(paused_since);
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn is_paused(&self) -> bool {
+    pub(super) fn is_paused(&self) -> bool {
         self.paused_since.is_some()
     }
 

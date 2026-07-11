@@ -4,32 +4,32 @@ use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
 use crate::runtime::events::AppEventBus;
 
-pub(crate) const READINESS_PINGS_REQUIRED: u8 = 2;
-pub(crate) const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
+pub(super) const READINESS_PINGS_REQUIRED: u8 = 2;
+const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) struct ReadinessBarrier {
-    pub(crate) generation: u64,
-    pub(crate) scene_index: i32,
-    pub(crate) scene_name: String,
-    pub(crate) last_counted_ping_sequence: u64,
-    pub(crate) observed_ping_count: u8,
+struct ReadinessBarrier {
+    generation: u64,
+    scene_index: i32,
+    scene_name: String,
+    last_counted_ping_sequence: u64,
+    observed_ping_count: u8,
     missed_events: bool,
-    pub(crate) deadline: tokio::time::Instant,
+    deadline: tokio::time::Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PingGateProgress {
+pub(super) enum PingGateProgress {
     Ignored,
     Waiting { observed: u8 },
     Released,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ReadinessTimeoutContext {
-    pub(crate) generation: u64,
-    pub(crate) scene_index: i32,
-    pub(crate) scene_name: String,
-    pub(crate) observed_ping_count: u8,
+pub(super) struct ReadinessTimeoutContext {
+    pub(super) generation: u64,
+    pub(super) scene_index: i32,
+    pub(super) scene_name: String,
+    pub(super) observed_ping_count: u8,
 }
 
 pub(crate) struct EngineState {
@@ -57,11 +57,11 @@ impl EngineState {
         !self.channels.is_empty()
     }
 
-    pub(crate) fn generation(&self) -> u64 {
+    pub(super) fn generation(&self) -> u64 {
         self.generation
     }
 
-    pub(crate) fn start_or_reset_readiness(
+    pub(super) fn start_or_reset_readiness(
         &mut self,
         generation: u64,
         scene_index: i32,
@@ -85,13 +85,13 @@ impl EngineState {
         });
     }
 
-    pub(crate) fn mark_readiness_lagged(&mut self) {
+    pub(super) fn mark_readiness_lagged(&mut self) {
         if let Some(barrier) = self.readiness_barrier.as_mut() {
             barrier.missed_events = true;
         }
     }
 
-    pub(crate) fn observe_ping(
+    pub(super) fn observe_ping(
         &mut self,
         generation: u64,
         sequence: u64,
@@ -123,13 +123,13 @@ impl EngineState {
         PingGateProgress::Released
     }
 
-    pub(crate) fn readiness_deadline(&self) -> Option<tokio::time::Instant> {
+    pub(super) fn readiness_deadline(&self) -> Option<tokio::time::Instant> {
         self.readiness_barrier
             .as_ref()
             .map(|barrier| barrier.deadline)
     }
 
-    pub(crate) fn readiness_timeout_context(&self) -> Option<ReadinessTimeoutContext> {
+    pub(super) fn readiness_timeout_context(&self) -> Option<ReadinessTimeoutContext> {
         self.readiness_barrier
             .as_ref()
             .map(|barrier| ReadinessTimeoutContext {
@@ -140,11 +140,11 @@ impl EngineState {
             })
     }
 
-    pub(crate) fn is_waiting_for_readiness(&self) -> bool {
+    pub(super) fn is_waiting_for_readiness(&self) -> bool {
         self.readiness_barrier.is_some()
     }
 
-    pub(crate) fn clear_readiness_barrier(&mut self) {
+    pub(super) fn clear_readiness_barrier(&mut self) {
         self.readiness_barrier = None;
     }
 
