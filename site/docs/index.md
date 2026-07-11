@@ -38,4 +38,8 @@ Advanced Show Control controls live mixer parameters. Rehearse every fade and cu
 
 Advanced Show Control is not affiliated with, endorsed by, or supported by Waves Audio Ltd. or the Waves eMotion LV1 product team.
 
-The software and documentation are provided without warranty. Use them at your own risk. Advanced Show Control is licensed under the [GNU General Public License version 3 or later](https://github.com/mixxorz/advanced-show-control/blob/main/LICENSE).
+Waves and eMotion LV1 are trademarks of their respective owners. All other trademarks are the property of their respective owners.
+
+Copyright &copy; 2026 Mitchel Cabuloy. Advanced Show Control is licensed under the [GNU General Public License version 3 or later](https://github.com/mixxorz/advanced-show-control/blob/main/LICENSE).
+
+The software and documentation are provided without warranty. Use them at your own risk.
