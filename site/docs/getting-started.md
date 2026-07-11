@@ -35,7 +35,7 @@ Save the session after each intended change.
 
 ## Configure One Fade
 
-Scope selects the channels and controls that can change during the fade. Whenever channel scope is empty when you select **Store**, including after **None**, Advanced Show Control restores every current channel to scope. It preserves the existing **FADER** and **PAN** selections. A new scene fade setting starts with **FADER** on and **PAN** off. Review and narrow both channel scope and parameter scope before you recall, or the fade may move more controls than you intend.
+Scope selects which channels and which controls, **FADER** and **PAN**, can move during the fade. Whenever Scope has no channels when you select **Store**, including after **None**, Advanced Show Control restores every current channel to Scope. It preserves the existing **FADER** and **PAN** selections. A new scene fade setting starts with **FADER** on and **PAN** off. Review Scope and remove channels or controls you do not want to move before recall.
 
 1. Open **Scenes** and select the required scene fade setting.
 2. Set LV1 to the mix you want the scene to reach.
@@ -52,7 +52,7 @@ Review scope after every later **Store** as well, especially if the console chan
 1. Confirm that **SAFE** is off.
 2. Compare the displayed LV1 scene number and name with the intended scene.
 3. Select **Recall**.
-4. Watch **Mode**. It shows **Fading** during a timed transition and **Ready** when the transition finishes.
+4. Watch the scoped controls reach their stored targets. **Mode** normally changes from **Fading** to **Ready**. If you move a fader, **Mode** can return to **Ready** while other scoped controls continue moving, so observe the controls rather than **Mode** alone.
 
 The fade starts from the fader and pan positions present when you recall the scene. It moves only the controls in scope. If LV1 is offline, the setting is unlinked, or the recalled LV1 scene number and name differ from the selected setting, no fade starts. Correct the condition, confirm the intended scene, and try again.
 

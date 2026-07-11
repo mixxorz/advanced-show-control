@@ -4,7 +4,7 @@ Use **Scenes** to prepare a scene fade setting for an LV1 scene. The setting sto
 
 ## Prepare A Scene Fade Setting
 
-Scope selects the channels and controls that can change during the fade. Whenever channel scope is empty when you select **Store**, including after **None**, every current channel enters scope. Store preserves the existing **FADER** and **PAN** selections. A new scene fade setting starts with **FADER** on and **PAN** off. Review and narrow both channel scope and parameter scope before you recall, or the fade may move more controls than you intend.
+Scope selects which channels and which controls, **FADER** and **PAN**, can move during the fade. Whenever Scope has no channels when you select **Store**, including after **None**, every current channel enters Scope. Store preserves the existing **FADER** and **PAN** selections. A new scene fade setting starts with **FADER** on and **PAN** off. Review Scope and remove channels or controls you do not want to move before recall.
 
 1. Select the setting in the **Scene library**.
 2. Set LV1 to the mix you want to reach.
@@ -25,7 +25,7 @@ The **Scene library** lists scene fade settings. The editor shows the selected s
 | Control | Result |
 | --- | --- |
 | **Recall** | Recalls the linked LV1 scene. A fade follows only when LV1 recalls the matching scene. |
-| **Store** | Records the current fader and pan values. Whenever channel scope is empty, it includes every current channel and preserves the current **FADER** and **PAN** selections. |
+| **Store** | Records the current fader and pan values. Whenever Scope has no channels, it includes every current channel and preserves the current **FADER** and **PAN** selections. |
 | **Copy** | Does not copy or change a scene fade setting in v2. |
 | **Paste** | Is disabled in v2. |
 | **X-Fade** | Sets the transition time. |

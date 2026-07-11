@@ -31,6 +31,6 @@ In v2, **Auto load last show file** does not open a session, **Auto save session
 | **Auto load last show file** | Off | Open the required session yourself. |
 | **Auto save sessions** | Off | Use **File > Save Session** after each intended change. |
 | **Time display** | **24 hour** | Read the clock as displayed. |
-| **Fader override sensitivity** | `9` | Move a fader during rehearsal to check the existing override response. |
+| **Fader override sensitivity** | `9` | During a fade, a fader you move follows your move while other scoped controls may continue. Rehearse this response before show use. |
 
-**Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2. During rehearsal, move a fader while it is fading. Your move takes control of that fader, regardless of the selected sensitivity value.
+**Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2.
