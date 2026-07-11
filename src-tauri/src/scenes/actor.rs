@@ -1063,6 +1063,14 @@ mod tests {
                 assert!(persisted_scene_edit);
                 assert_eq!(state.scene_configs[0].scene_index, Some(3));
                 assert_eq!(state.scene_configs[0].scene_name, "Song 2 -- Changed");
+                assert_eq!(
+                    state.scene_configs[0].scoped_channels,
+                    vec![ChannelRef {
+                        group: 0,
+                        channel: 2,
+                    }]
+                );
+                assert!(state.scene_configs[0].scope_toggles.faders);
             }
             other => panic!("unexpected event: {other:?}"),
         }

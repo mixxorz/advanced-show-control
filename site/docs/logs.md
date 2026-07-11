@@ -6,7 +6,7 @@ Use **Logs** to check connection progress, completed actions, safety blocks, and
 
 Each entry shows a timestamp, severity, and message. `INFO` records an action or status change. `WARNING` identifies a condition you should correct. `ERROR` identifies an action that could not complete.
 
-**No frontend logs yet.** means no messages have appeared in Logs during this session.
+When the list is empty, no log messages have appeared in this session.
 
 ## Diagnostic Files
 
@@ -18,4 +18,4 @@ On macOS, diagnostic files are written under:
 ~/Library/Application Support/com.advancedshowcontrol.app/logs/diagnostics-*.jsonl
 ```
 
-When you report a problem, include the app version, operating system, approximate time, connection state, selected scene, SAFE state, and relevant log lines. Do not share a complete session or diagnostic file unless a trusted support process asks for it; those files can contain show and console information.
+When you report a problem, include the app version, operating system, approximate time, connection state, selected scene, SAFE state, and relevant log lines. Do not share a complete session or diagnostic file unless a trusted support contact or approved support channel asks for it; those files can contain show and console information.

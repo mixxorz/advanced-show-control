@@ -24,13 +24,13 @@ Shortcuts do not operate while you are entering text or working in a dialog. Hol
 
 ## Not Active In v2
 
-These controls are shown and saved, but they do not change application behavior in v2.
+In v2, **Auto load last show file** does not open a session, **Auto save sessions** does not save changes, **Time display** does not change the clock, and **Fader override sensitivity** does not change manual override.
 
 | Setting | Default | What to do instead |
 | --- | --- | --- |
 | **Auto load last show file** | Off | Open the required session yourself. |
 | **Auto save sessions** | Off | Use **File > Save Session** after each intended change. |
 | **Time display** | **24 hour** | Read the clock as displayed. |
-| **Fader override sensitivity** | `9` | Rehearse the existing manual-override behavior. |
+| **Fader override sensitivity** | `9` | Move a fader during rehearsal to check the existing override response. |
 
-**Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2. A manual fader move still takes control of that fader during a fade.
+**Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2. During rehearsal, move a fader while it is fading. Your move takes control of that fader, regardless of the selected sensitivity value.

@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Use these checks to identify the condition preventing the result you expect. Correct it, then return to the named page before changing console state.
+Use these checks to get the next task moving. Correct the stated problem, then follow the linked procedure before changing console state.
 
 ## No LV1 Systems Found
 
@@ -8,7 +8,7 @@ If the console does not appear in **Connect to LV1**, you cannot connect or reca
 
 ## Connection Fails Or Reconnects
 
-If the top bar shows **Offline**, **Connecting**, or **Reconnecting...**, a scene fade cannot start. Wait for **Connected**. If it does not return, open [Connect To LV1](application-shell.md#connect-to-lv1), select the intended available console, and confirm **Current**.
+If the full-screen **Reconnecting...** overlay is visible, a scene fade cannot start. Wait for it to clear and for the top bar to show **Connected**. The top bar itself shows only **Connected**, **Connecting**, or **Offline**. If the connection does not return, open [Connect To LV1](application-shell.md#connect-to-lv1), select the intended available console, and confirm **Current**.
 
 ## Scene Is Unlinked
 
@@ -38,4 +38,4 @@ If **Logs** has no message for the problem, inspect the timestamp and severity a
 
 ## A Setting Does Not Change Application Behavior
 
-**Auto load last show file**, **Auto save sessions**, **Time display**, and **Fader override sensitivity** are inactive in v2. Use the manual session-save workflow and rehearse manual fader override. See [Not Active In v2](settings.md#not-active-in-v2).
+**Auto load last show file**, **Auto save sessions**, **Time display**, and **Fader override sensitivity** are inactive in v2. Open and save the session yourself. During rehearsal, move a fading fader to confirm that your move takes control of it. See [Not Active In v2](settings.md#not-active-in-v2).

@@ -4,6 +4,17 @@ Use the application shell to connect to LV1, prepare scenes or cues, and check t
 
 ![The application shell with the Scenes tab active.](assets/screenshots/application-shell.png)
 
+## Status Before Recall
+
+| Item | Meaning |
+| --- | --- |
+| **Cued** | The scene prepared for **GO**. |
+| **Current** | The LV1 scene that is active now. |
+| **Mode** | **Offline** means no console is connected; **Ready** means the app can operate; **Safe** means SAFE blocks app recalls; **Fading** means a timed transition is moving controls. |
+| **GO** | Recalls the cued scene fade setting. |
+
+`---` means the corresponding scene is unavailable. Compare **Cued** and **Current** before a recall.
+
 ## Normal Workflow
 
 1. Connect to the intended LV1 system.
@@ -17,7 +28,7 @@ Use the application shell to connect to LV1, prepare scenes or cues, and check t
 | --- | --- |
 | **Scenes** | Store values, set **X-Fade**, and select scope. |
 | **Cue Lists** | Build a prepared recall sequence. |
-| **Events** | View a feature unavailable in v2. |
+| **Events** | View the Events tab. You cannot create or run event automation in v2. |
 | **Logs** | Review messages, warnings, and errors. |
 | **Settings** | Change active v2 settings and view inactive controls. |
 
@@ -25,7 +36,7 @@ Use the application shell to connect to LV1, prepare scenes or cues, and check t
 
 Select the console control to open **Connect to LV1**. Select an **Available** console and confirm **Connected** in the top bar. An **Unavailable** console cannot be selected.
 
-If **Reconnecting...** appears, no new recall should be attempted. Wait for **Connected**. If reconnection fails, open **Connect to LV1**, select the intended available console, and confirm **Current** before recall.
+**Reconnecting...** is a full-screen overlay. Do not start a recall while it is visible because the connection is not ready. Wait for the top bar to show **Connected**. If reconnection fails, open **Connect to LV1**, select the intended available console, and confirm **Current** before recall.
 
 ## SAFE And Status
 
@@ -34,16 +45,6 @@ When **SAFE** is on, **Mode** displays **Safe** instead of **Fading**. You canno
 ![The SAFE control when active.](assets/screenshots/safe-active.png)
 
 **SAFE** blocks **Recall** and **GO** but does not disable LV1 controls or stop a fade already running. Use it before a rehearsal or console check where app recalls must not run.
-
-| Item | Meaning |
-| --- | --- |
-| **GO** | Recalls the cued scene fade setting. |
-| **Cued** | The scene prepared for GO. |
-| **Current** | The current LV1 scene. |
-| **Mode** | **Offline**, **Ready**, **Safe**, or **Fading**. |
-| **Time** | Local system time. |
-
-`---` means the corresponding scene is unavailable.
 
 ## Sessions
 
