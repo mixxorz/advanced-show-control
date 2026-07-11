@@ -7,7 +7,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::fade::commands::FadeCommand;
 use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
-use crate::fade::state::EngineState;
+use crate::fade::state::{EngineState, PingGateProgress, READINESS_PINGS_REQUIRED};
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
 use crate::fade::types::{FadeParameter, FadeTarget};
 use crate::lv1::{Lv1ActorHandle, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1WriteParameter};
@@ -143,6 +143,10 @@ async fn run_engine(
             }
 
             _ = tick_fut => {
+                if state.is_waiting_for_readiness() {
+                    continue;
+                }
+
                 let now = Instant::now();
                 let mut done_indices = Vec::new();
                 let mut completed_events = Vec::new();
@@ -258,6 +262,22 @@ async fn run_engine(
                             state.fan_out(FadeEvent::FadeAborted);
                         }
                     }
+                    Ok(AppEvent::Lv1 {
+                        generation: event_generation,
+                        event: Lv1Event::PingReceived { sequence },
+                    }) => match state.observe_ping(event_generation, sequence, Instant::now()) {
+                        PingGateProgress::Ignored => {}
+                        PingGateProgress::Waiting { observed } => tracing::debug!(
+                            event = "fade_post_recall_ping_waiting",
+                            observed,
+                            required = READINESS_PINGS_REQUIRED,
+                            "Fade readiness is waiting for LV1 keepalive pings"
+                        ),
+                        PingGateProgress::Released => tracing::debug!(
+                            event = "fade_post_recall_ping_released",
+                            "Fade readiness released after LV1 keepalive resumed"
+                        ),
+                    },
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("fade-engine", count);
@@ -402,6 +422,14 @@ async fn handle_recall_scene_fade(
             expected_generation,
         }));
     }
+
+    state.start_or_reset_readiness(
+        expected_generation.unwrap_or(state.generation()),
+        config.scene.index,
+        config.scene.name,
+        snapshot.ping_sequence,
+        now,
+    );
 
     Ok(())
 }
@@ -658,6 +686,32 @@ mod tests {
         let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 0);
         peers.set_lv1(lv1);
         task.spawn();
+
+        let mut events = event_bus.subscribe();
+        let ping_bus = event_bus.clone();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(AppEvent::Fade {
+                        generation,
+                        event: FadeEvent::FadeStarted,
+                    }) => {
+                        // Existing actor tests do not model LV1's keepalive loop.
+                        ping_bus.publish(AppEvent::Lv1 {
+                            generation,
+                            event: Lv1Event::PingReceived { sequence: 1 },
+                        });
+                        ping_bus.publish(AppEvent::Lv1 {
+                            generation,
+                            event: Lv1Event::PingReceived { sequence: 2 },
+                        });
+                    }
+                    Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         (event_bus, engine, rx)
     }
 
@@ -665,16 +719,96 @@ mod tests {
         engine: &FadeEngineHandle,
         config: FadeConfig,
     ) -> Result<(), AppCommandError> {
+        start_fade_for_generation(engine, config, None).await
+    }
+
+    async fn start_fade_for_generation(
+        engine: &FadeEngineHandle,
+        config: FadeConfig,
+        expected_generation: Option<u64>,
+    ) -> Result<(), AppCommandError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
         engine
             .send(FadeCommand::RecallSceneFade {
                 config,
-                expected_generation: None,
+                expected_generation,
                 reply: Some(reply),
             })
             .await
             .map_err(|_| AppCommandError::FadeUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?
+    }
+
+    fn connected_snapshot(
+        ping_sequence: u64,
+        channels: Vec<crate::lv1::ChannelInfo>,
+    ) -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![],
+            channels,
+            ping_sequence,
+        }
+    }
+
+    fn channel_info(channel: i32, gain_db: f64, pan: Option<f64>) -> crate::lv1::ChannelInfo {
+        crate::lv1::ChannelInfo {
+            group: 0,
+            channel,
+            name: format!("Channel {channel}"),
+            gain_db,
+            muted: false,
+            pan,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }
+    }
+
+    async fn spawn_runtime_for_ping_gate_test(
+        snapshots: Vec<Lv1StateSnapshot>,
+    ) -> (
+        AppEventBus,
+        FadeEngineHandle,
+        tokio::sync::mpsc::Receiver<Vec<Lv1ParameterWrite>>,
+    ) {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        let event_bus = AppEventBus::default();
+        let lv1 = test_actor_handle(tx);
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(7).await;
+        let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 7);
+        peers.set_lv1(lv1);
+        task.spawn();
+
+        let (write_tx, write_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut snapshots = snapshots.into_iter();
+            while let Some(command) = rx.recv().await {
+                match command {
+                    Lv1Command::GetState { reply } => {
+                        let snapshot = snapshots.next().expect("unexpected LV1 state lookup");
+                        let _ = reply.send(snapshot);
+                    }
+                    Lv1Command::WriteBatch(writes) => {
+                        let _ = write_tx.send(writes).await;
+                    }
+                    _ => panic!("unexpected LV1 command"),
+                }
+            }
+        });
+
+        (event_bus, engine, write_rx)
+    }
+
+    async fn assert_no_write(write_rx: &mut tokio::sync::mpsc::Receiver<Vec<Lv1ParameterWrite>>) {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), write_rx.recv())
+                .await
+                .is_err(),
+            "fade write was sent before the readiness gate released"
+        );
     }
 
     async fn assert_pan_family_aux_event_does_not_override(parameter: FadeParameter) {
@@ -1673,5 +1807,270 @@ mod tests {
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_gate_requires_two_newer_same_generation_pings() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 40 },
+        });
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 6,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        let writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+            .await
+            .expect("fade should resume after two newer pings")
+            .expect("fade write channel should remain open");
+        assert!(writes.iter().any(|write| {
+            write.group == 0 && write.channel == 0 && write.parameter == Lv1WriteParameter::FaderDb
+        }));
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_gate_resets_after_another_timed_recall() {
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(40, vec![channel_info(0, -20.0, None)]),
+            connected_snapshot(41, vec![channel_info(0, -20.0, None)]),
+        ])
+        .await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Scene A"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(2, "Scene B"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -5.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 43 },
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+                .await
+                .is_ok(),
+            "two newer pings after the latest recall should release the gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_reset_rebases_unrelated_fade_and_replaces_overlap() {
+        let snapshots = vec![
+            connected_snapshot(
+                40,
+                vec![
+                    channel_info(0, 0.0, Some(0.0)),
+                    channel_info(1, 0.0, Some(0.0)),
+                ],
+            ),
+            connected_snapshot(
+                42,
+                vec![
+                    channel_info(0, 0.0, Some(0.0)),
+                    channel_info(1, 0.0, Some(0.0)),
+                ],
+            ),
+        ];
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(snapshots).await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Scene A"),
+                vec![
+                    FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::Pan,
+                        target: 40.0,
+                    },
+                    FadeTarget {
+                        group: 0,
+                        channel: 1,
+                        parameter: FadeParameter::Pan,
+                        target: 40.0,
+                    },
+                ],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+
+        let first_a_writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+            .await
+            .expect("Scene A should write after its readiness gate releases")
+            .expect("fade write channel should remain open");
+        let a_before_gate = first_a_writes
+            .iter()
+            .find(|write| write.channel == 1 && write.parameter == Lv1WriteParameter::Pan)
+            .expect("Scene A's unrelated target should write")
+            .value;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(2, "Scene B"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Pan,
+                    target: -40.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+        while write_rx.try_recv().is_ok() {}
+        assert_no_write(&mut write_rx).await;
+
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 43 },
+        });
+        assert_no_write(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 44 },
+        });
+        let post_release_writes = tokio::time::timeout(Duration::from_millis(300), async {
+            loop {
+                let writes = write_rx
+                    .recv()
+                    .await
+                    .expect("fade write channel should remain open");
+                if writes.iter().any(|write| {
+                    write.channel == 0
+                        && write.parameter == Lv1WriteParameter::Pan
+                        && write.value < 0.0
+                }) && writes
+                    .iter()
+                    .any(|write| write.channel == 1 && write.parameter == Lv1WriteParameter::Pan)
+                {
+                    return writes;
+                }
+            }
+        })
+        .await
+        .expect("Scene B should write after its replacement gate releases");
+        let resumed_a_value = post_release_writes
+            .iter()
+            .find(|write| write.channel == 1 && write.parameter == Lv1WriteParameter::Pan)
+            .expect("Scene A's unrelated target should resume")
+            .value;
+        let replacement_b_value = post_release_writes
+            .iter()
+            .find(|write| write.channel == 0 && write.parameter == Lv1WriteParameter::Pan)
+            .expect("Scene B's overlapping target should replace Scene A")
+            .value;
+
+        assert!(replacement_b_value < 0.0, "Scene B should own channel 0");
+        assert!(
+            resumed_a_value > a_before_gate,
+            "Scene A's unrelated target should make progress after release"
+        );
+        assert!(
+            resumed_a_value <= a_before_gate + 3.0,
+            "Scene A must resume from pre-pause progress, not wall-clock progress"
+        );
     }
 }

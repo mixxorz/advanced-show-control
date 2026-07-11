@@ -193,9 +193,35 @@ async fn spawn_runtime_for_test(
     event_bus: AppEventBus,
 ) -> (RuntimeGeneration, FadeEngineHandle) {
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, task, peers) = build_engine(runtime_generation.clone(), event_bus, 0);
+    let (engine, task, peers) = build_engine(runtime_generation.clone(), event_bus.clone(), 0);
     peers.set_lv1(lv1);
     task.spawn();
+
+    let mut events = event_bus.subscribe();
+    let ping_bus = event_bus.clone();
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Fade {
+                    generation,
+                    event: FadeEvent::FadeStarted,
+                }) => {
+                    // These integration fixtures do not run LV1's keepalive loop.
+                    ping_bus.publish(AppEvent::Lv1 {
+                        generation,
+                        event: Lv1Event::PingReceived { sequence: 1 },
+                    });
+                    ping_bus.publish(AppEvent::Lv1 {
+                        generation,
+                        event: Lv1Event::PingReceived { sequence: 2 },
+                    });
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+
     (runtime_generation, engine)
 }
 
