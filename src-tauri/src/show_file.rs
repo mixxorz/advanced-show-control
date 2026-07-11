@@ -302,6 +302,27 @@ mod tests {
         }
     }
 
+    fn show_file_json(scope_toggles: Option<serde_json::Value>) -> serde_json::Value {
+        let mut scene_config = serde_json::json!({
+            "internalSceneId": "11111111-1111-4111-8111-111111111111",
+            "sceneIndex": 1,
+            "sceneName": "Intro",
+            "durationMs": 0,
+            "channelConfigs": [],
+            "scopedChannels": []
+        });
+        if let Some(scope_toggles) = scope_toggles {
+            scene_config["scopeToggles"] = scope_toggles;
+        }
+        serde_json::json!({
+            "schemaVersion": 1,
+            "appVersion": "0.1.0",
+            "savedAt": "2026-06-09T00:00:00Z",
+            "safety": { "lockout": false },
+            "sceneConfigs": [scene_config]
+        })
+    }
+
     fn temp_test_dir(name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
         path.push(format!(
@@ -413,58 +434,67 @@ mod tests {
         assert!(json.contains("\"channelConfigs\""));
         assert!(json.contains("\"scopedChannels\""));
         assert!(json.contains("\"scopeToggles\""));
-        assert!(json.contains("\"faders\": true"));
+        assert!(json.contains("\"faders\": false"));
         assert!(json.contains("\"faderDb\": -12.5"));
     }
 
     #[test]
-    fn old_show_file_scene_configs_default_fader_scope_enabled() {
-        let json = r#"
-        {
-          "schemaVersion": 1,
-          "appVersion": "0.1.0",
-          "savedAt": "2026-06-09T00:00:00Z",
-          "safety": { "lockout": false },
-          "sceneConfigs": [{
-            "internalSceneId": "11111111-1111-4111-8111-111111111111",
-            "sceneIndex": 1,
-            "sceneName": "Intro",
-            "durationMs": 0,
-            "channelConfigs": [],
-            "scopedChannels": []
-          }]
-        }
-        "#;
+    fn omitted_show_file_scope_defaults_to_empty() {
+        let file: ShowFile = serde_json::from_value(show_file_json(None)).unwrap();
 
-        let file: ShowFile = serde_json::from_str(json).unwrap();
-
-        assert!(file.scene_configs[0].scope_toggles.faders);
+        assert!(!file.scene_configs[0].scope_toggles.faders);
+        assert!(!file.scene_configs[0].scope_toggles.pan);
     }
 
     #[test]
-    fn partial_show_file_scope_toggles_default_fader_scope_enabled() {
-        let json = r#"
-        {
-          "schemaVersion": 1,
-          "appVersion": "0.1.0",
-          "savedAt": "2026-06-09T00:00:00Z",
-          "safety": { "lockout": false },
-          "sceneConfigs": [{
-            "internalSceneId": "11111111-1111-4111-8111-111111111111",
-            "sceneIndex": 1,
-            "sceneName": "Intro",
-            "durationMs": 0,
-            "channelConfigs": [],
-            "scopedChannels": [],
-            "scopeToggles": { "pan": true }
-          }]
-        }
-        "#;
+    fn partial_show_file_scope_toggles_default_missing_fields_to_false() {
+        let faders_missing: ShowFile =
+            serde_json::from_value(show_file_json(Some(serde_json::json!({ "pan": true }))))
+                .unwrap();
+        let pan_missing: ShowFile =
+            serde_json::from_value(show_file_json(Some(serde_json::json!({ "faders": true }))))
+                .unwrap();
 
-        let file: ShowFile = serde_json::from_str(json).unwrap();
+        assert!(!faders_missing.scene_configs[0].scope_toggles.faders);
+        assert!(faders_missing.scene_configs[0].scope_toggles.pan);
+        assert!(pan_missing.scene_configs[0].scope_toggles.faders);
+        assert!(!pan_missing.scene_configs[0].scope_toggles.pan);
+    }
 
-        assert!(file.scene_configs[0].scope_toggles.faders);
-        assert!(file.scene_configs[0].scope_toggles.pan);
+    #[test]
+    fn show_file_scope_toggles_preserve_explicit_values() {
+        let enabled: ShowFile = serde_json::from_value(show_file_json(Some(serde_json::json!({
+            "faders": true,
+            "pan": true
+        }))))
+        .unwrap();
+        let disabled: ShowFile = serde_json::from_value(show_file_json(Some(serde_json::json!({
+            "faders": false,
+            "pan": false
+        }))))
+        .unwrap();
+
+        assert!(enabled.scene_configs[0].scope_toggles.faders);
+        assert!(enabled.scene_configs[0].scope_toggles.pan);
+        assert!(!disabled.scene_configs[0].scope_toggles.faders);
+        assert!(!disabled.scene_configs[0].scope_toggles.pan);
+
+        let enabled_json = serde_json::to_value(enabled).unwrap();
+        let disabled_json = serde_json::to_value(disabled).unwrap();
+
+        assert_eq!(
+            enabled_json["sceneConfigs"][0]["scopeToggles"]["faders"],
+            true
+        );
+        assert_eq!(enabled_json["sceneConfigs"][0]["scopeToggles"]["pan"], true);
+        assert_eq!(
+            disabled_json["sceneConfigs"][0]["scopeToggles"]["faders"],
+            false
+        );
+        assert_eq!(
+            disabled_json["sceneConfigs"][0]["scopeToggles"]["pan"],
+            false
+        );
     }
 
     #[test]

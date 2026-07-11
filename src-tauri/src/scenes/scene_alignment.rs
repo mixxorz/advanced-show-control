@@ -282,6 +282,10 @@ mod tests {
         assert_eq!(aligned[0].scene_name, "Verse");
         assert_eq!(aligned[0].duration_ms, 0);
         assert_ne!(aligned[0].internal_scene_id, Uuid::from_u128(1));
+        assert!(aligned[0].channel_configs.is_empty());
+        assert!(aligned[0].scoped_channels.is_empty());
+        assert!(!aligned[0].scope_toggles.faders);
+        assert!(!aligned[0].scope_toggles.pan);
     }
 
     #[test]

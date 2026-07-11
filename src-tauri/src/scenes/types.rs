@@ -20,21 +20,12 @@ pub struct ChannelConfig {
     pub pan_mode: Option<crate::lv1::PanMode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct SceneScopeToggles {
     pub faders: bool,
     pub pan: bool,
-}
-
-impl Default for SceneScopeToggles {
-    fn default() -> Self {
-        Self {
-            faders: true,
-            pan: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -86,6 +77,17 @@ mod tests {
 
         assert_eq!(json["internalSceneId"], internal_scene_id.to_string());
         assert_eq!(json["sceneIndex"], 0);
+    }
+
+    #[test]
+    fn scene_scope_defaults_to_empty() {
+        assert_eq!(
+            SceneScopeToggles::default(),
+            SceneScopeToggles {
+                faders: false,
+                pan: false,
+            }
+        );
     }
 
     #[test]
@@ -200,12 +202,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_fader_scope_defaults_to_true_when_scope_toggles_exist() {
+    fn missing_fader_scope_defaults_to_false_when_scope_toggles_exist() {
         let json = serde_json::json!({ "pan": true });
 
         let toggles: SceneScopeToggles = serde_json::from_value(json).unwrap();
 
-        assert!(toggles.faders);
+        assert!(!toggles.faders);
         assert!(toggles.pan);
     }
 }
