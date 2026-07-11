@@ -103,6 +103,7 @@ async fn run_engine(
         };
 
         tokio::select! {
+            biased;
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None => break,
@@ -146,6 +147,120 @@ async fn run_engine(
                             let _ = reply.send(Ok(()));
                         }
                     }
+                }
+            }
+
+            app_event = app_events.recv() => {
+                match app_event {
+                    Ok(AppEvent::Lv1 {
+                        generation: event_generation,
+                        event: Lv1Event::FaderChanged { group, channel, gain_db },
+                    }) if event_generation == generation => {
+                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
+                            && state.channels[pos].is_override(gain_db)
+                        {
+                            state.fan_out(FadeEvent::ChannelOverride {
+                                group,
+                                channel,
+                                parameter: FadeParameter::FaderDb,
+                            });
+                            tracing::warn!(
+                                event = "fade_manual_override",
+                                group,
+                                channel,
+                                parameter = ?FadeParameter::FaderDb,
+                                "Fade manual override detected: group {group}, channel {channel}"
+                            );
+                            state.channels.remove(pos);
+                            state.fan_out(FadeEvent::ChannelCancelled {
+                                group,
+                                channel,
+                                parameter: FadeParameter::FaderDb,
+                            });
+
+                            if !state.is_active() {
+                                fade_completed_emitted = false;
+                                complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
+                            }
+                        }
+                    }
+                    Ok(AppEvent::Lv1 {
+                        generation: event_generation,
+                        event: Lv1Event::PanChanged { group, channel, pan },
+                    }) if event_generation == generation => {
+                        handle_pan_family_pan_report(
+                            &mut state,
+                            group,
+                            channel,
+                            pan,
+                            &mut tick_interval,
+                            &mut fade_completed_emitted,
+                        );
+                    }
+                    Ok(AppEvent::Lv1 {
+                        generation: event_generation,
+                        event: Lv1Event::Disconnected { .. },
+                    }) if event_generation == generation => {
+                        if state.is_active() || state.is_waiting_for_readiness() {
+                            state.cancel_all_in_place();
+                            tick_interval = None;
+                            fade_completed_emitted = false;
+                            tracing::warn!(event = "fade_aborted", "Fade aborted");
+                            state.fan_out(FadeEvent::FadeAborted);
+                        }
+                    }
+                    Ok(AppEvent::Runtime(
+                        crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                            generation: event_generation,
+                        },
+                    )) if event_generation != generation => {
+                        if state.is_active() || state.is_waiting_for_readiness() {
+                            state.cancel_all_in_place();
+                            tick_interval = None;
+                            fade_completed_emitted = false;
+                            state.fan_out(FadeEvent::FadeAborted);
+                        }
+                    }
+                    Ok(AppEvent::Lv1 {
+                        generation: event_generation,
+                        event: Lv1Event::PingReceived { sequence },
+                    }) => match state.observe_ping(event_generation, sequence, Instant::now()) {
+                        PingGateProgress::Ignored => {}
+                        PingGateProgress::Waiting { observed } => tracing::debug!(
+                            event = "fade_post_recall_ping_waiting",
+                            observed,
+                            required = READINESS_PINGS_REQUIRED,
+                            "Fade readiness is waiting for LV1 keepalive pings"
+                        ),
+                        PingGateProgress::Released => tracing::debug!(
+                            event = "fade_post_recall_ping_released",
+                            "Fade readiness released after LV1 keepalive resumed"
+                        ),
+                    },
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("fade-engine", count);
+                        state.mark_readiness_lagged();
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+
+            _ = readiness_timeout_fut => {
+                if let Some(context) = state.readiness_timeout_context() {
+                    state.cancel_all_in_place();
+                    tick_interval = None;
+                    fade_completed_emitted = false;
+                    tracing::warn!(
+                        event = "fade_post_recall_ping_timeout",
+                        generation = context.generation,
+                        scene_index = context.scene_index,
+                        scene_name = %context.scene_name,
+                        observed_ping_count = context.observed_ping_count,
+                        timeout_ms = 5_000_u64,
+                        "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
+                    );
+                    state.fan_out(FadeEvent::FadeAborted);
                 }
             }
 
@@ -217,114 +332,6 @@ async fn run_engine(
 
                 maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
             }
-
-            app_event = app_events.recv() => {
-                match app_event {
-                    Ok(AppEvent::Lv1 { event: Lv1Event::FaderChanged { group, channel, gain_db }, .. }) => {
-                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
-                            && state.channels[pos].is_override(gain_db)
-                        {
-                            state.fan_out(FadeEvent::ChannelOverride {
-                                group,
-                                channel,
-                                parameter: FadeParameter::FaderDb,
-                            });
-                            tracing::warn!(
-                                event = "fade_manual_override",
-                                group,
-                                channel,
-                                parameter = ?FadeParameter::FaderDb,
-                                "Fade manual override detected: group {group}, channel {channel}"
-                            );
-                            state.channels.remove(pos);
-                            state.fan_out(FadeEvent::ChannelCancelled {
-                                group,
-                                channel,
-                                parameter: FadeParameter::FaderDb,
-                            });
-
-                            if !state.is_active() {
-                                tick_interval = None;
-                                fade_completed_emitted = false;
-                                state.fan_out(FadeEvent::FadeCompleted);
-                            }
-                        }
-                    }
-                    Ok(AppEvent::Lv1 { event: Lv1Event::PanChanged { group, channel, pan }, .. }) => {
-                        handle_pan_family_pan_report(
-                            &mut state,
-                            group,
-                            channel,
-                            pan,
-                            &mut tick_interval,
-                            &mut fade_completed_emitted,
-                        );
-                    }
-                    Ok(AppEvent::Lv1 {
-                        generation: event_generation,
-                        event: Lv1Event::Disconnected { .. },
-                    }) if event_generation == generation => {
-                        if state.is_active() || state.is_waiting_for_readiness() {
-                            state.cancel_all_in_place();
-                            tick_interval = None;
-                            fade_completed_emitted = false;
-                            tracing::warn!(event = "fade_aborted", "Fade aborted");
-                            state.fan_out(FadeEvent::FadeAborted);
-                        }
-                    }
-                    Ok(AppEvent::Runtime(
-                        crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                            generation: event_generation,
-                        },
-                    )) if event_generation != generation => {
-                        if state.is_active() || state.is_waiting_for_readiness() {
-                            state.cancel_all_in_place();
-                            tick_interval = None;
-                            fade_completed_emitted = false;
-                            state.fan_out(FadeEvent::FadeAborted);
-                        }
-                    }
-                    Ok(AppEvent::Lv1 {
-                        generation: event_generation,
-                        event: Lv1Event::PingReceived { sequence },
-                    }) => match state.observe_ping(event_generation, sequence, Instant::now()) {
-                        PingGateProgress::Ignored => {}
-                        PingGateProgress::Waiting { observed } => tracing::debug!(
-                            event = "fade_post_recall_ping_waiting",
-                            observed,
-                            required = READINESS_PINGS_REQUIRED,
-                            "Fade readiness is waiting for LV1 keepalive pings"
-                        ),
-                        PingGateProgress::Released => tracing::debug!(
-                            event = "fade_post_recall_ping_released",
-                            "Fade readiness released after LV1 keepalive resumed"
-                        ),
-                    },
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("fade-engine", count);
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-
-            _ = readiness_timeout_fut => {
-                if let Some(context) = state.readiness_timeout_context() {
-                    state.cancel_all_in_place();
-                    tick_interval = None;
-                    fade_completed_emitted = false;
-                    tracing::warn!(
-                        event = "fade_post_recall_ping_timeout",
-                        generation = context.generation,
-                        scene_index = context.scene_index,
-                        scene_name = %context.scene_name,
-                        observed_ping_count = context.observed_ping_count,
-                        timeout_ms = 5_000_u64,
-                        "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
-                    );
-                    state.fan_out(FadeEvent::FadeAborted);
-                }
-            }
         }
     }
 }
@@ -347,6 +354,7 @@ fn complete_fade(
     if *fade_completed_emitted {
         return;
     }
+    state.clear_readiness_barrier();
     *fade_completed_emitted = true;
     *tick_interval = None;
     tracing::info!(event = "fade_completed", "Fade completed");
@@ -429,25 +437,29 @@ async fn handle_recall_scene_fade(
     }
 
     for target in &config.targets {
-        let start_value = state
+        let active_start_value =
+            state
+                .channels
+                .iter()
+                .find(|ch| ch.key == target.key())
+                .map(|ch| {
+                    if ch.is_done(now) {
+                        ch.target_value
+                    } else {
+                        ch.value_at(now)
+                    }
+                });
+        let snapshot_start_value = snapshot
             .channels
             .iter()
-            .find(|ch| ch.key == target.key())
-            .map(|ch| {
-                if ch.is_done(now) {
-                    ch.target_value
-                } else {
-                    ch.value_at(now)
-                }
-            })
-            .or_else(|| {
-                snapshot
-                    .channels
-                    .iter()
-                    .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                    .and_then(|ch| live_value_for_snapshot(ch, target))
-            })
-            .unwrap_or(target.target);
+            .find(|ch| ch.group == target.group && ch.channel == target.channel)
+            .and_then(|ch| live_value_for_snapshot(ch, target));
+        let start_value = if state.is_waiting_for_readiness() {
+            snapshot_start_value.or(active_start_value)
+        } else {
+            active_start_value.or(snapshot_start_value)
+        }
+        .unwrap_or(target.target);
 
         state.channels.retain(|ch| ch.key != target.key());
         state.channels.push(ActiveTarget::new(ActiveTargetInit {
@@ -463,13 +475,28 @@ async fn handle_recall_scene_fade(
         }));
     }
 
+    let readiness_action = if state.is_waiting_for_readiness() {
+        "reset"
+    } else {
+        "started"
+    };
+    let scene_index = config.scene.index;
+    let scene_name = config.scene.name;
     state.start_or_reset_readiness(
         expected_generation.unwrap_or(state.generation()),
-        config.scene.index,
-        config.scene.name,
+        scene_index,
+        scene_name.clone(),
         snapshot.ping_sequence,
         now,
         tokio::time::Instant::now(),
+    );
+    tracing::debug!(
+        event = "fade_post_recall_ping_barrier",
+        action = readiness_action,
+        generation = expected_generation.unwrap_or(state.generation()),
+        scene_index,
+        scene_name = %scene_name,
+        "Fade readiness barrier {readiness_action} after scene recall"
     );
 
     Ok(())
@@ -820,8 +847,18 @@ mod tests {
         FadeEngineHandle,
         tokio::sync::mpsc::Receiver<Vec<Lv1ParameterWrite>>,
     ) {
+        spawn_runtime_for_ping_gate_test_with_bus(AppEventBus::default(), snapshots).await
+    }
+
+    async fn spawn_runtime_for_ping_gate_test_with_bus(
+        event_bus: AppEventBus,
+        snapshots: Vec<Lv1StateSnapshot>,
+    ) -> (
+        AppEventBus,
+        FadeEngineHandle,
+        tokio::sync::mpsc::Receiver<Vec<Lv1ParameterWrite>>,
+    ) {
         let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        let event_bus = AppEventBus::default();
         let lv1 = test_actor_handle(tx);
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(7).await;
@@ -870,12 +907,15 @@ mod tests {
 
     async fn wait_for_fade_aborted(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
         loop {
-            if let AppEvent::Fade {
-                generation: 7,
-                event: FadeEvent::FadeAborted,
-            } = events.recv().await.expect("event bus should remain open")
-            {
-                return;
+            match events.recv().await {
+                Ok(AppEvent::Fade {
+                    generation: 7,
+                    event: FadeEvent::FadeAborted,
+                }) => return,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event bus should remain open")
+                }
             }
         }
     }
@@ -908,6 +948,7 @@ mod tests {
         scene_name: Option<String>,
         observed_ping_count: Option<String>,
         timeout_ms: Option<String>,
+        action: Option<String>,
     }
 
     #[derive(Clone, Default)]
@@ -938,6 +979,7 @@ mod tests {
                 "scene_name" => self.scene_name = Some(value.to_string()),
                 "observed_ping_count" => self.observed_ping_count = Some(value.to_string()),
                 "timeout_ms" => self.timeout_ms = Some(value.to_string()),
+                "action" => self.action = Some(value.to_string()),
                 _ => {}
             }
         }
@@ -2021,6 +2063,7 @@ mod tests {
                 scene_name: Some("Intro".to_string()),
                 observed_ping_count: Some("0".to_string()),
                 timeout_ms: Some("5000".to_string()),
+                action: None,
             }]
         );
     }
@@ -2660,6 +2703,407 @@ mod tests {
         assert!(
             resumed_a_value <= a_before_gate + 3.0,
             "Scene A must resume from pre-pause progress, not wall-clock progress"
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn post_recall_ping_lag_keeps_gate_closed_until_timeout() {
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test_with_bus(
+            AppEventBus::new(1),
+            vec![connected_snapshot(40, vec![channel_info(0, -20.0, None)])],
+        )
+        .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        for sequence in 41..=48 {
+            event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence });
+        }
+        tokio::task::yield_now().await;
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 49 });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(40)).await;
+        assert_no_write(&mut write_rx).await;
+
+        tokio::time::advance(Duration::from_millis(4_960)).await;
+        wait_for_fade_aborted(&mut events).await;
+        assert_no_write_after_cancellation(&mut write_rx).await;
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn post_recall_ping_replacement_uses_fresh_snapshot_start_while_gated() {
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(40, vec![channel_info(0, -20.0, None)]),
+            connected_snapshot(41, vec![channel_info(0, -40.0, None)]),
+        ])
+        .await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Scene A"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+        tokio::time::advance(Duration::from_millis(250)).await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(2, "Scene B"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -5.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 42 });
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 43 });
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(40)).await;
+
+        let writes = write_rx
+            .recv()
+            .await
+            .expect("fade should write after release");
+        let replacement_value = writes
+            .iter()
+            .find(|write| {
+                write.group == 0
+                    && write.channel == 0
+                    && write.parameter == Lv1WriteParameter::FaderDb
+            })
+            .expect("replacement target should write")
+            .value;
+        assert!(
+            replacement_value < -30.0,
+            "replacement must start from the fresh LV1 value, not the paused target interpolation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_fader_feedback_does_not_cancel_or_log_override_during_gate() {
+        let captured = CapturedWarnEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        event_bus.publish_lv1(
+            6,
+            Lv1Event::FaderChanged {
+                group: 0,
+                channel: 0,
+                gain_db: -50.0,
+            },
+        );
+        tokio::task::yield_now().await;
+        assert!(
+            !captured
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| { event.event.as_deref() == Some("fade_manual_override") })
+        );
+
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 41 });
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 42 });
+        let writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+            .await
+            .expect("stale feedback must leave the fader target active")
+            .expect("fade write channel should remain open");
+        assert!(
+            writes
+                .iter()
+                .any(|write| write.parameter == Lv1WriteParameter::FaderDb)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_pan_feedback_does_not_cancel_target_during_gate() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, Some(0.0))],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Pan,
+                    target: 45.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        for _ in 0..2 {
+            event_bus.publish_lv1(
+                6,
+                Lv1Event::PanChanged {
+                    group: 0,
+                    channel: 0,
+                    pan: -90.0,
+                },
+            );
+        }
+        tokio::task::yield_now().await;
+        assert!(!matches!(
+            events.try_recv(),
+            Ok(AppEvent::Fade {
+                event: FadeEvent::ChannelOverride { .. } | FadeEvent::ChannelCancelled { .. },
+                ..
+            })
+        ));
+
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 41 });
+        event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 42 });
+        let writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+            .await
+            .expect("stale feedback must leave the pan target active")
+            .expect("fade write channel should remain open");
+        assert!(
+            writes
+                .iter()
+                .any(|write| write.parameter == Lv1WriteParameter::Pan)
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn last_manual_override_clears_gate_without_timeout_abort_or_warning() {
+        let captured = CapturedWarnEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+        event_bus.publish_lv1(
+            7,
+            Lv1Event::FaderChanged {
+                group: 0,
+                channel: 0,
+                gain_db: -50.0,
+            },
+        );
+
+        loop {
+            if matches!(
+                events.recv().await.expect("event bus should remain open"),
+                AppEvent::Fade {
+                    event: FadeEvent::FadeCompleted,
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert_no_additional_fade_abort(&mut events).await;
+        assert_no_write_after_cancellation(&mut write_rx).await;
+        assert!(
+            !captured
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| { event.event.as_deref() == Some("fade_post_recall_ping_timeout") })
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn qualifying_ping_at_readiness_deadline_releases_before_timeout() {
+        for _ in 0..8 {
+            let (event_bus, engine, mut write_rx) =
+                spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                    40,
+                    vec![channel_info(0, -20.0, None)],
+                )])
+                .await;
+            let mut events = event_bus.subscribe();
+
+            start_fade_for_generation(
+                &engine,
+                fade_config(
+                    scene(1, "Intro"),
+                    vec![FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -10.0,
+                    }],
+                    1_000,
+                ),
+                Some(7),
+            )
+            .await
+            .unwrap();
+            event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 41 });
+            tokio::task::yield_now().await;
+
+            tokio::time::advance(Duration::from_secs(5)).await;
+            event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 42 });
+            tokio::task::yield_now().await;
+            assert_no_additional_fade_abort(&mut events).await;
+
+            tokio::time::advance(Duration::from_millis(40)).await;
+            let writes = write_rx
+                .recv()
+                .await
+                .expect("boundary ping should release fade");
+            assert!(
+                writes
+                    .iter()
+                    .any(|write| write.parameter == Lv1WriteParameter::FaderDb)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_barrier_logs_debug_start_and_reset() {
+        let captured = CapturedWarnEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (_event_bus, engine, _write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(40, vec![channel_info(0, -20.0, None)]),
+            connected_snapshot(41, vec![channel_info(0, -20.0, None)]),
+        ])
+        .await;
+
+        for (scene_index, scene_name) in [(1, "Intro"), (2, "Verse")] {
+            start_fade_for_generation(
+                &engine,
+                fade_config(
+                    scene(scene_index, scene_name),
+                    vec![FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -10.0,
+                    }],
+                    1_000,
+                ),
+                Some(7),
+            )
+            .await
+            .unwrap();
+        }
+
+        let barrier_logs: Vec<_> = captured
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|event| event.event.as_deref() == Some("fade_post_recall_ping_barrier"))
+            .cloned()
+            .collect();
+        assert_eq!(
+            barrier_logs,
+            vec![
+                CapturedWarnEvent {
+                    level: Some("DEBUG".to_string()),
+                    event: Some("fade_post_recall_ping_barrier".to_string()),
+                    message: Some("Fade readiness barrier started after scene recall".to_string()),
+                    generation: Some("7".to_string()),
+                    scene_index: Some("1".to_string()),
+                    scene_name: Some("Intro".to_string()),
+                    action: Some("started".to_string()),
+                    ..Default::default()
+                },
+                CapturedWarnEvent {
+                    level: Some("DEBUG".to_string()),
+                    event: Some("fade_post_recall_ping_barrier".to_string()),
+                    message: Some("Fade readiness barrier reset after scene recall".to_string()),
+                    generation: Some("7".to_string()),
+                    scene_index: Some("2".to_string()),
+                    scene_name: Some("Verse".to_string()),
+                    action: Some("reset".to_string()),
+                    ..Default::default()
+                },
+            ]
         );
     }
 }

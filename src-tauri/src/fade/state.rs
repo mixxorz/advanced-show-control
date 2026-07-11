@@ -16,6 +16,7 @@ pub(crate) struct ReadinessBarrier {
     pub(crate) scene_name: String,
     pub(crate) last_counted_ping_sequence: u64,
     pub(crate) observed_ping_count: u8,
+    missed_events: bool,
     pub(crate) deadline: tokio::time::Instant,
 }
 
@@ -86,8 +87,15 @@ impl EngineState {
             scene_name,
             last_counted_ping_sequence: ping_sequence,
             observed_ping_count: 0,
+            missed_events: false,
             deadline: readiness_now + READINESS_TIMEOUT,
         });
+    }
+
+    pub(crate) fn mark_readiness_lagged(&mut self) {
+        if let Some(barrier) = self.readiness_barrier.as_mut() {
+            barrier.missed_events = true;
+        }
     }
 
     #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
@@ -101,7 +109,10 @@ impl EngineState {
             return PingGateProgress::Ignored;
         };
 
-        if generation != barrier.generation || sequence <= barrier.last_counted_ping_sequence {
+        if barrier.missed_events
+            || generation != barrier.generation
+            || sequence <= barrier.last_counted_ping_sequence
+        {
             return PingGateProgress::Ignored;
         }
 
@@ -142,6 +153,10 @@ impl EngineState {
     #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
     pub(crate) fn is_waiting_for_readiness(&self) -> bool {
         self.readiness_barrier.is_some()
+    }
+
+    pub(crate) fn clear_readiness_barrier(&mut self) {
+        self.readiness_barrier = None;
     }
 
     pub(crate) fn cancel_all_in_place(&mut self) {
