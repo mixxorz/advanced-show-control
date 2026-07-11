@@ -1149,6 +1149,7 @@ mod tests {
                     state: crate::scenes::ScenesProjectionState {
                         scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
                         selected_scene_internal_id: None,
+                        scene_settings_clipboard_available: false,
                     },
                     persisted_scene_edit: true,
                 },
@@ -1181,6 +1182,7 @@ mod tests {
                     state: crate::scenes::ScenesProjectionState {
                         scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
                         selected_scene_internal_id: None,
+                        scene_settings_clipboard_available: false,
                     },
                     persisted_scene_edit: false,
                 },

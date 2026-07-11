@@ -602,6 +602,7 @@ mod tests {
                 scope_toggles: Default::default(),
             }],
             selected_scene_internal_id: Some("selected-id".to_string()),
+            scene_settings_clipboard_available: false,
         });
 
         let snapshot = cache.build_snapshot();

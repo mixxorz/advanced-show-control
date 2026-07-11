@@ -10,6 +10,7 @@ pub enum ScenesProjectionReason {
 pub struct ScenesProjectionState {
     pub scene_configs: Vec<SceneConfig>,
     pub selected_scene_internal_id: Option<String>,
+    pub scene_settings_clipboard_available: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
