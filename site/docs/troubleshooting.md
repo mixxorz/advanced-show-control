@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Use these checks to get the next task moving. Correct the stated problem, then follow the linked procedure before changing console state.
+Use this page when a connection, recall, cue, save, or fade does not do what you expect. Correct the stated problem, then follow the linked steps before you try the task again.
 
 ## No LV1 Systems Found
 
@@ -26,7 +26,7 @@ If **GO** is enabled but the setting is unlinked, the recall is refused and the 
 
 ## Cue Displays Missing Scene
 
-**Missing scene** and `---` mean the cue points to a scene fade setting that is no longer available. Restore that setting before cueing it. Until then, it cannot supply **Cued** for **GO**.
+**Missing scene** and `---` mean the cue points to a scene fade setting that is no longer available. Recreate the needed setting, or select an unlinked setting, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. Then confirm its number and name before you cue it. See [Link Or Relink A Scene](scenes.md#link-or-relink-a-scene). Until then, it cannot supply **Cued** for **GO**.
 
 ## Session Cannot Be Opened Or Saved
 
@@ -36,6 +36,6 @@ Open an `.ascs` file through **File > Open Session...**. Use **Save Session** or
 
 If **Logs** has no message for the problem, inspect the timestamp and severity around the operation. The screen excludes `DEBUG` messages. Enable **Extensive diagnostics** if you need more detail, then inspect the diagnostic file described in [Logs](logs.md#diagnostic-files).
 
-## A Setting Does Not Change Application Behavior
+## An Inactive Setting Does Not Produce A Result
 
 **Auto load last show file**, **Auto save sessions**, **Time display**, and **Fader override sensitivity** are inactive in v2. Open and save the session yourself. During rehearsal, move a fading fader to confirm that your move takes control of it. See [Not Active In v2](settings.md#not-active-in-v2).

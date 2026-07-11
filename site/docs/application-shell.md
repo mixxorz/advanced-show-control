@@ -10,7 +10,7 @@ Use the application shell to connect to LV1, prepare scenes or cues, and check t
 | --- | --- |
 | **Cued** | The scene prepared for **GO**. |
 | **Current** | The LV1 scene that is active now. |
-| **Mode** | **Offline** means no console is connected; **Ready** means the app can operate; **Safe** means SAFE blocks app recalls; **Fading** means a timed transition is moving controls. |
+| **Mode** | **Offline** means no console is connected; **Ready** means no active fade status is shown, so **Recall** and **GO** can be available when their other conditions pass; **Safe** means SAFE blocks app recalls; **Fading** means a timed transition is moving controls. |
 | **GO** | Recalls the cued scene fade setting. |
 
 `---` means the corresponding scene is unavailable. Compare **Cued** and **Current** before a recall.
@@ -45,6 +45,8 @@ When **SAFE** is on, **Mode** displays **Safe** instead of **Fading**. You canno
 ![The SAFE control when active.](assets/screenshots/safe-active.png)
 
 **SAFE** blocks **Recall** and **GO** but does not disable LV1 controls or stop a fade already running. Use it before a rehearsal or console check where app recalls must not run.
+
+If you move one fader during a fade, **Mode** can return to **Ready** while other scoped controls continue moving. Watch those controls before you treat the transition as finished.
 
 ## Sessions
 

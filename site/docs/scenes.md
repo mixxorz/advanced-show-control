@@ -4,7 +4,7 @@ Use **Scenes** to prepare a scene fade setting for an LV1 scene. The setting sto
 
 ## Prepare A Scene Fade Setting
 
-Scope selects the channels and controls that can change during the fade. If scope is empty when you first select **Store**, every current channel enters scope and **FADER** turns on. The first store can therefore include all current channel faders. Review the channel buttons immediately, remove any channels you do not want to move, then recall the scene.
+Scope selects the channels and controls that can change during the fade. Whenever scope is empty when you select **Store**, including after **None**, every current channel enters scope and **FADER** turns on. Store can therefore include all current channel faders. Review the channel buttons immediately, remove any channels you do not want to move, then recall the scene.
 
 1. Select the setting in the **Scene library**.
 2. Set LV1 to the mix you want to reach.
@@ -25,8 +25,8 @@ The **Scene library** lists scene fade settings. The editor shows the selected s
 | Control | Result |
 | --- | --- |
 | **Recall** | Recalls the linked LV1 scene. A fade follows only when LV1 recalls the matching scene. |
-| **Store** | Records the current fader and pan values. On the first store with empty scope, it includes every current channel and turns **FADER** on. |
-| **Copy** | Is available, but it has no effect in v2. |
+| **Store** | Records the current fader and pan values. Whenever scope is empty, it includes every current channel and turns **FADER** on. |
+| **Copy** | Does not copy or change a scene fade setting in v2. |
 | **Paste** | Is disabled in v2. |
 | **X-Fade** | Sets the transition time. |
 
@@ -53,7 +53,7 @@ If no values have been stored, select **Store** before setting scope. If both **
 
 The setting must be linked, and LV1 must recall the same number and name shown in the setting. When those match, scoped controls move from their positions at recall to the stored values. If the setting is unlinked, LV1 is offline, or the name or number differs, no fade starts. Correct the condition, then confirm the scene again.
 
-If you move a fader during a fade, your adjustment takes control of that fader. If LV1 disconnects, the fade stops. Reconnect, confirm the console state, and rehearse before you use the setting again.
+If you move one fader during a fade, your adjustment takes control of that fader. **Mode** can return to **Ready** even while other scoped controls continue moving. Watch the remaining controls, not **Mode** alone, before you decide that the transition has finished. If LV1 disconnects, the fade stops. Reconnect, confirm the console state, and rehearse before you use the setting again.
 
 ## Link Or Relink A Scene
 
