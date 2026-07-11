@@ -727,49 +727,96 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_load_drops_blank_file_configs_before_alignment() {
+    async fn connected_load_preserves_default_scene_ids_referenced_by_cue_entries() {
         let event_bus = AppEventBus::default();
-        let mut state = ShowState::default();
-        let path = std::path::PathBuf::from("session.show");
+        let (show, peers) = show_actor(event_bus.clone());
+        let (scenes, task, _scenes_peers) =
+            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        task.spawn();
+        peers.set_scenes(scenes.clone());
+        let (cue_lists, task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(event_bus, scenes.clone());
+        task.spawn();
+        peers.set_cue_lists(cue_lists.clone());
+
+        let lv1 = lv1_snapshot(vec![
+            SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            SceneListEntry {
+                index: 2,
+                name: "Verse".to_string(),
+            },
+        ]);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(4);
+        let lv1_handle = crate::lv1::test_actor_handle(lv1_tx);
+        tokio::spawn(async move {
+            while let Some(command) = lv1_rx.recv().await {
+                if let crate::lv1::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(lv1.clone());
+                }
+            }
+        });
+        peers.set_lv1(1, lv1_handle);
+
+        let path = std::env::temp_dir().join(format!("show-load-cue-ids-{}.ascs", Uuid::new_v4()));
+        let intro_id = Uuid::from_u128(1);
+        let verse_id = Uuid::from_u128(2);
+        let cue_list_id = Uuid::from_u128(3);
+        let intro_entry_id = Uuid::from_u128(4);
+        let verse_entry_id = Uuid::from_u128(5);
         let mut file = show_file(vec![
-            file_scene(scene_config(1, Some(1), "Intro", 1_000)),
+            file_scene(scene_config(1, Some(1), "Intro", 0)),
             file_scene(scene_config(2, Some(2), "Verse", 0)),
         ]);
+        file.cue_lists = vec![crate::cue_lists::CueList {
+            id: cue_list_id,
+            name: "Main".to_string(),
+            entries: vec![
+                crate::cue_lists::CueEntry {
+                    id: intro_entry_id,
+                    scene_internal_id: intro_id,
+                },
+                crate::cue_lists::CueEntry {
+                    id: verse_entry_id,
+                    scene_internal_id: verse_id,
+                },
+            ],
+        }];
+        file.active_cue_list_id = Some(cue_list_id);
+        file.cued_cue_entry_id = Some(intro_entry_id);
 
-        let peers = show_actor_peers();
-        load_show_file_from_dto(
-            &mut state,
-            &event_bus,
-            &peers,
-            path,
-            &mut file,
-            &lv1_snapshot(vec![
-                SceneListEntry {
-                    index: 1,
-                    name: "Intro".to_string(),
-                },
-                SceneListEntry {
-                    index: 2,
-                    name: "Verse".to_string(),
-                },
-            ]),
-        )
+        crate::show_file::write_show_file(&path, &file, &crate::show_file::backup_folder())
+            .unwrap();
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::LoadShowFileFromPath {
+            path: path.clone(),
+            reply: Some(reply),
+        })
         .await
-        .expect("load should succeed");
+        .unwrap();
+        assert!(rx.await.unwrap().is_ok());
 
-        let scene_document = get_scene_document(&peers.scenes().unwrap()).await;
+        let scene_document = get_scene_document(&scenes).await;
         assert_eq!(scene_document.scene_configs.len(), 2);
+        assert_eq!(scene_document.scene_configs[0].internal_scene_id, intro_id);
+        assert_eq!(scene_document.scene_configs[1].internal_scene_id, verse_id);
+
+        let cue_document = get_cue_list_document(&cue_lists).await;
+        assert_eq!(cue_document.cue_lists[0].entries.len(), 2);
         assert_eq!(
-            scene_document.scene_configs[0].internal_scene_id,
-            Uuid::from_u128(1)
+            cue_document.cue_lists[0].entries[0].scene_internal_id,
+            intro_id
         );
-        assert_eq!(scene_document.scene_configs[0].duration_ms, 1_000);
-        assert_ne!(
-            scene_document.scene_configs[1].internal_scene_id,
-            Uuid::from_u128(2)
+        assert_eq!(
+            cue_document.cue_lists[0].entries[1].scene_internal_id,
+            verse_id
         );
-        assert_eq!(scene_document.scene_configs[1].scene_index, Some(2));
-        assert_eq!(scene_document.scene_configs[1].duration_ms, 0);
+        assert_eq!(cue_document.cued_cue_entry_id, Some(intro_entry_id));
+
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
