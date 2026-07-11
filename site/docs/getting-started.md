@@ -35,7 +35,7 @@ Save the session after each intended change.
 
 ## Configure One Fade
 
-Scope selects the channels and controls that can change during the fade. Whenever scope is empty when you select **Store**, including after **None**, Advanced Show Control puts every current channel in scope and turns **FADER** on. That can include more faders than you intend to move, so review the channel buttons immediately and remove any channels before you recall.
+Scope selects the channels and controls that can change during the fade. Whenever channel scope is empty when you select **Store**, including after **None**, Advanced Show Control restores every current channel to scope. It preserves the existing **FADER** and **PAN** selections. A new scene fade setting starts with **FADER** on and **PAN** off. Review and narrow both channel scope and parameter scope before you recall, or the fade may move more controls than you intend.
 
 1. Open **Scenes** and select the required scene fade setting.
 2. Set LV1 to the mix you want the scene to reach.

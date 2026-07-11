@@ -10,10 +10,10 @@ Use the application shell to connect to LV1, prepare scenes or cues, and check t
 | --- | --- |
 | **Cued** | The scene prepared for **GO**. |
 | **Current** | The LV1 scene that is active now. |
-| **Mode** | **Offline** means no console is connected; **Ready** means no active fade status is shown, so **Recall** and **GO** can be available when their other conditions pass; **Safe** means SAFE blocks app recalls; **Fading** means a timed transition is moving controls. |
+| **Mode** | **Offline** means no console is connected; **Ready** means LV1 is connected, SAFE is off, and the status bar is not showing **Fading**; **Safe** means SAFE blocks app recalls; **Fading** means a timed transition is moving controls. |
 | **GO** | Recalls the cued scene fade setting. |
 
-`---` means the corresponding scene is unavailable. Compare **Cued** and **Current** before a recall.
+`---` means the corresponding scene is unavailable. **Ready** alone does not make **GO** available: **GO** also needs a cued entry that points to an available scene fade setting. Compare **Cued** and **Current** before a recall.
 
 ## Normal Workflow
 
