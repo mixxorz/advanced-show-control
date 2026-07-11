@@ -844,6 +844,7 @@ mod tests {
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::show::{ShowEvent, ShowProjectionReason};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};
@@ -856,6 +857,8 @@ mod tests {
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct CapturedLogEvent {
         event: Option<String>,
+        level: Option<tracing::Level>,
+        message: Option<String>,
         host: Option<String>,
         port: Option<u16>,
     }
@@ -871,6 +874,7 @@ mod tests {
         fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
             let mut visitor = CapturedLogEvent::default();
             event.record(&mut visitor);
+            visitor.level = Some(*event.metadata().level());
             self.0.lock().unwrap().push(visitor);
         }
     }
@@ -879,6 +883,7 @@ mod tests {
         fn record_str(&mut self, field: &Field, value: &str) {
             match field.name() {
                 "event" => self.event = Some(value.to_string()),
+                "message" => self.message = Some(value.to_string()),
                 "host" => self.host = Some(value.to_string()),
                 _ => {}
             }
@@ -900,6 +905,7 @@ mod tests {
             let value = format!("{value:?}").trim_matches('"').to_string();
             match field.name() {
                 "event" => self.event = Some(value),
+                "message" => self.message = Some(value),
                 "host" => self.host = Some(value),
                 _ => {}
             }
@@ -918,12 +924,52 @@ mod tests {
         test_actor_handle(tx)
     }
 
-    fn settings_handle_for_test(event_bus: AppEventBus) -> SettingsHandle {
-        let settings_dir =
-            std::env::temp_dir().join(format!("asc-lifecycle-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&settings_dir).expect("temporary settings directory should exist");
+    struct TestSettingsDir {
+        path: PathBuf,
+    }
+
+    impl TestSettingsDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("asc-lifecycle-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).expect("temporary settings directory should exist");
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestSettingsDir {
+        fn drop(&mut self) {
+            if self.path.is_dir() {
+                let _ = std::fs::remove_dir_all(&self.path);
+            } else {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    struct LifecycleTestFixture {
+        lifecycle: AppLifecycle,
+        settings_dir: TestSettingsDir,
+    }
+
+    impl std::ops::Deref for LifecycleTestFixture {
+        type Target = AppLifecycle;
+
+        fn deref(&self) -> &Self::Target {
+            &self.lifecycle
+        }
+    }
+
+    fn settings_handle_for_test(
+        settings_dir: &TestSettingsDir,
+        event_bus: AppEventBus,
+    ) -> SettingsHandle {
         let (settings, settings_task, _initial_settings) =
-            crate::settings::build_settings_actor(settings_dir, event_bus);
+            crate::settings::build_settings_actor(settings_dir.path().to_path_buf(), event_bus);
         settings_task.spawn();
         settings
     }
@@ -937,9 +983,13 @@ mod tests {
         AppLifecycle::new(event_bus, show, show_peers, settings)
     }
 
-    fn lifecycle_for_test(event_bus: AppEventBus) -> AppLifecycle {
-        let settings = settings_handle_for_test(event_bus.clone());
-        lifecycle_for_test_with_settings(event_bus, settings)
+    fn lifecycle_for_test(event_bus: AppEventBus) -> LifecycleTestFixture {
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        LifecycleTestFixture {
+            lifecycle: lifecycle_for_test_with_settings(event_bus, settings),
+            settings_dir,
+        }
     }
 
     async fn set_last_connected_lv1(settings: &SettingsHandle, identity: Lv1SystemIdentity) {
@@ -1001,6 +1051,16 @@ mod tests {
             identity: identity(uuid, host, address),
             status,
         }
+    }
+
+    #[test]
+    fn lifecycle_test_fixture_removes_settings_directory() {
+        let fixture = lifecycle_for_test(AppEventBus::default());
+        let path = fixture.settings_dir.path().to_path_buf();
+
+        assert!(path.exists());
+        drop(fixture);
+        assert!(!path.exists());
     }
 
     #[test]
@@ -1639,7 +1699,8 @@ mod tests {
     async fn ambiguous_startup_match_preserves_generation_and_remembered_identity() {
         let app = mock_app();
         let event_bus = AppEventBus::default();
-        let settings = settings_handle_for_test(event_bus.clone());
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
         let lifecycle = lifecycle_for_test_with_settings(event_bus, settings.clone());
         let remembered = identity(None, Some("LV1-FOH"), "192.168.1.35");
         set_last_connected_lv1(&settings, remembered.clone()).await;
@@ -1676,7 +1737,8 @@ mod tests {
     #[tokio::test]
     async fn accepted_connect_remembers_confirmed_identity() {
         let event_bus = AppEventBus::default();
-        let settings = settings_handle_for_test(event_bus.clone());
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
         let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
         let identity = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
         let generation = lifecycle.begin_connecting().await.unwrap();
@@ -1703,10 +1765,66 @@ mod tests {
         assert_eq!(get_last_connected_lv1(&settings).await, Some(identity));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn accepted_connect_logs_one_error_when_identity_cannot_be_remembered() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("test tracing subscriber should install");
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        std::fs::remove_dir_all(settings_dir.path())
+            .expect("settings test directory should remove");
+        std::fs::write(settings_dir.path(), "not a directory")
+            .expect("settings test path should become a file");
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(lifecycle.current_lv1().await.is_some());
+        let errors: Vec<_> = logs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|log| log.level == Some(tracing::Level::ERROR))
+            .cloned()
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].event.as_deref(),
+            Some("last_connected_lv1_save_failed")
+        );
+        assert_eq!(
+            errors[0].message.as_deref(),
+            Some("Connected to LV1, but the connection could not be remembered for next startup")
+        );
+    }
+
     #[tokio::test]
     async fn stale_connect_does_not_replace_remembered_identity() {
         let event_bus = AppEventBus::default();
-        let settings = settings_handle_for_test(event_bus.clone());
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
         let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
         let remembered = identity(Some("uuid-old"), Some("LV1-FOH"), "192.168.1.35");
         set_last_connected_lv1(&settings, remembered.clone()).await;

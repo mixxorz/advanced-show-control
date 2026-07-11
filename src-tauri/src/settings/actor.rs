@@ -58,19 +58,30 @@ async fn handle_command(
             let _ = reply.send(state.settings());
         }
         SettingsCommand::ReplaceSettings { settings, reply } => {
-            let result = state.replace_settings(settings).map(|changed| {
-                if changed {
-                    let settings = state.settings();
-                    log_settings_updated(&settings);
-                    event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged { settings }));
-                } else {
-                    tracing::debug!(
-                        event = "settings_update_noop",
-                        "Settings already match requested values"
-                    );
+            let result = match state.replace_settings(settings) {
+                Ok(changed) => {
+                    if changed {
+                        let settings = state.settings();
+                        log_settings_updated(&settings);
+                        event_bus
+                            .publish(AppEvent::Settings(SettingsEvent::StateChanged { settings }));
+                    } else {
+                        tracing::debug!(
+                            event = "settings_update_noop",
+                            "Settings already match requested values"
+                        );
+                    }
+                    Ok(SettingsCommandResult { changed })
                 }
-                SettingsCommandResult { changed }
-            });
+                Err(error) => {
+                    tracing::error!(
+                        event = "settings_write_failed",
+                        error = %error,
+                        "Settings could not be saved"
+                    );
+                    Err(error)
+                }
+            };
             let _ = reply.send(result);
         }
         SettingsCommand::GetLastConnectedLv1 { reply } => {

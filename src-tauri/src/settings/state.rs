@@ -95,34 +95,12 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
 
 fn write_settings_file(file_path: &Path, settings: &PersistedSettings) -> Result<(), String> {
     if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|err| {
-            tracing::error!(
-                event = "settings_write_failed",
-                path = %file_path.display(),
-                error = %err,
-                "Settings could not be saved"
-            );
-            format!("Failed to create settings directory: {err}")
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create settings directory: {err}"))?;
     }
-    let contents = serde_json::to_string_pretty(settings).map_err(|err| {
-        tracing::error!(
-            event = "settings_write_failed",
-            path = %file_path.display(),
-            error = %err,
-            "Settings could not be saved"
-        );
-        format!("Failed to serialize settings: {err}")
-    })?;
-    std::fs::write(file_path, contents).map_err(|err| {
-        tracing::error!(
-            event = "settings_write_failed",
-            path = %file_path.display(),
-            error = %err,
-            "Settings could not be saved"
-        );
-        format!("Failed to write settings: {err}")
-    })
+    let contents = serde_json::to_string_pretty(settings)
+        .map_err(|err| format!("Failed to serialize settings: {err}"))?;
+    std::fs::write(file_path, contents).map_err(|err| format!("Failed to write settings: {err}"))
 }
 
 #[cfg(test)]
