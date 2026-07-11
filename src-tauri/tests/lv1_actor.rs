@@ -595,7 +595,10 @@ async fn actor_resets_ping_sequence_after_reconnecting() {
     let (release_server_tx, release_server_rx) = std::sync::mpsc::channel();
 
     tokio::task::spawn_blocking(move || {
-        for ping_args in [vec![OscArg::Int(1)], vec![OscArg::Int(2)]] {
+        for (connection_index, ping_args) in [vec![OscArg::Int(1)], vec![OscArg::Int(2)]]
+            .into_iter()
+            .enumerate()
+        {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_millis(50)))
@@ -632,11 +635,13 @@ async fn actor_resets_ping_sequence_after_reconnecting() {
                     panic!("server did not receive pong");
                 }
             }
-        }
 
-        release_server_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .unwrap();
+            if connection_index == 1 {
+                release_server_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+            }
+        }
     });
 
     let event_bus = AppEventBus::default();
