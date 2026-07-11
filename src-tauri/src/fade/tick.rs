@@ -1,8 +1,9 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
-use crate::fade::types::{FadeParameter, FadeTargetKey};
+use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 
 pub const TICK_HZ: u64 = 25;
 /// Minimum fader position change (0.0–1.0) required to send a SetGain command.
@@ -20,6 +21,7 @@ pub const PAN_OVERRIDE_THRESHOLD: f64 = 1.8;
 pub const PAN_OVERRIDE_CONFIRMATION_COUNT: u8 = 2;
 
 pub(crate) struct ActiveTarget {
+    pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
@@ -36,6 +38,7 @@ pub(crate) struct ActiveTarget {
 }
 
 pub(crate) struct ActiveTargetInit {
+    pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
     pub(crate) channel: i32,
@@ -50,6 +53,7 @@ pub(crate) struct ActiveTargetInit {
 impl ActiveTarget {
     pub(crate) fn new(init: ActiveTargetInit) -> Self {
         Self {
+            scene: init.scene,
             key: init.key,
             group: init.group,
             channel: init.channel,
@@ -75,6 +79,10 @@ impl ActiveTarget {
         if let Some(paused_since) = self.paused_since.take() {
             self.started_at += now.duration_since(paused_since);
         }
+    }
+
+    pub(crate) fn finish_on_next_tick(&mut self) {
+        self.duration = Duration::ZERO;
     }
 
     #[cfg(test)]
@@ -180,11 +188,18 @@ impl ActiveTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fade::types::FadeParameter;
     use std::time::Duration;
+
+    fn scene(index: i32, name: &str) -> FadeSceneIdentity {
+        FadeSceneIdentity {
+            index,
+            name: name.to_string(),
+        }
+    }
 
     fn make_channel(start_db: f64, target_db: f64, duration_ms: u64) -> ActiveTarget {
         ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: crate::fade::types::FadeTargetKey {
                 group: 0,
                 channel: 0,
@@ -197,7 +212,7 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
-            expected_generation: None,
+            expected_generation: Some(4),
         })
     }
 
@@ -219,6 +234,7 @@ mod tests {
     #[test]
     fn value_at_midpoint_interpolates_pan_linearly() {
         let ch = ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: crate::fade::types::FadeTargetKey {
                 group: 0,
                 channel: 0,
@@ -251,6 +267,35 @@ mod tests {
         let ch = make_channel(-20.0, -10.0, 4000);
         let end = ch.started_at + Duration::from_millis(4000);
         assert!(ch.is_done(end));
+    }
+
+    #[test]
+    fn instant_finish_preserves_target_ownership_and_exact_value() {
+        let mut target = make_channel(-20.0, -10.0, 4_000);
+        let owner = target.scene.clone();
+        let key = target.key.clone();
+        let generation = target.expected_generation;
+
+        target.finish_on_next_tick();
+
+        assert!(target.is_done(Instant::now()));
+        assert_eq!(target.exact_final_send(), -10.0);
+        assert_eq!(target.scene, owner);
+        assert_eq!(target.key, key);
+        assert_eq!(target.expected_generation, generation);
+    }
+
+    #[test]
+    fn instant_finish_remains_done_after_paused_target_resumes() {
+        let now = Instant::now();
+        let mut target = make_channel(-20.0, -10.0, 4_000);
+        target.pause(now);
+
+        target.finish_on_next_tick();
+        target.resume(now + Duration::from_secs(2));
+
+        assert!(target.is_done(now + Duration::from_secs(2)));
+        assert_eq!(target.exact_final_send(), -10.0);
     }
 
     #[test]
@@ -323,6 +368,7 @@ mod tests {
 
     fn make_pan_family_target(parameter: FadeParameter) -> ActiveTarget {
         ActiveTarget::new(ActiveTargetInit {
+            scene: scene(17, "Verse"),
             key: crate::fade::types::FadeTargetKey {
                 group: 0,
                 channel: 0,

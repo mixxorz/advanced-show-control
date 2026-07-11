@@ -12,12 +12,16 @@ const targetA = -10;
 const targetB = 0;
 const tolerance = 0.5;
 const timeoutMs = 15_000;
+const sameSceneDurationMs = 6_000;
+const sameSceneMovementThresholdDb = 2;
+const sameSceneFinishTimeoutMs = 3_000;
 const tests = [
   "cue-list-create",
   "connection",
   "scene-recall",
   "fade-starts",
   "fade-completes",
+  "same-scene-finish",
   "decreasing-xfade",
   "link-unlinked-scene",
   "lockout-blocks-recall",
@@ -102,6 +106,44 @@ async function run() {
       await reset(sceneA, targetA);
       await invoke("recall_scene", { internalSceneId: sceneB });
       await waitGain(targetB);
+    });
+    await test("same-scene-finish", async () => {
+      try {
+        await reset(sceneA, targetA);
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneB,
+          durationMs: sameSceneDurationMs,
+        });
+        await invoke("recall_scene", { internalSceneId: sceneB });
+        await waitFor(async () => {
+          const liveGain = await gain();
+          return (
+            liveGain >= targetA + sameSceneMovementThresholdDb &&
+            liveGain < targetB - tolerance
+          );
+        }, "same-scene fade movement before target");
+
+        const repeatedAt = Date.now();
+        await invoke("recall_scene", { internalSceneId: sceneB });
+        await waitFor(
+          async () => Math.abs((await gain()) - targetB) <= tolerance,
+          "same-scene exact finish",
+          sameSceneFinishTimeoutMs,
+        );
+        await waitFor(
+          () => state?.fadeState === "idle",
+          "same-scene projected fade completion",
+          sameSceneFinishTimeoutMs,
+        );
+        if (Date.now() - repeatedAt >= sameSceneDurationMs) {
+          throw new Error("same-scene recall restarted the full fade duration");
+        }
+      } finally {
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneB,
+          durationMs: 1_000,
+        });
+      }
     });
     await test("decreasing-xfade", async () => {
       await reset(sceneA, targetA);
@@ -341,8 +383,9 @@ function resolveSmokeSceneIds() {
 async function waitFor<T>(
   check: () => T | Promise<T>,
   labelText: string,
+  waitTimeoutMs = timeoutMs,
 ): Promise<NonNullable<T>> {
-  const deadline = Date.now() + timeoutMs;
+  const deadline = Date.now() + waitTimeoutMs;
   while (Date.now() < deadline) {
     const value = await check();
     if (value) return value as NonNullable<T>;
