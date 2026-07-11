@@ -8,7 +8,7 @@ Each entry shows a timestamp, severity, and message. `INFO` records an action or
 
 When the list is empty, no log messages have appeared in this session.
 
-## Diagnostic Files
+## Diagnostic files
 
 Logs does not show `DEBUG` messages. Enable **Extensive diagnostics** when you need detailed diagnostic messages, then disable it after investigation because files can grow quickly.
 

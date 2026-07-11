@@ -1,8 +1,8 @@
-# Keyboard Shortcuts
+# Keyboard shortcuts
 
 `CmdOrCtrl` means Command on macOS and Control on other supported platforms.
 
-## Fixed File Shortcuts
+## Fixed file shortcuts
 
 | Command | Shortcut |
 | --- | --- |
@@ -11,7 +11,7 @@
 | **Save Session** | `CmdOrCtrl+S` |
 | **Save As...** | `CmdOrCtrl+Shift+S` |
 
-## GO And CUE
+## GO and CUE
 
 | Action | Default |
 | --- | --- |

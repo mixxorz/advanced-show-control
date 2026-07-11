@@ -1,10 +1,10 @@
-# Application Shell
+# Application shell
 
 The application shell keeps the controls you need during a show in one place: connection and **SAFE** at the top, the current work screen in the centre, and recall status at the bottom.
 
 ![The application shell with the Scenes tab active.](assets/screenshots/application-shell.png)
 
-## Top Bar
+## Top bar
 
 Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**. The **Events** tab is visible in v2, but event automation is not yet available.
 
@@ -22,7 +22,7 @@ While **SAFE** is on, **Recall** and **GO** are blocked. LV1 remains available f
 
 If you want to use **Mode** to watch a fade finish, wait until the fade is complete before turning on **SAFE**. **Mode** shows **Safe** while SAFE is on, even if controls are still moving.
 
-## Bottom Status Bar
+## Bottom status bar
 
 The bottom bar shows the information you need before **GO**:
 

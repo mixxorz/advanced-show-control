@@ -16,7 +16,7 @@ Add a fade to any LV1 scene. Each scene can have its own channels, target values
 
 Arrange scenes in show order without rearranging the scene list in LV1. Prepare the next cue, confirm it in the status bar, and recall it with **GO**.
 
-## Get Started
+## Get started
 
 [Download for Windows](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_Windows_x64_Setup.zip){ .md-button .md-button--primary }
 [Download for macOS](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_macOS_universal.dmg){ .md-button .md-button--primary }
@@ -26,7 +26,7 @@ Version 2 is the current stable release. The downloads are not signed, and the m
 
 Advanced Show Control controls live mixer parameters. Rehearse every fade and cue-list sequence on the system you will use for the show.
 
-## Read The Guide
+## Read the guide
 
 - [Getting Started](getting-started.md): install the app and create your first fade.
 - [Scenes](scenes.md): store targets, choose scope, and set fade times.

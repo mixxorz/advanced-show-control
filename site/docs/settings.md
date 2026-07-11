@@ -4,13 +4,13 @@ Use **Settings** to change the shortcuts and diagnostic detail available in v2. 
 
 ![The Settings screen.](assets/screenshots/settings.png)
 
-## Active In v2
+## Active in v2
 
-### Extensive Diagnostics
+### Extensive diagnostics
 
 Enable **Extensive diagnostics** only while you investigate a problem. When it is off, diagnostic files include `INFO`, `WARN`, and `ERROR`. When it is on, they also include `DEBUG`, so files can grow quickly. Disable it after you collect the information you need.
 
-### Keyboard Shortcuts
+### Keyboard shortcuts
 
 **GO** recalls the current cued entry. **CUE** prepares the selected cue-list entry. The defaults are `Space` for GO and `C` for CUE.
 
@@ -22,7 +22,7 @@ Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when ne
 
 Shortcuts do not operate while you are entering text or working in a dialog. Holding a shortcut does not repeat CUE or GO. A shortcut does not bypass **SAFE**, connection checks, or the LV1 scene number-and-name check.
 
-## Not Active In v2
+## Not active in v2
 
 In v2, **Auto load last show file** does not open a session, **Auto save sessions** does not save changes, **Time display** does not change the clock, and **Fader override sensitivity** does not change manual override.
 

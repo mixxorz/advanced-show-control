@@ -4,7 +4,7 @@ Use **Scenes** to add a fade to an LV1 scene. For each scene, you can store targ
 
 ![A selected scene with its fade and scope controls.](assets/screenshots/scenes-selected.png)
 
-## Create A Scene Fade
+## Create a scene fade
 
 1. Select the scene in the **Scene library**.
 2. Set LV1 to the mix you want the scene to reach.
@@ -18,7 +18,7 @@ Scope is the combination of selected channels and enabled controls. Advanced Sho
 !!! warning "Store with an empty scope"
     If no channels are in scope when you select **Store**, all current channels are added. Remove any channels that should not move before recall. **Store** preserves the current **FADER** and **PAN** selections.
 
-## Scene Library
+## Scene library
 
 The library shows the LV1 scene number, scene name, and **X-Fade** time for each scene fade. Select a row to edit it.
 
@@ -28,7 +28,7 @@ The row indicators identify the selected, current, and cued scenes. An unlinked 
 
 ![The duplicate-scene-name warning in the Scene library.](assets/screenshots/scenes-duplicate-warning.png)
 
-## Store And Scope
+## Store and scope
 
 **Store** captures the current fader and pan values as targets. Storing again replaces those targets with the current LV1 values.
 
@@ -44,13 +44,13 @@ The row indicators identify the selected, current, and cued scenes. An unlinked 
 
 If both **FADER** and **PAN** are off, LV1 can still recall the scene, but Advanced Show Control will not move any controls.
 
-## Fade Time
+## Fade time
 
 Set **X-Fade** to `0` for an immediate cut or from `0.1` to `120` seconds for a timed transition. Press `Enter` or move away from the field to apply the value. You can include a trailing `s`.
 
 Invalid, empty, or negative values return to the previous setting.
 
-## Recall A Scene
+## Recall a scene
 
 1. Confirm that LV1 is **Connected** and **SAFE** is off.
 2. Select the scene fade.
@@ -63,7 +63,7 @@ If the number or name does not match, the fade does not start. Correct the scene
 
 Moving a fader during a fade gives you control of that fader; the other scoped controls may continue moving. If LV1 disconnects, the fade stops. Reconnect and confirm the console state before recalling again.
 
-## Link A Missing Scene
+## Link a missing scene
 
 When an LV1 scene can no longer be found, its scene fade becomes unlinked. Its fade time and scope are retained, but **Store** and **Recall** are unavailable.
 
@@ -78,7 +78,7 @@ If **Overwrite Existing Fade Settings?** appears, continue only when you intend 
 
 **Delete** removes the scene fade from Advanced Show Control. It does not delete the scene in LV1.
 
-## Unavailable Controls
+## Unavailable controls
 
 In version 2, **Copy** does not copy or change a scene fade, and **Paste** is disabled.
 

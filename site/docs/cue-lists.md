@@ -1,10 +1,10 @@
-# Cue Lists
+# Cue lists
 
 Cue lists put your scene fades in show order without changing the scene order in LV1. Use them to prepare the next scene, confirm it, and recall it with **GO**.
 
 ![A cue list with repeated scene entries.](assets/screenshots/cue-list.png)
 
-## Build A Cue List
+## Build a cue list
 
 1. Select **Manage Cue Lists**.
 2. Create a list and make it active.
@@ -15,13 +15,13 @@ The same scene can appear more than once. Removing an entry removes it only from
 
 If no list is active, select or create one before adding entries.
 
-## Manage Lists
+## Manage lists
 
 ![The Manage Cue Lists dialog.](assets/screenshots/manage-cue-lists.png)
 
 Use **Manage Cue Lists** to create, select, rename, reorder, or delete lists. Deleting a list does not delete its scenes or fade settings.
 
-## Prepare The Next Cue
+## Prepare the next cue
 
 Select an entry, then select **Cue**. You can also double-click the entry. The cued row turns blue, and its scene name appears under **Cued** in the bottom status bar.
 
@@ -41,7 +41,7 @@ After a successful **GO**, the following entry is cued automatically. After the 
 
 An unlinked scene fade can still appear under **Cued**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
 
-## Cue Entry States
+## Cue entry states
 
 | State | Meaning |
 | --- | --- |
@@ -52,7 +52,7 @@ An unlinked scene fade can still appear under **Cued**, but **GO** will refuse t
 
 ![A cued entry whose scene fade is missing.](assets/screenshots/missing-cue-scene.png)
 
-## Keyboard Operation
+## Keyboard operation
 
 The default shortcut for **Cue** is `C`. The default shortcut for **GO** is `Space`.
 

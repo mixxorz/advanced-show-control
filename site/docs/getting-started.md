@@ -1,8 +1,8 @@
-# Getting Started
+# Getting started
 
 This guide takes you from installation to your first scene fade. Before you begin, connect the computer running Advanced Show Control to the same network as your Waves eMotion LV1 or LV1 Classic system.
 
-## 1. Download And Install
+## 1. Download and install
 
 Download [Advanced Show Control v2 for Windows](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_Windows_x64_Setup.zip) or [Advanced Show Control v2 for macOS](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_macOS_universal.dmg).
 
@@ -10,7 +10,7 @@ On Windows, extract the ZIP file and run the installer. On macOS, open the disk 
 
 The downloads are not signed, and the macOS version is not notarized. If your computer blocks the app, approve it in your operating-system security settings and open it again.
 
-## 2. Connect To LV1
+## 2. Connect to LV1
 
 Advanced Show Control searches for LV1 systems when it opens.
 
@@ -22,7 +22,7 @@ Advanced Show Control searches for LV1 systems when it opens.
 
 If the console appears as **Unavailable**, check the network connection and wait for discovery to update. You can reopen this window at any time by selecting the console name in the top bar.
 
-## 3. Create A Session
+## 3. Create a session
 
 A session stores your scene fades and cue lists in an `.ascs` file.
 
@@ -32,7 +32,7 @@ A session stores your scene fades and cue lists in an `.ascs` file.
 
 Advanced Show Control does not yet warn you before closing or replacing a session with unsaved changes. Save after each change you want to keep.
 
-## 4. Create Your First Fade
+## 4. Create your first fade
 
 Create the scene in LV1 first, then use Advanced Show Control to add the fade.
 
@@ -49,7 +49,7 @@ Create the scene in LV1 first, then use Advanced Show Control to add the fade.
 
 Set **X-Fade** to `0` for an immediate cut. For a timed transition, use a value from `0.1` to `120` seconds.
 
-## 5. Recall The Scene
+## 5. Recall the scene
 
 1. Confirm that the top bar shows **Connected** and **SAFE** is off.
 2. Check the scene number and name.
@@ -62,7 +62,7 @@ During a normal fade, **Mode** shows **Fading** and returns to **Ready** afterwa
 
 If the fade does not start, confirm that LV1 is connected, **SAFE** is off, and the scene number and name match. See [Recall Is Disabled Or Does Not Fade](troubleshooting.md#recall-is-disabled-or-does-not-fade) for additional checks.
 
-## Continue Learning
+## Continue learning
 
 - [Scenes](scenes.md) explains every part of a scene fade.
 - [Cue Lists](cue-lists.md) shows how to arrange scenes in show order.
