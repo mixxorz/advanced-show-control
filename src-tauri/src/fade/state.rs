@@ -58,13 +58,6 @@ impl EngineState {
         !self.channels.is_empty()
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "same-scene recall handling dispatches this state transition in the next task"
-        )
-    )]
     pub(super) fn finish_scene_on_next_tick(&mut self, scene: &FadeSceneIdentity) -> usize {
         let mut count = 0;
         for target in &mut self.channels {
