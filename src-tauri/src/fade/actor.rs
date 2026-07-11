@@ -97,7 +97,7 @@ async fn run_engine(
         let readiness_deadline = state.readiness_deadline();
         let readiness_timeout_fut = async move {
             match readiness_deadline {
-                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
                 None => std::future::pending::<()>().await,
             }
         };
@@ -221,8 +221,7 @@ async fn run_engine(
             app_event = app_events.recv() => {
                 match app_event {
                     Ok(AppEvent::Lv1 { event: Lv1Event::FaderChanged { group, channel, gain_db }, .. }) => {
-                        if !state.is_waiting_for_readiness()
-                            && let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
+                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
                             && state.channels[pos].is_override(gain_db)
                         {
                             state.fan_out(FadeEvent::ChannelOverride {
@@ -252,16 +251,14 @@ async fn run_engine(
                         }
                     }
                     Ok(AppEvent::Lv1 { event: Lv1Event::PanChanged { group, channel, pan }, .. }) => {
-                        if !state.is_waiting_for_readiness() {
-                            handle_pan_family_pan_report(
-                                &mut state,
-                                group,
-                                channel,
-                                pan,
-                                &mut tick_interval,
-                                &mut fade_completed_emitted,
-                            );
-                        }
+                        handle_pan_family_pan_report(
+                            &mut state,
+                            group,
+                            channel,
+                            pan,
+                            &mut tick_interval,
+                            &mut fade_completed_emitted,
+                        );
                     }
                     Ok(AppEvent::Lv1 { event: Lv1Event::Disconnected { .. }, .. }) => {
                         if state.is_active() || state.is_waiting_for_readiness() {
@@ -469,6 +466,7 @@ async fn handle_recall_scene_fade(
         config.scene.name,
         snapshot.ping_sequence,
         now,
+        tokio::time::Instant::now(),
     );
 
     Ok(())
@@ -902,6 +900,11 @@ mod tests {
         level: Option<String>,
         event: Option<String>,
         message: Option<String>,
+        generation: Option<String>,
+        scene_index: Option<String>,
+        scene_name: Option<String>,
+        observed_ping_count: Option<String>,
+        timeout_ms: Option<String>,
     }
 
     #[derive(Clone, Default)]
@@ -927,28 +930,25 @@ mod tests {
             match field.name() {
                 "event" => self.event = Some(value.to_string()),
                 "message" => self.message = Some(value.to_string()),
+                "generation" => self.generation = Some(value.to_string()),
+                "scene_index" => self.scene_index = Some(value.to_string()),
+                "scene_name" => self.scene_name = Some(value.to_string()),
+                "observed_ping_count" => self.observed_ping_count = Some(value.to_string()),
+                "timeout_ms" => self.timeout_ms = Some(value.to_string()),
                 _ => {}
             }
         }
 
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.record_str(field, &value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.record_str(field, &value.to_string());
+        }
+
         fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
             self.record_str(field, format!("{value:?}").trim_matches('"'));
-        }
-    }
-
-    fn assert_no_override_or_cancellation(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
-        while let Ok(event) = events.try_recv() {
-            assert!(
-                !matches!(
-                    event,
-                    AppEvent::Fade {
-                        event: FadeEvent::ChannelOverride { .. }
-                            | FadeEvent::ChannelCancelled { .. },
-                        ..
-                    }
-                ),
-                "readiness-gated LV1 feedback must not emit fade override or cancellation facts"
-            );
         }
     }
 
@@ -1997,14 +1997,29 @@ mod tests {
         assert_no_additional_fade_abort(&mut events).await;
 
         let warnings = captured.0.lock().unwrap();
-        assert!(warnings.iter().any(|warning| {
-            warning.level.as_deref() == Some("WARN")
-                && warning.event.as_deref() == Some("fade_post_recall_ping_timeout")
-                && warning.message.as_deref()
-                    == Some(
-                        "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall",
-                    )
-        }));
+        let timeout_warnings: Vec<_> = warnings
+            .iter()
+            .filter(|warning| {
+                warning.level.as_deref() == Some("WARN")
+                    && warning.event.as_deref() == Some("fade_post_recall_ping_timeout")
+            })
+            .collect();
+        assert_eq!(
+            timeout_warnings,
+            vec![&CapturedWarnEvent {
+                level: Some("WARN".to_string()),
+                event: Some("fade_post_recall_ping_timeout".to_string()),
+                message: Some(
+                    "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
+                        .to_string(),
+                ),
+                generation: Some("7".to_string()),
+                scene_index: Some("1".to_string()),
+                scene_name: Some("Intro".to_string()),
+                observed_ping_count: Some("0".to_string()),
+                timeout_ms: Some("5000".to_string()),
+            }]
+        );
     }
 
     #[tokio::test]
@@ -2208,11 +2223,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_recall_ping_gate_ignores_feedback_until_release_then_restores_manual_override() {
+    async fn post_recall_ping_gate_preserves_target_scoped_manual_overrides() {
         let (event_bus, engine, mut write_rx) =
             spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
                 40,
-                vec![channel_info(0, -20.0, Some(0.0))],
+                vec![
+                    channel_info(0, -20.0, Some(0.0)),
+                    channel_info(1, -20.0, Some(0.0)),
+                ],
             )])
             .await;
         let mut events = event_bus.subscribe();
@@ -2231,6 +2249,18 @@ mod tests {
                     FadeTarget {
                         group: 0,
                         channel: 0,
+                        parameter: FadeParameter::Pan,
+                        target: 45.0,
+                    },
+                    FadeTarget {
+                        group: 0,
+                        channel: 1,
+                        parameter: FadeParameter::FaderDb,
+                        target: -10.0,
+                    },
+                    FadeTarget {
+                        group: 0,
+                        channel: 1,
                         parameter: FadeParameter::Pan,
                         target: 45.0,
                     },
@@ -2255,11 +2285,46 @@ mod tests {
                 generation: 7,
                 event: Lv1Event::PanChanged {
                     group: 0,
-                    channel: 0,
+                    channel: 1,
                     pan: -90.0,
                 },
             });
         }
+
+        let mut overridden = std::collections::HashSet::new();
+        let mut cancelled = std::collections::HashSet::new();
+        tokio::time::timeout(Duration::from_millis(300), async {
+            while overridden.len() < 2 || cancelled.len() < 2 {
+                match events.recv().await.expect("event bus should remain open") {
+                    AppEvent::Fade {
+                        event:
+                            FadeEvent::ChannelOverride {
+                                channel, parameter, ..
+                            },
+                        ..
+                    } => {
+                        overridden.insert((channel, parameter));
+                    }
+                    AppEvent::Fade {
+                        event:
+                            FadeEvent::ChannelCancelled {
+                                channel, parameter, ..
+                            },
+                        ..
+                    } => {
+                        cancelled.insert((channel, parameter));
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("manual override behavior should remain active while readiness waits");
+        assert!(overridden.contains(&(0, FadeParameter::FaderDb)));
+        assert!(overridden.contains(&(1, FadeParameter::Pan)));
+        assert!(cancelled.contains(&(0, FadeParameter::FaderDb)));
+        assert!(cancelled.contains(&(1, FadeParameter::Pan)));
+
         event_bus.publish(AppEvent::Lv1 {
             generation: 7,
             event: Lv1Event::PingReceived { sequence: 41 },
@@ -2274,59 +2339,71 @@ mod tests {
             .expect("fade should resume after readiness release")
             .expect("fade write channel should remain open");
         assert!(writes.iter().any(|write| {
-            write.parameter == Lv1WriteParameter::FaderDb && write.group == 0 && write.channel == 0
-        }));
-        assert!(writes.iter().any(|write| {
             write.parameter == Lv1WriteParameter::Pan && write.group == 0 && write.channel == 0
         }));
-        assert_no_override_or_cancellation(&mut events);
+        assert!(writes.iter().any(|write| {
+            write.parameter == Lv1WriteParameter::FaderDb && write.group == 0 && write.channel == 1
+        }));
+        assert!(!writes.iter().any(|write| {
+            write.parameter == Lv1WriteParameter::FaderDb && write.group == 0 && write.channel == 0
+        }));
+        assert!(!writes.iter().any(|write| {
+            write.parameter == Lv1WriteParameter::Pan && write.group == 0 && write.channel == 1
+        }));
+    }
 
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 7,
-            event: Lv1Event::FaderChanged {
-                group: 0,
-                channel: 0,
-                gain_db: -50.0,
-            },
-        });
-        for _ in 0..2 {
-            event_bus.publish(AppEvent::Lv1 {
-                generation: 7,
-                event: Lv1Event::PanChanged {
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn post_recall_ping_gate_newer_recall_receives_a_full_timeout_window() {
+        let (event_bus, engine, _write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(40, vec![channel_info(0, -20.0, None)]),
+            connected_snapshot(41, vec![channel_info(0, -20.0, None)]),
+        ])
+        .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Scene A"),
+                vec![FadeTarget {
                     group: 0,
                     channel: 0,
-                    pan: -90.0,
-                },
-            });
-        }
-
-        let mut overridden = std::collections::HashSet::new();
-        let mut cancelled = std::collections::HashSet::new();
-        tokio::time::timeout(Duration::from_millis(300), async {
-            while overridden.len() < 2 || cancelled.len() < 2 {
-                match events.recv().await.expect("event bus should remain open") {
-                    AppEvent::Fade {
-                        event: FadeEvent::ChannelOverride { parameter, .. },
-                        ..
-                    } => {
-                        overridden.insert(parameter);
-                    }
-                    AppEvent::Fade {
-                        event: FadeEvent::ChannelCancelled { parameter, .. },
-                        ..
-                    } => {
-                        cancelled.insert(parameter);
-                    }
-                    _ => {}
-                }
-            }
-        })
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
         .await
-        .expect("manual override behavior should resume after readiness release");
-        assert!(overridden.contains(&FadeParameter::FaderDb));
-        assert!(overridden.contains(&FadeParameter::Pan));
-        assert!(cancelled.contains(&FadeParameter::FaderDb));
-        assert!(cancelled.contains(&FadeParameter::Pan));
+        .unwrap();
+
+        tokio::time::advance(Duration::from_secs(4)).await;
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(2, "Scene B"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -5.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(4_999)).await;
+        tokio::task::yield_now().await;
+        assert_no_additional_fade_abort(&mut events).await;
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        wait_for_fade_aborted(&mut events).await;
     }
 
     #[tokio::test]

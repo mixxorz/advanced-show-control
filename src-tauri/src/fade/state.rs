@@ -16,7 +16,7 @@ pub(crate) struct ReadinessBarrier {
     pub(crate) scene_name: String,
     pub(crate) last_counted_ping_sequence: u64,
     pub(crate) observed_ping_count: u8,
-    pub(crate) deadline: Instant,
+    pub(crate) deadline: tokio::time::Instant,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,6 +74,7 @@ impl EngineState {
         scene_name: String,
         ping_sequence: u64,
         now: Instant,
+        readiness_now: tokio::time::Instant,
     ) {
         for channel in &mut self.channels {
             channel.pause(now);
@@ -85,7 +86,7 @@ impl EngineState {
             scene_name,
             last_counted_ping_sequence: ping_sequence,
             observed_ping_count: 0,
-            deadline: now + READINESS_TIMEOUT,
+            deadline: readiness_now + READINESS_TIMEOUT,
         });
     }
 
@@ -120,7 +121,7 @@ impl EngineState {
     }
 
     #[allow(dead_code)] // Consumed by the fade actor in the next integration task.
-    pub(crate) fn readiness_deadline(&self) -> Option<Instant> {
+    pub(crate) fn readiness_deadline(&self) -> Option<tokio::time::Instant> {
         self.readiness_barrier
             .as_ref()
             .map(|barrier| barrier.deadline)
@@ -179,13 +180,17 @@ mod tests {
     #[test]
     fn readiness_requires_two_newer_same_generation_pings_before_releasing() {
         let now = Instant::now();
+        let readiness_now = tokio::time::Instant::now();
         let mut state = EngineState::new(AppEventBus::default(), 4);
 
-        state.start_or_reset_readiness(4, 17, "Verse".to_string(), 10, now);
+        state.start_or_reset_readiness(4, 17, "Verse".to_string(), 10, now, readiness_now);
 
         assert_eq!(state.generation(), 4);
         assert!(state.is_waiting_for_readiness());
-        assert_eq!(state.readiness_deadline(), Some(now + READINESS_TIMEOUT));
+        assert_eq!(
+            state.readiness_deadline(),
+            Some(readiness_now + READINESS_TIMEOUT)
+        );
         assert_eq!(
             state.readiness_timeout_context(),
             Some(ReadinessTimeoutContext {
@@ -220,6 +225,7 @@ mod tests {
             "Verse".to_string(),
             10,
             now + Duration::from_millis(100),
+            tokio::time::Instant::now(),
         );
         state.start_or_reset_readiness(
             4,
@@ -227,6 +233,7 @@ mod tests {
             "Chorus".to_string(),
             20,
             now + Duration::from_millis(200),
+            tokio::time::Instant::now(),
         );
 
         assert!(state.channels[0].is_paused());
@@ -261,7 +268,14 @@ mod tests {
         let now = Instant::now();
         let mut state = EngineState::new(AppEventBus::default(), 4);
         state.channels.push(active_target(now));
-        state.start_or_reset_readiness(4, 17, "Verse".to_string(), 10, now);
+        state.start_or_reset_readiness(
+            4,
+            17,
+            "Verse".to_string(),
+            10,
+            now,
+            tokio::time::Instant::now(),
+        );
 
         state.cancel_all_in_place();
 
