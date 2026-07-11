@@ -33,3 +33,9 @@ Advanced Show Control controls live mixer parameters. Rehearse every fade and cu
 - [Cue Lists](cue-lists.md): build a running order and use **Cue** and **GO**.
 - [Application Shell](application-shell.md): understand connection, **SAFE**, and the status bar.
 - [Troubleshooting](troubleshooting.md): resolve common connection, recall, and session problems.
+
+## Disclaimer
+
+Advanced Show Control is not affiliated with, endorsed by, or supported by Waves Audio Ltd. or the Waves eMotion LV1 product team.
+
+The software and documentation are provided without warranty. Use them at your own risk. Advanced Show Control is licensed under the [GNU General Public License version 3 or later](https://github.com/mixxorz/advanced-show-control/blob/main/LICENSE).
