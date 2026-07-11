@@ -73,6 +73,15 @@ async fn handle_command(
             });
             let _ = reply.send(result);
         }
+        SettingsCommand::GetLastConnectedLv1 { reply } => {
+            let _ = reply.send(state.last_connected_lv1());
+        }
+        SettingsCommand::SetLastConnectedLv1 { identity, reply } => {
+            let result = state
+                .set_last_connected_lv1(identity)
+                .map(|changed| SettingsCommandResult { changed });
+            let _ = reply.send(result);
+        }
     }
 }
 
@@ -118,6 +127,7 @@ fn shortcut_label(shortcut: &KeyboardShortcut) -> String {
 #[cfg(test)]
 mod tests {
     use super::{SettingsCommand, SettingsCommandResult, SettingsHandle, build_settings_actor};
+    use crate::connection_state::Lv1SystemIdentity;
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::settings::{AppSettings, SettingsEvent};
     use std::sync::Arc;
@@ -176,6 +186,15 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("asc-settings-{name}-{unique}"))
+    }
+
+    fn identity(uuid: &str, host: &str, address: &str) -> Lv1SystemIdentity {
+        Lv1SystemIdentity {
+            uuid: Some(uuid.to_string()),
+            host: Some(host.to_string()),
+            address: address.to_string(),
+            port: 50000,
+        }
     }
 
     async fn get_settings(handle: &SettingsHandle) -> AppSettings {
@@ -293,6 +312,36 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn actor_stores_and_returns_last_connected_lv1() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("connected-identity");
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        task.spawn();
+        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: identity.clone(),
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.await.unwrap().unwrap(),
+            SettingsCommandResult { changed: true }
+        );
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), Some(identity));
+        assert!(dir.join("settings.json").exists());
     }
 
     #[tokio::test]

@@ -103,6 +103,7 @@ mod tests {
     }
 }
 
+use crate::connection_state::Lv1SystemIdentity;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -134,6 +135,21 @@ impl AppSettings {
     pub fn normalized(mut self) -> Self {
         self.fader_override_sensitivity = self.fader_override_sensitivity.clamp(1, 10);
         self.keyboard_shortcuts = self.keyboard_shortcuts.normalized();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PersistedSettings {
+    #[serde(flatten)]
+    pub settings: AppSettings,
+    pub last_connected_lv1: Option<Lv1SystemIdentity>,
+}
+
+impl PersistedSettings {
+    pub fn normalized(mut self) -> Self {
+        self.settings = self.settings.normalized();
         self
     }
 }

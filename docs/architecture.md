@@ -86,7 +86,7 @@ An actor module normally defines four interface concepts:
 3. A task object, such as `Lv1ActorTask`, `FadeEngineTask`, `ScenesTask`, or `ShowActorTask`.
 4. A peer-wiring object, when the actor requires direct access to other actors after construction.
 
-`SettingsActor` is an app-lifetime actor. It is not tied to LV1 connection generation. It owns `AppSettings`, loads `settings.json` from the Tauri app config directory during startup, accepts full-object replacement through `SettingsCommand::ReplaceSettings`, saves changed settings immediately, and publishes `SettingsEvent::StateChanged` through `AppEventBus` for projector consumption.
+`SettingsActor` is an app-lifetime actor. It is not tied to LV1 connection generation. It owns `AppSettings` and private remembered LV1 identity metadata in `settings.json`, loads them from the Tauri app config directory during startup, accepts full-object replacement through `SettingsCommand::ReplaceSettings`, saves changed settings immediately, and publishes `SettingsEvent::StateChanged` through `AppEventBus` for projector consumption. Remembered identity is not projected as public settings; lifecycle accesses it through explicit settings commands.
 
 The actor handle owns a Tokio sender. The handle shall remain dumb. It shall not provide domain-specific helpers that hide mailbox command construction.
 

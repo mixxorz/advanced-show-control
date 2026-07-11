@@ -1,48 +1,67 @@
 use std::path::{Path, PathBuf};
 
-use super::AppSettings;
+use crate::connection_state::Lv1SystemIdentity;
+
+use super::{AppSettings, PersistedSettings};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsState {
-    settings: AppSettings,
+    document: PersistedSettings,
     file_path: PathBuf,
 }
 
 impl SettingsState {
     pub fn load(settings_dir: PathBuf) -> Self {
         let file_path = settings_dir.join("settings.json");
-        let settings = load_settings_file(&file_path);
+        let document = load_settings_file(&file_path);
         Self {
-            settings,
+            document,
             file_path,
         }
     }
 
     pub fn settings(&self) -> AppSettings {
-        self.settings.clone()
+        self.document.settings.clone()
     }
 
     pub fn replace_settings(&mut self, settings: AppSettings) -> Result<bool, String> {
         let normalized = settings.normalized();
-        if normalized == self.settings {
+        if normalized == self.document.settings {
             return Ok(false);
         }
-        write_settings_file(&self.file_path, &normalized)?;
-        self.settings = normalized;
+        let mut updated = self.document.clone();
+        updated.settings = normalized;
+        write_settings_file(&self.file_path, &updated)?;
+        self.document = updated;
+        Ok(true)
+    }
+
+    pub fn last_connected_lv1(&self) -> Option<Lv1SystemIdentity> {
+        self.document.last_connected_lv1.clone()
+    }
+
+    pub fn set_last_connected_lv1(&mut self, identity: Lv1SystemIdentity) -> Result<bool, String> {
+        if self.document.last_connected_lv1.as_ref() == Some(&identity) {
+            return Ok(false);
+        }
+        let mut updated = self.document.clone();
+        updated.last_connected_lv1 = Some(identity);
+        write_settings_file(&self.file_path, &updated)?;
+        self.document = updated;
         Ok(true)
     }
 }
 
-fn load_settings_file(file_path: &Path) -> AppSettings {
+fn load_settings_file(file_path: &Path) -> PersistedSettings {
     match std::fs::read_to_string(file_path) {
-        Ok(contents) => match serde_json::from_str::<AppSettings>(&contents) {
-            Ok(settings) => {
+        Ok(contents) => match serde_json::from_str::<PersistedSettings>(&contents) {
+            Ok(document) => {
                 tracing::info!(
                     event = "settings_loaded",
                     path = %file_path.display(),
                     "Settings loaded"
                 );
-                settings.normalized()
+                document.normalized()
             }
             Err(err) => {
                 tracing::warn!(
@@ -51,7 +70,7 @@ fn load_settings_file(file_path: &Path) -> AppSettings {
                     error = %err,
                     "Settings file could not be read; using defaults"
                 );
-                AppSettings::default().normalized()
+                PersistedSettings::default().normalized()
             }
         },
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -60,7 +79,7 @@ fn load_settings_file(file_path: &Path) -> AppSettings {
                 path = %file_path.display(),
                 "Settings file not found; using defaults"
             );
-            AppSettings::default().normalized()
+            PersistedSettings::default().normalized()
         }
         Err(err) => {
             tracing::warn!(
@@ -69,12 +88,12 @@ fn load_settings_file(file_path: &Path) -> AppSettings {
                 error = %err,
                 "Settings file could not be opened; using defaults"
             );
-            AppSettings::default().normalized()
+            PersistedSettings::default().normalized()
         }
     }
 }
 
-fn write_settings_file(file_path: &Path, settings: &AppSettings) -> Result<(), String> {
+fn write_settings_file(file_path: &Path, settings: &PersistedSettings) -> Result<(), String> {
     if let Some(parent) = file_path.parent() {
         std::fs::create_dir_all(parent).map_err(|err| {
             tracing::error!(
@@ -104,4 +123,62 @@ fn write_settings_file(file_path: &Path, settings: &AppSettings) -> Result<(), S
         );
         format!("Failed to write settings: {err}")
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::connection_state::Lv1SystemIdentity;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_settings_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "asc-settings-state-{name}-{}-{unique}",
+            std::process::id()
+        ))
+    }
+
+    fn identity(uuid: &str, host: &str, address: &str) -> Lv1SystemIdentity {
+        Lv1SystemIdentity {
+            uuid: Some(uuid.to_string()),
+            host: Some(host.to_string()),
+            address: address.to_string(),
+            port: 50000,
+        }
+    }
+
+    #[test]
+    fn invalid_persisted_document_resets_public_and_private_settings() {
+        let dir = temp_settings_dir("invalid-document");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"lastConnectedLv1":42}"#).unwrap();
+
+        let state = SettingsState::load(dir);
+
+        assert_eq!(state.settings(), AppSettings::default());
+        assert_eq!(state.last_connected_lv1(), None);
+    }
+
+    #[test]
+    fn replacing_public_settings_preserves_remembered_identity() {
+        let dir = temp_settings_dir("preserve-identity");
+        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
+        let mut state = SettingsState::load(dir.clone());
+        state.set_last_connected_lv1(identity.clone()).unwrap();
+
+        state
+            .replace_settings(AppSettings {
+                auto_save_sessions: true,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let reloaded = SettingsState::load(dir);
+        assert!(reloaded.settings().auto_save_sessions);
+        assert_eq!(reloaded.last_connected_lv1(), Some(identity));
+    }
 }
