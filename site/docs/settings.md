@@ -10,9 +10,9 @@ fails, the screen reports the error and restores the projected settings.
 
 | Setting | Current behavior |
 | --- | --- |
-| **Auto-load Last Show** | Displayed and stored. It is not currently wired to open a session at startup. |
-| **Auto-save** | Displayed and stored. It is not currently wired to save a session after changes. Use **File > Save Session** to save intentional work. |
-| **Time Display** | Displayed and stored. It is not currently wired to change the clock shown in the application. |
+| **Auto load last show file** | Displayed and stored. It is not currently wired to open a session at startup. |
+| **Auto save sessions** | Displayed and stored. It is not currently wired to save a session after changes. Use **File > Save Session** to save intentional work. |
+| **Time display** | Valid values are **12 hour** and **24 hour**. The selected value is displayed and stored. It is not currently wired to change the clock shown in the application. |
 | **Fader Override Sensitivity** | Select a value from 1 through 10. The control is displayed and stored, but the current fade engine does not consume this setting. |
 | **Extensive Diagnostics** | When enabled, diagnostic files include `DEBUG` events. When disabled, diagnostic files include `INFO`, `WARN`, and `ERROR` events. Enable it only while troubleshooting because diagnostic files can grow quickly. |
 
@@ -54,3 +54,7 @@ Settings do not override application safety checks. In particular, changing a
 shortcut does not make an unavailable cue valid, and it does not bypass
 **SAFE**, LV1 connection requirements, or scene identity validation. Review
 the displayed cue and console state before using GO.
+
+## Troubleshooting
+
+For settings that are displayed and stored but do not change application behavior, see [A Setting Does Not Change Application Behavior](troubleshooting.md#a-setting-does-not-change-application-behavior).

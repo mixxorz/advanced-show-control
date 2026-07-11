@@ -131,3 +131,8 @@ The following conditions prevent the related action:
 | **SAFE** is active | The application recall request is blocked. |
 | Focus is in a dialog text input | CUE and GO shortcuts do not run. |
 | An entry references a missing scene | The entry remains visible, but it cannot supply a valid cue for **GO**. |
+
+## Troubleshooting
+
+- [GO Is Disabled](troubleshooting.md#go-is-disabled)
+- [Cue Displays Missing Scene](troubleshooting.md#cue-displays-missing-scene)

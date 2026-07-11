@@ -56,3 +56,7 @@ They can reveal show names, scene names, channel information, and other console
 state. Remove sensitive console information before sharing an excerpt, and
 provide a complete file only when a trusted support process specifically
 requires it.
+
+## Troubleshooting
+
+For an operation with no relevant visible log entry, see [No Visible Log Explains A Failure](troubleshooting.md#no-visible-log-explains-a-failure).

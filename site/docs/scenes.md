@@ -153,3 +153,10 @@ Use the scene number together with the name to identify the intended configurati
 When there is no selected configuration, select a Scene library row to open its editor. When no configurations are loaded, the library displays **No scenes loaded.**
 
 When LV1 is disconnected, recalls are blocked and no fade is started. Reconnect to LV1, confirm the current scene and scene list, then verify each affected configuration before recall. Unlinked configurations remain editable for duration and scope while their **Store** and **Recall** controls remain disabled.
+
+## Troubleshooting
+
+- [Scene Is Unlinked](troubleshooting.md#scene-is-unlinked)
+- [Duplicate Scene Name Warning](troubleshooting.md#duplicate-scene-name-warning)
+- [Recall Is Disabled Or Blocked](troubleshooting.md#recall-is-disabled-or-blocked)
+- [Fade Does Not Start](troubleshooting.md#fade-does-not-start)

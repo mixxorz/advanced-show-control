@@ -21,6 +21,7 @@ logs/
 
 # Tooling
 .superpowers/
+.venv-docs/
 .worktrees
 sdd/
 opencode.json

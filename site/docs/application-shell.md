@@ -72,3 +72,9 @@ An asterisk marks unsaved changes. For example, a dirty `Tour Prep.ascs` session
 When the application detects a reconnecting state, it displays a **Reconnecting...** overlay while it retries the connection. The top bar continues to report the connection state, and the footer reports **Offline** whenever no active connection is available.
 
 If reconnection does not complete, the application returns control to the connection workflow so that an engineer can select an available system manually.
+
+## Troubleshooting
+
+- [No LV1 Systems Found](troubleshooting.md#no-lv1-systems-found)
+- [Connection Fails Or Reconnects](troubleshooting.md#connection-fails-or-reconnects)
+- [Session Cannot Be Opened Or Saved](troubleshooting.md#session-cannot-be-opened-or-saved)

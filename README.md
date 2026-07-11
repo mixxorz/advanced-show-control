@@ -32,13 +32,17 @@ Prefer `cargo nextest run` for Rust tests, including targeted checks such as `ca
 
 ## Documentation
 
-Install the pinned documentation dependencies and run the local site with:
+The documentation targets create or reuse the ignored `.venv-docs` virtual
+environment and install the pinned dependencies there. No virtual-environment
+activation is required. Build or serve the local site with:
 
 ```bash
-make docs-install
 make docs-build
 make docs-serve
 ```
+
+Run `make docs-install` to install or refresh the documentation dependencies
+without building the site.
 
 The published manual is available at https://mitchel.me/advanced-show-control/.
 `stable` is the latest numbered release documentation, while `latest` tracks the current `main` branch.

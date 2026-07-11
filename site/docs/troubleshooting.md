@@ -72,3 +72,10 @@ Open the **Logs** tab and review the timestamp, severity, and message around
 the failure. The screen does not display `DEBUG` diagnostics. If no relevant
 entry is visible, inspect the diagnostic file path and reporting guidance in
 [Logs](logs.md#operational-and-diagnostic-logs).
+
+## A Setting Does Not Change Application Behavior
+
+**Auto load last show file**, **Auto save sessions**, **Time display**, and
+**Fader override sensitivity** are displayed and stored settings that are not
+currently wired to change runtime behavior. Review
+[General Settings](settings.md#general-settings) for their current behavior.

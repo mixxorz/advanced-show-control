@@ -3,6 +3,10 @@
 	ui-fmt ui-lint ui-typecheck ui-build ui-test ui-storybook-test \
 	visual-test visual-update docs-install docs-build docs-serve dev storybook probe smoke
 
+DOCS_VENV := .venv-docs
+DOCS_PYTHON := $(DOCS_VENV)/bin/python
+DOCS_ZENSICAL := $(DOCS_VENV)/bin/zensical
+
 help:
 	@printf '%s\n' \
 	  'Common targets:' \
@@ -53,13 +57,14 @@ build: rust-build ui-build
 check: fmt lint ui-typecheck build test ui-storybook-test
 
 docs-install:
-	python3 -m pip install -r requirements-docs.txt
+	@test -x "$(DOCS_PYTHON)" || python3 -m venv "$(DOCS_VENV)"
+	"$(DOCS_PYTHON)" -m pip install -r requirements-docs.txt
 
-docs-build:
-	zensical build --clean --strict --config-file site/zensical.toml
+docs-build: docs-install
+	"$(DOCS_ZENSICAL)" build --clean --strict --config-file site/zensical.toml
 
-docs-serve:
-	zensical serve --config-file site/zensical.toml
+docs-serve: docs-install
+	"$(DOCS_ZENSICAL)" serve --config-file site/zensical.toml
 
 rust-fmt:
 	cargo fmt --all -- --check
