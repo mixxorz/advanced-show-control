@@ -1,120 +1,78 @@
 # Scenes
 
-Use **Scenes** to add a controlled fader or pan transition to an LV1 scene. LV1 creates and owns the scene. Advanced Show Control stores the targets, scope, and **X-Fade** time that it may apply after that exact LV1 scene has recalled successfully.
+Use **Scenes** to prepare a scene fade setting for an LV1 scene. The setting stores the targets, scope, and **X-Fade** time that Advanced Show Control uses after LV1 recalls the matching scene.
 
-## Prepare A Scene Fade
+## Prepare A Scene Fade Setting
 
-1. Select the required configuration in the **Scene library**.
-2. Set LV1 to the mix you want the transition to reach.
-3. Select **Store** to record the current mixer targets.
-4. Select the channels and parameter families that may move.
-5. Set **X-Fade**.
-6. Save the session and rehearse the recall.
+1. Select the setting in the **Scene library**.
+2. Set LV1 to the mix you want to reach.
+3. Select **Store**.
+4. Select the channels and controls that may move.
+5. Set **X-Fade** and save the session.
 
-Storing targets does not automatically include every channel or parameter. Scope is the permission you give Advanced Show Control to apply particular stored values. Review it after every store, especially when the console state has changed.
+Scope selects the channels and controls that can change during the fade. Storing values does not select them automatically.
 
 ## Screen Overview
 
-The **Scene library** at left lists app scene configurations. The editor at right shows the selected configuration, its recall and storage controls, its fade duration, and its channel scope.
+The **Scene library** lists scene fade settings. The editor shows the selected setting and its recall, storage, duration, and scope controls.
 
 ![A selected stored scene with its fade and channel-scope controls.](assets/screenshots/scenes-selected.png)
 
-Select a library row before editing it. If nothing is selected, the editor displays **Select a scene to edit its scoped channels.** If no configurations are available, the library displays **No scenes loaded.**
+## Controls
 
-## Scene Library
-
-Each row identifies an app scene configuration rather than every LV1 console setting.
-
-| Item | Meaning |
+| Control | Result |
 | --- | --- |
-| Scene number | The linked LV1 scene number. `---` means the configuration is unlinked. |
-| Scene name | The stored scene name. |
-| **X-Fade** | The configured transition time. |
-| Direction indicator | Identifies the selected, current, or cued configuration. |
+| **Recall** | Recalls the linked LV1 scene. A fade follows only when LV1 recalls the matching scene. |
+| **Store** | Records the current fader and pan values. |
+| **Copy** | Is available, but it has no effect in v2. |
+| **Paste** | Is disabled in v2. |
+| **X-Fade** | Sets the transition time. |
 
-| State | What you see | What it means |
-| --- | --- | --- |
-| Selected | Orange row highlight and indicator | This configuration is open in the editor. |
-| Current | Green text and indicator | Its number and name match the current LV1 scene. |
-| Cued | Blue text and indicator | The active cue list points to this configuration. |
-| Unlinked | Yellow text and `---` | No available LV1 scene is linked. **Store** and **Recall** are unavailable. |
-| Duplicate name | **Duplicate scene names** warning | More than one app configuration uses the same stored name. |
-
-![The duplicate-scene-name warning in the Scene library.](assets/screenshots/scenes-duplicate-warning.png)
-
-## Selected Scene Controls
-
-The selected-scene header shows the stored scene number and name.
-
-| Control | Use it to | Result |
-| --- | --- | --- |
-| **Recall** | Request the selected linked scene. | LV1 recalls the scene; a scoped fade starts only after validation succeeds. |
-| **Store** | Capture the current live mixer targets. | Updates the targets available to the selected configuration. |
-| **Copy** | No current workflow. | Unavailable in the current build. |
-| **Paste** | No current workflow. | Disabled in the current build. |
-| **X-Fade** | Set transition time. | Applies to the selected configuration, including an unlinked configuration. |
-
-### Set Fade Duration
-
-Enter a value in **X-Fade**, then press `Enter` or move focus away. A trailing `s` is accepted. The arrow controls change the value by one second.
-
-Set `0` for a cut. Set a timed transition from `0.1` through `120` seconds. Empty, negative, or invalid entries return to the stored value, so verify the displayed duration before you recall.
-
-### Set Parameter And Channel Scope
-
-Parameter scope defines which stored parameter families may move. Channel scope defines which channels may use those families.
+Enter **X-Fade** and press `Enter` or move away from the field. A trailing `s` is accepted. Set `0` for a cut or `0.1` through `120` seconds for a timed transition. Invalid, empty, or negative entries return to the previous value.
 
 ![A populated channel-scope grid.](assets/screenshots/channel-scope.png)
 
-| Control | When active |
+| Control | Result |
 | --- | --- |
-| **FADER** | Stored fader targets can move on scoped channels. |
-| **PAN** | Available pan-family targets can move on scoped channels. |
-| Channel button | The channel is included in the selected configuration's scope. Hover text shows its stored values. |
+| **FADER** | Allows stored fader values to move on scoped channels. |
+| **PAN** | Allows available pan-family values to move on scoped channels. |
+| Channel button | Includes or removes that channel. |
 | **All** | Includes every available channel. |
-| **None** | Removes every channel from scope. |
+| **None** | Removes every channel. |
 
-The grid groups channels by console section. If no stored channel data exists, it displays **Store the current mixer state to choose scoped channels.** When both **FADER** and **PAN** are off, no scoped fade targets are available, so recall does not start a fade.
+If no values have been stored, select **Store** before setting scope. If both **FADER** and **PAN** are off, LV1 can still recall the scene, but Advanced Show Control does not move any controls.
 
 ## Recall A Scene
 
-1. Confirm that LV1 is connected and **SAFE** is not active.
-2. Select the required linked configuration.
-3. Compare its displayed scene number and name with the intended LV1 scene.
+1. Confirm LV1 is **Connected** and **SAFE** is off.
+2. Select the linked scene fade setting.
+3. Compare its LV1 scene number and name with the intended scene.
 4. Select **Recall**.
-5. Watch **Mode** in the bottom status bar while the transition runs.
 
-The application validates the recall before it starts a fade. The LV1 scene number and name after recall must exactly match the linked configuration. LV1 must be connected, and current live channel data must be available. When validation succeeds, each scoped target moves from its current live value to its stored value.
+The setting must be linked, and LV1 must recall the same number and name shown in the setting. When those match, scoped controls move from their positions at recall to the stored values. If the setting is unlinked, LV1 is offline, or the name or number differs, no fade starts. Correct the condition, then confirm the scene again.
 
-If SAFE is active, the configuration is unlinked, LV1 is offline, or scene identity does not match, the fade will not start. Correct the reported condition, verify the intended scene, and recall again. A blocked, skipped, or disabled recall does not stop a fade that is already running.
-
-If you move a fader during a fade, your manual adjustment takes control of that target. The remaining eligible targets can continue, but the adjusted fader no longer follows the stored target. If LV1 disconnects, active fade activity stops. Reconnect, confirm the console state, and rehearse before you use the transition again.
+If you move a fader during a fade, your adjustment takes control of that fader. If LV1 disconnects, the fade stops. Reconnect, confirm the console state, and rehearse before you use the setting again.
 
 ## Link Or Relink A Scene
 
-An unlinked configuration retains its duration and scope but cannot store targets or recall. Use linking when the LV1 scene list has changed or when you need to assign a configuration to an available LV1 scene.
+An unlinked scene fade setting shows `---`. It retains its fade time and scope, but **Store** and **Recall** are unavailable.
 
-![An unlinked configuration with LV1 scene selection, link, and delete controls.](assets/screenshots/scenes-unlinked.png)
+![An unlinked scene fade setting with LV1 scene selection, link, and delete controls.](assets/screenshots/scenes-unlinked.png)
 
-1. Select the unlinked configuration.
-2. Confirm that its stored targets, duration, and scope suit the intended LV1 scene.
-3. Select the LV1 scene in **LV1 Scene**.
-4. Select **Link to scene**.
-5. Confirm the displayed number and name before you recall.
+1. Select the unlinked setting.
+2. Select the intended LV1 scene in **LV1 Scene**.
+3. Select **Link to scene**.
+4. Confirm the displayed LV1 scene number and name.
 
-The selector initially chooses the first LV1 scene without an app configuration when one is available. Exact matching uses both number and name. A matching name by itself is not enough to identify a safe replacement.
+If **Overwrite Existing Fade Settings?** appears, select **Overwrite** only when you intend to replace that setting. **Delete** removes only the scene fade setting. It does not delete the LV1 scene.
 
-If you select an LV1 scene that already has an app configuration, the application shows **Overwrite Existing Fade Settings?**. Select **Overwrite** only when replacing that configuration is intentional. Otherwise, cancel and choose another scene.
+## Duplicate Names
 
-To remove an unlinked configuration that you no longer need, select it, review its name and scope, then select **Delete**. This removes only the Advanced Show Control configuration. It does not delete or change the LV1 scene.
+**Duplicate scene names** means more than one scene fade setting has the same name. Use the LV1 scene number with the name before you store, link, or recall. This prevents a familiar name from selecting the wrong scene.
 
-## Work With Duplicate Names
-
-Duplicate names can describe different scenes, so use the scene number together with the name when you identify a configuration. If **Duplicate scene names** appears, compare both values before you store, relink, or recall. This prevents a familiar name from being mistaken for the intended LV1 scene.
+![The duplicate-scene-name warning in the Scene library.](assets/screenshots/scenes-duplicate-warning.png)
 
 ## Troubleshooting
 
 - [Scene Is Unlinked](troubleshooting.md#scene-is-unlinked)
-- [Duplicate Scene Name Warning](troubleshooting.md#duplicate-scene-name-warning)
-- [Recall Is Disabled Or Blocked](troubleshooting.md#recall-is-disabled-or-blocked)
-- [Fade Does Not Start](troubleshooting.md#fade-does-not-start)
+- [Recall Is Disabled Or Does Not Fade](troubleshooting.md#recall-is-disabled-or-does-not-fade)

@@ -1,46 +1,36 @@
 # Settings
 
-Use **Settings** to set application preferences, choose the displayed time format, control diagnostic detail, and assign the CUE and GO shortcuts. Changes are stored when you make them. If a setting cannot be saved, the screen shows the error and restores the last confirmed values.
+Use **Settings** to change the shortcuts and diagnostic detail available in v2. If a setting cannot be saved, the screen restores the last confirmed value and shows an error.
 
 ![The Settings screen.](assets/screenshots/settings.png)
 
-## Set A Preference
+## Active In v2
 
-1. Open **Settings**.
-2. Select or adjust the required control.
-3. Confirm that the control still shows the value you chose.
-4. Read the notes below before depending on a stored-only preference during a show.
+### Extensive Diagnostics
 
-Settings do not override recall safety checks. A shortcut cannot make an unavailable cue valid or bypass **SAFE**, LV1 connection requirements, or exact scene identity validation.
+Enable **Extensive diagnostics** only while you investigate a problem. When it is off, diagnostic files include `INFO`, `WARN`, and `ERROR`. When it is on, they also include `DEBUG`, so files can grow quickly. Disable it after you collect the information you need.
 
-## General Settings
+### Keyboard Shortcuts
 
-| Setting | Use it to | Current result |
+**GO** recalls the current cued entry. **CUE** prepares the selected cue-list entry. The defaults are `Space` for GO and `C` for CUE.
+
+1. Select the GO or CUE shortcut control. It displays `...`.
+2. Press the key combination you want.
+3. Confirm the displayed shortcut.
+
+Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when needed. Pressing a modifier by itself keeps capture open. `Tab` can be used as a shortcut. A shortcut cannot duplicate the other action or **New Session**, **Open Session...**, **Save Session**, or **Save As...**.
+
+Shortcuts do not operate while you are entering text or working in a dialog. Holding a shortcut does not repeat CUE or GO. A shortcut does not bypass **SAFE**, connection checks, or the LV1 scene number-and-name check.
+
+## Not Active In v2
+
+These controls are shown and saved, but they do not change application behavior in v2.
+
+| Setting | Default | What to do instead |
 | --- | --- | --- |
-| **Auto load last show file** | Choose whether the application should open the last session at startup. | Stored, default off. It does not currently open a session at startup. |
-| **Auto save sessions** | Choose whether session changes should save automatically. | Stored, default off. It does not currently save after changes; use **File > Save Session**. |
-| **Time display** | Choose **12 hour** or **24 hour** time. | Stored, default **24 hour**. It does not currently change the clock in the application. |
-| **Fader override sensitivity** | Choose the intended manual-override sensitivity from `1` through `10`. | Stored, default `9`. The current fade engine does not use this setting. |
-| **Extensive diagnostics** | Include `DEBUG` events in diagnostic files. | Active. When off, diagnostic files retain `INFO`, `WARN`, and `ERROR`; when on, they also retain `DEBUG`. |
+| **Auto load last show file** | Off | Open the required session yourself. |
+| **Auto save sessions** | Off | Use **File > Save Session** after each intended change. |
+| **Time display** | **24 hour** | Read the clock as displayed. |
+| **Fader override sensitivity** | `9` | Rehearse the existing manual-override behavior. |
 
-The Fader override sensitivity help describes the intended scale: `10` should react to very small movements, while `1` should require a larger movement. The current manual-override behavior does not change when you adjust this stored setting. If a live fade must yield to a manual fader move, rehearse the existing behavior rather than relying on this control.
-
-Enable **Extensive diagnostics** only while you investigate a problem. `DEBUG` entries can make diagnostic files grow quickly. Disable it after you collect the information you need.
-
-## Keyboard Shortcuts
-
-**GO** recalls the current valid cue. **CUE** prepares the selected cue-list entry. Their default shortcuts are `Space` for GO and `C` for CUE.
-
-1. Select the GO or CUE shortcut control. It displays `...` while it waits for a key.
-2. Press the required key combination.
-3. Confirm that the control displays the new combination.
-
-Capture records one non-modifier key with any held Shift, Control, Alt, or Meta modifier. Press `Escape` to cancel. Pressing a modifier by itself keeps capture active. `Tab` is a valid shortcut and does not move focus while capture is active.
-
-The application compares letter keys without regard to case. It rejects a shortcut already assigned to the other action or to a fixed file command. The fixed commands are **New Session** (`CmdOrCtrl+N`), **Open Session...** (`CmdOrCtrl+O`), **Save Session** (`CmdOrCtrl+S`), and **Save As...** (`CmdOrCtrl+Shift+S`).
-
-Action shortcuts do not run while focus is in a text input, text area, select control, editable content, or dialog. Repeated keydown events do not create repeated CUE or GO requests.
-
-## Troubleshooting
-
-If a preference is stored but does not change application behavior, see [A Setting Does Not Change Application Behavior](troubleshooting.md#a-setting-does-not-change-application-behavior). For the full shortcut reference, see [Keyboard Shortcuts](reference/keyboard-shortcuts.md).
+**Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2. A manual fader move still takes control of that fader during a fade.

@@ -1,10 +1,8 @@
 # Advanced Show Control
 
-Advanced Show Control is a scene-fade and cue-list utility for Waves eMotion LV1 and LV1 Classic. Use it when you want a recalled LV1 scene to move selected faders or pan controls to stored targets over a defined time, rather than change those controls immediately.
+Use Advanced Show Control to recall an LV1 scene and move selected faders or pan controls to stored values over the time you choose. It adds timed scene transitions and cue lists to Waves eMotion LV1 and LV1 Classic without changing how you create or manage scenes in LV1.
 
-It is intended for engineers who already build and recall scenes in LV1. You continue to create scenes, set routing, processing, mutes, and the normal scene scope in LV1. Advanced Show Control adds a separate fade configuration to selected LV1 scenes. That configuration records the targets you choose, the channels and parameter families it may move, and the **X-Fade** time.
-
-This keeps the normal console workflow intact while giving you a controlled transition for scene changes such as walk-in-to-show, band changes, and program moves. You can also arrange configured scenes in cue lists, prepare the next cue, and recall it with **GO**.
+A **scene fade setting** is the Advanced Show Control setting linked to one LV1 scene. It stores the fade time, target values, and scope. **Scope** selects the channels and controls that can change during the fade. LV1 continues to recall the scene itself and its normal console settings; Advanced Show Control changes only the controls in scope.
 
 ![Advanced Show Control with the Scenes screen open.](assets/screenshots/application-shell.png)
 
@@ -15,16 +13,14 @@ This keeps the normal console workflow intact while giving you a controlled tran
 [Quick Start](getting-started.md){ .md-button }
 [User Guide](application-shell.md){ .md-button }
 
-The current stable download is Advanced Show Control v2. The Windows installer and macOS disk image are not signed; the macOS image is also not notarized. Your operating system may ask you to approve the application before opening it. Complete the approval procedure, then rehearse the session on the intended system before show use.
+The stable v2 Windows installer and macOS disk image are not signed. The macOS image is not notarized. If your operating system blocks the app, approve it through the operating system before opening it. Rehearse the session on the intended system before show use.
 
-## What It Controls
+## What You Can Do
 
-An app scene configuration is a fade overlay for one LV1 scene. After a valid application recall, Advanced Show Control moves only the stored targets that are both enabled by parameter scope and included in channel scope. A fade always starts from the current live value, so it can move smoothly from the console state you actually have at recall time.
-
-Use **FADER** to include fader targets and **PAN** to include available pan-family targets. Set **X-Fade** to `0` for a cut, or from `0.1` through `120` seconds for a timed transition. If you need a repeatable sequence, place configured scenes in a cue list and use **Cue** followed by **GO**.
+Use **FADER** to move faders and **PAN** to move available pan-family controls. Set **X-Fade** to `0` for a cut, or from `0.1` through `120` seconds for a timed move. Arrange scene fade settings in a cue list when you need a prepared sequence for **Cue** and **GO**.
 
 ## Work Safely
 
-Use **SAFE** when application-initiated recalls must not run. SAFE does not disable LV1 controls, but it blocks recalls started from Advanced Show Control, including **GO**. Before a show, confirm each scene's number, name, scope, targets, and fade duration against LV1.
+Use **SAFE** when Advanced Show Control must not start a recall. SAFE blocks **Recall** and **GO**, but it does not disable LV1 controls or stop a fade already running. Before a show, compare each LV1 scene number and name with its scene fade setting, then confirm its scope, targets, and fade time.
 
-If you move a fader during an active fade, your adjustment takes precedence for that fader target. If LV1 disconnects, active fade activity stops. Reconnect, confirm the console state, and rehearse the affected transition before using it again.
+If you move a fader during a fade, your adjustment takes control of that fader. If LV1 disconnects, the fade stops. Reconnect, confirm the console state, and rehearse the transition again.

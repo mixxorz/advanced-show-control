@@ -1,84 +1,59 @@
 # Application Shell
 
-Use the application shell to connect to the intended LV1 system, select the work area, confirm operating state, and run a prepared cue with **GO**. The top bar controls the application-wide state; the center area changes with the selected tab; the bottom status bar shows the scene and fade state you need before a recall.
+Use the application shell to connect to LV1, prepare scenes or cues, and check the state before a recall. The top bar controls connection and **SAFE**. The centre area shows the selected tab. The bottom bar shows **Cued**, **Current**, and **Mode**.
 
 ![The application shell with the Scenes tab active.](assets/screenshots/application-shell.png)
 
 ## Normal Workflow
 
-1. Select the console control in the top bar and connect to the intended LV1 system.
-2. Open **Scenes** to configure and store fade targets, or open **Cue Lists** to prepare a recall sequence.
-3. Check **Cued**, **Current**, and **Mode** in the bottom status bar before you use **GO**.
-4. Enable **SAFE** whenever application-initiated recalls must not run.
-5. Save the session after an intentional change.
+1. Connect to the intended LV1 system.
+2. Prepare a scene fade setting in **Scenes** or a sequence in **Cue Lists**.
+3. Compare **Cued** and **Current** before **GO**.
+4. Save the session after an intended change.
 
-## Interface Overview
-
-| Area | Purpose |
-| --- | --- |
-| Top bar | Selects the work area, displays connection state, opens **Connect to LV1**, and toggles **SAFE**. |
-| Work area | Shows the selected tab. |
-| Bottom status bar | Shows the prepared cue, current LV1 scene, operating mode, and local time. It also contains **GO**. |
-
-Select a top-bar tab to change the work area.
+## Tabs
 
 | Tab | Use it to |
 | --- | --- |
-| **Scenes** | Store targets, set **X-Fade**, and define channel and parameter scope. |
-| **Cue Lists** | Build ordered recall sequences and prepare a cue for **GO**. |
-| **Events** | View placeholder content. This workflow is not available in the current build. |
-| **Logs** | Review operating messages, warnings, and errors. |
-| **Settings** | Set application preferences and keyboard shortcuts. |
-
-Sessions are not a tab. Use the native **File** menu to create, open, and save them.
+| **Scenes** | Store values, set **X-Fade**, and select scope. |
+| **Cue Lists** | Build a prepared recall sequence. |
+| **Events** | View a feature unavailable in v2. |
+| **Logs** | Review messages, warnings, and errors. |
+| **Settings** | Change active v2 settings and view inactive controls. |
 
 ## Connect To LV1
 
-The connection control shows the connected console name when a connection is active. Select it to open **Connect to LV1** while connected or offline. The top bar shows **Connected**, **Connecting**, or **Offline**.
+Select the console control to open **Connect to LV1**. Select an **Available** console and confirm **Connected** in the top bar. An **Unavailable** console cannot be selected.
 
-The dialog lists discovered systems. Select an **Available** system to connect. An **Unavailable** system is shown for reference but cannot start a connection. Use **Disconnect** in the dialog before selecting another console.
+If **Reconnecting...** appears, no new recall should be attempted. Wait for **Connected**. If reconnection fails, open **Connect to LV1**, select the intended available console, and confirm **Current** before recall.
 
-If the connection drops, the application displays **Reconnecting...** while it retries. Do not recall a scene during this state because no active LV1 connection is available. If reconnection does not complete, use **Connect to LV1** to select an available system, then confirm the current scene before recalling again.
+## SAFE And Status
 
-## SAFE
-
-**SAFE** is the application lockout. When it is active, the button appears pressed and **Mode** shows **Safe**.
+When **SAFE** is on, **Mode** displays **Safe** instead of **Fading**. You cannot use Mode to see a running fade in that state, so wait for a fade to finish before you enable SAFE when you need that confirmation.
 
 ![The SAFE control when active.](assets/screenshots/safe-active.png)
 
-Enable **SAFE** before a rehearsal, console check, or other operation where Advanced Show Control must not initiate a recall. SAFE blocks recalls started by **Recall** and **GO**, but it does not disable LV1 controls. If a recall is blocked because SAFE is active, leave SAFE enabled until you are ready to operate, then disable it and confirm the intended scene before trying again.
-
-## Bottom Status Bar
-
-The bottom status bar gives you the final check before a cue recall.
+**SAFE** blocks **Recall** and **GO** but does not disable LV1 controls or stop a fade already running. Use it before a rehearsal or console check where app recalls must not run.
 
 | Item | Meaning |
 | --- | --- |
-| **GO** | Requests recall of the valid cued entry. It is unavailable when no valid cue exists or while a recall is pending. |
-| **Cued** | Identifies the scene assigned to the current cue. |
-| **Current** | Identifies the current LV1 scene. |
-| **Mode** | Shows **Offline**, **Ready**, **Safe**, or **Fading**. |
-| **Time** | Shows the local system time. |
+| **GO** | Recalls the cued scene fade setting. |
+| **Cued** | The scene prepared for GO. |
+| **Current** | The current LV1 scene. |
+| **Mode** | **Offline**, **Ready**, **Safe**, or **Fading**. |
+| **Time** | Local system time. |
 
-`---` means no current scene or valid cued scene is available. **Safe** takes precedence over **Fading** in the display, so confirm the SAFE state before judging fade status.
+`---` means the corresponding scene is unavailable.
 
-## Sessions And File Commands
+## Sessions
 
-A session is an `.ascs` document containing Advanced Show Control scene configurations and cue lists. It does not replace an LV1 show file.
+Sessions are `.ascs` files that store scene fade settings and cue lists.
 
-| Command | Result |
+| Command | Shortcut |
 | --- | --- |
-| **New Session** | Creates a session from the current LV1 scene list and clears its cue lists. Shortcut: `CmdOrCtrl+N`. |
-| **Open Session...** | Opens an `.ascs` session from the native file picker. Shortcut: `CmdOrCtrl+O`. |
-| **Save Session** | Saves to the current path. If no path exists, opens the save dialog with `Untitled.ascs` as the suggested name. Shortcut: `CmdOrCtrl+S`. |
-| **Save As...** | Saves to a new `.ascs` path through the native save dialog. Shortcut: `CmdOrCtrl+Shift+S`. |
+| **New Session** | `CmdOrCtrl+N` |
+| **Open Session...** | `CmdOrCtrl+O` |
+| **Save Session** | `CmdOrCtrl+S` |
+| **Save As...** | `CmdOrCtrl+Shift+S` |
 
-The window title identifies the active session as `Advanced Show Control - Session Name`. The `.ascs` extension is omitted. An asterisk marks an unsaved change, for example `Advanced Show Control - Tour Prep *`.
-
-The current build does not ask you to save before you create a new session, open a session, or close the application. If you leave a dirty session without saving, the changes may be lost. Save the session before you take any of those actions.
-
-## Troubleshooting
-
-- [No LV1 Systems Found](troubleshooting.md#no-lv1-systems-found)
-- [Connection Fails Or Reconnects](troubleshooting.md#connection-fails-or-reconnects)
-- [Session Cannot Be Opened Or Saved](troubleshooting.md#session-cannot-be-opened-or-saved)
+An asterisk in the window title marks unsaved changes. v2 does not ask before you create, open, or close a session with unsaved changes. Save before you take those actions.
