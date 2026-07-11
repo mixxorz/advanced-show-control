@@ -2,6 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
+use crate::fade::types::FadeSceneIdentity;
 use crate::runtime::events::AppEventBus;
 
 pub(super) const READINESS_PINGS_REQUIRED: u8 = 2;
@@ -55,6 +56,24 @@ impl EngineState {
 
     pub(crate) fn is_active(&self) -> bool {
         !self.channels.is_empty()
+    }
+
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "same-scene recall handling dispatches this state transition in the next task"
+        )
+    )]
+    pub(super) fn finish_scene_on_next_tick(&mut self, scene: &FadeSceneIdentity) -> usize {
+        let mut count = 0;
+        for target in &mut self.channels {
+            if &target.scene == scene {
+                target.finish_on_next_tick();
+                count += 1;
+            }
+        }
+        count
     }
 
     pub(super) fn generation(&self) -> u64 {
@@ -163,21 +182,23 @@ mod tests {
     use crate::fade::tick::ActiveTargetInit;
     use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
 
-    fn active_target(started_at: Instant) -> ActiveTarget {
+    fn active_target(
+        started_at: Instant,
+        scene: FadeSceneIdentity,
+        channel: i32,
+        target_value: f64,
+    ) -> ActiveTarget {
         ActiveTarget::new(ActiveTargetInit {
-            scene: FadeSceneIdentity {
-                index: 17,
-                name: "Verse".to_string(),
-            },
+            scene,
             key: FadeTargetKey {
                 group: 0,
-                channel: 0,
+                channel,
                 parameter: FadeParameter::FaderDb,
             },
             group: 0,
-            channel: 0,
+            channel,
             start_value: -20.0,
-            target_value: -10.0,
+            target_value,
             curve: FadeCurve::Linear,
             duration: Duration::from_secs(1),
             started_at,
@@ -225,7 +246,15 @@ mod tests {
     fn readiness_reset_uses_new_boundary_and_preserves_original_pause() {
         let now = Instant::now();
         let mut state = EngineState::new(AppEventBus::default(), 4);
-        state.channels.push(active_target(now));
+        state.channels.push(active_target(
+            now,
+            FadeSceneIdentity {
+                index: 17,
+                name: "Verse".to_string(),
+            },
+            0,
+            -10.0,
+        ));
 
         state.start_or_reset_readiness(
             4,
@@ -275,7 +304,15 @@ mod tests {
     fn cancellation_clears_targets_and_readiness_barrier_together() {
         let now = Instant::now();
         let mut state = EngineState::new(AppEventBus::default(), 4);
-        state.channels.push(active_target(now));
+        state.channels.push(active_target(
+            now,
+            FadeSceneIdentity {
+                index: 17,
+                name: "Verse".to_string(),
+            },
+            0,
+            -10.0,
+        ));
         state.start_or_reset_readiness(
             4,
             17,
@@ -290,5 +327,64 @@ mod tests {
         assert!(state.channels.is_empty());
         assert!(!state.is_waiting_for_readiness());
         assert_eq!(state.readiness_deadline(), None);
+    }
+
+    #[test]
+    fn finish_scene_rewrites_only_exact_scene_owner() {
+        let now = Instant::now();
+        let scene_a = FadeSceneIdentity {
+            index: 17,
+            name: "Verse".to_string(),
+        };
+        let same_index_wrong_name = FadeSceneIdentity {
+            index: 17,
+            name: "Verse Copy".to_string(),
+        };
+        let scene_b = FadeSceneIdentity {
+            index: 18,
+            name: "Chorus".to_string(),
+        };
+        let mut state = EngineState::new(AppEventBus::default(), 4);
+        state
+            .channels
+            .push(active_target(now, scene_a.clone(), 1, -10.0));
+        state
+            .channels
+            .push(active_target(now, scene_a.clone(), 2, -12.0));
+        state
+            .channels
+            .push(active_target(now, same_index_wrong_name, 3, -14.0));
+        state.channels.push(active_target(now, scene_b, 4, -16.0));
+
+        assert_eq!(state.finish_scene_on_next_tick(&scene_a), 2);
+        assert!(state.channels[0].is_done(now));
+        assert!(state.channels[1].is_done(now));
+        assert!(!state.channels[2].is_done(now));
+        assert!(!state.channels[3].is_done(now));
+        assert_eq!(state.channels[0].target_value, -10.0);
+        assert_eq!(state.channels[1].target_value, -12.0);
+    }
+
+    #[test]
+    fn finish_scene_returns_zero_without_mutating_unowned_targets() {
+        let now = Instant::now();
+        let mut state = EngineState::new(AppEventBus::default(), 4);
+        state.channels.push(active_target(
+            now,
+            FadeSceneIdentity {
+                index: 18,
+                name: "Chorus".to_string(),
+            },
+            1,
+            -10.0,
+        ));
+
+        let count = state.finish_scene_on_next_tick(&FadeSceneIdentity {
+            index: 17,
+            name: "Verse".to_string(),
+        });
+
+        assert_eq!(count, 0);
+        assert!(!state.channels[0].is_done(now));
     }
 }

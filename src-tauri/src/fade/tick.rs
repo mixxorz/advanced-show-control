@@ -20,13 +20,6 @@ pub const PAN_OVERRIDE_THRESHOLD: f64 = 1.8;
 pub const PAN_OVERRIDE_CONFIRMATION_COUNT: u8 = 2;
 
 pub(crate) struct ActiveTarget {
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "same-scene recall handling consumes target ownership in the next task"
-        )
-    )]
     pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
     pub(crate) group: i32,
@@ -87,13 +80,6 @@ impl ActiveTarget {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "same-scene recall handling requests instant completion in the next task"
-        )
-    )]
     pub(crate) fn finish_on_next_tick(&mut self) {
         self.duration = Duration::ZERO;
     }
