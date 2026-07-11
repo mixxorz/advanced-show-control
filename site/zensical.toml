@@ -1,0 +1,40 @@
+[project]
+site_name = "Advanced Show Control"
+site_url = "https://mitchel.me/advanced-show-control/"
+site_description = "User manual for Advanced Show Control"
+site_author = "Mitchel Cabuloy"
+copyright = "Advanced Show Control is licensed under GPL-3.0-or-later."
+docs_dir = "docs"
+site_dir = "output"
+repo_url = "https://github.com/mixxorz/advanced-show-control"
+repo_name = "mixxorz/advanced-show-control"
+extra_css = ["assets/stylesheets/extra.css"]
+nav = [
+  {"Home" = "index.md"},
+  {"Getting Started" = "getting-started.md"},
+  {"Application Shell" = "application-shell.md"},
+  {"Scenes" = "scenes.md"},
+  {"Cue Lists" = "cue-lists.md"},
+  {"Settings" = "settings.md"},
+  {"Logs" = "logs.md"},
+  {"Troubleshooting" = "troubleshooting.md"},
+  {"Reference" = [
+    {"Keyboard Shortcuts" = "reference/keyboard-shortcuts.md"},
+    {"Terminology" = "reference/terminology.md"}
+  ]}
+]
+
+[project.theme]
+variant = "modern"
+features = [
+  "navigation.instant",
+  "navigation.instant.progress",
+  "navigation.path",
+  "navigation.top",
+  "toc.follow"
+]
+
+[project.extra.version]
+provider = "mike"
+default = "stable"
+alias = true

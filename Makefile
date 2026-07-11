@@ -1,7 +1,7 @@
 .PHONY: help fmt lint test build check \
 	rust-fmt rust-lint rust-test rust-build \
 	ui-fmt ui-lint ui-typecheck ui-build ui-test ui-storybook-test \
-	visual-test visual-update dev storybook probe smoke
+	visual-test visual-update docs-install docs-build docs-serve dev storybook probe smoke
 
 help:
 	@printf '%s\n' \
@@ -11,6 +11,11 @@ help:
 	  '  make test                 Run Rust and UI unit tests' \
 	  '  make build                Build Rust workspace and UI' \
 	  '  make check                Run CI-like non-visual checks' \
+	  '' \
+	  'Documentation targets:' \
+	  '  make docs-install         Install pinned documentation dependencies' \
+	  '  make docs-build           Build documentation site with strict validation' \
+	  '  make docs-serve           Serve documentation site locally' \
 	  '' \
 	  'Rust targets:' \
 	  '  make rust-fmt             cargo fmt --all -- --check' \
@@ -46,6 +51,15 @@ test: rust-test ui-test
 build: rust-build ui-build
 
 check: fmt lint ui-typecheck build test ui-storybook-test
+
+docs-install:
+	python3 -m pip install -r requirements-docs.txt
+
+docs-build:
+	zensical build --clean --strict --config-file site/zensical.toml
+
+docs-serve:
+	zensical serve --config-file site/zensical.toml
 
 rust-fmt:
 	cargo fmt --all -- --check
