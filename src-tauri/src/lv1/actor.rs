@@ -246,6 +246,7 @@ async fn run_actor(
                 }
             }
         };
+        state.ping_sequence = 0;
 
         let device_name = "lv1-state-mirror";
         let uuid = uuid::Uuid::new_v4().to_string();
