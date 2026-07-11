@@ -1012,7 +1012,10 @@ mod tests {
                         duration_ms: 1_000,
                         channel_configs: vec![],
                         scoped_channels: vec![],
-                        scope_toggles: Default::default(),
+                        scope_toggles: SceneScopeToggles {
+                            faders: false,
+                            pan: true,
+                        },
                     }],
                     selected_scene_internal_id: None,
                 },
@@ -1064,6 +1067,15 @@ mod tests {
                 assert!(persisted_scene_edit);
                 assert_eq!(state.scene_configs[0].scene_index, Some(3));
                 assert_eq!(state.scene_configs[0].scene_name, "Song 2 -- Changed");
+                assert_eq!(
+                    state.scene_configs[0].scoped_channels,
+                    vec![ChannelRef {
+                        group: 0,
+                        channel: 2,
+                    }]
+                );
+                assert!(!state.scene_configs[0].scope_toggles.faders);
+                assert!(state.scene_configs[0].scope_toggles.pan);
             }
             other => panic!("unexpected event: {other:?}"),
         }

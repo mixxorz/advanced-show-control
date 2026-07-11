@@ -30,6 +30,23 @@ Prefer `cargo nextest run` for Rust tests, including targeted checks such as `ca
 
 `pre-commit` runs Rust formatting and workspace-wide clippy. It does not run tests.
 
+## Documentation
+
+The documentation targets create or reuse the ignored `.venv-docs` virtual
+environment and install the pinned dependencies there. No virtual-environment
+activation is required. Build or serve the local site with:
+
+```bash
+make docs-build
+make docs-serve
+```
+
+Run `make docs-install` to install or refresh the documentation dependencies
+without building the site.
+
+The published manual is available at https://mitchel.me/advanced-show-control/.
+`stable` is the latest numbered release documentation, while `latest` tracks the current `main` branch.
+
 ## License
 
 Advanced Show Control is licensed under the GNU General Public License version 3 or later. See [LICENSE](LICENSE) for details.

@@ -1,0 +1,39 @@
+:root {
+  --asc-navy: #111820;
+  --asc-slate: #5f6c78;
+  --asc-amber: #d6a94a;
+  --asc-green: #69b58a;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--asc-navy);
+  --md-accent-fg-color: #8a641b;
+}
+
+.md-header {
+  border-bottom: 2px solid var(--asc-amber);
+}
+
+.md-typeset h1 {
+  letter-spacing: -0.02em;
+}
+
+.md-typeset a:not(.md-button) {
+  text-decoration-color: color-mix(in srgb, currentColor 35%, transparent);
+  text-underline-offset: 0.15em;
+}
+
+.md-typeset .md-button--primary {
+  background-color: var(--asc-navy);
+  border-color: var(--asc-navy);
+}
+
+.md-typeset .admonition.warning,
+.md-typeset details.warning {
+  border-color: var(--asc-amber);
+}
+
+.md-typeset .admonition.success,
+.md-typeset details.success {
+  border-color: var(--asc-green);
+}

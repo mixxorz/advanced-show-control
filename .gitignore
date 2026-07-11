@@ -21,10 +21,15 @@ logs/
 
 # Tooling
 .superpowers/
+.venv-docs/
 .worktrees
 sdd/
 opencode.json
 tags
+
+# Documentation site build output
+site/output/
+site/.cache/
 
 # macOS
 .DS_Store
