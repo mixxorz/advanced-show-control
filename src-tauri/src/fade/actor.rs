@@ -94,6 +94,13 @@ async fn run_engine(
                 None => std::future::pending::<bool>().await,
             }
         };
+        let readiness_deadline = state.readiness_deadline();
+        let readiness_timeout_fut = async move {
+            match readiness_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
 
         tokio::select! {
             cmd = cmd_rx.recv() => {
@@ -257,11 +264,23 @@ async fn run_engine(
                         }
                     }
                     Ok(AppEvent::Lv1 { event: Lv1Event::Disconnected { .. }, .. }) => {
-                        if state.is_active() {
+                        if state.is_active() || state.is_waiting_for_readiness() {
                             state.cancel_all_in_place();
                             tick_interval = None;
                             fade_completed_emitted = false;
                             tracing::warn!(event = "fade_aborted", "Fade aborted");
+                            state.fan_out(FadeEvent::FadeAborted);
+                        }
+                    }
+                    Ok(AppEvent::Runtime(
+                        crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                            generation: event_generation,
+                        },
+                    )) if event_generation != generation => {
+                        if state.is_active() || state.is_waiting_for_readiness() {
+                            state.cancel_all_in_place();
+                            tick_interval = None;
+                            fade_completed_emitted = false;
                             state.fan_out(FadeEvent::FadeAborted);
                         }
                     }
@@ -286,6 +305,24 @@ async fn run_engine(
                         log_lagged_subscriber("fade-engine", count);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+
+            _ = readiness_timeout_fut => {
+                if let Some(context) = state.readiness_timeout_context() {
+                    state.cancel_all_in_place();
+                    tick_interval = None;
+                    fade_completed_emitted = false;
+                    tracing::warn!(
+                        event = "fade_post_recall_ping_timeout",
+                        generation = context.generation,
+                        scene_index = context.scene_index,
+                        scene_name = %context.scene_name,
+                        observed_ping_count = context.observed_ping_count,
+                        timeout_ms = 5_000_u64,
+                        "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
+                    );
+                    state.fan_out(FadeEvent::FadeAborted);
                 }
             }
         }
@@ -634,7 +671,13 @@ mod tests {
         Lv1WriteParameter, test_actor_handle,
     };
     use crate::runtime::errors::AppCommandError;
-    use crate::runtime::events::AppEventBus;
+    use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
+    use std::sync::Arc;
+    use tracing::field::{Field, Visit};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::Context;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::registry::{LookupSpan, Registry};
 
     fn scene(index: i32, name: &str) -> FadeSceneIdentity {
         FadeSceneIdentity {
@@ -812,6 +855,85 @@ mod tests {
                 .is_err(),
             "fade write was sent before the readiness gate released"
         );
+    }
+
+    async fn assert_no_write_after_cancellation(
+        write_rx: &mut tokio::sync::mpsc::Receiver<Vec<Lv1ParameterWrite>>,
+    ) {
+        tokio::task::yield_now().await;
+        assert!(
+            write_rx.try_recv().is_err(),
+            "fade write was sent after readiness cancellation"
+        );
+    }
+
+    async fn wait_for_fade_aborted(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
+        loop {
+            if let AppEvent::Fade {
+                generation: 7,
+                event: FadeEvent::FadeAborted,
+            } = events.recv().await.expect("event bus should remain open")
+            {
+                return;
+            }
+        }
+    }
+
+    async fn assert_no_additional_fade_abort(
+        events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    ) {
+        tokio::task::yield_now().await;
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(
+                    event,
+                    AppEvent::Fade {
+                        generation: 7,
+                        event: FadeEvent::FadeAborted,
+                    }
+                ),
+                "cancellation must emit only one FadeAborted event"
+            );
+        }
+    }
+
+    #[derive(Debug, Default, Clone, PartialEq, Eq)]
+    struct CapturedWarnEvent {
+        level: Option<String>,
+        event: Option<String>,
+        message: Option<String>,
+    }
+
+    #[derive(Clone, Default)]
+    struct CapturedWarnEvents(Arc<std::sync::Mutex<Vec<CapturedWarnEvent>>>);
+
+    impl<S> Layer<S> for CapturedWarnEvents
+    where
+        S: tracing::Subscriber,
+        S: for<'a> LookupSpan<'a>,
+    {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+            let mut captured = CapturedWarnEvent {
+                level: Some(event.metadata().level().as_str().to_string()),
+                ..Default::default()
+            };
+            event.record(&mut captured);
+            self.0.lock().unwrap().push(captured);
+        }
+    }
+
+    impl Visit for CapturedWarnEvent {
+        fn record_str(&mut self, field: &Field, value: &str) {
+            match field.name() {
+                "event" => self.event = Some(value.to_string()),
+                "message" => self.message = Some(value.to_string()),
+                _ => {}
+            }
+        }
+
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.record_str(field, format!("{value:?}").trim_matches('"'));
+        }
     }
 
     fn assert_no_override_or_cancellation(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
@@ -1826,6 +1948,200 @@ mod tests {
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn post_recall_ping_timeout_aborts_fade_and_logs_warning() {
+        let captured = CapturedWarnEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(5)).await;
+        wait_for_fade_aborted(&mut events).await;
+        assert_no_write_after_cancellation(&mut write_rx).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        assert_no_write_after_cancellation(&mut write_rx).await;
+        assert_no_additional_fade_abort(&mut events).await;
+
+        let warnings = captured.0.lock().unwrap();
+        assert!(warnings.iter().any(|warning| {
+            warning.level.as_deref() == Some("WARN")
+                && warning.event.as_deref() == Some("fade_post_recall_ping_timeout")
+                && warning.message.as_deref()
+                    == Some(
+                        "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall",
+                    )
+        }));
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_abort_clears_readiness_before_later_pings() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        let (reply, reply_rx) = tokio::sync::oneshot::channel();
+        engine
+            .send(FadeCommand::AbortAll { reply: Some(reply) })
+            .await
+            .unwrap();
+        reply_rx.await.unwrap().unwrap();
+        wait_for_fade_aborted(&mut events).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        assert_no_write_after_cancellation(&mut write_rx).await;
+        assert_no_additional_fade_abort(&mut events).await;
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_disconnect_clears_readiness_before_later_pings() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        });
+        wait_for_fade_aborted(&mut events).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        assert_no_write_after_cancellation(&mut write_rx).await;
+        assert_no_additional_fade_abort(&mut events).await;
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_generation_change_clears_readiness_before_later_pings() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![FadeTarget {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                }],
+                1_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 8 },
+        ));
+        wait_for_fade_aborted(&mut events).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+        assert_no_write_after_cancellation(&mut write_rx).await;
     }
 
     #[tokio::test]
