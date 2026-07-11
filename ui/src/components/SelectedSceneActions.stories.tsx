@@ -1,27 +1,66 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MockAppProviders } from "../storybook/MockAppProviders";
-import { connectedAppState, storedVerseScene } from "../storybook/mockAppState";
+import {
+  connectedAppState,
+  storedVerseScene,
+  unlinkedDraftScene,
+} from "../storybook/mockAppState";
+import type { AppViewState, SceneConfig } from "../types";
 import { SelectedSceneActions } from "./SelectedSceneActions";
 
-const meta: Meta<typeof SelectedSceneActions> = {
+type SelectedSceneActionsStoryArgs = {
+  appState: AppViewState;
+  scene: SceneConfig;
+};
+
+const meta: Meta<SelectedSceneActionsStoryArgs> = {
   title: "Scenes/Selected Scene/SelectedSceneActions",
-  component: SelectedSceneActions,
   decorators: [
     (Story) => (
       <main className="bg-console-bg p-6 text-console-primary">
-        <MockAppProviders appState={connectedAppState}>
-          <Story />
-        </MockAppProviders>
+        <Story />
       </main>
     ),
   ],
   args: {
+    appState: connectedAppState,
     scene: storedVerseScene,
   },
+  render: (args) => (
+    <MockAppProviders appState={args.appState}>
+      <SelectedSceneActions scene={args.scene} />
+    </MockAppProviders>
+  ),
 };
 
 export default meta;
 
-type Story = StoryObj<typeof SelectedSceneActions>;
+type Story = StoryObj<SelectedSceneActionsStoryArgs>;
 
-export const Default: Story = {};
+export const ClipboardUnavailable: Story = {
+  args: {
+    appState: {
+      ...connectedAppState,
+      sceneSettingsClipboardAvailable: false,
+    },
+  },
+};
+
+export const ClipboardAvailable: Story = {
+  args: {
+    appState: {
+      ...connectedAppState,
+      sceneSettingsClipboardAvailable: true,
+    },
+  },
+};
+
+export const UnlinkedDestination: Story = {
+  args: {
+    appState: {
+      ...connectedAppState,
+      sceneSettingsClipboardAvailable: true,
+    },
+    scene: unlinkedDraftScene,
+  },
+};
