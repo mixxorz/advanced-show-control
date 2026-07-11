@@ -20,6 +20,8 @@ The **Scene library** on the left contains configured application scenes. The ac
 
 Drag a scene from the library into the active list to create an entry. Drop over an entry to insert before it, or drop in the remaining pane area to append it. Drag an existing cue entry vertically to reorder it.
 
+If no list is active, the pane header shows **No active cue list** and the pane displays **No active cue list.** Create or select a list in **Manage Cue Lists** before you add or prepare entries.
+
 ## Manage Cue Lists
 
 Select **Manage Cue Lists** to create, select, rename, reorder, or delete lists.
