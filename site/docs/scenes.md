@@ -8,15 +8,15 @@ Use **Scenes** to add a fade to an LV1 scene. For each scene, you can store targ
 
 1. Select the scene in the **Scene library**.
 2. Set LV1 to the mix you want the scene to reach.
-3. Select **Store** to capture the current fader and pan values.
-4. Choose the channels that may move.
-5. Turn **FADER** and **PAN** on or off as needed.
+3. Choose the channels that may move.
+4. Turn on **FADER**. Turn on **PAN** if pan controls should move as well.
+5. Select **Store** to capture the current fader and pan values.
 6. Set **X-Fade** and save the session.
 
 Scope is the combination of selected channels and enabled controls. Advanced Show Control moves only the faders and pans in scope.
 
 !!! warning "Store with an empty scope"
-    If no channels are in scope when you select **Store**, all current channels are added. Remove any channels that should not move before recall. **Store** preserves the current **FADER** and **PAN** selections.
+    A new scene fade has no selected channels, and **FADER** and **PAN** are off. Select the intended channels and enable the controls before you select **Store**. If no channels are in scope when you select **Store**, all current channels are added. **Store** preserves the current **FADER** and **PAN** selections.
 
 ## Scene library
 
@@ -41,6 +41,8 @@ The row indicators identify the selected, current, and cued scenes. An unlinked 
 | Channel button | Adds or removes one channel from scope. |
 | **All** | Adds every available channel. |
 | **None** | Removes every channel. |
+
+Every new scene fade starts with an empty scope: no channels are selected, and **FADER** and **PAN** are off. Select the intended channels and enable the controls before you store or recall the fade.
 
 If both **FADER** and **PAN** are off, LV1 can still recall the scene, but Advanced Show Control will not move any controls.
 
@@ -78,9 +80,20 @@ If **Overwrite Existing Fade Settings?** appears, continue only when you intend 
 
 **Delete** removes the scene fade from Advanced Show Control. It does not delete the scene in LV1.
 
-## Unavailable controls
+## Copy and paste scene settings
 
-In version 2, **Copy** does not copy or change a scene fade, and **Paste** is disabled.
+Use **Copy** to retain the settings from the selected scene fade for a later paste. **Copy** retains the **X-Fade** time, **FADER** and **PAN** selections, stored channel target data, and selected channel scope. It does not change the source scene fade.
+
+You can copy settings from a linked or unlinked scene fade. **Paste** is available only when copied settings are present and the destination scene fade is linked to an LV1 scene.
+
+1. Select the scene fade whose settings you want to copy.
+2. Select **Copy**.
+3. Select the linked destination scene fade.
+4. Select **Paste**.
+
+**Paste** replaces the destination fade's copied settings but retains the destination's LV1 scene number and name. It does not change the source scene fade. If the destination already has identical settings, **Paste** makes no change and does not mark the session as changed.
+
+The copied settings are available only for the current session. Creating, opening, or replacing a session clears the copied settings. Copy the settings again after changing sessions.
 
 ## Troubleshooting
 
