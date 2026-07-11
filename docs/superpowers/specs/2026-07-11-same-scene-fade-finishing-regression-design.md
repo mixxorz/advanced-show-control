@@ -126,6 +126,20 @@ Use scenes actor tests for the validation boundary:
 
 Strengthen or replace the misleading existing same-scene test so it asserts exact writes, scene-scoped completion, and unrelated-scene continuation rather than only the absence of an early global completion event.
 
+### Hardware Smoke Test
+
+Extend `ui/src/debug/main.tsx` with a `same-scene-finish` smoke case driven through production Tauri commands:
+
+1. Recall a configured smoke scene with a long enough duration that its test-channel fade remains active.
+2. Confirm from the live test-channel value that movement has started and the stored target has not yet been reached.
+3. Recall the same app-managed scene again through `recall_scene`.
+4. Wait for post-recall readiness and assert that the live test-channel value reaches the scene's stored target within the existing hardware tolerance and substantially before the original fade duration would have elapsed.
+5. Assert through projected fade state that the finished target is no longer active.
+
+Use debug-only commands only for live LV1 observation and deterministic setup. The repeated recall and session workflow must use production commands. Keep the smoke timing bounds tolerant of LV1 and host scheduling latency while still distinguishing instant completion after readiness from a restarted full-duration fade.
+
+Run `make smoke` against an LV1-compatible target. Always inspect `logs/debug-smoke-report.txt` and require the authoritative report to show `same-scene-finish: PASS` and the full suite result as passed. A successful shell exit alone is not sufficient verification.
+
 ## Documentation
 
 Update `docs/architecture.md` to state that active targets retain exact scene ownership and that repeated validated scene recalls rewrite only that scene's targets for readiness-gated exact completion.
@@ -151,3 +165,4 @@ Historical design documents remain unchanged.
 - Manual override and lifecycle cancellation prevent stale deferred writes.
 - Different-scene overlap behavior remains parameter-key scoped.
 - The regression is covered by observable actor tests and focused pure timeline tests.
+- `make smoke` exercises repeated same-scene recall on live LV1 state, and `logs/debug-smoke-report.txt` reports `same-scene-finish: PASS` with a passing full suite.
