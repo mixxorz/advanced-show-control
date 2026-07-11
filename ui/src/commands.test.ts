@@ -6,8 +6,10 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  copySceneSettings,
   createCueList,
   deleteCueList,
+  pasteSceneSettings,
   probeLv1TcpConnectLatency,
   recallCuedCue,
   reorderCueLists,
@@ -94,5 +96,27 @@ describe("cue list commands", () => {
     await recallCuedCue();
 
     expect(invoke).toHaveBeenCalledWith("recall_cued_cue");
+  });
+});
+
+describe("scene settings clipboard commands", () => {
+  it("calls copy_scene_settings with the provided internal scene id", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await copySceneSettings("scene-1");
+
+    expect(invoke).toHaveBeenCalledWith("copy_scene_settings", {
+      internalSceneId: "scene-1",
+    });
+  });
+
+  it("calls paste_scene_settings with the provided internal scene id", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await pasteSceneSettings("scene-1");
+
+    expect(invoke).toHaveBeenCalledWith("paste_scene_settings", {
+      internalSceneId: "scene-1",
+    });
   });
 });

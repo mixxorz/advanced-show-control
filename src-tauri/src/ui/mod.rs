@@ -59,8 +59,10 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::cue_lists::reorder_cue_entries,
             commands::cue_lists::reorder_cue_lists,
             commands::cue_lists::set_active_cue_list,
+            commands::scenes::copy_scene_settings,
             commands::scenes::delete_scene_config,
             commands::scenes::link_scene_config,
+            commands::scenes::paste_scene_settings,
             commands::scenes::recall_scene,
             commands::scenes::select_scene_config,
             commands::scenes::set_all_channels_scoped,
@@ -99,8 +101,10 @@ mod tests {
         let _ = super::commands::cue_lists::create_cue_list;
         let _ = super::commands::cue_lists::recall_cued_cue;
         let _ = super::commands::scenes::recall_scene;
+        let _ = super::commands::scenes::copy_scene_settings;
         let _ = super::commands::scenes::delete_scene_config;
         let _ = super::commands::scenes::link_scene_config;
+        let _ = super::commands::scenes::paste_scene_settings;
         let _ = super::commands::scenes::select_scene_config;
         let _ = super::commands::scenes::set_all_channels_scoped;
         let _ = super::commands::scenes::set_channel_scoped;

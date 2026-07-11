@@ -61,6 +61,14 @@ export async function deleteSceneConfig(internalSceneId: string) {
   return invoke<void>("delete_scene_config", { internalSceneId });
 }
 
+export async function copySceneSettings(internalSceneId: string) {
+  return invoke<void>("copy_scene_settings", { internalSceneId });
+}
+
+export async function pasteSceneSettings(internalSceneId: string) {
+  return invoke<void>("paste_scene_settings", { internalSceneId });
+}
+
 export async function createCueList(name: string) {
   return invoke<void>("create_cue_list", { name });
 }

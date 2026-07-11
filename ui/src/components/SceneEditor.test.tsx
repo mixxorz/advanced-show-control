@@ -13,9 +13,11 @@ import { SceneEditor } from "./SceneEditor";
 function makeCommands(commands: Partial<AppCommands> = {}): AppCommands {
   return {
     abortAll: vi.fn(),
+    copySceneSettings: vi.fn(),
     disconnect: vi.fn(),
     newShowFile: vi.fn(),
     openShowFile: vi.fn(),
+    pasteSceneSettings: vi.fn(),
     recallCuedCue: vi.fn(),
     probeLv1TcpConnectLatency: vi.fn(),
     saveShowFile: vi.fn(),

@@ -109,6 +109,54 @@ pub async fn delete_scene_config(
 }
 
 #[tauri::command]
+pub async fn copy_scene_settings(
+    lifecycle: State<'_, AppLifecycle>,
+    internal_scene_id: uuid::Uuid,
+) -> Result<ScenesCommandResult, String> {
+    let scenes = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or(AppCommandError::ScenesUnavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    scenes
+        .send(ScenesCommand::CopySceneSettings {
+            source_internal_scene_id: internal_scene_id,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| AppCommandError::ScenesUnavailable)
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
+pub async fn paste_scene_settings(
+    lifecycle: State<'_, AppLifecycle>,
+    internal_scene_id: uuid::Uuid,
+) -> Result<ScenesCommandResult, String> {
+    let scenes = lifecycle
+        .current_scene_recall_fader()
+        .await
+        .ok_or(AppCommandError::ScenesUnavailable)
+        .map_err(map_app_command_error)?;
+    let (reply, rx) = oneshot::channel();
+    scenes
+        .send(ScenesCommand::PasteSceneSettings {
+            destination_internal_scene_id: internal_scene_id,
+            reply: Some(reply),
+        })
+        .await
+        .map_err(|_| AppCommandError::ScenesUnavailable)
+        .map_err(map_app_command_error)?;
+    rx.await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)
+        .map_err(map_app_command_error)?
+}
+
+#[tauri::command]
 pub async fn select_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
