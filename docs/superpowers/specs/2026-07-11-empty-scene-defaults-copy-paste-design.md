@@ -80,6 +80,24 @@ Paste validation and mutation will occur within the Scenes actor so the update i
 
 The empty default ensures no channel or parameter becomes app-managed without explicit engineer intent. An empty/default scene cannot cause parameter writes during later recall automation.
 
+## Public Site Documentation
+
+The implementation will update the operator-facing Zensical site with the shipped behavior.
+
+`site/docs/getting-started.md` will revise the first-fade procedure so it no longer assumes **FADER** begins enabled. The procedure will require the engineer to select the intended channels and explicitly enable **FADER** and, when needed, **PAN** before recall.
+
+`site/docs/scenes.md` will:
+
+- State that new scene fade configurations begin with no channels or parameters in scope.
+- Explain that **FADER** and **PAN** must be enabled explicitly.
+- Replace the obsolete unavailable-controls text with instructions for **Copy** and **Paste**.
+- State exactly which settings are copied and that destination scene identity is preserved.
+- Explain that Copy is available for unlinked scenes, while Paste requires a linked destination.
+- Explain that the clipboard is cleared when the engineer creates or opens another session.
+- Explain that pasting identical settings makes no session change.
+
+Scene screenshots sourced from visual regression assets will be refreshed when their visible default scope or Copy/Paste availability no longer matches the implemented UI. Documentation images will continue to be copied into the site as immutable assets rather than linked to generated test output.
+
 ## Testing
 
 ### Pure Unit Tests
@@ -126,11 +144,18 @@ The debug smoke suite will exercise production commands and assert projected con
 
 The added smoke coverage will not recall B or assert live fader movement. Existing smoke coverage remains responsible for live fade execution.
 
+### Documentation Verification
+
+- Verify the site describes the empty default and Copy/Paste behavior without retaining contradictory legacy instructions.
+- Run a clean Zensical build from `site/` after updating the manual and any screenshots.
+- Check internal links and image references through the site build.
+
 ## Implementation Sequence
 
-The changes will be delivered in two reviewable commits:
+The changes will be delivered in three reviewable commits:
 
 1. Change new and omitted scene scope defaults to the empty fail-safe model, including persistence, recall-policy, UI, and smoke expectations.
 2. Add the backend-owned clipboard, Copy/Paste commands, projection state, UI controls, tests, and smoke workflow.
+3. Update the public Zensical manual and affected screenshots for the new defaults and Copy/Paste workflow.
 
 This ordering ensures Copy/Paste is built against the final default and import semantics rather than carrying transitional behavior.
