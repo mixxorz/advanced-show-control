@@ -70,6 +70,7 @@ pub struct AppViewState {
     pub fade_state: AppFadeState,
     pub lockout: bool,
     pub scene_configs: Vec<SceneConfig>,
+    pub scene_settings_clipboard_available: bool,
     pub cue_lists: Vec<CueList>,
     pub active_cue_list_id: Option<String>,
     pub cued_cue_entry_id: Option<String>,

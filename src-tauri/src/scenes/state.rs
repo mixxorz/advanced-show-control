@@ -179,7 +179,6 @@ impl ScenesState {
         Ok(true)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn copy_scene_settings(
         &mut self,
         source_internal_scene_id: uuid::Uuid,
@@ -200,7 +199,6 @@ impl ScenesState {
         Ok(changed)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn paste_scene_settings(
         &mut self,
         destination_internal_scene_id: uuid::Uuid,
@@ -864,5 +862,17 @@ mod tests {
         state.replace_snapshot_for_session(SceneDocument::empty());
 
         assert!(!state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn ordinary_snapshot_replacement_preserves_the_settings_clipboard() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+        assert_eq!(state.copy_scene_settings(source_id), Ok(true));
+
+        state.replace_snapshot(SceneDocument::empty());
+
+        assert!(state.projection_state().scene_settings_clipboard_available);
     }
 }

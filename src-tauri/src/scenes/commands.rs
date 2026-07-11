@@ -60,6 +60,14 @@ pub enum ScenesCommand {
         internal_scene_id: Uuid,
         reply: Option<oneshot::Sender<Result<SelectedSceneResult, String>>>,
     },
+    CopySceneSettings {
+        source_internal_scene_id: Uuid,
+        reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
+    },
+    PasteSceneSettings {
+        destination_internal_scene_id: Uuid,
+        reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
+    },
     StoreSceneConfigFromCurrentLv1 {
         internal_scene_id: Uuid,
         reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
