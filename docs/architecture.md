@@ -240,14 +240,15 @@ The smoke suite shall assert behavior through production command results, `app-s
 The smoke suite shall validate the following paths:
 
 1. LV1 discovery and connection.
-2. New show creation from the connected LV1.
-3. Capture of Smoke A and Smoke B scene configurations from LV1.
-4. Test-channel scope and duration configuration for both app-managed scenes.
-5. Production scene recall updates projected current scene state.
-6. Recall from Smoke A to Smoke B starts live fader movement.
-7. Recall fade reaches the stored target within tolerance.
-8. Alternating scene recalls with decreasing fade durations complete at the expected targets.
-9. Lockout blocks recall and prevents fader movement.
+2. Same-process startup auto-connect after a production-command disconnect, validated against the projected connected LV1 identity.
+3. New show creation from the connected LV1.
+4. Capture of Smoke A and Smoke B scene configurations from LV1.
+5. Test-channel scope and duration configuration for both app-managed scenes.
+6. Production scene recall updates projected current scene state.
+7. Recall from Smoke A to Smoke B starts live fader movement.
+8. Recall fade reaches the stored target within tolerance.
+9. Alternating scene recalls with decreasing fade durations complete at the expected targets.
+10. Lockout blocks recall and prevents fader movement.
 
 ## 12.0 Projector Cache and Frontend Emission
 
