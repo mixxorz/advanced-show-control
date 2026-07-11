@@ -214,7 +214,8 @@ async fn run_engine(
             app_event = app_events.recv() => {
                 match app_event {
                     Ok(AppEvent::Lv1 { event: Lv1Event::FaderChanged { group, channel, gain_db }, .. }) => {
-                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
+                        if !state.is_waiting_for_readiness()
+                            && let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
                             && state.channels[pos].is_override(gain_db)
                         {
                             state.fan_out(FadeEvent::ChannelOverride {
@@ -244,14 +245,16 @@ async fn run_engine(
                         }
                     }
                     Ok(AppEvent::Lv1 { event: Lv1Event::PanChanged { group, channel, pan }, .. }) => {
-                        handle_pan_family_pan_report(
-                            &mut state,
-                            group,
-                            channel,
-                            pan,
-                            &mut tick_interval,
-                            &mut fade_completed_emitted,
-                        );
+                        if !state.is_waiting_for_readiness() {
+                            handle_pan_family_pan_report(
+                                &mut state,
+                                group,
+                                channel,
+                                pan,
+                                &mut tick_interval,
+                                &mut fade_completed_emitted,
+                            );
+                        }
                     }
                     Ok(AppEvent::Lv1 { event: Lv1Event::Disconnected { .. }, .. }) => {
                         if state.is_active() {
@@ -809,6 +812,22 @@ mod tests {
                 .is_err(),
             "fade write was sent before the readiness gate released"
         );
+    }
+
+    fn assert_no_override_or_cancellation(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(
+                    event,
+                    AppEvent::Fade {
+                        event: FadeEvent::ChannelOverride { .. }
+                            | FadeEvent::ChannelCancelled { .. },
+                        ..
+                    }
+                ),
+                "readiness-gated LV1 feedback must not emit fade override or cancellation facts"
+            );
+        }
     }
 
     async fn assert_pan_family_aux_event_does_not_override(parameter: FadeParameter) {
@@ -1870,6 +1889,128 @@ mod tests {
         assert!(writes.iter().any(|write| {
             write.group == 0 && write.channel == 0 && write.parameter == Lv1WriteParameter::FaderDb
         }));
+    }
+
+    #[tokio::test]
+    async fn post_recall_ping_gate_ignores_feedback_until_release_then_restores_manual_override() {
+        let (event_bus, engine, mut write_rx) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                40,
+                vec![channel_info(0, -20.0, Some(0.0))],
+            )])
+            .await;
+        let mut events = event_bus.subscribe();
+
+        start_fade_for_generation(
+            &engine,
+            fade_config(
+                scene(1, "Intro"),
+                vec![
+                    FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -10.0,
+                    },
+                    FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::Pan,
+                        target: 45.0,
+                    },
+                ],
+                5_000,
+            ),
+            Some(7),
+        )
+        .await
+        .unwrap();
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::FaderChanged {
+                group: 0,
+                channel: 0,
+                gain_db: -50.0,
+            },
+        });
+        for _ in 0..2 {
+            event_bus.publish(AppEvent::Lv1 {
+                generation: 7,
+                event: Lv1Event::PanChanged {
+                    group: 0,
+                    channel: 0,
+                    pan: -90.0,
+                },
+            });
+        }
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 41 },
+        });
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 42 },
+        });
+
+        let writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
+            .await
+            .expect("fade should resume after readiness release")
+            .expect("fade write channel should remain open");
+        assert!(writes.iter().any(|write| {
+            write.parameter == Lv1WriteParameter::FaderDb && write.group == 0 && write.channel == 0
+        }));
+        assert!(writes.iter().any(|write| {
+            write.parameter == Lv1WriteParameter::Pan && write.group == 0 && write.channel == 0
+        }));
+        assert_no_override_or_cancellation(&mut events);
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::FaderChanged {
+                group: 0,
+                channel: 0,
+                gain_db: -50.0,
+            },
+        });
+        for _ in 0..2 {
+            event_bus.publish(AppEvent::Lv1 {
+                generation: 7,
+                event: Lv1Event::PanChanged {
+                    group: 0,
+                    channel: 0,
+                    pan: -90.0,
+                },
+            });
+        }
+
+        let mut overridden = std::collections::HashSet::new();
+        let mut cancelled = std::collections::HashSet::new();
+        tokio::time::timeout(Duration::from_millis(300), async {
+            while overridden.len() < 2 || cancelled.len() < 2 {
+                match events.recv().await.expect("event bus should remain open") {
+                    AppEvent::Fade {
+                        event: FadeEvent::ChannelOverride { parameter, .. },
+                        ..
+                    } => {
+                        overridden.insert(parameter);
+                    }
+                    AppEvent::Fade {
+                        event: FadeEvent::ChannelCancelled { parameter, .. },
+                        ..
+                    } => {
+                        cancelled.insert(parameter);
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .expect("manual override behavior should resume after readiness release");
+        assert!(overridden.contains(&FadeParameter::FaderDb));
+        assert!(overridden.contains(&FadeParameter::Pan));
+        assert!(cancelled.contains(&FadeParameter::FaderDb));
+        assert!(cancelled.contains(&FadeParameter::Pan));
     }
 
     #[tokio::test]
