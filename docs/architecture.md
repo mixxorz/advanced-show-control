@@ -325,6 +325,10 @@ The barrier pauses ASC parameter writes only. It does not ignore LV1 parameter
 feedback, and normal manual override detection remains active while the barrier is
 waiting. Same-scene finishing behavior is tracked separately in #42.
 
+#### Scene-Owned Repeated Recall
+
+Every timed active target retains the exact LV1 scene index and scene name that created it. After normal recall validation, recalling that exact scene while it owns active targets rewrites only those targets for completion on the next eligible scheduler tick. The repeated recall resets the connection-wide post-recall readiness barrier; no final parameter write occurs until two qualifying same-generation pings release the barrier. The normal scheduler then sends each stored target value exactly and removes the completed target. Targets owned by other scenes remain active and resume after the shared readiness pause.
+
 ### 13.3 `scenes`
 
 The `scenes` module owns scene recall automation.
