@@ -1,36 +1,31 @@
 # Logs
 
-The **Logs** screen displays user-visible application events. Use it to review
-connection progress, completed operations, warnings, and failures that require
-an operator response.
+Use **Logs** to understand what the application has done and why an operation needs attention. The screen shows connection progress, completed operations, visible safety blocks, recoverable warnings, and failures that prevented a requested action.
 
 ![A populated Logs screen.](assets/screenshots/logs.png)
 
-## Log Entries
+## Review An Operation
 
-Each entry contains three fields:
+1. Open **Logs** after a connection, store, recall, cue, or file operation.
+2. Read the newest message near the time of the event.
+3. Use its severity to decide whether to continue, correct a condition, or collect support information.
+4. Follow the linked procedure before changing scene configuration or console state.
+
+If no entries are available, the screen displays **No frontend logs yet.**
+
+## Read The Entries
 
 | Field | Meaning |
 | --- | --- |
-| Timestamp | The time at which the application projected the event into the frontend log. |
+| Timestamp | The time the entry appeared in the Logs screen. |
 | Severity | `INFO`, `WARNING`, or `ERROR`. |
-| Message | A complete operator-facing description of the event. |
+| Message | A complete description of the event for the operator. |
 
-When no entries are available, the screen reports **No frontend logs yet.**
+An `INFO` entry records an operating fact or completed action. A `WARNING` entry identifies a visible safety block or recoverable problem. An `ERROR` entry identifies a command or file operation that could not complete. If you see a warning or error before a recall, correct the stated condition and verify the intended scene before you try again.
 
-## Operational And Diagnostic Logs
+## Diagnostic Files
 
-The Logs screen is an operational view. It receives `INFO`, `WARN`, and
-`ERROR` events through the application state projection. Warnings include
-visible safety blocks and recoverable failures; errors identify command or
-persistence failures that prevent the requested operation.
-
-Diagnostic logs are separate JSONL files for detailed support investigation.
-`DEBUG` events are excluded from the visible Logs screen. They may be available
-through diagnostic outputs, including the diagnostic JSONL files and application
-stdout. Enable **Extensive diagnostics** in
-[Settings](settings.md#general-settings) to retain `DEBUG` events in the
-diagnostic file while investigating a problem.
+The Logs screen is the operational view, not a complete diagnostic history. It does not display `DEBUG` entries. Use the diagnostic JSONL file when a support investigation needs more detail.
 
 On macOS, normal application diagnostic files are written under:
 
@@ -38,25 +33,19 @@ On macOS, normal application diagnostic files are written under:
 ~/Library/Application Support/com.advancedshowcontrol.app/logs/diagnostics-*.jsonl
 ```
 
-Each application run creates a timestamped diagnostic file. The Logs screen is
-not a complete history of every diagnostic event; use the relevant diagnostic
-file when a support request requires low-level detail.
+Each application run creates a timestamped file. Enable **Extensive diagnostics** in [Settings](settings.md#general-settings) when you need `DEBUG` entries in that file. Disable it after investigation because the files can grow quickly.
 
-## Reporting A Problem
+## Report A Problem
 
-Include the following in an issue report:
+Include these details when you report a problem:
 
 - Application version and operating system version.
-- The approximate time of the problem and the steps that reproduce it.
-- The connection state, selected scene, and whether **SAFE** was active.
-- The relevant Logs-screen entries or a small, relevant diagnostic-file excerpt.
+- Approximate time of the problem and the steps that reproduce it.
+- Connection state, selected scene, and whether **SAFE** was active.
+- Relevant Logs-screen entries or a short, relevant diagnostic-file excerpt.
 
-Do not attach full `.ascs` session files or complete diagnostic logs by default.
-They can reveal show names, scene names, channel information, and other console
-state. Remove sensitive console information before sharing an excerpt, and
-provide a complete file only when a trusted support process specifically
-requires it.
+Do not share a full `.ascs` session or complete diagnostic file by default. These files can contain show names, scene names, channel information, and other console details. Remove sensitive information from an excerpt, and provide a complete file only through a trusted support process that specifically requests it.
 
 ## Troubleshooting
 
-For an operation with no relevant visible log entry, see [No Visible Log Explains A Failure](troubleshooting.md#no-visible-log-explains-a-failure).
+For an operation with no useful visible entry, see [No Visible Log Explains A Failure](troubleshooting.md#no-visible-log-explains-a-failure).

@@ -16,7 +16,7 @@ that the required system appears as **Available**, then follow
 Check the top-bar connection state and confirm that the intended system remains
 available in the connection dialog. During reconnection, wait for the
 **Reconnecting...** overlay to complete before attempting recall. Follow
-[Reconnection States](application-shell.md#reconnection-states) if the
+[Connect To LV1](application-shell.md#connect-to-lv1) if the
 application returns to the connection workflow.
 
 ## Scene Is Unlinked
@@ -24,13 +24,13 @@ application returns to the connection workflow.
 An unlinked configuration displays scene number `---`; **Store** and
 **Recall** are unavailable. Select the intended LV1 scene, link the
 configuration, then verify both its number and name. See
-[Link A Scene](scenes.md#link-a-scene).
+[Link Or Relink A Scene](scenes.md#link-or-relink-a-scene).
 
 ## Duplicate Scene Name Warning
 
 Use the scene number together with the scene name to identify the intended
 configuration. Do not rely on a matching name alone. Review
-[Duplicate Scene Names](scenes.md#duplicate-scene-names) before overwriting
+[Work With Duplicate Names](scenes.md#work-with-duplicate-names) before overwriting
 existing fade settings.
 
 ## Recall Is Disabled Or Blocked
@@ -64,14 +64,14 @@ using the cue. See [Missing Scenes](cue-lists.md#missing-scenes).
 
 Use the native **File** menu and select an `.ascs` session file when opening.
 For a new session, choose a save location through **Save Session** or **Save
-As...**. See [File Menu And Sessions](application-shell.md#file-menu-and-sessions).
+As...**. See [Sessions And File Commands](application-shell.md#sessions-and-file-commands).
 
 ## No Visible Log Explains A Failure
 
 Open the **Logs** tab and review the timestamp, severity, and message around
 the failure. The screen does not display `DEBUG` diagnostics. If no relevant
 entry is visible, inspect the diagnostic file path and reporting guidance in
-[Logs](logs.md#operational-and-diagnostic-logs).
+[Logs](logs.md#diagnostic-files).
 
 ## A Setting Does Not Change Application Behavior
 

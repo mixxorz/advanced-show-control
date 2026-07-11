@@ -1,60 +1,46 @@
 # Settings
 
-The **Settings** screen stores application preferences. Settings changes are
-saved as a complete replacement of the current settings object. If a save
-fails, the screen reports the error and restores the projected settings.
+Use **Settings** to set application preferences, choose the displayed time format, control diagnostic detail, and assign the CUE and GO shortcuts. Changes are stored when you make them. If a setting cannot be saved, the screen shows the error and restores the last confirmed values.
 
 ![The Settings screen.](assets/screenshots/settings.png)
 
+## Set A Preference
+
+1. Open **Settings**.
+2. Select or adjust the required control.
+3. Confirm that the control still shows the value you chose.
+4. Read the notes below before depending on a stored-only preference during a show.
+
+Settings do not override recall safety checks. A shortcut cannot make an unavailable cue valid or bypass **SAFE**, LV1 connection requirements, or exact scene identity validation.
+
 ## General Settings
 
-| Setting | Current behavior |
-| --- | --- |
-| **Auto load last show file** | Displayed and stored. It is not currently wired to open a session at startup. |
-| **Auto save sessions** | Displayed and stored. It is not currently wired to save a session after changes. Use **File > Save Session** to save intentional work. |
-| **Time display** | Valid values are **12 hour** and **24 hour**. The selected value is displayed and stored. It is not currently wired to change the clock shown in the application. |
-| **Fader override sensitivity** | Select a value from 1 through 10. The control is displayed and stored, but the current fade engine does not consume this setting. |
-| **Extensive diagnostics** | When enabled, diagnostic files include `DEBUG` events. When disabled, diagnostic files include `INFO`, `WARN`, and `ERROR` events. Enable it only while troubleshooting because diagnostic files can grow quickly. |
+| Setting | Use it to | Current result |
+| --- | --- | --- |
+| **Auto load last show file** | Choose whether the application should open the last session at startup. | Stored, default off. It does not currently open a session at startup. |
+| **Auto save sessions** | Choose whether session changes should save automatically. | Stored, default off. It does not currently save after changes; use **File > Save Session**. |
+| **Time display** | Choose **12 hour** or **24 hour** time. | Stored, default **24 hour**. It does not currently change the clock in the application. |
+| **Fader override sensitivity** | Choose the intended manual-override sensitivity from `1` through `10`. | Stored, default `9`. The current fade engine does not use this setting. |
+| **Extensive diagnostics** | Include `DEBUG` events in diagnostic files. | Active. When off, diagnostic files retain `INFO`, `WARN`, and `ERROR`; when on, they also retain `DEBUG`. |
 
-The Fader override sensitivity help text describes the intended scale: 10
-reacts to very small fader movements, while 1 requires a larger movement. The
-current runtime always uses its existing manual-override behavior; changing
-this stored setting does not change that behavior.
+The Fader override sensitivity help describes the intended scale: `10` should react to very small movements, while `1` should require a larger movement. The current manual-override behavior does not change when you adjust this stored setting. If a live fade must yield to a manual fader move, rehearse the existing behavior rather than relying on this control.
+
+Enable **Extensive diagnostics** only while you investigate a problem. `DEBUG` entries can make diagnostic files grow quickly. Disable it after you collect the information you need.
 
 ## Keyboard Shortcuts
 
-**GO** and **CUE** are configurable action shortcuts. Their defaults are
-`Space` for GO and `C` for CUE. GO recalls the current valid cue; CUE prepares
-the selected cue-list entry. See [Cue Lists](cue-lists.md#keyboard-operation)
-for the conditions that allow those actions.
+**GO** recalls the current valid cue. **CUE** prepares the selected cue-list entry. Their default shortcuts are `Space` for GO and `C` for CUE.
 
-To change either shortcut:
-
-1. Select its shortcut control. The control displays `...` while it captures a key.
+1. Select the GO or CUE shortcut control. It displays `...` while it waits for a key.
 2. Press the required key combination.
 3. Confirm that the control displays the new combination.
 
-Capture records a non-modifier key together with any Shift, Control, Alt, or
-Meta modifier held at the time. Press `Escape` to cancel without changing the
-shortcut. Pressing only a modifier keeps capture active. `Tab` is a valid
-captured shortcut; while capture is active it does not move focus.
+Capture records one non-modifier key with any held Shift, Control, Alt, or Meta modifier. Press `Escape` to cancel. Pressing a modifier by itself keeps capture active. `Tab` is a valid shortcut and does not move focus while capture is active.
 
-The application compares shortcut keys without regard to letter case. It
-rejects a shortcut that is already assigned to the other configurable action.
-It also rejects conflicts with the fixed file commands listed in
-[Keyboard Shortcuts](reference/keyboard-shortcuts.md#fixed-file-shortcuts).
+The application compares letter keys without regard to case. It rejects a shortcut already assigned to the other action or to a fixed file command. The fixed commands are **New Session** (`CmdOrCtrl+N`), **Open Session...** (`CmdOrCtrl+O`), **Save Session** (`CmdOrCtrl+S`), and **Save As...** (`CmdOrCtrl+Shift+S`).
 
-Action shortcuts do not run while focus is in a text input, text area, select
-control, editable content, or dialog. Repeated keydown events do not create
-repeated CUE or GO requests.
-
-## Settings And Safety
-
-Settings do not override application safety checks. In particular, changing a
-shortcut does not make an unavailable cue valid, and it does not bypass
-**SAFE**, LV1 connection requirements, or scene identity validation. Review
-the displayed cue and console state before using GO.
+Action shortcuts do not run while focus is in a text input, text area, select control, editable content, or dialog. Repeated keydown events do not create repeated CUE or GO requests.
 
 ## Troubleshooting
 
-For settings that are displayed and stored but do not change application behavior, see [A Setting Does Not Change Application Behavior](troubleshooting.md#a-setting-does-not-change-application-behavior).
+If a preference is stored but does not change application behavior, see [A Setting Does Not Change Application Behavior](troubleshooting.md#a-setting-does-not-change-application-behavior). For the full shortcut reference, see [Keyboard Shortcuts](reference/keyboard-shortcuts.md).

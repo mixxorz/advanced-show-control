@@ -1,77 +1,81 @@
 # Application Shell
 
-## Screen Overview
-
-The application shell consists of a top navigation bar, a central work area, and a bottom status bar. The active tab determines the content of the work area.
+Use the application shell to connect to the intended LV1 system, select the work area, confirm operating state, and run a prepared cue with **GO**. The top bar controls the application-wide state; the center area changes with the selected tab; the bottom status bar shows the scene and fade state you need before a recall.
 
 ![The application shell with the Scenes tab active.](assets/screenshots/application-shell.png)
 
-## Navigation
+## Normal Workflow
 
-Select a top-bar tab to change the central work area:
+1. Select the console control in the top bar and connect to the intended LV1 system.
+2. Open **Scenes** to configure and store fade targets, or open **Cue Lists** to prepare a recall sequence.
+3. Check **Cued**, **Current**, and **Mode** in the bottom status bar before you use **GO**.
+4. Enable **SAFE** whenever application-initiated recalls must not run.
+5. Save the session after an intentional change.
 
-| Tab | Visible content |
+## Interface Overview
+
+| Area | Purpose |
 | --- | --- |
-| **Scenes** | Scene library, selected-scene controls, fade duration, and scope controls. |
-| **Cue Lists** | Cue-list management and cue entries. |
-| **Events** | Placeholder content. |
-| **Logs** | Application log entries. |
-| **Settings** | Application settings. |
+| Top bar | Selects the work area, displays connection state, opens **Connect to LV1**, and toggles **SAFE**. |
+| Work area | Shows the selected tab. |
+| Bottom status bar | Shows the prepared cue, current LV1 scene, operating mode, and local time. It also contains **GO**. |
 
-Sessions are not a shell-navigation tab. Use the native **File** menu to create, open, and save sessions.
+Select a top-bar tab to change the work area.
 
-## Connection Control
+| Tab | Use it to |
+| --- | --- |
+| **Scenes** | Store targets, set **X-Fade**, and define channel and parameter scope. |
+| **Cue Lists** | Build ordered recall sequences and prepare a cue for **GO**. |
+| **Events** | View placeholder content. This workflow is not available in the current build. |
+| **Logs** | Review operating messages, warnings, and errors. |
+| **Settings** | Set application preferences and keyboard shortcuts. |
 
-The top bar displays the current connection state and a console control. When connected, the control displays the connected console name. Select the control to open the **Connect to LV1** dialog. The dialog can be opened while connected or offline.
+Sessions are not a tab. Use the native **File** menu to create, open, and save them.
 
-The top-bar status is **Connected**, **Connecting**, or **Offline**. Use the connection dialog to select an available system, inspect discovered systems, or disconnect from the current system.
+## Connect To LV1
+
+The connection control shows the connected console name when a connection is active. Select it to open **Connect to LV1** while connected or offline. The top bar shows **Connected**, **Connecting**, or **Offline**.
+
+The dialog lists discovered systems. Select an **Available** system to connect. An **Unavailable** system is shown for reference but cannot start a connection. Use **Disconnect** in the dialog before selecting another console.
+
+If the connection drops, the application displays **Reconnecting...** while it retries. Do not recall a scene during this state because no active LV1 connection is available. If reconnection does not complete, use **Connect to LV1** to select an available system, then confirm the current scene before recalling again.
 
 ## SAFE
 
-The **SAFE** control in the top bar toggles the application's lockout state. When active, it is shown as pressed and the bottom status bar reports **Safe**.
+**SAFE** is the application lockout. When it is active, the button appears pressed and **Mode** shows **Safe**.
 
 ![The SAFE control when active.](assets/screenshots/safe-active.png)
 
-Active **SAFE** prevents application-initiated recalls. It does not disable LV1 controls. Use **SAFE** before a rehearsal or other operation where application recall automation must not run.
+Enable **SAFE** before a rehearsal, console check, or other operation where Advanced Show Control must not initiate a recall. SAFE blocks recalls started by **Recall** and **GO**, but it does not disable LV1 controls. If a recall is blocked because SAFE is active, leave SAFE enabled until you are ready to operate, then disable it and confirm the intended scene before trying again.
 
 ## Bottom Status Bar
 
-The bottom status bar contains these visible controls and indicators:
+The bottom status bar gives you the final check before a cue recall.
 
-| Item | Description |
+| Item | Meaning |
 | --- | --- |
-| **GO** | Recalls the cued cue-list entry. It is disabled when no valid cue is available or while a recall is pending. |
+| **GO** | Requests recall of the valid cued entry. It is unavailable when no valid cue exists or while a recall is pending. |
 | **Cued** | Identifies the scene assigned to the current cue. |
 | **Current** | Identifies the current LV1 scene. |
-| **Mode** | Reports **Offline**, **Ready**, **Safe**, or **Fading**. |
-| **Time** | Displays the local time. |
+| **Mode** | Shows **Offline**, **Ready**, **Safe**, or **Fading**. |
+| **Time** | Shows the local system time. |
 
-When no current scene or valid cued scene is available, the corresponding status value is displayed as `---`.
+`---` means no current scene or valid cued scene is available. **Safe** takes precedence over **Fading** in the display, so confirm the SAFE state before judging fade status.
 
-## File Menu And Sessions
+## Sessions And File Commands
 
-The native **File** menu provides session commands. Session files use the `.ascs` extension.
+A session is an `.ascs` document containing Advanced Show Control scene configurations and cue lists. It does not replace an LV1 show file.
 
-| Command | Operation |
+| Command | Result |
 | --- | --- |
-| **New Session** | Creates a new session from the current LV1 scene list and clears session cue lists. Shortcut: `CmdOrCtrl+N`. |
-| **Open Session...** | Opens a native file picker filtered for `.ascs` session files. Shortcut: `CmdOrCtrl+O`. |
-| **Save Session** | Saves to the current session path. If the session has no path, opens the save dialog with `Untitled.ascs` as the suggested name. Shortcut: `CmdOrCtrl+S`. |
-| **Save As...** | Opens the native save dialog and saves the session to the selected `.ascs` path. Shortcut: `CmdOrCtrl+Shift+S`. |
+| **New Session** | Creates a session from the current LV1 scene list and clears its cue lists. Shortcut: `CmdOrCtrl+N`. |
+| **Open Session...** | Opens an `.ascs` session from the native file picker. Shortcut: `CmdOrCtrl+O`. |
+| **Save Session** | Saves to the current path. If no path exists, opens the save dialog with `Untitled.ascs` as the suggested name. Shortcut: `CmdOrCtrl+S`. |
+| **Save As...** | Saves to a new `.ascs` path through the native save dialog. Shortcut: `CmdOrCtrl+Shift+S`. |
 
-The current build does not provide a dirty-session confirmation prompt before creating a new session, opening a session, or closing the application. Save intentional changes before taking those actions.
+The window title identifies the active session as `Advanced Show Control - Session Name`. The `.ascs` extension is omitted. An asterisk marks an unsaved change, for example `Advanced Show Control - Tour Prep *`.
 
-## Window Title And Unsaved Changes
-
-The window title identifies the active session. It uses the form `Advanced Show Control - Session Name`. The `.ascs` extension is omitted from the displayed session name.
-
-An asterisk marks unsaved changes. For example, a dirty `Tour Prep.ascs` session is displayed as `Advanced Show Control - Tour Prep *`. An unsaved new session is displayed as `Advanced Show Control - Untitled` until its state changes.
-
-## Reconnection States
-
-When the application detects a reconnecting state, it displays a **Reconnecting...** overlay while it retries the connection. The top bar continues to report the connection state, and the footer reports **Offline** whenever no active connection is available.
-
-If reconnection does not complete, the application returns control to the connection workflow so that an engineer can select an available system manually.
+The current build does not ask you to save before you create a new session, open a session, or close the application. If you leave a dirty session without saving, the changes may be lost. Save the session before you take any of those actions.
 
 ## Troubleshooting
 
