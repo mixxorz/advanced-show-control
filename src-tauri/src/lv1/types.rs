@@ -46,4 +46,5 @@ pub struct Lv1StateSnapshot {
     pub scene: Option<SceneState>,
     pub scene_list: Vec<SceneListEntry>,
     pub channels: Vec<ChannelInfo>,
+    pub ping_sequence: u64,
 }

@@ -467,6 +467,212 @@ async fn actor_routes_pong_without_blocking_read_loop() {
 }
 
 #[tokio::test]
+async fn actor_publishes_ping_sequence_facts_after_routing_pongs() {
+    use std::io::Read;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (pong_tx, pong_rx) = std::sync::mpsc::channel();
+    let first_ping_args = vec![OscArg::Int64(42)];
+    let second_ping_args = vec![OscArg::String("ready".to_string()), OscArg::Int(7)];
+    let first_server_ping_args = first_ping_args.clone();
+    let second_server_ping_args = second_ping_args.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+            .unwrap();
+        stream
+            .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
+            .unwrap();
+        stream
+            .write_all(&make_lv1_frame("/ping", &first_server_ping_args))
+            .unwrap();
+        stream
+            .write_all(&make_lv1_frame("/ping", &second_server_ping_args))
+            .unwrap();
+
+        let mut buf = [0_u8; 1024];
+        let mut decoder = TestFrameDecoder::default();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut pong_count = 0;
+        while std::time::Instant::now() < deadline {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for frame in decoder.push(&buf[..n]) {
+                        let msg = decode_frame_payload(&frame).unwrap();
+                        if msg.address == "/pong" {
+                            pong_tx.send(msg.args).unwrap();
+                            pong_count += 1;
+                        }
+                    }
+                    if pong_count == 2 {
+                        std::thread::sleep(std::time::Duration::from_millis(500));
+                        break;
+                    }
+                }
+                Err(err)
+                    if err.kind() == std::io::ErrorKind::WouldBlock
+                        || err.kind() == std::io::ErrorKind::TimedOut => {}
+                Err(err) => panic!("server read failed: {err}"),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 7);
+
+    let (first_pong_args, second_pong_args) = tokio::task::spawn_blocking(move || {
+        (
+            pong_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+            pong_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+        )
+    })
+    .await
+    .unwrap();
+
+    let first_ping_event = loop {
+        let event = events.recv().await.unwrap();
+        if matches!(
+            event,
+            AppEvent::Lv1 {
+                event: Lv1Event::PingReceived { .. },
+                ..
+            }
+        ) {
+            break event;
+        }
+    };
+    let second_ping_event = loop {
+        let event = events.recv().await.unwrap();
+        if matches!(
+            event,
+            AppEvent::Lv1 {
+                event: Lv1Event::PingReceived { .. },
+                ..
+            }
+        ) {
+            break event;
+        }
+    };
+
+    let (reply, rx) = oneshot::channel();
+    handle.send(Lv1Command::GetState { reply }).await.unwrap();
+    let snapshot = rx.await.unwrap();
+
+    assert!(matches!(
+        first_ping_event,
+        AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 1 },
+        }
+    ));
+    assert!(matches!(
+        second_ping_event,
+        AppEvent::Lv1 {
+            generation: 7,
+            event: Lv1Event::PingReceived { sequence: 2 },
+        }
+    ));
+    assert_eq!(snapshot.ping_sequence, 2);
+    assert_eq!(first_pong_args, first_ping_args);
+    assert_eq!(second_pong_args, second_ping_args);
+}
+
+#[tokio::test]
+async fn actor_resets_ping_sequence_after_reconnecting() {
+    use std::io::Read;
+
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release_server_tx, release_server_rx) = std::sync::mpsc::channel();
+
+    tokio::task::spawn_blocking(move || {
+        for (connection_index, ping_args) in [vec![OscArg::Int(1)], vec![OscArg::Int(2)]]
+            .into_iter()
+            .enumerate()
+        {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            stream
+                .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
+            stream
+                .write_all(&make_lv1_frame("/ping", &ping_args))
+                .unwrap();
+
+            let mut buffer = [0_u8; 1024];
+            let mut decoder = TestFrameDecoder::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            'wait_for_pong: loop {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        for frame in decoder.push(&buffer[..count]) {
+                            let message = decode_frame_payload(&frame).unwrap();
+                            if message.address == "/pong" {
+                                assert_eq!(message.args, ping_args);
+                                break 'wait_for_pong;
+                            }
+                        }
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            || error.kind() == std::io::ErrorKind::TimedOut => {}
+                    Err(error) => panic!("server read failed: {error}"),
+                }
+
+                if std::time::Instant::now() >= deadline {
+                    panic!("server did not receive pong");
+                }
+            }
+
+            if connection_index == 1 {
+                release_server_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 7);
+    let mut sequences = Vec::new();
+
+    tokio::time::timeout(std::time::Duration::from_secs(8), async {
+        while sequences.len() < 2 {
+            if let AppEvent::Lv1 {
+                event: Lv1Event::PingReceived { sequence },
+                ..
+            } = events.recv().await.unwrap()
+            {
+                sequences.push(sequence);
+            }
+        }
+    })
+    .await
+    .expect("actor did not accept pings across reconnect");
+
+    let (reply, rx) = oneshot::channel();
+    handle.send(Lv1Command::GetState { reply }).await.unwrap();
+    let snapshot = rx.await.unwrap();
+    release_server_tx.send(()).unwrap();
+
+    assert_eq!(sequences, vec![1, 1]);
+    assert_eq!(snapshot.ping_sequence, 1);
+}
+
+#[tokio::test]
 async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();

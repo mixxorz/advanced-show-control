@@ -24,6 +24,12 @@ When the second ping arrives, the engine rebases every paused active target by t
 
 The barrier applies to timed fade-engine parameter writes caused by scene recall. Zero-duration recalls continue to follow existing scene-recall policy and do not create timed fade targets.
 
+Supported LV1 scene recall scope must not move faders or pan-family controls managed
+by ASC; ASC is the sole owner of those movements. The barrier pauses ASC writes, not
+LV1 parameter feedback processing, so normal manual override remains active while it
+waits. If LV1 is configured to move ASC-managed controls during recall, ASC behavior
+is unsupported and undefined.
+
 ## Ownership And Data Flow
 
 The readiness barrier remains private fade-engine state. Scene recall continues to validate the request and send `FadeCommand::RecallSceneFade` through the existing actor boundary.

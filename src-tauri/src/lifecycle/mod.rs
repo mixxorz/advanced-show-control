@@ -827,6 +827,7 @@ mod tests {
             scene: None,
             scene_list: vec![],
             channels: vec![],
+            ping_sequence: 0,
         }
     }
 
@@ -836,6 +837,7 @@ mod tests {
             scene: None,
             scene_list: vec![],
             channels: vec![],
+            ping_sequence: 0,
         }
     }
 

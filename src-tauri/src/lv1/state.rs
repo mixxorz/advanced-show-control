@@ -136,6 +136,7 @@ pub(super) struct ActorState {
     pub(super) scene: Option<SceneState>,
     pub(super) scene_list: Vec<SceneListEntry>,
     pub(super) channels: Vec<ChannelInfo>,
+    pub(super) ping_sequence: u64,
     pub(super) scene_buf: SceneBuffer,
     pub(super) last_ping: Instant,
     pub(super) event_bus: AppEventBus,
@@ -149,6 +150,7 @@ impl ActorState {
             scene: None,
             scene_list: Vec::new(),
             channels: Vec::new(),
+            ping_sequence: 0,
             scene_buf: SceneBuffer::default(),
             last_ping: Instant::now(),
             event_bus,
@@ -161,6 +163,7 @@ impl ActorState {
             scene: self.scene.clone(),
             scene_list: self.scene_list.clone(),
             channels: self.channels.clone(),
+            ping_sequence: self.ping_sequence,
         }
     }
 
