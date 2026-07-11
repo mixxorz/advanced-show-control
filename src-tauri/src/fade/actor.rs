@@ -1,8 +1,9 @@
 //! Fade engine actor — animates LV1 faders over time.
 
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 
 use crate::fade::commands::FadeCommand;
 use crate::fade::events::FadeEvent;
@@ -2687,14 +2688,9 @@ mod tests {
         publish_ping(&event_bus, 7, repeated_recall_boundary + 1);
         assert_no_write(&mut write_rx).await;
         publish_ping(&event_bus, 7, repeated_recall_boundary + 2);
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
+        for _ in 0..6 {
+            tokio::task::yield_now().await;
+        }
 
         let writes = next_write_batch(&mut write_rx).await;
         assert!(writes.contains(&Lv1ParameterWrite {
@@ -2705,6 +2701,13 @@ mod tests {
         }));
         assert!(!writes.iter().any(|write| {
             write.channel == 2 && (write.value - scene_b_exact_target).abs() < 1e-10
+        }));
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        let resumed_writes = next_write_batch(&mut write_rx).await;
+        assert!(resumed_writes.iter().any(|write| {
+            write.channel == 2 && (write.value - scene_b_exact_target).abs() >= 1e-10
         }));
 
         let completed_scene_a = tokio::time::timeout(Duration::from_secs(1), async {
@@ -2776,6 +2779,7 @@ mod tests {
         tokio::task::yield_now().await;
         tokio::time::advance(Duration::from_millis(250)).await;
         tokio::task::yield_now().await;
+        while write_rx.try_recv().is_ok() {}
 
         start_fade_for_generation(&engine, repeated_scene_a, Some(7))
             .await
@@ -2806,6 +2810,7 @@ mod tests {
     async fn repeated_scene_manual_override_cancels_only_the_repeated_scene_target() {
         let boundary = 42;
         let manual_value = -50.0;
+        let scene_b_exact_target = 0.0;
         let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
             connected_snapshot(
                 40,
@@ -2837,22 +2842,19 @@ mod tests {
             .await
             .expect("initial Scene A recall should validate");
 
-        start_fade_for_generation(
-            &engine,
-            fade_config(
-                scene(18, "Chorus"),
-                vec![FadeTarget {
-                    group: 0,
-                    channel: 2,
-                    parameter: FadeParameter::FaderDb,
-                    target: 0.0,
-                }],
-                1_000,
-            ),
-            Some(7),
-        )
-        .await
-        .expect("Scene B recall should validate");
+        let scene_b = fade_config(
+            scene(18, "Chorus"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 2,
+                parameter: FadeParameter::FaderDb,
+                target: scene_b_exact_target,
+            }],
+            1_000,
+        );
+        start_fade_for_generation(&engine, scene_b, Some(7))
+            .await
+            .expect("Scene B recall should validate");
 
         start_fade_for_generation(&engine, repeated_scene_a, Some(7))
             .await
@@ -2870,8 +2872,6 @@ mod tests {
         for _ in 0..6 {
             tokio::task::yield_now().await;
         }
-        tokio::time::advance(Duration::from_millis(200)).await;
-        tokio::task::yield_now().await;
 
         while let Ok(writes) = write_rx.try_recv() {
             assert!(!writes.iter().any(|write| {
@@ -2880,6 +2880,19 @@ mod tests {
                     && write.parameter == Lv1WriteParameter::FaderDb
             }));
         }
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        tokio::task::yield_now().await;
+        let scene_b_progress = next_write_batch(&mut write_rx).await;
+        assert!(scene_b_progress.iter().any(|write| {
+            write.group == 0
+                && write.channel == 2
+                && write.parameter == Lv1WriteParameter::FaderDb
+                && (write.value - scene_b_exact_target).abs() >= 1e-10
+        }));
+        assert!(!scene_b_progress.iter().any(|write| {
+            write.group == 0 && write.channel == 1 && write.parameter == Lv1WriteParameter::FaderDb
+        }));
 
         let mut saw_scene_a_override = false;
         let mut saw_scene_a_cancelled = false;

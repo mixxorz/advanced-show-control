@@ -1,4 +1,5 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
@@ -168,7 +169,8 @@ impl EngineState {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     use super::*;
     use crate::fade::curve::FadeCurve;

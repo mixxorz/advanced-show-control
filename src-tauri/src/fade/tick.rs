@@ -1,4 +1,5 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use crate::fade::curve::{FadeCurve, interpolate};
 use crate::fade::fader_law::db_to_pos;
