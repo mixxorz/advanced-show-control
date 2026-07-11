@@ -22,7 +22,7 @@ The gate opens after two pings from the same runtime generation are observed aft
 
 When the second ping arrives, the engine rebases every paused active target by the time spent waiting. Existing fades continue from their pre-pause progress, and newly created targets begin from their fresh live starting values. Waiting does not consume any target's configured remaining duration.
 
-The barrier applies to every fade-engine parameter write caused by scene recall, including exact final writes requested by same-scene repeat behavior. Zero-duration recalls continue to follow existing scene-recall policy and do not create timed fade targets.
+The barrier applies to timed fade-engine parameter writes caused by scene recall. Zero-duration recalls continue to follow existing scene-recall policy and do not create timed fade targets.
 
 ## Ownership And Data Flow
 
@@ -38,7 +38,7 @@ The flow is:
 4. The LV1 actor publishes incoming ping facts while continuing to send the required pong replies.
 5. The fade actor counts only same-generation pings later than the latest recall boundary.
 6. The second qualifying ping releases the barrier.
-7. The fade actor rebases all paused targets and resumes normal ticks and any deferred same-scene final writes.
+7. The fade actor rebases all paused targets and resumes normal ticks.
 
 This keeps readiness policy with the component that owns fade timing. The LV1 actor exposes only the keepalive fact it directly observes; it does not decide whether a fade is safe to resume.
 
@@ -50,7 +50,6 @@ Scene-owned parameter overlap remains unchanged beneath the global pause:
 - Existing and incoming targets all pause because LV1 readiness is connection-wide.
 - On release, retained targets continue from their previous progress and incoming targets start from fresh live values.
 - Two recalls before release do not create competing gates. The one shared barrier resets from the latest recall, and all current targets wait for two later pings.
-- A same-scene repeat still requests scene-scoped finish behavior, but its exact final writes are deferred until the latest two-ping barrier releases.
 - Abort All and disconnect remain global.
 
 This model has no parameter-specific acknowledgement locks, so concurrent scene fades cannot release or block one another through reuse of the same gain, pan, balance, or width key.
@@ -78,7 +77,6 @@ Cover these behaviors:
 - Waiting time does not consume existing or incoming fade duration.
 - Existing unrelated fades pause and resume without losing ownership or progress.
 - Incoming recalls still replace only overlapping parameter targets.
-- Same-scene exact final writes wait for barrier release.
 - Five seconds without two qualifying pings aborts all paused fades, prevents later writes, and emits one visible warning.
 - Disconnect, generation change, Abort All, and manual override remain safe while waiting.
 - Blocked, skipped, or disabled recalls do not alter an existing barrier or active fades.
@@ -89,11 +87,14 @@ Run targeted fade and LV1 actor tests during development, then the broader Rust 
 
 GitHub issue #38 tracks a reusable tracing assertion helper to reduce repeated setup in logging-sensitive actor tests. That infrastructure is follow-up work and is not required before implementing this safety fix.
 
+GitHub issue #42 tracks the pre-existing gap between documented same-scene finish behavior and the current implementation. The ping gate preserves current target replacement behavior; adding scene ownership and same-scene exact final writes is outside this change.
+
 ## Non-Goals
 
 - Adding parameter-write acknowledgement or echo correlation.
 - Treating simulator ping behavior as proof of real-hardware behavior.
 - Adding a user-configurable timeout.
 - Changing scene recall validation or scene identity matching.
+- Implementing scene-owned same-scene finish behavior tracked by #42.
 - Changing manual-override tolerance or policy.
 - Changing the frontend projection contract.
