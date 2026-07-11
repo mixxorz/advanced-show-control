@@ -26,9 +26,11 @@ visible safety blocks and recoverable failures; errors identify command or
 persistence failures that prevent the requested operation.
 
 Diagnostic logs are separate JSONL files for detailed support investigation.
-`DEBUG` events are written only to those files, not to the Logs screen. Enable
-**Extensive Diagnostics** in [Settings](settings.md#general-settings) to retain
-`DEBUG` events in the diagnostic file while investigating a problem.
+`DEBUG` events are excluded from the visible Logs screen. They may be available
+through diagnostic outputs, including the diagnostic JSONL files and application
+stdout. Enable **Extensive Diagnostics** in
+[Settings](settings.md#general-settings) to retain `DEBUG` events in the
+diagnostic file while investigating a problem.
 
 On macOS, normal application diagnostic files are written under:
 
