@@ -507,7 +507,7 @@ async fn handle_recall_scene_fade(
         scene_name.clone(),
         snapshot.ping_sequence,
         now,
-        tokio::time::Instant::now(),
+        now,
     );
     tracing::debug!(
         event = "fade_post_recall_ping_barrier",
@@ -2631,15 +2631,17 @@ mod tests {
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
     async fn repeated_scene_recall_finishes_only_its_targets_after_readiness() {
-        let repeated_recall_boundary = 42;
+        let scene_a_boundary = 40;
+        let scene_b_boundary = 43;
+        let repeated_recall_boundary = 46;
         let scene_b_exact_target = 0.0;
         let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
             connected_snapshot(
-                40,
+                scene_a_boundary,
                 vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
             ),
             connected_snapshot(
-                41,
+                scene_b_boundary,
                 vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
             ),
             connected_snapshot(
@@ -2663,6 +2665,14 @@ mod tests {
         start_fade_for_generation(&engine, scene_a_config.clone(), Some(7))
             .await
             .expect("Scene A recall should validate");
+        assert_no_write(&mut write_rx).await;
+        publish_ping(&event_bus, 7, scene_a_boundary + 1);
+        assert_no_write(&mut write_rx).await;
+        publish_ping(&event_bus, 7, scene_a_boundary + 2);
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let scene_a_running = next_write_batch(&mut write_rx).await;
+        assert!(scene_a_running.iter().any(|write| write.channel == 1));
+        while write_rx.try_recv().is_ok() {}
 
         start_fade_for_generation(
             &engine,
@@ -2680,10 +2690,28 @@ mod tests {
         )
         .await
         .expect("Scene B recall should validate");
+        assert_no_write(&mut write_rx).await;
+        publish_ping(&event_bus, 7, scene_b_boundary + 1);
+        assert_no_write(&mut write_rx).await;
+        publish_ping(&event_bus, 7, scene_b_boundary + 2);
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let scene_b_running = next_write_batch(&mut write_rx).await;
+        let scene_b_before_repeated_recall = scene_b_running
+            .iter()
+            .find(|write| write.channel == 2 && write.parameter == Lv1WriteParameter::FaderDb)
+            .expect("Scene B should make progress after its own readiness gate releases")
+            .value;
+        assert!(
+            scene_b_before_repeated_recall > -20.0
+                && scene_b_before_repeated_recall < scene_b_exact_target
+        );
+        while write_rx.try_recv().is_ok() {}
 
         start_fade_for_generation(&engine, scene_a_config, Some(7))
             .await
             .expect("repeated Scene A recall should validate");
+        assert_no_write(&mut write_rx).await;
+        tokio::time::advance(Duration::from_millis(200)).await;
         assert_no_write(&mut write_rx).await;
         publish_ping(&event_bus, 7, repeated_recall_boundary + 1);
         assert_no_write(&mut write_rx).await;
@@ -2706,9 +2734,13 @@ mod tests {
         tokio::time::advance(Duration::from_millis(200)).await;
         tokio::task::yield_now().await;
         let resumed_writes = next_write_batch(&mut write_rx).await;
-        assert!(resumed_writes.iter().any(|write| {
-            write.channel == 2 && (write.value - scene_b_exact_target).abs() >= 1e-10
-        }));
+        let scene_b_resumed_value = resumed_writes
+            .iter()
+            .find(|write| write.channel == 2 && write.parameter == Lv1WriteParameter::FaderDb)
+            .expect("Scene B should make progress after the repeated Scene A gate releases")
+            .value;
+        assert!(scene_b_resumed_value > scene_b_before_repeated_recall);
+        assert!(scene_b_resumed_value < scene_b_exact_target);
 
         let completed_scene_a = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
