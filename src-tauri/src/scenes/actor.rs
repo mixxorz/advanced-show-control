@@ -1797,6 +1797,16 @@ mod tests {
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
 
+        tokio::time::advance(Duration::from_millis(300)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         drop(peers);
         server.await.unwrap();
@@ -1956,6 +1966,16 @@ mod tests {
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
 
+        tokio::time::advance(Duration::from_millis(300)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         drop(peers);
         server.await.unwrap();
@@ -2026,7 +2046,7 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn unavailable_settings_after_lag_stops_recall_automation() {
         let captured = CapturedLogEvents::default();
         let logs = captured.0.clone();
@@ -2034,35 +2054,42 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let event_bus = AppEventBus::new(1);
         let events = event_bus.subscribe();
-        event_bus.publish(AppEvent::Runtime(
-            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                generation: 1,
-            },
-        ));
-        event_bus.publish(AppEvent::Runtime(
-            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                generation: 2,
-            },
-        ));
         let (settings_tx, settings_rx) = tokio::sync::mpsc::channel(1);
         drop(settings_rx);
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
-        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let (handle, task, peers) = build_scenes_actor(
             1,
-            RuntimeGeneration::default(),
+            runtime_generation,
             event_bus.clone(),
             events,
             SettingsHandle::new(settings_tx),
             AppSettings::default(),
         );
-        peers.set_peers(crate::lv1::test_actor_handle(lv1_tx), fade);
+        peers.set_peers(lv1, fade);
         task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 3,
+            },
+        ));
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 4,
+            },
+        ));
         yield_to_actor().await;
         event_bus.publish(AppEvent::Lv1 {
             generation: 1,
             event: Lv1Event::SceneChanged(intro_scene()),
         });
+        tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
 
         assert!(matches!(
@@ -2078,6 +2105,7 @@ mod tests {
         }));
         drop(peers);
         drop(handle);
+        server.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
