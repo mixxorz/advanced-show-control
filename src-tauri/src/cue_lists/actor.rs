@@ -418,14 +418,9 @@ mod tests {
     use crate::cue_lists::{CueListDocument, state::ClearedCueEntry};
     use crate::runtime::events::AppEvent;
     use crate::scenes::{RecallSceneResult, SceneConfig, SceneScopeToggles, ScenesCommand};
-    use std::sync::Mutex;
+    use crate::test_support::TracingCapture;
     use tokio::sync::{mpsc, oneshot};
-    use tracing::dispatcher;
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
+    use tracing::Level;
     use uuid::Uuid;
 
     fn scene_config(id: Uuid) -> SceneConfig {
@@ -510,52 +505,6 @@ mod tests {
         current_document(handle).await
     }
 
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CapturedWarnEvent {
-        level: Option<String>,
-        event: Option<String>,
-        message: Option<String>,
-        cue_list_id: Option<String>,
-        cue_entry_id: Option<String>,
-        scene_internal_id: Option<String>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedWarnEvents(Arc<Mutex<Vec<CapturedWarnEvent>>>);
-
-    impl<S> Layer<S> for CapturedWarnEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedWarnEvent {
-                level: Some(event.metadata().level().as_str().to_string()),
-                ..Default::default()
-            };
-            event.record(&mut visitor);
-            self.0.lock().unwrap().push(visitor);
-        }
-    }
-
-    impl Visit for CapturedWarnEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.event = Some(value.to_string()),
-                "message" => self.message = Some(value.to_string()),
-                "cue_list_id" => self.cue_list_id = Some(value.to_string()),
-                "cue_entry_id" => self.cue_entry_id = Some(value.to_string()),
-                "scene_internal_id" => self.scene_internal_id = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let value = format!("{value:?}");
-            self.record_str(field, value.trim_matches('"'));
-        }
-    }
-
     #[tokio::test]
     async fn active_scene_fact_clears_missing_current_cue_and_publishes_persisted_edit() {
         let event_bus = AppEventBus::default();
@@ -624,16 +573,16 @@ mod tests {
 
     #[test]
     fn invalid_current_cue_logs_clear_warning() {
-        let captured = CapturedWarnEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let dispatch = tracing::Dispatch::new(subscriber);
+        let capture = TracingCapture::new();
 
         let cue_list_id = Uuid::from_u128(0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);
         let cue_entry_id = Uuid::from_u128(0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb);
         let scene_internal_id = Uuid::from_u128(0xcccccccccccccccccccccccccccccccc);
+        let cue_list_id_string = cue_list_id.to_string();
+        let cue_entry_id_string = cue_entry_id.to_string();
+        let scene_internal_id_string = scene_internal_id.to_string();
 
-        dispatcher::with_default(&dispatch, || {
+        capture.with_default(|| {
             log_cue_cleared_missing_scene(&ClearedCueEntry {
                 cue_list_id,
                 cue_entry_id,
@@ -641,18 +590,26 @@ mod tests {
             });
         });
 
-        let logs = logs.lock().unwrap();
+        let logs = capture.matching("cue_cleared_missing_scene", Level::WARN);
         assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(log.level, Level::WARN);
+        assert_eq!(log.event.as_deref(), Some("cue_cleared_missing_scene"));
         assert_eq!(
-            logs[0],
-            CapturedWarnEvent {
-                level: Some("WARN".to_string()),
-                event: Some("cue_cleared_missing_scene".to_string()),
-                message: Some("Cued entry cleared because its scene is unavailable.".to_string()),
-                cue_list_id: Some(cue_list_id.to_string()),
-                cue_entry_id: Some(cue_entry_id.to_string()),
-                scene_internal_id: Some(scene_internal_id.to_string()),
-            }
+            log.message.as_deref(),
+            Some("Cued entry cleared because its scene is unavailable.")
+        );
+        assert_eq!(
+            log.fields.get("cue_list_id").map(String::as_str),
+            Some(cue_list_id_string.as_str())
+        );
+        assert_eq!(
+            log.fields.get("cue_entry_id").map(String::as_str),
+            Some(cue_entry_id_string.as_str())
+        );
+        assert_eq!(
+            log.fields.get("scene_internal_id").map(String::as_str),
+            Some(scene_internal_id_string.as_str())
         );
     }
 

@@ -755,12 +755,8 @@ mod tests {
     };
     use crate::runtime::errors::AppCommandError;
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
-    use std::sync::Arc;
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
+    use crate::test_support::TracingCapture;
+    use tracing::Level;
 
     fn scene(index: i32, name: &str) -> FadeSceneIdentity {
         FadeSceneIdentity {
@@ -1023,67 +1019,6 @@ mod tests {
                 ),
                 "cancellation must emit only one FadeAborted event"
             );
-        }
-    }
-
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CapturedWarnEvent {
-        level: Option<String>,
-        event: Option<String>,
-        message: Option<String>,
-        generation: Option<String>,
-        scene_index: Option<String>,
-        scene_name: Option<String>,
-        observed_ping_count: Option<String>,
-        timeout_ms: Option<String>,
-        action: Option<String>,
-        target_count: Option<String>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedWarnEvents(Arc<std::sync::Mutex<Vec<CapturedWarnEvent>>>);
-
-    impl<S> Layer<S> for CapturedWarnEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut captured = CapturedWarnEvent {
-                level: Some(event.metadata().level().as_str().to_string()),
-                ..Default::default()
-            };
-            event.record(&mut captured);
-            self.0.lock().unwrap().push(captured);
-        }
-    }
-
-    impl Visit for CapturedWarnEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.event = Some(value.to_string()),
-                "message" => self.message = Some(value.to_string()),
-                "generation" => self.generation = Some(value.to_string()),
-                "scene_index" => self.scene_index = Some(value.to_string()),
-                "scene_name" => self.scene_name = Some(value.to_string()),
-                "observed_ping_count" => self.observed_ping_count = Some(value.to_string()),
-                "timeout_ms" => self.timeout_ms = Some(value.to_string()),
-                "action" => self.action = Some(value.to_string()),
-                "target_count" => self.target_count = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_i64(&mut self, field: &Field, value: i64) {
-            self.record_str(field, &value.to_string());
-        }
-
-        fn record_u64(&mut self, field: &Field, value: u64) {
-            self.record_str(field, &value.to_string());
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            self.record_str(field, format!("{value:?}").trim_matches('"'));
         }
     }
 
@@ -2094,9 +2029,8 @@ mod tests {
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
     async fn post_recall_ping_timeout_aborts_fade_and_logs_warning() {
-        let captured = CapturedWarnEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let (event_bus, engine, mut write_rx) =
             spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
                 40,
@@ -2138,32 +2072,44 @@ mod tests {
         assert_no_write_after_cancellation(&mut write_rx).await;
         assert_no_additional_fade_abort(&mut events).await;
 
-        let warnings = captured.0.lock().unwrap();
-        let timeout_warnings: Vec<_> = warnings
-            .iter()
-            .filter(|warning| {
-                warning.level.as_deref() == Some("WARN")
-                    && warning.event.as_deref() == Some("fade_post_recall_ping_timeout")
-            })
-            .collect();
+        let timeout_warnings = captured.matching("fade_post_recall_ping_timeout", Level::WARN);
+        assert_eq!(timeout_warnings.len(), 1);
+        let warning = &timeout_warnings[0];
         assert_eq!(
-            timeout_warnings,
-            vec![&CapturedWarnEvent {
-                level: Some("WARN".to_string()),
-                event: Some("fade_post_recall_ping_timeout".to_string()),
-                message: Some(
-                    "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
-                        .to_string(),
-                ),
-                generation: Some("7".to_string()),
-                scene_index: Some("1".to_string()),
-                scene_name: Some("Intro".to_string()),
-                observed_ping_count: Some("0".to_string()),
-                timeout_ms: Some("5000".to_string()),
-                action: None,
-                target_count: None,
-            }]
+            warning.message.as_deref(),
+            Some(
+                "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
+            )
         );
+        assert_eq!(
+            warning.fields.get("generation").map(String::as_str),
+            Some("7")
+        );
+        assert_eq!(
+            warning.fields.get("scene_index").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            warning.fields.get("scene_name").map(String::as_str),
+            Some("Intro")
+        );
+        assert_eq!(
+            warning
+                .fields
+                .get("observed_ping_count")
+                .map(String::as_str),
+            Some("0")
+        );
+        assert_eq!(
+            warning.fields.get("timeout_ms").map(String::as_str),
+            Some("5000")
+        );
+        for field in ["action", "target_count"] {
+            assert!(
+                !warning.fields.contains_key(field),
+                "timeout warning unexpectedly included {field}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -3482,9 +3428,8 @@ mod tests {
 
     #[tokio::test]
     async fn stale_fader_feedback_does_not_cancel_or_log_override_during_gate() {
-        let captured = CapturedWarnEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let (event_bus, engine, mut write_rx) =
             spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
                 40,
@@ -3520,11 +3465,9 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(
             !captured
-                .0
-                .lock()
-                .unwrap()
+                .events()
                 .iter()
-                .any(|event| { event.event.as_deref() == Some("fade_manual_override") })
+                .any(|event| event.event.as_deref() == Some("fade_manual_override"))
         );
 
         event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 41 });
@@ -3601,9 +3544,8 @@ mod tests {
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
     async fn last_manual_override_clears_gate_without_timeout_abort_or_warning() {
-        let captured = CapturedWarnEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let (event_bus, engine, mut write_rx) =
             spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
                 40,
@@ -3653,11 +3595,9 @@ mod tests {
         assert_no_write_after_cancellation(&mut write_rx).await;
         assert!(
             !captured
-                .0
-                .lock()
-                .unwrap()
+                .events()
                 .iter()
-                .any(|event| { event.event.as_deref() == Some("fade_post_recall_ping_timeout") })
+                .any(|event| event.event.as_deref() == Some("fade_post_recall_ping_timeout"))
         );
     }
 
@@ -3711,9 +3651,8 @@ mod tests {
 
     #[tokio::test]
     async fn post_recall_ping_barrier_logs_debug_start_and_reset() {
-        let captured = CapturedWarnEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let (_event_bus, engine, _write_rx) = spawn_runtime_for_ping_gate_test(vec![
             connected_snapshot(40, vec![channel_info(0, -20.0, None)]),
             connected_snapshot(41, vec![channel_info(0, -20.0, None)]),
@@ -3740,45 +3679,53 @@ mod tests {
         }
 
         let barrier_logs: Vec<_> = captured
-            .0
-            .lock()
-            .unwrap()
-            .iter()
+            .events()
+            .into_iter()
             .filter(|event| event.event.as_deref() == Some("fade_post_recall_ping_barrier"))
-            .cloned()
             .collect();
-        assert_eq!(
-            barrier_logs,
-            vec![
-                CapturedWarnEvent {
-                    level: Some("DEBUG".to_string()),
-                    event: Some("fade_post_recall_ping_barrier".to_string()),
-                    message: Some("Fade readiness barrier started after scene recall".to_string()),
-                    generation: Some("7".to_string()),
-                    scene_index: Some("1".to_string()),
-                    scene_name: Some("Intro".to_string()),
-                    action: Some("started".to_string()),
-                    ..Default::default()
-                },
-                CapturedWarnEvent {
-                    level: Some("DEBUG".to_string()),
-                    event: Some("fade_post_recall_ping_barrier".to_string()),
-                    message: Some("Fade readiness barrier reset after scene recall".to_string()),
-                    generation: Some("7".to_string()),
-                    scene_index: Some("2".to_string()),
-                    scene_name: Some("Verse".to_string()),
-                    action: Some("reset".to_string()),
-                    ..Default::default()
-                },
-            ]
-        );
+        assert_eq!(barrier_logs.len(), 2);
+        for (log, expected) in barrier_logs.iter().zip([
+            (
+                "Fade readiness barrier started after scene recall",
+                "1",
+                "Intro",
+                "started",
+            ),
+            (
+                "Fade readiness barrier reset after scene recall",
+                "2",
+                "Verse",
+                "reset",
+            ),
+        ]) {
+            assert_eq!(log.level, Level::DEBUG);
+            assert_eq!(log.message.as_deref(), Some(expected.0));
+            assert_eq!(log.fields.get("generation").map(String::as_str), Some("7"));
+            assert_eq!(
+                log.fields.get("scene_index").map(String::as_str),
+                Some(expected.1)
+            );
+            assert_eq!(
+                log.fields.get("scene_name").map(String::as_str),
+                Some(expected.2)
+            );
+            assert_eq!(
+                log.fields.get("action").map(String::as_str),
+                Some(expected.3)
+            );
+            for field in ["observed_ping_count", "timeout_ms", "target_count"] {
+                assert!(
+                    !log.fields.contains_key(field),
+                    "barrier log unexpectedly included {field}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
     async fn repeated_scene_recall_logs_one_finishing_outcome() {
-        let captured = CapturedWarnEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let (_event_bus, engine, _write_rx) = spawn_runtime_for_ping_gate_test(vec![
             connected_snapshot(
                 40,
@@ -3816,31 +3763,42 @@ mod tests {
             .await
             .expect("repeated Scene A recall should validate");
 
-        let logs = captured.0.lock().unwrap();
+        let logs = captured.events();
         let finishing_logs: Vec<_> = logs
             .iter()
             .filter(|event| event.event.as_deref() == Some("fade_same_scene_finishing"))
             .collect();
+        assert_eq!(finishing_logs.len(), 1);
+        let finishing = finishing_logs[0];
+        assert_eq!(finishing.level, Level::INFO);
         assert_eq!(
-            finishing_logs,
-            vec![&CapturedWarnEvent {
-                level: Some("INFO".to_string()),
-                event: Some("fade_same_scene_finishing".to_string()),
-                message: Some(
-                    "Repeated scene recall is finishing active fade targets for 17: Verse (2 targets)"
-                        .to_string(),
-                ),
-                scene_index: Some("17".to_string()),
-                scene_name: Some("Verse".to_string()),
-                target_count: Some("2".to_string()),
-                ..Default::default()
-            }]
+            finishing.message.as_deref(),
+            Some(
+                "Repeated scene recall is finishing active fade targets for 17: Verse (2 targets)"
+            )
         );
+        assert_eq!(
+            finishing.fields.get("scene_index").map(String::as_str),
+            Some("17")
+        );
+        assert_eq!(
+            finishing.fields.get("scene_name").map(String::as_str),
+            Some("Verse")
+        );
+        assert_eq!(
+            finishing.fields.get("target_count").map(String::as_str),
+            Some("2")
+        );
+        for field in ["generation", "observed_ping_count", "timeout_ms", "action"] {
+            assert!(
+                !finishing.fields.contains_key(field),
+                "finishing log unexpectedly included {field}"
+            );
+        }
         assert_eq!(
             logs.iter()
                 .filter(|event| {
-                    event.level.as_deref() == Some("INFO")
-                        && event.event.as_deref() == Some("fade_started")
+                    event.level == Level::INFO && event.event.as_deref() == Some("fade_started")
                 })
                 .count(),
             1,
@@ -3850,9 +3808,8 @@ mod tests {
 
     #[tokio::test]
     async fn repeated_scene_override_logs_one_current_value_outcome() {
-        let captured = CapturedWarnEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let (_event_bus, engine, _write_rx) = spawn_runtime_for_ping_gate_test(vec![
             connected_snapshot(
                 40,
@@ -3922,31 +3879,42 @@ mod tests {
         .await
         .unwrap();
 
-        let logs = captured.0.lock().unwrap();
+        let logs = captured.events();
         let overriding_logs: Vec<_> = logs
             .iter()
             .filter(|event| event.event.as_deref() == Some("fade_same_scene_overriding"))
             .collect();
+        assert_eq!(overriding_logs.len(), 1);
+        let overriding = overriding_logs[0];
+        assert_eq!(overriding.level, Level::INFO);
         assert_eq!(
-            overriding_logs,
-            vec![&CapturedWarnEvent {
-                level: Some("INFO".to_string()),
-                event: Some("fade_same_scene_overriding".to_string()),
-                message: Some(
-                    "Repeated scene recall is overriding active fade targets from their current values for 17: Verse (2 targets)"
-                        .to_string(),
-                ),
-                scene_index: Some("17".to_string()),
-                scene_name: Some("Verse".to_string()),
-                target_count: Some("2".to_string()),
-                ..Default::default()
-            }]
+            overriding.message.as_deref(),
+            Some(
+                "Repeated scene recall is overriding active fade targets from their current values for 17: Verse (2 targets)"
+            )
         );
+        assert_eq!(
+            overriding.fields.get("scene_index").map(String::as_str),
+            Some("17")
+        );
+        assert_eq!(
+            overriding.fields.get("scene_name").map(String::as_str),
+            Some("Verse")
+        );
+        assert_eq!(
+            overriding.fields.get("target_count").map(String::as_str),
+            Some("2")
+        );
+        for field in ["generation", "observed_ping_count", "timeout_ms", "action"] {
+            assert!(
+                !overriding.fields.contains_key(field),
+                "override log unexpectedly included {field}"
+            );
+        }
         assert_eq!(
             logs.iter()
                 .filter(|event| {
-                    event.level.as_deref() == Some("INFO")
-                        && event.event.as_deref() == Some("fade_started")
+                    event.level == Level::INFO && event.event.as_deref() == Some("fade_started")
                 })
                 .count(),
             2,

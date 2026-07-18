@@ -229,73 +229,8 @@ pub(crate) async fn read_next_async(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
-
-    #[derive(Clone, Default)]
-    struct CapturedOscLogs(Arc<Mutex<Vec<CapturedOscLog>>>);
-
-    #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    struct CapturedOscLog {
-        event: Option<String>,
-        direction: Option<String>,
-        osc_address: Option<String>,
-        message: Option<String>,
-    }
-
-    impl<S> Layer<S> for CapturedOscLogs
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = OscLogVisitor::default();
-            event.record(&mut visitor);
-            if visitor.log.event.as_deref() == Some("osc_message") {
-                self.0.lock().unwrap().push(visitor.log);
-            }
-        }
-    }
-
-    #[derive(Default)]
-    struct OscLogVisitor {
-        log: CapturedOscLog,
-    }
-
-    impl Visit for OscLogVisitor {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.log.event = Some(value.to_string()),
-                "direction" => self.log.direction = Some(value.to_string()),
-                "osc_address" => self.log.osc_address = Some(value.to_string()),
-                "message" => self.log.message = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let value = format!("{value:?}");
-            match field.name() {
-                "event" => self.log.event = Some(value.trim_matches('"').to_string()),
-                "direction" => self.log.direction = Some(value.trim_matches('"').to_string()),
-                "osc_address" => self.log.osc_address = Some(value.trim_matches('"').to_string()),
-                "message" => self.log.message = Some(value.trim_matches('"').to_string()),
-                _ => {}
-            }
-        }
-    }
-
-    fn capture_osc_logs(run: impl FnOnce()) -> Vec<CapturedOscLog> {
-        let captured = CapturedOscLogs::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        tracing::subscriber::with_default(subscriber, run);
-        logs.lock().unwrap().clone()
-    }
+    use crate::test_support::TracingCapture;
+    use tracing::Level;
 
     #[test]
     fn encodes_frame_with_payload_length_and_default_header() {
@@ -308,27 +243,32 @@ mod tests {
 
     #[test]
     fn encode_frame_logs_osc_tx_at_frame_boundary() {
-        let logs = capture_osc_logs(|| {
+        let capture = TracingCapture::new();
+        capture.with_default(|| {
             let _ = encode_frame("/Set/Track/Out/Gain", &[OscArg::Int64(123)]).unwrap();
         });
+        let logs = capture.matching("osc_message", Level::DEBUG);
 
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(log.level, Level::DEBUG);
+        assert_eq!(log.event.as_deref(), Some("osc_message"));
+        assert_eq!(log.message.as_deref(), Some("/Set/Track/Out/Gain"));
+        assert_eq!(log.fields.get("direction").map(String::as_str), Some("tx"));
         assert_eq!(
-            logs,
-            vec![CapturedOscLog {
-                event: Some("osc_message".to_string()),
-                direction: Some("tx".to_string()),
-                osc_address: Some("/Set/Track/Out/Gain".to_string()),
-                message: Some("/Set/Track/Out/Gain".to_string()),
-            }]
+            log.fields.get("osc_address").map(String::as_str),
+            Some("/Set/Track/Out/Gain")
         );
     }
 
     #[test]
     fn encode_frame_does_not_log_noisy_osc_tx_messages() {
         for address in ["/ping", "/pong", "/Notify/TempoBlink"] {
-            let logs = capture_osc_logs(|| {
+            let capture = TracingCapture::new();
+            capture.with_default(|| {
                 let _ = encode_frame(address, &[OscArg::Int64(123)]).unwrap();
             });
+            let logs = capture.matching("osc_message", Level::DEBUG);
 
             assert_eq!(logs, Vec::new(), "logged noisy address {address}");
         }
@@ -342,18 +282,21 @@ mod tests {
                 .unwrap(),
         };
 
-        let logs = capture_osc_logs(|| {
+        let capture = TracingCapture::new();
+        capture.with_default(|| {
             let _ = decode_frame_payload(&frame).unwrap();
         });
+        let logs = capture.matching("osc_message", Level::DEBUG);
 
+        assert_eq!(logs.len(), 1);
+        let log = &logs[0];
+        assert_eq!(log.level, Level::DEBUG);
+        assert_eq!(log.event.as_deref(), Some("osc_message"));
+        assert_eq!(log.message.as_deref(), Some("/CurrentScene"));
+        assert_eq!(log.fields.get("direction").map(String::as_str), Some("rx"));
         assert_eq!(
-            logs,
-            vec![CapturedOscLog {
-                event: Some("osc_message".to_string()),
-                direction: Some("rx".to_string()),
-                osc_address: Some("/CurrentScene".to_string()),
-                message: Some("/CurrentScene".to_string()),
-            }]
+            log.fields.get("osc_address").map(String::as_str),
+            Some("/CurrentScene")
         );
     }
 
@@ -365,9 +308,11 @@ mod tests {
                 payload: crate::lv1::osc::encode_message(address, &[OscArg::Int64(123)]).unwrap(),
             };
 
-            let logs = capture_osc_logs(|| {
+            let capture = TracingCapture::new();
+            capture.with_default(|| {
                 let _ = decode_frame_payload(&frame).unwrap();
             });
+            let logs = capture.matching("osc_message", Level::DEBUG);
 
             assert_eq!(logs, Vec::new(), "logged noisy address {address}");
         }

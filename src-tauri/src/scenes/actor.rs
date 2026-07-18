@@ -981,62 +981,13 @@ mod tests {
     use crate::scenes::events::ScenesEvent;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
+    use crate::test_support::TracingCapture;
     use std::collections::VecDeque;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
     use std::time::Duration;
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
-
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CapturedLogEvent {
-        event: Option<String>,
-        message: Option<String>,
-        level: Option<tracing::Level>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedLogEvents(Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>);
-
-    impl<S> Layer<S> for CapturedLogEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent {
-                level: Some(*event.metadata().level()),
-                ..Default::default()
-            };
-            event.record(&mut visitor);
-            self.0.lock().unwrap().push(visitor);
-        }
-    }
-
-    impl Visit for CapturedLogEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.event = Some(value.to_string()),
-                "message" => self.message = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            match field.name() {
-                "event" => self.event = Some(format!("{value:?}").trim_matches('"').to_string()),
-                "message" => {
-                    self.message = Some(format!("{value:?}").trim_matches('"').to_string())
-                }
-                _ => {}
-            }
-        }
-    }
 
     async fn arm_recall_state(event_bus: &AppEventBus) {
         event_bus.publish(AppEvent::Lv1 {
@@ -1211,10 +1162,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn scene_list_alignment_logs_diagnostic_when_configs_change() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
@@ -1239,10 +1188,10 @@ mod tests {
         let _ = next_scene_state_with_name(&mut events, "Intro Renamed").await;
 
         assert!(
-            logs.lock()
-                .unwrap()
+            captured
+                .events()
                 .iter()
-                .any(|log| { log.event.as_deref() == Some("session_scene_alignment") })
+                .any(|log| log.event.as_deref() == Some("session_scene_alignment"))
         );
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
@@ -2013,10 +1962,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn settled_observation_stops_when_settings_refresh_fails() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
@@ -2048,10 +1995,14 @@ mod tests {
             fade_rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
-        assert!(logs.lock().unwrap().iter().any(|log| {
-            log.event.as_deref() == Some("scene_recall_settings_unavailable")
-                && log.level == Some(tracing::Level::ERROR)
-                && log.message.as_deref()
+        assert!(captured
+            .matching(
+                "scene_recall_settings_unavailable",
+                tracing::Level::ERROR,
+            )
+            .iter()
+            .any(|log| {
+                log.message.as_deref()
                     == Some(
                         "Scene recall automation stopped because current settings are unavailable",
                     )
@@ -2371,10 +2322,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn unavailable_settings_after_lag_stops_recall_automation() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let event_bus = AppEventBus::new(1);
         let events = event_bus.subscribe();
         let (settings_tx, settings_rx) = tokio::sync::mpsc::channel(1);
@@ -2419,10 +2368,14 @@ mod tests {
             fade_rx.try_recv(),
             Err(tokio::sync::mpsc::error::TryRecvError::Empty)
         ));
-        assert!(logs.lock().unwrap().iter().any(|log| {
-            log.event.as_deref() == Some("scene_recall_settings_unavailable")
-                && log.level == Some(tracing::Level::ERROR)
-                && log.message.as_deref()
+        assert!(captured
+            .matching(
+                "scene_recall_settings_unavailable",
+                tracing::Level::ERROR,
+            )
+            .iter()
+            .any(|log| {
+                log.message.as_deref()
                     == Some(
                         "Scene recall automation stopped because current settings are unavailable",
                     )

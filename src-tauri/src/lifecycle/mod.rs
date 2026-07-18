@@ -779,72 +779,8 @@ mod tests {
     use crate::scenes::ScenesCommand;
     use crate::show::{ShowEvent, ShowProjectionReason};
     use std::path::PathBuf;
-    use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
-
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CapturedLogEvent {
-        event: Option<String>,
-        level: Option<tracing::Level>,
-        message: Option<String>,
-        host: Option<String>,
-        port: Option<u16>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedLogEvents(Arc<StdMutex<Vec<CapturedLogEvent>>>);
-
-    impl<S> Layer<S> for CapturedLogEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent::default();
-            event.record(&mut visitor);
-            visitor.level = Some(*event.metadata().level());
-            self.0.lock().unwrap().push(visitor);
-        }
-    }
-
-    impl Visit for CapturedLogEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            match field.name() {
-                "event" => self.event = Some(value.to_string()),
-                "message" => self.message = Some(value.to_string()),
-                "host" => self.host = Some(value.to_string()),
-                _ => {}
-            }
-        }
-
-        fn record_u64(&mut self, field: &Field, value: u64) {
-            if field.name() == "port" {
-                self.port = u16::try_from(value).ok();
-            }
-        }
-
-        fn record_i64(&mut self, field: &Field, value: i64) {
-            if field.name() == "port" {
-                self.port = u16::try_from(value).ok();
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            let value = format!("{value:?}").trim_matches('"').to_string();
-            match field.name() {
-                "event" => self.event = Some(value),
-                "message" => self.message = Some(value),
-                "host" => self.host = Some(value),
-                _ => {}
-            }
-        }
-    }
 
     fn fake_lv1_handle(snapshot: Lv1StateSnapshot) -> crate::lv1::Lv1ActorHandle {
         let (tx, mut rx) = mpsc::channel(8);
@@ -1429,10 +1365,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn connect_completion_logs_lv1_connected_for_ui_log_projection() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
@@ -1466,11 +1400,15 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        assert!(logs.lock().unwrap().iter().any(|log| {
-            log.event.as_deref() == Some("lv1_connected")
-                && log.host.as_deref() == Some("LV1-FOH")
-                && log.port == Some(50000)
-        }));
+        assert!(
+            capture
+                .matching("lv1_connected", tracing::Level::INFO)
+                .iter()
+                .any(|log| {
+                    log.fields.get("host").map(String::as_str) == Some("LV1-FOH")
+                        && log.fields.get("port").map(String::as_str) == Some("50000")
+                })
+        );
     }
 
     #[tokio::test]
@@ -1574,10 +1512,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn connect_lv1_system_attempts_selected_identity() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let app = mock_app();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
@@ -1598,27 +1534,27 @@ mod tests {
             result.is_err(),
             "unreachable selected identity should fail instead of returning a false success"
         );
-        let logs = logs.lock().unwrap();
         assert!(
-            logs.iter()
-                .any(|log| log.event.as_deref() == Some("lv1_connect_requested"))
+            !capture
+                .matching("lv1_connect_requested", tracing::Level::DEBUG)
+                .is_empty()
         );
         assert!(
-            logs.iter()
-                .any(|log| log.event.as_deref() == Some("lv1_connecting"))
+            !capture
+                .matching("lv1_connecting", tracing::Level::INFO)
+                .is_empty()
         );
         assert!(
-            logs.iter()
-                .any(|log| log.event.as_deref() == Some("lv1_connect_failed"))
+            !capture
+                .matching("lv1_connect_failed", tracing::Level::WARN)
+                .is_empty()
         );
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn attempt_reconnect_uses_stored_connected_identity() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let app = mock_app();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
@@ -1645,10 +1581,9 @@ mod tests {
             "unreachable stored identity should fail instead of returning a false success"
         );
         assert!(
-            logs.lock()
-                .unwrap()
-                .iter()
-                .any(|log| log.event.as_deref() == Some("lv1_reconnect_failed"))
+            !capture
+                .matching("lv1_reconnect_failed", tracing::Level::WARN)
+                .is_empty()
         );
     }
 
@@ -1837,10 +1772,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn stale_persistence_handoff_does_not_store_identity_or_log_an_error() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
         let settings_dir = TestSettingsDir::new();
         let (settings, settings_task, _) = crate::settings::build_settings_actor(
@@ -1896,11 +1829,9 @@ mod tests {
         assert!(connect.await.unwrap().is_ok());
         assert_eq!(get_last_connected_lv1(&settings).await, None);
         assert!(
-            !logs
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|log| { log.event.as_deref() == Some("last_connected_lv1_save_failed") })
+            capture
+                .matching("last_connected_lv1_save_failed", tracing::Level::ERROR)
+                .is_empty()
         );
     }
 
@@ -2058,10 +1989,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn disconnect_current_runtime_publishes_active_generation_disconnect() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
         let mut rx = event_bus.subscribe();
         let lifecycle = lifecycle_for_test(event_bus);
@@ -2085,14 +2014,15 @@ mod tests {
             AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
                 if event_generation == generation + 1
         ));
-        let logs = logs.lock().unwrap();
         assert!(
-            logs.iter()
-                .any(|log| log.event.as_deref() == Some("lv1_disconnect_requested"))
+            !capture
+                .matching("lv1_disconnect_requested", tracing::Level::DEBUG)
+                .is_empty()
         );
         assert!(
-            logs.iter()
-                .any(|log| log.event.as_deref() == Some("lv1_disconnected"))
+            !capture
+                .matching("lv1_disconnected", tracing::Level::INFO)
+                .is_empty()
         );
     }
 }
