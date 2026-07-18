@@ -11,6 +11,8 @@ pub mod scenes;
 pub mod settings;
 pub mod show;
 pub mod show_file;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod time;
 pub mod ui;
 pub mod vegas;

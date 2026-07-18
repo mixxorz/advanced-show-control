@@ -40,40 +40,49 @@ impl ShowState {
         }
     }
 
-    pub(crate) fn set_pending_lv1_identity(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
-        if self.pending_lv1_identity == identity {
-            false
-        } else {
-            self.pending_lv1_identity = identity;
-            true
-        }
-    }
-
-    pub(crate) fn establish_connected_lv1_identity(&mut self, identity: Lv1SystemIdentity) -> bool {
+    pub(crate) fn complete_lv1_connection(&mut self, identity: Lv1SystemIdentity) -> bool {
+        let reconnect = ReconnectState::default();
         let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
-            || self.pending_lv1_identity.is_some();
-        if changed {
-            self.connected_lv1_identity = Some(identity);
-            self.pending_lv1_identity = None;
-        }
+            || self.pending_lv1_identity.is_some()
+            || self.reconnect != reconnect;
+        self.connected_lv1_identity = Some(identity);
+        self.pending_lv1_identity = None;
+        self.reconnect = reconnect;
         changed
     }
 
-    pub(crate) fn clear_connected_lv1_identity(&mut self) -> bool {
-        if self.connected_lv1_identity.is_none() {
-            false
-        } else {
-            self.connected_lv1_identity = None;
-            true
-        }
+    pub(crate) fn fail_lv1_connection(&mut self) -> bool {
+        let reconnect = ReconnectState::default();
+        let changed = self.connected_lv1_identity.is_some()
+            || self.pending_lv1_identity.is_some()
+            || self.reconnect != reconnect;
+        self.connected_lv1_identity = None;
+        self.pending_lv1_identity = None;
+        self.reconnect = reconnect;
+        changed
     }
 
-    pub(crate) fn set_reconnect_state(&mut self, reconnect: ReconnectState) -> bool {
-        if self.reconnect == reconnect {
-            false
-        } else {
-            self.reconnect = reconnect;
-            true
+    pub(crate) fn fail_lv1_reconnect(&mut self) -> bool {
+        let reconnect = ReconnectState::default();
+        let changed = self.pending_lv1_identity.is_some() || self.reconnect != reconnect;
+        self.pending_lv1_identity = None;
+        self.reconnect = reconnect;
+        changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_connection_metadata_for_test(
+        connected_lv1_identity: Lv1SystemIdentity,
+        pending_lv1_identity: Option<Lv1SystemIdentity>,
+        reconnect: ReconnectState,
+        last_event_at: Option<String>,
+    ) -> Self {
+        Self {
+            connected_lv1_identity: Some(connected_lv1_identity),
+            pending_lv1_identity,
+            reconnect,
+            last_event_at,
+            ..Default::default()
         }
     }
 
@@ -147,4 +156,82 @@ impl ShowState {
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    fn identity(uuid: &str) -> Lv1SystemIdentity {
+        Lv1SystemIdentity {
+            uuid: Some(uuid.to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50_000,
+        }
+    }
+
+    #[test]
+    fn complete_connection_sets_identity_and_clears_transient_metadata_atomically() {
+        let next = identity("new");
+        let mut state = ShowState {
+            connected_lv1_identity: Some(identity("old")),
+            pending_lv1_identity: Some(next.clone()),
+            reconnect: ReconnectState {
+                active: true,
+                attempt: 3,
+            },
+            ..Default::default()
+        };
+
+        assert!(state.complete_lv1_connection(next.clone()));
+        let projection = state.projection_state();
+        assert_eq!(projection.connected_lv1_identity, Some(next.clone()));
+        assert_eq!(projection.pending_lv1_identity, None);
+        assert_eq!(projection.reconnect, ReconnectState::default());
+        assert!(!state.complete_lv1_connection(next));
+    }
+
+    #[test]
+    fn failed_connection_clears_all_connection_metadata() {
+        let mut state = ShowState {
+            connected_lv1_identity: Some(identity("old")),
+            pending_lv1_identity: Some(identity("new")),
+            reconnect: ReconnectState {
+                active: true,
+                attempt: 2,
+            },
+            ..Default::default()
+        };
+
+        assert!(state.fail_lv1_connection());
+        let projection = state.projection_state();
+        assert_eq!(projection.connected_lv1_identity, None);
+        assert_eq!(projection.pending_lv1_identity, None);
+        assert_eq!(projection.reconnect, ReconnectState::default());
+        assert!(!state.fail_lv1_connection());
+    }
+
+    #[test]
+    fn failed_reconnect_preserves_connected_identity_and_clears_transient_metadata() {
+        let connected = identity("old");
+        let mut state = ShowState {
+            connected_lv1_identity: Some(connected.clone()),
+            pending_lv1_identity: Some(identity("new")),
+            reconnect: ReconnectState {
+                active: true,
+                attempt: 4,
+            },
+            last_event_at: Some("2026-07-19T12:00:00.000Z".to_string()),
+            ..Default::default()
+        };
+
+        assert!(state.fail_lv1_reconnect());
+        let projection = state.projection_state();
+        assert_eq!(projection.connected_lv1_identity, Some(connected));
+        assert_eq!(projection.pending_lv1_identity, None);
+        assert_eq!(projection.reconnect, ReconnectState::default());
+        assert_eq!(
+            projection.last_event_at.as_deref(),
+            Some("2026-07-19T12:00:00.000Z")
+        );
+        assert!(!state.fail_lv1_reconnect());
+    }
+}

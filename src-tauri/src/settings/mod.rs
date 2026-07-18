@@ -9,7 +9,6 @@ pub use actor::{SettingsActorTask, build_settings_actor};
 pub use commands::{SettingsCommand, SettingsCommandResult};
 pub use events::SettingsEvent;
 pub use handle::SettingsHandle;
-pub(crate) use types::PersistedSettings;
 pub use types::{
     AppSettings, KeyboardShortcut, KeyboardShortcutModifiers, KeyboardShortcutSettings,
     TimeDisplayFormat,

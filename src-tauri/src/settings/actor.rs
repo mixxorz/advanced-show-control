@@ -135,12 +135,10 @@ async fn handle_command(
             }
             let result = runtime_generation
                 .if_current(expected_generation, || {
-                    state
-                        .set_last_connected_lv1(identity)
-                        .map(|changed| SettingsCommandResult { changed })
+                    state.set_last_connected_lv1(identity).map(|_changed| ())
                 })
                 .await
-                .unwrap_or(Ok(SettingsCommandResult { changed: false }));
+                .unwrap_or(Ok(()));
             let _ = reply.send(result);
         }
     }
@@ -193,63 +191,9 @@ mod tests {
     use crate::connection_state::Lv1SystemIdentity;
     use crate::runtime::events::{AppEvent, AppEventBus};
     use crate::settings::{AppSettings, SettingsEvent};
-    use std::sync::Arc;
+    use crate::test_support::TracingCapture;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot;
-    use tracing::field::{Field, Visit};
-    use tracing_subscriber::Layer;
-    use tracing_subscriber::layer::Context;
-    use tracing_subscriber::prelude::*;
-    use tracing_subscriber::registry::{LookupSpan, Registry};
-
-    #[derive(Debug, Default, Clone, PartialEq, Eq)]
-    struct CapturedLogEvent {
-        event: Option<String>,
-        enable_extensive_diagnostics: Option<bool>,
-        same_scene_recall_enabled: Option<bool>,
-        same_scene_recall_threshold_ms: Option<String>,
-    }
-
-    #[derive(Clone, Default)]
-    struct CapturedLogEvents(Arc<std::sync::Mutex<Vec<CapturedLogEvent>>>);
-
-    impl<S> Layer<S> for CapturedLogEvents
-    where
-        S: tracing::Subscriber,
-        S: for<'a> LookupSpan<'a>,
-    {
-        fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent::default();
-            event.record(&mut visitor);
-            self.0.lock().unwrap().push(visitor);
-        }
-    }
-
-    impl Visit for CapturedLogEvent {
-        fn record_str(&mut self, field: &Field, value: &str) {
-            if field.name() == "event" {
-                self.event = Some(value.to_string());
-            }
-        }
-
-        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            match field.name() {
-                "event" => {
-                    self.event = Some(format!("{value:?}").trim_matches('"').to_string());
-                }
-                "enable_extensive_diagnostics" => {
-                    self.enable_extensive_diagnostics = Some(format!("{value:?}") == "true");
-                }
-                "same_scene_recall_enabled" => {
-                    self.same_scene_recall_enabled = Some(format!("{value:?}") == "true");
-                }
-                "same_scene_recall_threshold_ms" => {
-                    self.same_scene_recall_threshold_ms = Some(format!("{value:?}"));
-                }
-                _ => {}
-            }
-        }
-    }
 
     fn temp_settings_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -411,10 +355,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(
-            rx.await.unwrap().unwrap(),
-            SettingsCommandResult { changed: true }
-        );
+        assert_eq!(rx.await.unwrap(), Ok(()));
 
         let (reply, rx) = oneshot::channel();
         handle
@@ -444,10 +385,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(
-            rx.await.unwrap().unwrap(),
-            SettingsCommandResult { changed: true }
-        );
+        assert_eq!(rx.await.unwrap(), Ok(()));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
                 .await
@@ -483,10 +421,85 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn actor_treats_stale_remembered_identity_update_as_successful_noop() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("stale-remembered-identity");
+        let (handle, task, _) = build_settings_actor(dir, event_bus);
+        task.spawn();
+        let runtime_generation = crate::runtime::generation::RuntimeGeneration::default();
+        runtime_generation.advance().await;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: identity("uuid-new", "LV1-FOH", "192.168.1.36"),
+                runtime_generation,
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .expect("stale identity command should send");
+        assert_eq!(
+            rx.await.expect("stale identity reply should arrive"),
+            Ok(())
+        );
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn actor_preserves_remembered_identity_when_replacement_write_fails() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("failed-remembered-identity-write");
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        task.spawn();
+        let runtime_generation = runtime_generation();
+        let original = identity("uuid-old", "LV1-FOH", "192.168.1.35");
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: original.clone(),
+                runtime_generation: runtime_generation.clone(),
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), Ok(()));
+
+        std::fs::remove_file(dir.join("settings.json")).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::write(&dir, "not a directory").unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: identity("uuid-new", "LV1-FOH", "192.168.1.36"),
+                runtime_generation,
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert!(rx.await.unwrap().is_err());
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), Some(original));
+    }
+
+    #[tokio::test]
     async fn actor_logs_settings_update_fields() {
-        let captured = CapturedLogEvents::default();
-        let subscriber = Registry::default().with(captured.clone());
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
 
         super::log_settings_updated(&AppSettings {
             enable_extensive_diagnostics: true,
@@ -495,12 +508,23 @@ mod tests {
             ..Default::default()
         });
 
-        let events = captured.0.lock().unwrap();
+        let events = captured.matching("settings_updated", tracing::Level::INFO);
         assert!(events.iter().any(|event| {
-            event.event.as_deref() == Some("settings_updated")
-                && event.enable_extensive_diagnostics == Some(true)
-                && event.same_scene_recall_enabled == Some(false)
-                && event.same_scene_recall_threshold_ms.as_deref() == Some("1200")
+            event
+                .fields
+                .get("enable_extensive_diagnostics")
+                .map(String::as_str)
+                == Some("true")
+                && event
+                    .fields
+                    .get("same_scene_recall_enabled")
+                    .map(String::as_str)
+                    == Some("false")
+                && event
+                    .fields
+                    .get("same_scene_recall_threshold_ms")
+                    .map(String::as_str)
+                    == Some("1200")
         }));
     }
 }

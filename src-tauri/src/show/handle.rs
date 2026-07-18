@@ -34,8 +34,8 @@ mod tests {
     use crate::connection_state::{Lv1SystemIdentity, ReconnectState};
     use crate::lv1::Lv1Event;
     use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
-    use crate::show::ShowCommand;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
+    use crate::show::{ConnectCommandResult, ShowCommand, ShowCommandResult};
 
     async fn recv_show_event(
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
@@ -114,6 +114,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn complete_connection_publishes_one_full_projection_and_noop_publishes_none() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50_000,
+        };
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::CompleteLv1Connection {
+            identity: identity.clone(),
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        assert_eq!(rx.await.unwrap(), ConnectCommandResult { changed: true });
+
+        let AppEvent::Show(ShowEvent::StateChanged { reason, state }) =
+            events.recv().await.unwrap()
+        else {
+            panic!("expected Show projection");
+        };
+        assert_eq!(reason, ShowProjectionReason::ConnectionMetadata);
+        assert_eq!(state.connected_lv1_identity, Some(identity.clone()));
+        assert_eq!(state.pending_lv1_identity, None);
+        assert_eq!(state.reconnect, ReconnectState::default());
+        assert!(events.try_recv().is_err());
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::CompleteLv1Connection {
+            identity,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        assert_eq!(rx.await.unwrap(), ConnectCommandResult { changed: false });
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_connection_clears_connected_identity_with_one_projection() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let show = ShowStateHandle::new_empty(event_bus);
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50_000,
+        };
+        show.send(ShowCommand::CompleteLv1Connection {
+            identity,
+            reply: None,
+        })
+        .await
+        .unwrap();
+        recv_show_event(&mut events, ShowProjectionReason::ConnectionMetadata).await;
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::FailLv1Connection { reply: Some(reply) })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), ShowCommandResult { changed: true });
+        let AppEvent::Show(ShowEvent::StateChanged { state, .. }) = events.recv().await.unwrap()
+        else {
+            panic!("expected Show projection");
+        };
+        assert_eq!(state.connected_lv1_identity, None);
+        assert_eq!(state.pending_lv1_identity, None);
+        assert_eq!(state.reconnect, ReconnectState::default());
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn failed_reconnect_preserves_connected_identity_with_one_full_projection() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let identity = Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1-FOH".to_string()),
+            address: "192.168.1.35".to_string(),
+            port: 50_000,
+        };
+        let (show, task, _peers) =
+            super::super::actor::build_show_actor_with_connection_metadata_for_test(
+                event_bus,
+                identity.clone(),
+                Some(Lv1SystemIdentity {
+                    uuid: Some("pending-uuid".to_string()),
+                    host: Some("LV1-MON".to_string()),
+                    address: "192.168.1.36".to_string(),
+                    port: 50_000,
+                }),
+                ReconnectState {
+                    active: true,
+                    attempt: 3,
+                },
+                Some("2026-07-19T12:00:00.000Z".to_string()),
+            );
+        task.spawn();
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::FailLv1Reconnect { reply: Some(reply) })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), ShowCommandResult { changed: true });
+        let AppEvent::Show(ShowEvent::StateChanged { reason, state }) =
+            events.recv().await.unwrap()
+        else {
+            panic!("expected Show projection");
+        };
+        assert_eq!(reason, ShowProjectionReason::ConnectionMetadata);
+        assert_eq!(state.connected_lv1_identity, Some(identity));
+        assert_eq!(state.pending_lv1_identity, None);
+        assert_eq!(state.reconnect, ReconnectState::default());
+        assert_eq!(
+            state.last_event_at.as_deref(),
+            Some("2026-07-19T12:00:00.000Z")
+        );
+        assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
     async fn show_actor_handles_active_generation_lv1_disconnect() {
         let event_bus = AppEventBus::default();
         let mut show_events = event_bus.subscribe();
@@ -125,18 +251,8 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 12345,
         };
-        show.send(ShowCommand::EstablishConnectedLv1Identity {
+        show.send(ShowCommand::CompleteLv1Connection {
             identity,
-            reply: None,
-        })
-        .await
-        .unwrap();
-        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
-        show.send(ShowCommand::SetReconnectState {
-            reconnect: ReconnectState {
-                active: true,
-                attempt: 2,
-            },
             reply: None,
         })
         .await
@@ -175,7 +291,7 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 12345,
         };
-        show.send(ShowCommand::EstablishConnectedLv1Identity {
+        show.send(ShowCommand::CompleteLv1Connection {
             identity,
             reply: None,
         })

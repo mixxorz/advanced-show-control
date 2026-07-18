@@ -1,6 +1,7 @@
-use crate::lifecycle::AppLifecycle;
 use crate::runtime::errors::AppCommandError;
-use crate::show::{LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult};
+use crate::show::{
+    LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult, ShowStateHandle,
+};
 use crate::show_file::default_show_folder;
 use std::path::PathBuf;
 #[cfg(target_os = "macos")]
@@ -121,8 +122,7 @@ pub fn handle_session_menu_event(app: &AppHandle<tauri::Wry>, event: MenuEvent) 
 }
 
 async fn new_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<NewShowFileResult, String> {
-    let lifecycle = app.state::<AppLifecycle>();
-    let show = lifecycle.current_show().await;
+    let show = app.state::<ShowStateHandle>().inner().clone();
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
         .await
@@ -144,8 +144,7 @@ async fn open_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<LoadShowFi
     .await
     .map_err(|err| format!("Failed to open file dialog: {err}"))??
     .ok_or_else(|| "Open session cancelled".to_string())?;
-    let lifecycle = app.state::<AppLifecycle>();
-    let show = lifecycle.current_show().await;
+    let show = app.state::<ShowStateHandle>().inner().clone();
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::LoadShowFileFromPath {
         path,
@@ -160,8 +159,7 @@ async fn open_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<LoadShowFi
 }
 
 async fn save_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<ShowCommandResult, String> {
-    let lifecycle = app.state::<AppLifecycle>();
-    let show = lifecycle.current_show().await;
+    let show = app.state::<ShowStateHandle>().inner().clone();
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::CurrentShowFilePath { reply })
         .await
@@ -212,8 +210,7 @@ async fn save_session_as_from_menu(
     .await
     .map_err(|err| format!("Failed to open save dialog: {err}"))??
     .ok_or_else(|| "Save session cancelled".to_string())?;
-    let lifecycle = app.state::<AppLifecycle>();
-    let show = lifecycle.current_show().await;
+    let show = app.state::<ShowStateHandle>().inner().clone();
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SaveShowFileAs {
         path,

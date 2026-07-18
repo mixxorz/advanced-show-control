@@ -2,13 +2,13 @@ use crate::lifecycle::AppLifecycle;
 use crate::lv1::Lv1Command;
 use crate::show::{
     SHOW_FILE_SCHEMA_VERSION, ShowCommand, ShowFile, ShowFileSafety, ShowFileSceneConfig,
-    ShowFileSceneScopeToggles,
+    ShowFileSceneScopeToggles, ShowStateHandle,
 };
 use crate::show_file::write_show_file;
 use std::io::Write;
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Runtime, State};
+use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::oneshot;
 
 pub struct SmokeReport {
@@ -146,8 +146,8 @@ pub async fn debug_smoke_get_channel_gain(
 }
 
 #[tauri::command]
-pub async fn debug_smoke_load_scene_settings_session(
-    lifecycle: State<'_, AppLifecycle>,
+pub async fn debug_smoke_load_scene_settings_session<R: Runtime>(
+    app: AppHandle<R>,
 ) -> Result<(), String> {
     let path = std::env::temp_dir().join(format!(
         "advanced-show-control-debug-smoke-scene-settings-{}.ascs",
@@ -169,7 +169,7 @@ pub async fn debug_smoke_load_scene_settings_session(
     };
     write_show_file(&path, &file, &backup_dir)?;
 
-    let show = lifecycle.current_show().await;
+    let show = app.state::<ShowStateHandle>().inner().clone();
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::LoadShowFileFromPath {
         path,
@@ -183,8 +183,8 @@ pub async fn debug_smoke_load_scene_settings_session(
 }
 
 #[tauri::command]
-pub async fn debug_smoke_load_unlinked_scene_session(
-    lifecycle: State<'_, AppLifecycle>,
+pub async fn debug_smoke_load_unlinked_scene_session<R: Runtime>(
+    app: AppHandle<R>,
 ) -> Result<String, String> {
     let internal_scene_id = uuid::Uuid::new_v4();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -215,7 +215,7 @@ pub async fn debug_smoke_load_unlinked_scene_session(
     };
     write_show_file(&path, &file, &backup_dir)?;
 
-    let show = lifecycle.current_show().await;
+    let show = app.state::<ShowStateHandle>().inner().clone();
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::LoadShowFileFromPath {
         path,
