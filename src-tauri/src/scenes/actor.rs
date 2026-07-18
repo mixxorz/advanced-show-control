@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::fade::{FadeCommand, FadeEngineHandle};
+use crate::fade::{FadeCommand, FadeEngineHandle, SameSceneRecallBehavior};
 use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
     SceneState,
@@ -504,6 +504,7 @@ async fn process_scene_observation(
                 match fade
                     .send(FadeCommand::RecallSceneFade {
                         config: fade_config,
+                        same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
                         expected_generation: Some(generation),
                         reply: Some(reply),
                     })

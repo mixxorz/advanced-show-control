@@ -1,6 +1,6 @@
 use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
-    FadeSceneIdentity, FadeTarget, build_engine,
+    FadeSceneIdentity, FadeTarget, SameSceneRecallBehavior, build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
@@ -566,6 +566,7 @@ async fn run_monitor(host: Option<String>, port: Option<u16>, timeout_ms: u64) -
                     Lv1Event::ChannelTopologyChanged(channels) => {
                         println!("[channels] {} channels loaded", channels.len());
                     }
+                    Lv1Event::PingReceived { .. } => {}
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
@@ -775,6 +776,7 @@ async fn run_fade_test(
                 duration_ms,
                 curve: fade_curve,
             },
+            same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
             expected_generation: None,
             reply: Some(reply),
         })
@@ -1168,6 +1170,7 @@ async fn run_pan_family_smoke_step(
     engine
         .send(FadeCommand::RecallSceneFade {
             config,
+            same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
             expected_generation: None,
             reply: Some(reply),
         })
