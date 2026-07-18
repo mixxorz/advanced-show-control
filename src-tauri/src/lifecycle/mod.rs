@@ -118,34 +118,6 @@ fn build_connected_runtime(
     }
 }
 
-fn startup_auto_connect_target(
-    remembered: &crate::connection_state::Lv1SystemIdentity,
-    systems: &[crate::connection_state::DiscoveredLv1System],
-) -> Option<crate::connection_state::Lv1SystemIdentity> {
-    let available: Vec<_> = systems
-        .iter()
-        .filter(|system| system.status == crate::connection_state::DiscoveredLv1Status::Available)
-        .collect();
-
-    if let Some(uuid) = remembered.uuid.as_deref()
-        && let Some(system) = available
-            .iter()
-            .find(|system| system.identity.uuid.as_deref() == Some(uuid))
-    {
-        return Some(system.identity.clone());
-    }
-
-    let host = remembered.host.as_deref()?.trim();
-    if host.is_empty() {
-        return None;
-    }
-    let mut matches = available
-        .into_iter()
-        .filter(|system| system.identity.host.as_deref().map(str::trim) == Some(host));
-    let target = matches.next()?.identity.clone();
-    matches.next().is_none().then_some(target)
-}
-
 #[derive(Clone, Copy)]
 pub enum ConnectFailureMode {
     ClearConnectedIdentity,
@@ -716,7 +688,9 @@ impl AppLifecycle {
         remembered: crate::connection_state::Lv1SystemIdentity,
         systems: &[crate::connection_state::DiscoveredLv1System],
     ) -> Result<ConnectCommandResult, String> {
-        let Some(identity) = startup_auto_connect_target(&remembered, systems) else {
+        let Some(identity) =
+            crate::connection_state::startup_auto_connect_target(&remembered, systems)
+        else {
             tracing::debug!(
                 event = "startup_auto_connect_no_match",
                 "No safe discovered LV1 match for the remembered startup target"
@@ -1099,93 +1073,6 @@ mod tests {
         assert!(path.exists());
         drop(fixture);
         assert!(!path.exists());
-    }
-
-    #[test]
-    fn startup_target_prefers_uuid_over_hostname() {
-        let remembered = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
-        let systems = vec![
-            system(
-                Some("uuid-2"),
-                Some("LV1-FOH"),
-                "10.0.0.20",
-                DiscoveredLv1Status::Available,
-            ),
-            system(
-                Some("uuid-1"),
-                Some("Renamed"),
-                "10.0.0.21",
-                DiscoveredLv1Status::Available,
-            ),
-        ];
-
-        assert_eq!(
-            startup_auto_connect_target(&remembered, &systems)
-                .unwrap()
-                .address,
-            "10.0.0.21"
-        );
-    }
-
-    #[test]
-    fn startup_target_uses_one_exact_trimmed_hostname() {
-        let remembered = identity(None, Some(" LV1-FOH "), "192.168.1.35");
-        let systems = vec![system(
-            None,
-            Some("LV1-FOH"),
-            "10.0.0.20",
-            DiscoveredLv1Status::Available,
-        )];
-
-        assert_eq!(
-            startup_auto_connect_target(&remembered, &systems)
-                .unwrap()
-                .address,
-            "10.0.0.20"
-        );
-    }
-
-    #[test]
-    fn startup_target_rejects_ambiguous_or_address_only_matches() {
-        let remembered = identity(None, Some("LV1-FOH"), "10.0.0.20");
-        let duplicate_hosts = vec![
-            system(
-                None,
-                Some("LV1-FOH"),
-                "10.0.0.20",
-                DiscoveredLv1Status::Available,
-            ),
-            system(
-                None,
-                Some("LV1-FOH"),
-                "10.0.0.21",
-                DiscoveredLv1Status::Available,
-            ),
-        ];
-        assert!(startup_auto_connect_target(&remembered, &duplicate_hosts).is_none());
-
-        let address_only = vec![system(
-            None,
-            Some("Different"),
-            "10.0.0.20",
-            DiscoveredLv1Status::Available,
-        )];
-        assert!(startup_auto_connect_target(&remembered, &address_only).is_none());
-    }
-
-    #[test]
-    fn startup_target_ignores_unavailable_uuid_and_hostname_matches() {
-        let uuid_remembered = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
-        let hostname_remembered = identity(None, Some("LV1-FOH"), "192.168.1.35");
-        let systems = vec![system(
-            Some("uuid-1"),
-            Some("LV1-FOH"),
-            "10.0.0.20",
-            DiscoveredLv1Status::Unavailable,
-        )];
-
-        assert!(startup_auto_connect_target(&uuid_remembered, &systems).is_none());
-        assert!(startup_auto_connect_target(&hostname_remembered, &systems).is_none());
     }
 
     #[tokio::test]
