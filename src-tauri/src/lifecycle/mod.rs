@@ -1129,23 +1129,46 @@ mod tests {
         assert!(lifecycle.cue_lists_peers.scenes().is_some());
     }
 
-    #[tokio::test]
-    async fn generation_flip_before_scene_peer_install_leaves_peers_unset() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn generation_flip_before_scene_peer_install_leaves_newer_peers_intact() {
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
+        let remembered = identity(Some("uuid-old"), Some("LV1-FOH"), "192.168.1.35");
+        set_last_connected_lv1(&settings, remembered.clone()).await;
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
+        let newer_generation = generation + 1;
+        let (newer_scenes, _newer_task, _newer_peers) = build_scenes_actor(
+            newer_generation,
+            runtime_generation.clone(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            lifecycle.settings.clone(),
+            lifecycle.settings_snapshot().await.unwrap(),
+        );
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
-        let identity = Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            address: "127.0.0.1".parse().unwrap(),
-            host: Some("localhost".to_string()),
-            port: 9000,
-        };
         let (flip_tx, flip_rx) = oneshot::channel();
         let lifecycle_for_hook = lifecycle.clone();
+        let newer_scenes_for_hook = newer_scenes.clone();
+        let hook = Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+            lifecycle_for_hook
+                .show_peers
+                .set_scenes(newer_scenes_for_hook.clone());
+            lifecycle_for_hook
+                .cue_lists_peers
+                .set_scenes(newer_scenes_for_hook);
+            let lifecycle = lifecycle_for_hook.clone();
+            tokio::spawn(async move {
+                lifecycle.begin_connecting().await;
+                let _ = flip_tx.send(());
+            });
+        }) as Box<dyn FnOnce(RuntimeGeneration) + Send>);
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -1153,20 +1176,14 @@ mod tests {
             event_bus,
             lv1,
             fade,
-            Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                let lifecycle = lifecycle_for_hook.clone();
-                tokio::spawn(async move {
-                    let _ = lifecycle.begin_connecting().await;
-                    let _ = flip_tx.send(());
-                });
-            })),
+            hook,
         )
         .await;
 
         let result = lifecycle
             .finish_connect_transaction(
-                identity,
-                ConnectFailureMode::PreserveConnectedIdentity,
+                identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
+                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -1174,8 +1191,14 @@ mod tests {
 
         assert!(flip_rx.await.is_ok());
         assert!(matches!(result, Err(message) if message == "generation is stale"));
-        assert!(lifecycle.show_peers.scenes().is_none());
-        assert!(lifecycle.cue_lists_peers.scenes().is_none());
+        assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+        assert_eq!(get_last_connected_lv1(&settings).await, Some(remembered));
+        assert!(
+            capture
+                .matching("lv1_connected", tracing::Level::INFO)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
