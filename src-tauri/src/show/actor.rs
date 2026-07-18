@@ -342,6 +342,42 @@ async fn handle_command(
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
+        ShowCommand::CompleteLv1Connection { identity, reply } => {
+            let changed = state.complete_lv1_connection(identity);
+            publish_if_changed(
+                event_bus,
+                ShowProjectionReason::ConnectionMetadata,
+                state,
+                changed,
+            );
+            if let Some(reply) = reply {
+                let _ = reply.send(crate::show::ConnectCommandResult { changed });
+            }
+        }
+        ShowCommand::FailLv1Connection { reply } => {
+            let changed = state.fail_lv1_connection();
+            publish_if_changed(
+                event_bus,
+                ShowProjectionReason::ConnectionMetadata,
+                state,
+                changed,
+            );
+            if let Some(reply) = reply {
+                let _ = reply.send(ShowCommandResult { changed });
+            }
+        }
+        ShowCommand::FailLv1Reconnect { reply } => {
+            let changed = state.fail_lv1_reconnect();
+            publish_if_changed(
+                event_bus,
+                ShowProjectionReason::ConnectionMetadata,
+                state,
+                changed,
+            );
+            if let Some(reply) = reply {
+                let _ = reply.send(ShowCommandResult { changed });
+            }
+        }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
             let result = async {
                 let lv1 = current_lv1_snapshot(peers).await?;

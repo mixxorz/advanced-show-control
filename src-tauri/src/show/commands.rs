@@ -50,6 +50,16 @@ pub enum ShowCommand {
         reconnect: ReconnectState,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
+    CompleteLv1Connection {
+        identity: Lv1SystemIdentity,
+        reply: Option<oneshot::Sender<ConnectCommandResult>>,
+    },
+    FailLv1Connection {
+        reply: Option<oneshot::Sender<ShowCommandResult>>,
+    },
+    FailLv1Reconnect {
+        reply: Option<oneshot::Sender<ShowCommandResult>>,
+    },
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,

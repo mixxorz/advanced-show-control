@@ -77,13 +77,6 @@ impl ShowState {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Show actor transition commands are added in Task 2."
-        )
-    )]
     pub(crate) fn complete_lv1_connection(&mut self, identity: Lv1SystemIdentity) -> bool {
         let reconnect = ReconnectState::default();
         let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
@@ -95,13 +88,6 @@ impl ShowState {
         changed
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Show actor transition commands are added in Task 2."
-        )
-    )]
     pub(crate) fn fail_lv1_connection(&mut self) -> bool {
         let reconnect = ReconnectState::default();
         let changed = self.connected_lv1_identity.is_some()
@@ -113,13 +99,6 @@ impl ShowState {
         changed
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Show actor transition commands are added in Task 2."
-        )
-    )]
     pub(crate) fn fail_lv1_reconnect(&mut self) -> bool {
         let reconnect = ReconnectState::default();
         let changed = self.pending_lv1_identity.is_some() || self.reconnect != reconnect;
