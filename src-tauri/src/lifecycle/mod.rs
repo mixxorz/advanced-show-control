@@ -137,6 +137,7 @@ struct LifecycleInner {
     connecting: bool,
     frontend_ready: bool,
     handles: RuntimeHandles,
+    runtime_handles_generation: Option<u64>,
     projector: Option<JoinHandle<()>>,
 }
 
@@ -168,6 +169,7 @@ impl AppLifecycle {
                 connecting: false,
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
+                runtime_handles_generation: None,
                 projector: None,
             })),
             event_bus,
@@ -218,6 +220,7 @@ impl AppLifecycle {
         }
 
         inner.handles = handles;
+        inner.runtime_handles_generation = Some(generation);
         inner.connecting = false;
         Ok(())
     }
@@ -228,7 +231,9 @@ impl AppLifecycle {
         handle: ScenesHandle,
     ) -> bool {
         let mut inner = self.inner.lock().await;
-        if inner.generation.current().await != generation {
+        if inner.generation.current().await != generation
+            || inner.runtime_handles_generation != Some(generation)
+        {
             return false;
         }
 
@@ -244,6 +249,7 @@ impl AppLifecycle {
             return;
         }
         inner.handles.abort_all();
+        inner.runtime_handles_generation = None;
         self.show_peers.clear_lv1(generation);
         self.cue_lists_peers.clear_scenes();
         let generation = inner.generation.advance().await;
@@ -261,10 +267,26 @@ impl AppLifecycle {
         let (generation, runtime_generation) = {
             let mut inner = self.inner.lock().await;
             inner.handles.abort_all();
+            inner.runtime_handles_generation = None;
             (inner.generation.current().await, inner.generation.clone())
         };
         self.show_peers.clear_lv1(generation);
         runtime_generation.set(generation).await;
+    }
+
+    async fn abort_rejected_connection_transaction(
+        &self,
+        generation: u64,
+        mut candidate_handles: RuntimeHandles,
+    ) {
+        candidate_handles.abort_all();
+        let mut inner = self.inner.lock().await;
+        if inner.runtime_handles_generation == Some(generation) {
+            inner.handles.abort_all();
+            inner.runtime_handles_generation = None;
+        }
+        drop(inner);
+        self.show_peers.clear_lv1(generation);
     }
 
     pub async fn connect_to_identity<R: Runtime>(
@@ -292,9 +314,8 @@ impl AppLifecycle {
         );
         let handles = built_runtime.runtime_targets();
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
-            let mut handles = rejection.into_handles();
-            handles.abort_all();
-            self.show_peers.clear_lv1(generation);
+            self.abort_rejected_connection_transaction(generation, rejection.into_handles())
+                .await;
             return Err("generation is stale".to_string());
         }
         let started_runtime = built_runtime.spawn_lv1_and_fade();
@@ -328,13 +349,13 @@ impl AppLifecycle {
             )
             .await
         {
-            let mut handles = RuntimeHandles {
+            let handles = RuntimeHandles {
                 lv1: Some(started_runtime.lv1),
                 fade: None,
                 scene_recall_fader: None,
             };
-            handles.abort_all();
-            self.clear_runtime_transaction(generation).await;
+            self.abort_rejected_connection_transaction(generation, handles)
+                .await;
             return Err("generation is stale".to_string());
         }
         if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
@@ -364,11 +385,9 @@ impl AppLifecycle {
         let initial_settings = self.settings_snapshot().await?;
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
 
-        if self
-            .install_runtime_transaction(generation, handles)
-            .await
-            .is_err()
-        {
+        if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
+            self.abort_rejected_connection_transaction(generation, rejection.into_handles())
+                .await;
             return Err("generation is stale".to_string());
         }
 
@@ -408,13 +427,13 @@ impl AppLifecycle {
             .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
             .await
         {
-            let mut handles = RuntimeHandles {
+            let handles = RuntimeHandles {
                 lv1: Some(lv1),
                 fade: Some(fade),
                 scene_recall_fader: None,
             };
-            handles.abort_all();
-            self.clear_runtime_transaction(generation).await;
+            self.abort_rejected_connection_transaction(generation, handles)
+                .await;
             return Err("generation is stale".to_string());
         }
         if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
@@ -1292,6 +1311,10 @@ mod tests {
 
         assert!(matches!(result, Err(message) if message == "LV1 did not connect"));
         assert!(lifecycle.current_lv1().await.is_none());
+        assert_eq!(
+            lifecycle.inner.lock().await.runtime_handles_generation,
+            None
+        );
     }
 
     #[tokio::test]
@@ -1805,6 +1828,84 @@ mod tests {
 
         let mut handles = rejection.into_handles();
         handles.abort_all();
+        assert_eq!(
+            lifecycle.inner.lock().await.runtime_handles_generation,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_runtime_install_records_owning_generation() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+
+        let install = lifecycle
+            .install_runtime_transaction(
+                generation,
+                RuntimeHandles::with_runtime_targets(lv1, FadeEngineHandle::new(fade_tx)),
+            )
+            .await;
+        assert!(install.is_ok());
+
+        assert_eq!(
+            lifecycle.inner.lock().await.runtime_handles_generation,
+            Some(generation)
+        );
+
+        lifecycle
+            .abort_runtime_handles_without_advancing_generation()
+            .await;
+
+        assert_eq!(
+            lifecycle.inner.lock().await.runtime_handles_generation,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_connection_cleanup_preserves_newer_scene_peers() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let rejected_generation = lifecycle.begin_connecting().await.unwrap();
+        let accepted_generation = lifecycle.begin_connecting().await.unwrap();
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+
+        let install = lifecycle
+            .install_runtime_transaction(
+                accepted_generation,
+                RuntimeHandles::with_runtime_targets(lv1, FadeEngineHandle::new(fade_tx)),
+            )
+            .await;
+        assert!(install.is_ok());
+        let (scenes, _scenes_task, _scenes_peers) = build_scenes_actor(
+            accepted_generation,
+            lifecycle.current_runtime_generation().await,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            lifecycle.settings.clone(),
+            lifecycle.settings_snapshot().await.unwrap(),
+        );
+        assert!(
+            lifecycle
+                .install_accepted_scene_recall_fader(accepted_generation, scenes)
+                .await
+        );
+
+        lifecycle
+            .abort_rejected_connection_transaction(rejected_generation, RuntimeHandles::default())
+            .await;
+
+        assert_eq!(
+            lifecycle.inner.lock().await.runtime_handles_generation,
+            Some(accepted_generation)
+        );
+        assert!(lifecycle.current_lv1().await.is_some());
+        assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_some());
     }
 
     #[tokio::test(flavor = "current_thread")]
