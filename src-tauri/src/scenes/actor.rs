@@ -559,7 +559,6 @@ async fn dispatch_scenes_command(
         } => {
             let peer_handles = peers.handles();
             let scene_document = recall_state.snapshot();
-            let lockout = lockout.current();
             let _ = reply.send(
                 handle_explicit_recall_scene(
                     lockout,
@@ -863,7 +862,7 @@ fn scene_label(scene: &SceneState) -> String {
 }
 
 async fn handle_explicit_recall_scene(
-    lockout: bool,
+    lockout: &ShowLockoutReader,
     lv1: &Lv1ActorHandle,
     scene_document: &SceneDocument,
     internal_scene_id: uuid::Uuid,
@@ -905,7 +904,7 @@ async fn handle_explicit_recall_scene(
             error
         })?;
     let result = crate::scenes::validate_recall_scene_request(
-        lockout,
+        lockout.current(),
         scene_document,
         &lv1_snapshot,
         internal_scene_id,
@@ -1298,6 +1297,92 @@ mod tests {
             build_and_spawn_scene_recall_fader(1, runtime_generation, lv1, fade, event_bus).await;
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn explicit_recall_rechecks_lockout_after_fresh_lv1_state() {
+        let event_bus = AppEventBus::default();
+        let (show, show_task, _show_peers, mut lockout) =
+            crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+        let (state_requested, state_requested_rx) = oneshot::channel();
+        let (release_state, release_state_rx) = oneshot::channel();
+        let recall_count = Arc::new(AtomicUsize::new(0));
+        let recall_count_for_server = recall_count.clone();
+        let server = tokio::spawn(async move {
+            let Some(crate::lv1::Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
+                panic!("expected an LV1 state request");
+            };
+            let _ = state_requested.send(());
+            let _ = release_state_rx.await;
+            let _ = reply.send(Lv1StateSnapshot {
+                connection: crate::lv1::ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![scene_entry(1, "Intro")],
+                channels: Vec::new(),
+                ping_sequence: 0,
+            });
+            while let Some(command) = lv1_rx.recv().await {
+                match command {
+                    crate::lv1::Lv1Command::RecallScene { reply, .. } => {
+                        recall_count_for_server.fetch_add(1, Ordering::SeqCst);
+                        let _ = reply.unwrap().send(Ok(RecallSceneDispatch {
+                            scene_observation_sequence: 1,
+                        }));
+                    }
+                    _ => panic!("unexpected LV1 command"),
+                }
+            }
+        });
+        let runtime_generation = RuntimeGeneration::new();
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let scene_events = event_bus.subscribe();
+        let (scenes, scenes_task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus,
+            scene_events,
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            lockout.clone(),
+        );
+        peers.set_peers(crate::lv1::test_actor_handle(lv1_tx), fade);
+        scenes_task.spawn();
+        install_scene_document(&scenes, intro_scene_document()).await;
+
+        let (reply, rx) = oneshot::channel();
+        scenes
+            .send(ScenesCommand::RecallScene {
+                internal_scene_id: intro_internal_scene_id(),
+                reply,
+            })
+            .await
+            .unwrap();
+        state_requested_rx.await.unwrap();
+
+        let (lockout_reply, lockout_rx) = oneshot::channel();
+        show.send(crate::show::ShowCommand::SetLockout {
+            enabled: true,
+            reply: Some(lockout_reply),
+        })
+        .await
+        .unwrap();
+        lockout_rx.await.unwrap();
+        assert!(lockout.changed().await.unwrap());
+
+        release_state.send(()).unwrap();
+        assert!(matches!(
+            rx.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message)) if message == "Recall blocked: lockout is enabled"
+        ));
+        assert_eq!(recall_count.load(Ordering::SeqCst), 0);
+
+        scenes.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        drop(scenes);
+        drop(show);
+        server.await.unwrap();
     }
 
     #[tokio::test]
