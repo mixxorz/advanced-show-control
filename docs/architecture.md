@@ -344,6 +344,7 @@ The module owns the following responsibilities:
 4. Dispatch of validated LV1 recall commands through wired peers.
 5. Dispatch of validated fade-start commands through wired peers.
 6. Recall status facts for skipped, blocked, and started recall outcomes.
+7. Fresh app-settings acquisition at each settled scene-observation boundary before recall validation and fade dispatch.
 
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 

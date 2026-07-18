@@ -837,7 +837,7 @@ async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<
 }
 ```
 
-In both `RecvError::Lagged` branches, keep `log_lagged_subscriber`, then replace the local snapshot from this helper. If it returns `None`, break the actor loop. Do not process a pending or future scene observation with the pre-lag snapshot.
+In both `RecvError::Lagged` branches, keep `log_lagged_subscriber`, then replace the local snapshot from this helper. If it returns `None`, break the actor loop. Do not process a pending or future scene observation with the pre-lag snapshot. Also call the helper immediately before processing every settled `PendingSceneObservation`; replace the local snapshot and pass it to validation. This defends against a ready settle timer winning `tokio::select!` before a queued settings event. Do not use biased selection; if this boundary refresh fails, log the existing `scene_recall_settings_unavailable` ERROR and stop before any fade command.
 
 Pass `&settings` into `process_scene_observation`. Compute the delay once per observation:
 

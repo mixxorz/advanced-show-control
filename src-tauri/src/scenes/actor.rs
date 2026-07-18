@@ -266,6 +266,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     if let Some(observation) = pending_scene.take() {
+                        let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
+                            break;
+                        };
+                        if settings != updated_settings {
+                            settings = updated_settings;
+                        }
                         let peer_handles = peers.handles();
                         process_scene_observation(
                             generation,
@@ -762,6 +768,7 @@ mod tests {
     use crate::scenes::events::ScenesEvent;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
+    use std::collections::VecDeque;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1752,7 +1759,51 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn live_settings_update_controls_same_scene_behavior_and_repeat_delay() {
+    async fn settled_observation_refreshes_current_settings_before_dispatch() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            ..Default::default()
+        };
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle_sequence(vec![AppSettings::default(), disabled_settings.clone()]),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn settled_observation_stops_when_settings_refresh_fails() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
@@ -1763,7 +1814,64 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
+            fake_settings_handle_then_unavailable(AppSettings::default()),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        assert!(matches!(
+            fade_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(logs.lock().unwrap().iter().any(|log| {
+            log.event.as_deref() == Some("scene_recall_settings_unavailable")
+                && log.level == Some(tracing::Level::ERROR)
+                && log.message.as_deref()
+                    == Some(
+                        "Scene recall automation stopped because current settings are unavailable after event subscriber lag",
+                    )
+        }));
+
+        drop(peers);
+        drop(handle);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_settings_update_controls_same_scene_behavior_and_repeat_delay() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_000,
+            ..Default::default()
+        };
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle_sequence(vec![
+                AppSettings::default(),
+                disabled_settings.clone(),
+                disabled_settings.clone(),
+                disabled_settings.clone(),
+            ]),
             AppSettings::default(),
         );
         peers.set_peers(lv1, fade);
@@ -1773,11 +1881,7 @@ mod tests {
         arm_recall_state(&event_bus).await;
 
         event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
-            settings: AppSettings {
-                same_scene_recall_enabled: false,
-                same_scene_recall_threshold_ms: 1_000,
-                ..Default::default()
-            },
+            settings: disabled_settings,
         }));
         yield_to_actor().await;
         event_bus.publish(AppEvent::Lv1 {
@@ -1823,12 +1927,17 @@ mod tests {
         runtime_generation.set(1).await;
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_000,
+            ..Default::default()
+        };
         let (handle, task, peers) = build_scenes_actor(
             1,
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
+            fake_settings_handle(disabled_settings.clone()),
             AppSettings::default(),
         );
         peers.set_peers(lv1, fade);
@@ -1883,11 +1992,7 @@ mod tests {
         copy_rx.await.unwrap().unwrap();
 
         event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
-            settings: AppSettings {
-                same_scene_recall_enabled: false,
-                same_scene_recall_threshold_ms: 1_000,
-                ..Default::default()
-            },
+            settings: disabled_settings,
         }));
         yield_to_actor().await;
 
@@ -1926,12 +2031,13 @@ mod tests {
         let events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_000,
+            ..Default::default()
+        };
         event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
-            settings: AppSettings {
-                same_scene_recall_enabled: false,
-                same_scene_recall_threshold_ms: 1_000,
-                ..Default::default()
-            },
+            settings: disabled_settings.clone(),
         }));
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
@@ -1940,7 +2046,7 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             events,
-            fake_settings_handle(AppSettings::default()),
+            fake_settings_handle(disabled_settings),
             AppSettings::default(),
         );
         peers.set_peers(lv1, fade);
@@ -2927,6 +3033,29 @@ mod tests {
                 if let SettingsCommand::GetSettings { reply } = command {
                     let _ = reply.send(settings.clone());
                 }
+            }
+        });
+        SettingsHandle::new(tx)
+    }
+
+    fn fake_settings_handle_sequence(settings: Vec<AppSettings>) -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut settings = VecDeque::from(settings);
+            while let Some(command) = rx.recv().await {
+                if let SettingsCommand::GetSettings { reply } = command {
+                    let _ = reply.send(settings.pop_front().expect("unexpected settings refresh"));
+                }
+            }
+        });
+        SettingsHandle::new(tx)
+    }
+
+    fn fake_settings_handle_then_unavailable(settings: AppSettings) -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(SettingsCommand::GetSettings { reply }) = rx.recv().await {
+                let _ = reply.send(settings);
             }
         });
         SettingsHandle::new(tx)
