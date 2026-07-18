@@ -777,6 +777,7 @@ mod tests {
     struct CapturedLogEvent {
         event: Option<String>,
         message: Option<String>,
+        level: Option<tracing::Level>,
     }
 
     #[derive(Clone, Default)]
@@ -788,7 +789,10 @@ mod tests {
         S: for<'a> LookupSpan<'a>,
     {
         fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent::default();
+            let mut visitor = CapturedLogEvent {
+                level: Some(*event.metadata().level()),
+                ..Default::default()
+            };
             event.record(&mut visitor);
             self.0.lock().unwrap().push(visitor);
         }
@@ -2098,6 +2102,7 @@ mod tests {
         ));
         assert!(logs.lock().unwrap().iter().any(|log| {
             log.event.as_deref() == Some("scene_recall_settings_unavailable")
+                && log.level == Some(tracing::Level::ERROR)
                 && log.message.as_deref()
                     == Some(
                         "Scene recall automation stopped because current settings are unavailable after event subscriber lag",
