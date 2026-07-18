@@ -2257,6 +2257,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn lagged_settings_events_refresh_before_recall() {
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let event_bus = AppEventBus::new(1);
         let events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
@@ -2302,7 +2304,26 @@ mod tests {
         );
         peers.set_peers(lv1, fade);
         task.spawn();
-        yield_to_actor().await;
+        for _ in 0..1_000 {
+            if captured
+                .matching("event_subscriber_lagged", tracing::Level::DEBUG)
+                .iter()
+                .any(|event| {
+                    event.fields.get("subscriber").map(String::as_str) == Some("scene-recall")
+                })
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            captured
+                .matching("event_subscriber_lagged", tracing::Level::DEBUG)
+                .iter()
+                .any(|event| {
+                    event.fields.get("subscriber").map(String::as_str) == Some("scene-recall")
+                })
+        );
         install_scene_document(&handle, intro_scene_document()).await;
         release_lv1.send(()).unwrap();
         arm_recall_state(&event_bus).await;
