@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import type { AppViewState, Lv1SystemIdentity } from "../types";
+import type { AppSettings, AppViewState, Lv1SystemIdentity } from "../types";
 import { findSmokeSceneConfigs } from "./smokeScenes";
 import "../index.css";
 
@@ -26,6 +26,7 @@ const tests = [
   "fade-starts",
   "fade-completes",
   "same-scene-finish",
+  "same-scene-override",
   "decreasing-xfade",
   "link-unlinked-scene",
   "lockout-blocks-recall",
@@ -265,6 +266,7 @@ async function run() {
     });
     await test("same-scene-finish", async () => {
       try {
+        await setSameSceneSettings(true, 500);
         await reset(sceneA, targetA);
         await invoke("set_scene_duration_ms", {
           internalSceneId: sceneB,
@@ -299,6 +301,50 @@ async function run() {
           internalSceneId: sceneB,
           durationMs: 1_000,
         });
+        await setSameSceneSettings(true, 500);
+      }
+    });
+    await test("same-scene-override", async () => {
+      try {
+        await setSameSceneSettings(false, 500);
+        await reset(sceneA, targetA);
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneB,
+          durationMs: sameSceneDurationMs,
+        });
+        await invoke("recall_scene", { internalSceneId: sceneB });
+        await waitFor(async () => {
+          const liveGain = await gain();
+          return (
+            liveGain >= targetA + sameSceneMovementThresholdDb &&
+            liveGain < targetB - tolerance
+          );
+        }, "same-scene override movement before repeat");
+
+        const repeatedAt = Date.now();
+        await invoke("recall_scene", { internalSceneId: sceneB });
+        await sleep(1_000);
+        if (Math.abs((await gain()) - targetB) <= tolerance) {
+          throw new Error(
+            "disabled same-scene finishing completed immediately",
+          );
+        }
+        await waitFor(
+          async () => Math.abs((await gain()) - targetB) <= tolerance,
+          "same-scene override completion",
+          sameSceneDurationMs + 5_000,
+        );
+        if (Date.now() - repeatedAt < sameSceneDurationMs) {
+          throw new Error(
+            "same-scene override did not use the full configured duration",
+          );
+        }
+      } finally {
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneB,
+          durationMs: 1_000,
+        });
+        await setSameSceneSettings(true, 500);
       }
     });
     await test("decreasing-xfade", async () => {
@@ -480,6 +526,27 @@ async function setup() {
   }
   await log(
     `SETUP ${sceneA}=${targetA} ${sceneB}=${targetB} channel=${group}:${channel}`,
+  );
+}
+
+async function setSameSceneSettings(
+  sameSceneRecallEnabled: boolean,
+  sameSceneRecallThresholdMs: number,
+) {
+  const current = state?.settings;
+  if (!current) throw new Error("projected settings are unavailable");
+  const settings: AppSettings = {
+    ...current,
+    sameSceneRecallEnabled,
+    sameSceneRecallThresholdMs,
+  };
+
+  await invoke("replace_app_settings", { settings });
+  await waitFor(
+    () =>
+      state?.settings.sameSceneRecallEnabled === sameSceneRecallEnabled &&
+      state.settings.sameSceneRecallThresholdMs === sameSceneRecallThresholdMs,
+    "projected same-scene recall settings",
   );
 }
 
