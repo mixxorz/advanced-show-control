@@ -83,7 +83,6 @@ fn build_connected_runtime(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     identity: &crate::connection_state::Lv1SystemIdentity,
-    show_peers: ShowActorPeers,
     event_bus: AppEventBus,
     scene_events: tokio::sync::broadcast::Receiver<AppEvent>,
     settings_handle: SettingsHandle,
@@ -105,7 +104,6 @@ fn build_connected_runtime(
         settings_handle,
         initial_settings,
     );
-    show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
     BuiltConnectedRuntime {
@@ -219,8 +217,10 @@ impl AppLifecycle {
             return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles });
         }
 
+        let lv1 = handles.lv1.clone().expect("validated LV1 handle");
         inner.handles = handles;
         inner.runtime_handles_generation = Some(generation);
+        self.show_peers.set_lv1(generation, lv1);
         inner.connecting = false;
         Ok(())
     }
@@ -306,7 +306,6 @@ impl AppLifecycle {
             generation,
             runtime_generation,
             &identity,
-            self.show_peers.clone(),
             event_bus.clone(),
             scene_events,
             self.settings.clone(),
@@ -1088,7 +1087,6 @@ mod tests {
             generation,
             runtime_generation,
             &identity,
-            lifecycle.show_peers.clone(),
             event_bus,
             scene_events,
             lifecycle.settings.clone(),
@@ -1906,6 +1904,62 @@ mod tests {
         assert!(lifecycle.current_lv1().await.is_some());
         assert!(lifecycle.show_peers.scenes().is_some());
         assert!(lifecycle.cue_lists_peers.scenes().is_some());
+    }
+
+    #[tokio::test]
+    async fn stale_runtime_build_does_not_replace_newer_show_lv1_peer() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let stale_generation = lifecycle.begin_connecting().await.unwrap();
+        let accepted_generation = lifecycle.begin_connecting().await.unwrap();
+        let (newer_tx, mut newer_rx) = mpsc::channel(1);
+        let newer_lv1 = crate::lv1::test_actor_handle(newer_tx);
+        let (fade_tx, _fade_rx) = mpsc::channel(1);
+        let install = lifecycle
+            .install_runtime_transaction(
+                accepted_generation,
+                RuntimeHandles::with_runtime_targets(newer_lv1, FadeEngineHandle::new(fade_tx)),
+            )
+            .await;
+        assert!(install.is_ok());
+
+        let stale_runtime = build_connected_runtime(
+            stale_generation,
+            lifecycle.current_runtime_generation().await,
+            &identity(Some("uuid-stale"), Some("LV1-Stale"), "192.168.1.36"),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            lifecycle.settings.clone(),
+            lifecycle.settings_snapshot().await.unwrap(),
+        );
+        let Err(rejection) = lifecycle
+            .install_runtime_transaction(stale_generation, stale_runtime.runtime_targets())
+            .await
+        else {
+            panic!("stale runtime install should be rejected");
+        };
+        lifecycle
+            .abort_rejected_connection_transaction(stale_generation, rejection.into_handles())
+            .await;
+        drop(stale_runtime);
+
+        let (reply, result) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
+            .await
+            .expect("show command should send");
+        let command = tokio::time::timeout(std::time::Duration::from_millis(100), newer_rx.recv())
+            .await
+            .expect("newer Show LV1 peer should receive GetState")
+            .expect("newer LV1 receiver should remain connected");
+        let Lv1Command::GetState { reply } = command else {
+            panic!("Show should request the newer LV1 state");
+        };
+        reply
+            .send(connected_snapshot())
+            .expect("Show LV1 state reply should send");
+        assert!(result.await.unwrap().is_err());
     }
 
     #[tokio::test(flavor = "current_thread")]
