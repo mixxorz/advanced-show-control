@@ -2,6 +2,10 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use std::future::Future;
+#[cfg(test)]
+use std::pin::Pin;
 use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
@@ -47,6 +51,10 @@ pub enum RuntimeInstallRejection {
     MissingRuntimeTargets { handles: RuntimeHandles },
 }
 
+#[cfg(test)]
+type BeforeSceneRecallStartHook =
+    Box<dyn FnOnce(RuntimeGeneration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
 struct BuiltConnectedRuntime {
     lv1: Lv1ActorHandle,
     lv1_task: crate::lv1::Lv1ActorTask,
@@ -81,7 +89,7 @@ struct StartedConnectedRuntime {
     scene_recall_fader: ScenesHandle,
     scene_recall_task: crate::scenes::ScenesTask,
     #[cfg(test)]
-    before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
+    before_scene_recall_start: Option<BeforeSceneRecallStartHook>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -368,10 +376,8 @@ impl AppLifecycle {
 
         #[cfg(test)]
         if let Some(before_scene_recall_start) = before_scene_recall_start {
-            before_scene_recall_start(self.current_runtime_generation().await);
+            before_scene_recall_start(self.current_runtime_generation().await).await;
         }
-        #[cfg(test)]
-        tokio::task::yield_now().await;
 
         if !self
             .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
@@ -770,6 +776,7 @@ mod tests {
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
+    use crate::scenes::ScenesCommand;
     use crate::show::{ShowEvent, ShowProjectionReason};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex as StdMutex};
@@ -926,7 +933,7 @@ mod tests {
         event_bus: AppEventBus,
         lv1: Lv1ActorHandle,
         fade: FadeEngineHandle,
-        before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
+        before_scene_recall_start: Option<BeforeSceneRecallStartHook>,
     ) -> StartedConnectedRuntime {
         assert!(
             lifecycle
@@ -1142,7 +1149,7 @@ mod tests {
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let newer_generation = generation + 1;
-        let (newer_scenes, _newer_task, _newer_peers) = build_scenes_actor(
+        let (newer_scenes, newer_task, _newer_peers) = build_scenes_actor(
             newer_generation,
             runtime_generation.clone(),
             event_bus.clone(),
@@ -1150,25 +1157,26 @@ mod tests {
             lifecycle.settings.clone(),
             lifecycle.settings_snapshot().await.unwrap(),
         );
+        newer_task.spawn();
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
         let (flip_tx, flip_rx) = oneshot::channel();
         let lifecycle_for_hook = lifecycle.clone();
         let newer_scenes_for_hook = newer_scenes.clone();
-        let hook = Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-            lifecycle_for_hook
-                .show_peers
-                .set_scenes(newer_scenes_for_hook.clone());
-            lifecycle_for_hook
-                .cue_lists_peers
-                .set_scenes(newer_scenes_for_hook);
-            let lifecycle = lifecycle_for_hook.clone();
-            tokio::spawn(async move {
-                lifecycle.begin_connecting().await;
-                let _ = flip_tx.send(());
-            });
-        }) as Box<dyn FnOnce(RuntimeGeneration) + Send>);
+        let hook: Option<BeforeSceneRecallStartHook> =
+            Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                Box::pin(async move {
+                    lifecycle_for_hook
+                        .show_peers
+                        .set_scenes(newer_scenes_for_hook.clone());
+                    lifecycle_for_hook
+                        .cue_lists_peers
+                        .set_scenes(newer_scenes_for_hook);
+                    lifecycle_for_hook.begin_connecting().await;
+                    let _ = flip_tx.send(());
+                })
+            }));
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -1191,8 +1199,32 @@ mod tests {
 
         assert!(flip_rx.await.is_ok());
         assert!(matches!(result, Err(message) if message == "generation is stale"));
-        assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+        let show_scenes = lifecycle
+            .show_peers
+            .scenes()
+            .expect("newer Show scenes peer should remain installed");
+        let (show_reply, show_rx) = oneshot::channel();
+        show_scenes
+            .send(ScenesCommand::InitialProjectionState { reply: show_reply })
+            .await
+            .expect("newer Show scenes peer should accept mailbox commands");
+        show_rx
+            .await
+            .expect("newer Show scenes peer should reply to mailbox commands");
+        let cue_lists_scenes = lifecycle
+            .cue_lists_peers
+            .scenes()
+            .expect("newer cue-list scenes peer should remain installed");
+        let (cue_lists_reply, cue_lists_rx) = oneshot::channel();
+        cue_lists_scenes
+            .send(ScenesCommand::InitialProjectionState {
+                reply: cue_lists_reply,
+            })
+            .await
+            .expect("newer cue-list scenes peer should accept mailbox commands");
+        cue_lists_rx
+            .await
+            .expect("newer cue-list scenes peer should reply to mailbox commands");
         assert_eq!(get_last_connected_lv1(&settings).await, Some(remembered));
         assert!(
             capture
@@ -1369,8 +1401,7 @@ mod tests {
             lv1,
             fade,
             Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                let seen_tx = seen_tx;
-                tokio::spawn(async move {
+                Box::pin(async move {
                     let (reply, rx) = oneshot::channel();
                     let ok = lv1_for_assertion
                         .send(Lv1Command::GetState { reply })
@@ -1378,7 +1409,7 @@ mod tests {
                         .is_ok()
                         && matches!(rx.await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
                     let _ = seen_tx.send(ok);
-                });
+                })
             })),
         )
         .await;
@@ -1782,11 +1813,10 @@ mod tests {
             lv1,
             fade,
             Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                let lifecycle = lifecycle_for_hook.clone();
-                tokio::spawn(async move {
-                    lifecycle.begin_connecting().await;
+                Box::pin(async move {
+                    lifecycle_for_hook.begin_connecting().await;
                     let _ = flip_tx.send(());
-                });
+                })
             })),
         )
         .await;
