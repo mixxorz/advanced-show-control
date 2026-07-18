@@ -4,14 +4,24 @@ export function StepperControl(props: {
   label: string;
   min: number;
   max: number;
+  step?: number;
   value: number;
+  formatValue?: (value: number) => string;
   onChange: (value: number) => void;
 }) {
   function step(direction: 1 | -1) {
+    const increment = props.step ?? 1;
     props.onChange(
-      Math.min(props.max, Math.max(props.min, props.value + direction)),
+      Math.min(
+        props.max,
+        Math.max(props.min, props.value + direction * increment),
+      ),
     );
   }
+
+  const displayValue = props.formatValue
+    ? props.formatValue(props.value)
+    : props.value;
 
   return (
     <div className="group flex h-9 w-32 gap-1">
@@ -20,7 +30,7 @@ export function StepperControl(props: {
         className={`${settingControlText} w-32 rounded-console-control border border-console-line bg-console-panel px-3 py-1.5 text-center text-accent-orange outline-none transition-colors group-hover:border-console-line-strong focus:border-console-line-strong`}
         readOnly
         type="text"
-        value={props.value}
+        value={displayValue}
       />
       <div className="flex w-[2rem] shrink-0 flex-col gap-1">
         <button

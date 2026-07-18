@@ -167,6 +167,42 @@ export function SettingsTab(props: {
                 />
               </SettingRow>
               <SettingRow
+                help="When enabled, an accepted repeated recall completes that scene's active fade targets. When disabled, matching fades continue from their current values over the full scene duration."
+                label="Same scene recall finishing"
+                onHelpChange={setActiveHelp}
+              >
+                <ToggleControl
+                  label="Same scene recall finishing"
+                  checked={settings.sameSceneRecallEnabled}
+                  onChange={(checked) =>
+                    update((current) => ({
+                      ...current,
+                      sameSceneRecallEnabled: checked,
+                    }))
+                  }
+                />
+              </SettingRow>
+              <SettingRow
+                help="Suppress repeated identical LV1 scene notifications below this threshold. Other scene recall timing and safety gates are unchanged."
+                label="Same scene recall threshold"
+                onHelpChange={setActiveHelp}
+              >
+                <StepperControl
+                  label="Same scene recall threshold"
+                  min={0}
+                  max={5000}
+                  step={100}
+                  value={settings.sameSceneRecallThresholdMs}
+                  formatValue={(value) => `${value} ms`}
+                  onChange={(value) =>
+                    update((current) => ({
+                      ...current,
+                      sameSceneRecallThresholdMs: value,
+                    }))
+                  }
+                />
+              </SettingRow>
+              <SettingRow
                 help="Write detailed debug diagnostics to disk. Enable only while troubleshooting because log files can grow quickly."
                 label="Extensive diagnostics"
                 onHelpChange={setActiveHelp}
