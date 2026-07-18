@@ -576,6 +576,7 @@ mod tests {
     use crate::runtime::generation::RuntimeGeneration;
     use crate::scenes::{SceneConfig, SceneScopeToggles};
     use crate::scenes::{ScenesCommand, build_scenes_actor};
+    use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::commands::ShowCommand;
     use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::handle::ShowStateHandle;
@@ -630,8 +631,15 @@ mod tests {
 
     fn show_actor_peers() -> super::ShowActorPeers {
         let peers = super::ShowActorPeers::default();
-        let (scenes, task, _peers) =
-            build_scenes_actor(1, RuntimeGeneration::default(), AppEventBus::default());
+        let event_bus = AppEventBus::default();
+        let (scenes, task, _peers) = build_scenes_actor(
+            1,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+        );
         task.spawn();
         peers.set_scenes(scenes);
         let (cue_lists, task, _cue_lists_peers) =
@@ -645,6 +653,18 @@ mod tests {
         let (handle, task, peers) = super::build_show_actor(event_bus);
         task.spawn();
         (handle, peers)
+    }
+
+    fn fake_settings_handle() -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let SettingsCommand::GetSettings { reply } = command {
+                    let _ = reply.send(AppSettings::default());
+                }
+            }
+        });
+        SettingsHandle::new(tx)
     }
 
     async fn get_scene_document(
@@ -731,8 +751,14 @@ mod tests {
     async fn connected_load_preserves_default_scene_ids_referenced_by_cue_entries() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
-        let (scenes, task, _scenes_peers) =
-            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        let (scenes, task, _scenes_peers) = build_scenes_actor(
+            1,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+        );
         task.spawn();
         peers.set_scenes(scenes.clone());
         let (cue_lists, task, _cue_lists_peers) =
@@ -954,8 +980,14 @@ mod tests {
     async fn save_queries_scenes_for_the_scene_document() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
-        let (scenes, task, _peers) =
-            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        let (scenes, task, _peers) = build_scenes_actor(
+            1,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+        );
         task.spawn();
         peers.set_scenes(scenes.clone());
         let (cue_lists, task, _cue_lists_peers) =
@@ -1000,8 +1032,14 @@ mod tests {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
         let mut events = event_bus.subscribe();
-        let (scenes, task, _peers) =
-            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        let (scenes, task, _peers) = build_scenes_actor(
+            1,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+        );
         task.spawn();
         peers.set_scenes(scenes.clone());
         let (cue_lists, task, _cue_lists_peers) =
@@ -1067,8 +1105,14 @@ mod tests {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
         let mut events = event_bus.subscribe();
-        let (scenes, task, _peers) =
-            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        let (scenes, task, _peers) = build_scenes_actor(
+            1,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+        );
         task.spawn();
         peers.set_scenes(scenes.clone());
         let (cue_lists, task, _cue_lists_peers) =
@@ -1218,8 +1262,14 @@ mod tests {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
         let mut events = event_bus.subscribe();
-        let (scenes, task, _peers) =
-            build_scenes_actor(1, RuntimeGeneration::default(), event_bus.clone());
+        let (scenes, task, _peers) = build_scenes_actor(
+            1,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+        );
         task.spawn();
         peers.set_scenes(scenes.clone());
         let (cue_lists, task, _cue_lists_peers) =

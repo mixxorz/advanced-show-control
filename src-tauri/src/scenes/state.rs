@@ -7,7 +7,6 @@ use crate::scenes::scene_alignment::align_scene_configs;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
-const SAME_SCENE_REPEAT_DELAY: Duration = Duration::from_millis(500);
 const SCENE_LIST_EDIT_SUPPRESSION_WINDOW: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,7 +51,7 @@ pub(crate) struct CopySceneSettingsResult {
 /// gate arms over `RECALL_ARMING_DELAY`: scenes seen while arming are the
 /// pre-existing scene (the baseline), not recalls. The same notify can land
 /// again just after the window closes, so a baseline-equal scene observed
-/// within `SAME_SCENE_REPEAT_DELAY` of the baseline observation is also
+/// within the supplied same-scene repeat delay of the baseline observation is also
 /// suppressed rather than treated as a recall.
 #[derive(Debug, Default)]
 enum RecallGate {
@@ -67,7 +66,7 @@ enum RecallGate {
         deadline: Instant,
     },
     /// Observations may trigger recalls, except baseline echoes and repeats
-    /// of `last_trigger` within `SAME_SCENE_REPEAT_DELAY`.
+    /// of `last_trigger` within the supplied same-scene repeat delay.
     Armed {
         baseline: ObservedScene,
         last_trigger: Option<ObservedScene>,
@@ -348,11 +347,20 @@ impl ScenesState {
             .unwrap_or(false)
     }
 
-    pub(crate) fn accepts(&mut self, current_scene: &SceneState) -> bool {
-        self.accepts_at(current_scene, Instant::now())
+    pub(crate) fn accepts(
+        &mut self,
+        current_scene: &SceneState,
+        same_scene_repeat_delay: Duration,
+    ) -> bool {
+        self.accepts_at(current_scene, Instant::now(), same_scene_repeat_delay)
     }
 
-    pub(crate) fn accepts_at(&mut self, current_scene: &SceneState, now: Instant) -> bool {
+    pub(crate) fn accepts_at(
+        &mut self,
+        current_scene: &SceneState,
+        now: Instant,
+        same_scene_repeat_delay: Duration,
+    ) -> bool {
         let observed = ObservedScene {
             scene: RecallSceneIdentity::from(current_scene),
             at: now,
@@ -373,7 +381,12 @@ impl ScenesState {
                 }
                 let baseline = baseline.clone();
                 let mut last_trigger = None;
-                let accepted = decide_armed(&baseline, &mut last_trigger, observed);
+                let accepted = decide_armed(
+                    &baseline,
+                    &mut last_trigger,
+                    observed,
+                    same_scene_repeat_delay,
+                );
                 self.gate = RecallGate::Armed {
                     baseline,
                     last_trigger,
@@ -383,7 +396,7 @@ impl ScenesState {
             RecallGate::Armed {
                 baseline,
                 last_trigger,
-            } => decide_armed(baseline, last_trigger, observed),
+            } => decide_armed(baseline, last_trigger, observed, same_scene_repeat_delay),
         }
     }
 
@@ -394,21 +407,22 @@ impl ScenesState {
 }
 
 /// Armed-state decision: accept unless the observation repeats the last
-/// trigger or echoes the arming baseline within `SAME_SCENE_REPEAT_DELAY`.
+/// trigger or echoes the arming baseline within the supplied same-scene repeat delay.
 fn decide_armed(
     baseline: &ObservedScene,
     last_trigger: &mut Option<ObservedScene>,
     observed: ObservedScene,
+    same_scene_repeat_delay: Duration,
 ) -> bool {
     if let Some(last) = last_trigger.as_ref()
         && last.scene == observed.scene
-        && observed.at.duration_since(last.at) < SAME_SCENE_REPEAT_DELAY
+        && observed.at.duration_since(last.at) < same_scene_repeat_delay
     {
         return false;
     }
 
     if baseline.scene == observed.scene
-        && observed.at.duration_since(baseline.at) < SAME_SCENE_REPEAT_DELAY
+        && observed.at.duration_since(baseline.at) < same_scene_repeat_delay
     {
         // Baseline echo: the pre-existing scene re-broadcast shortly after
         // arming. Record it as the last trigger so further echoes fall under
@@ -564,74 +578,124 @@ mod tests {
         let scene = scene(1, "Intro");
         let start = Instant::now();
 
-        assert!(!state.accepts_at(&scene, start));
-        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY));
+        assert!(!state.accepts_at(&scene, start, Duration::from_millis(500)));
+        assert!(state.accepts_at(
+            &scene,
+            start + RECALL_ARMING_DELAY,
+            Duration::from_millis(500),
+        ));
     }
 
     #[test]
-    fn suppresses_same_scene_repeat_for_500ms() {
+    fn configurable_repeat_delay_accepts_exact_boundary() {
+        let mut state = ScenesState::default();
+        let scene = scene(1, "Intro");
+        let start = Instant::now();
+        let delay = Duration::from_millis(1_200);
+
+        assert!(!state.accepts_at(&scene, start, delay));
+        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY, delay));
+        assert!(!state.accepts_at(
+            &scene,
+            start + RECALL_ARMING_DELAY + delay - Duration::from_millis(1),
+            delay,
+        ));
+        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY + delay, delay,));
+    }
+
+    #[test]
+    fn zero_repeat_delay_accepts_immediate_repeat_after_arming() {
         let mut state = ScenesState::default();
         let scene = scene(1, "Intro");
         let start = Instant::now();
 
-        assert!(!state.accepts_at(&scene, start));
-        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY));
-        assert!(!state.accepts_at(
-            &scene,
-            start + RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY - Duration::from_millis(1)
-        ));
-        assert!(state.accepts_at(
-            &scene,
-            start + RECALL_ARMING_DELAY + SAME_SCENE_REPEAT_DELAY
-        ));
+        assert!(!state.accepts_at(&scene, start, Duration::ZERO));
+        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY, Duration::ZERO));
+        assert!(state.accepts_at(&scene, start + RECALL_ARMING_DELAY, Duration::ZERO));
     }
 
     #[test]
     fn baseline_scene_seen_shortly_after_arming_is_suppressed() {
         let mut state = ScenesState::default();
         let start = Instant::now();
+        let delay = Duration::from_millis(1_200);
 
-        assert!(!state.accepts_at(&scene(1, "Intro"), start));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
         // Scene re-observed late in the arming window becomes the baseline.
-        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(1_900)));
+        assert!(!state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(1_900),
+            delay,
+        ));
         // The same scene re-broadcast just after arming is the pre-existing
         // scene, not an operator recall.
-        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_100)));
+        assert!(!state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(2_100),
+            delay,
+        ));
     }
 
     #[test]
     fn suppressed_baseline_echo_counts_as_trigger_for_repeat_suppression() {
         let mut state = ScenesState::default();
         let start = Instant::now();
+        let delay = Duration::from_millis(1_200);
 
-        assert!(!state.accepts_at(&scene(1, "Intro"), start));
-        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(1_900)));
-        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_100)));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
+        assert!(!state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(1_900),
+            delay,
+        ));
+        assert!(!state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(2_100),
+            delay,
+        ));
         // Still within the repeat window measured from the baseline observation.
-        assert!(!state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_350)));
+        assert!(!state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(3_099),
+            delay,
+        ));
         // Once the repeat window from the baseline observation has elapsed,
         // the same scene is a real recall again.
-        assert!(state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_500)));
+        assert!(state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(3_100),
+            delay,
+        ));
     }
 
     #[test]
     fn last_scene_seen_during_arming_becomes_the_suppressed_baseline() {
         let mut state = ScenesState::default();
         let start = Instant::now();
+        let delay = Duration::from_millis(500);
 
-        assert!(!state.accepts_at(&scene(1, "Intro"), start));
-        assert!(!state.accepts_at(&scene(2, "Verse"), start + Duration::from_millis(1_900)));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
+        assert!(!state.accepts_at(
+            &scene(2, "Verse"),
+            start + Duration::from_millis(1_900),
+            delay,
+        ));
         // "Verse" is the baseline now, so "Intro" is a real scene change.
-        assert!(state.accepts_at(&scene(1, "Intro"), start + Duration::from_millis(2_100)));
+        assert!(state.accepts_at(
+            &scene(1, "Intro"),
+            start + Duration::from_millis(2_100),
+            delay,
+        ));
     }
 
     #[test]
     fn different_scene_right_after_arming_is_accepted() {
         let mut state = ScenesState::default();
         let start = Instant::now();
+        let delay = Duration::from_millis(500);
 
-        assert!(!state.accepts_at(&scene(1, "Intro"), start));
-        assert!(state.accepts_at(&scene(2, "Verse"), start + RECALL_ARMING_DELAY));
+        assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
+        assert!(state.accepts_at(&scene(2, "Verse"), start + RECALL_ARMING_DELAY, delay,));
     }
 
     #[test]
@@ -695,7 +759,7 @@ mod tests {
         let mut state = ScenesState::default();
         let now = Instant::now();
 
-        assert!(!state.accepts_at(&scene(1, "Intro"), now));
+        assert!(!state.accepts_at(&scene(1, "Intro"), now, Duration::from_millis(500),));
         state.observe_scene_list(initial_scene_list(), now);
         state.observe_scene_list(moved_current_scene_list(), now + Duration::from_millis(10));
         assert!(state.is_scene_list_edit_suppressed(now + Duration::from_millis(10)));
@@ -714,7 +778,11 @@ mod tests {
         });
 
         assert!(!state.is_scene_list_edit_suppressed(now));
-        assert!(!state.accepts_at(&scene(1, "Intro"), now + Duration::from_millis(1)));
+        assert!(!state.accepts_at(
+            &scene(1, "Intro"),
+            now + Duration::from_millis(1),
+            Duration::from_millis(500),
+        ));
     }
 
     #[test]
