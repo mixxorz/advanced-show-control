@@ -1,6 +1,6 @@
 //! Show-owned application command handlers.
 
-use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 use crate::scenes::SceneConfig;
 use crate::show::show_file::LoadValidationReport;
 use serde::{Deserialize, Serialize};
@@ -34,21 +34,6 @@ pub enum ShowCommand {
     RefreshLv1Discovery {
         timeout_ms: Option<u64>,
         reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
-    },
-    SetPendingLv1Identity {
-        identity: Option<Lv1SystemIdentity>,
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
-    EstablishConnectedLv1Identity {
-        identity: Lv1SystemIdentity,
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
-    ClearConnectedLv1Identity {
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
-    SetReconnectState {
-        reconnect: ReconnectState,
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
     CompleteLv1Connection {
         identity: Lv1SystemIdentity,

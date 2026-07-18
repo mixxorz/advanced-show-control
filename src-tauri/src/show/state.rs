@@ -40,43 +40,6 @@ impl ShowState {
         }
     }
 
-    pub(crate) fn set_pending_lv1_identity(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
-        if self.pending_lv1_identity == identity {
-            false
-        } else {
-            self.pending_lv1_identity = identity;
-            true
-        }
-    }
-
-    pub(crate) fn establish_connected_lv1_identity(&mut self, identity: Lv1SystemIdentity) -> bool {
-        let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
-            || self.pending_lv1_identity.is_some();
-        if changed {
-            self.connected_lv1_identity = Some(identity);
-            self.pending_lv1_identity = None;
-        }
-        changed
-    }
-
-    pub(crate) fn clear_connected_lv1_identity(&mut self) -> bool {
-        if self.connected_lv1_identity.is_none() {
-            false
-        } else {
-            self.connected_lv1_identity = None;
-            true
-        }
-    }
-
-    pub(crate) fn set_reconnect_state(&mut self, reconnect: ReconnectState) -> bool {
-        if self.reconnect == reconnect {
-            false
-        } else {
-            self.reconnect = reconnect;
-            true
-        }
-    }
-
     pub(crate) fn complete_lv1_connection(&mut self, identity: Lv1SystemIdentity) -> bool {
         let reconnect = ReconnectState::default();
         let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
@@ -105,6 +68,22 @@ impl ShowState {
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
         changed
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_connection_metadata_for_test(
+        connected_lv1_identity: Lv1SystemIdentity,
+        pending_lv1_identity: Option<Lv1SystemIdentity>,
+        reconnect: ReconnectState,
+        last_event_at: Option<String>,
+    ) -> Self {
+        Self {
+            connected_lv1_identity: Some(connected_lv1_identity),
+            pending_lv1_identity,
+            reconnect,
+            last_event_at,
+            ..Default::default()
+        }
     }
 
     pub(crate) fn handle_runtime_disconnected(&mut self, _reason: String) -> bool {
@@ -240,6 +219,7 @@ mod tests {
                 active: true,
                 attempt: 4,
             },
+            last_event_at: Some("2026-07-19T12:00:00.000Z".to_string()),
             ..Default::default()
         };
 
@@ -248,6 +228,10 @@ mod tests {
         assert_eq!(projection.connected_lv1_identity, Some(connected));
         assert_eq!(projection.pending_lv1_identity, None);
         assert_eq!(projection.reconnect, ReconnectState::default());
+        assert_eq!(
+            projection.last_event_at.as_deref(),
+            Some("2026-07-19T12:00:00.000Z")
+        );
         assert!(!state.fail_lv1_reconnect());
     }
 }

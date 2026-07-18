@@ -311,14 +311,13 @@ impl AppLifecycle {
 
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
-            let _ = self.apply_failed_connect_metadata(failure_mode).await;
+            let _ = self.fail_lv1_connection_metadata(failure_mode).await;
             log_lv1_connect_failed(&identity, failure_mode);
             return Err("LV1 did not connect".to_string());
         }
 
-        let reconnect_state = crate::connection_state::ReconnectState::default();
         let connect_result = self
-            .apply_connected_lv1_metadata(identity.clone(), reconnect_state)
+            .complete_lv1_connection_metadata(identity.clone())
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
@@ -382,14 +381,13 @@ impl AppLifecycle {
             .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())?;
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
-            let _ = self.apply_failed_connect_metadata(failure_mode).await;
+            let _ = self.fail_lv1_connection_metadata(failure_mode).await;
             log_lv1_connect_failed(&identity, failure_mode);
             return Err("LV1 did not connect".to_string());
         }
 
-        let reconnect_state = crate::connection_state::ReconnectState::default();
         let connect_result = self
-            .apply_connected_lv1_metadata(identity.clone(), reconnect_state)
+            .complete_lv1_connection_metadata(identity.clone())
             .await
             .map_err(|error| error.to_string())?;
         log_lv1_connected(&identity);
@@ -428,79 +426,39 @@ impl AppLifecycle {
         Ok(connect_result)
     }
 
-    async fn apply_connected_lv1_metadata(
+    async fn complete_lv1_connection_metadata(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
-        reconnect: crate::connection_state::ReconnectState,
     ) -> Result<ConnectCommandResult, AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.show
-            .send(ShowCommand::SetPendingLv1Identity {
-                identity: None,
-                reply: Some(reply),
-            })
-            .await
-            .map_err(|_| AppCommandError::ShowUnavailable)?;
-        let pending_result = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::EstablishConnectedLv1Identity {
+            .send(ShowCommand::CompleteLv1Connection {
                 identity,
                 reply: Some(reply),
             })
             .await
             .map_err(|_| AppCommandError::ShowUnavailable)?;
-        let connected_result = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::SetReconnectState {
-                reconnect,
-                reply: Some(reply),
-            })
-            .await
-            .map_err(|_| AppCommandError::ShowUnavailable)?;
-        let reconnect_result = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-        Ok(ConnectCommandResult {
-            changed: pending_result.changed || connected_result.changed || reconnect_result.changed,
-        })
+        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)
     }
 
-    async fn apply_failed_connect_metadata(
+    async fn fail_lv1_connection_metadata(
         &self,
         failure_mode: ConnectFailureMode,
     ) -> Result<(), AppCommandError> {
-        match failure_mode {
+        let (reply, rx) = oneshot::channel();
+        let command = match failure_mode {
             ConnectFailureMode::ClearConnectedIdentity => {
-                let (reply, rx) = oneshot::channel();
-                self.show
-                    .send(ShowCommand::ClearConnectedLv1Identity { reply: Some(reply) })
-                    .await
-                    .map_err(|_| AppCommandError::ShowUnavailable)?;
-                let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
+                ShowCommand::FailLv1Connection { reply: Some(reply) }
             }
             ConnectFailureMode::PreserveConnectedIdentity => {
-                let (reply, rx) = oneshot::channel();
-                self.show
-                    .send(ShowCommand::SetPendingLv1Identity {
-                        identity: None,
-                        reply: Some(reply),
-                    })
-                    .await
-                    .map_err(|_| AppCommandError::ShowUnavailable)?;
-                let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
-                let (reply, rx) = oneshot::channel();
-                self.show
-                    .send(ShowCommand::SetReconnectState {
-                        reconnect: crate::connection_state::ReconnectState::default(),
-                        reply: Some(reply),
-                    })
-                    .await
-                    .map_err(|_| AppCommandError::ShowUnavailable)?;
-                let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
+                ShowCommand::FailLv1Reconnect { reply: Some(reply) }
             }
-        }
+        };
+        self.show
+            .send(command)
+            .await
+            .map_err(|_| AppCommandError::ShowUnavailable)?;
+        let _ = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
         Ok(())
     }
 
@@ -1219,7 +1177,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connected_identity_metadata_is_applied() {
+    async fn complete_connection_metadata_is_applied_atomically() {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let mut events = lifecycle.event_bus.subscribe();
@@ -1231,7 +1189,7 @@ mod tests {
         };
 
         lifecycle
-            .apply_connected_lv1_metadata(identity.clone(), ReconnectState::default())
+            .complete_lv1_connection_metadata(identity.clone())
             .await
             .expect("connected metadata should apply");
 
@@ -1242,10 +1200,21 @@ mod tests {
                 ..
             })
         ));
+
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .expect("connection metadata state should be requested");
+        let state = rx.await.expect("connection metadata state should arrive");
+        assert_eq!(state.connected_lv1_identity, Some(identity));
+        assert_eq!(state.pending_lv1_identity, None);
+        assert_eq!(state.reconnect, ReconnectState::default());
     }
 
     #[tokio::test]
-    async fn failed_connect_metadata_is_applied() {
+    async fn failed_reconnect_metadata_preserves_connected_identity() {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let mut events = lifecycle.event_bus.subscribe();
@@ -1259,42 +1228,13 @@ mod tests {
         let (reply, rx) = oneshot::channel();
         lifecycle
             .show
-            .send(ShowCommand::SetPendingLv1Identity {
-                identity: Some(identity.clone()),
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        let _ = rx.await.unwrap();
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::EstablishConnectedLv1Identity {
+            .send(ShowCommand::CompleteLv1Connection {
                 identity: identity.clone(),
                 reply: Some(reply),
             })
             .await
             .unwrap();
         let _ = rx.await.unwrap();
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::SetReconnectState {
-                reconnect: ReconnectState {
-                    active: true,
-                    attempt: 3,
-                },
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        let _ = rx.await.unwrap();
-
-        lifecycle
-            .apply_failed_connect_metadata(ConnectFailureMode::PreserveConnectedIdentity)
-            .await
-            .expect("failed connect metadata should apply");
-
         assert!(matches!(
             events.recv().await.unwrap(),
             AppEvent::Show(ShowEvent::StateChanged {
@@ -1302,6 +1242,22 @@ mod tests {
                 ..
             })
         ));
+        lifecycle
+            .fail_lv1_connection_metadata(ConnectFailureMode::PreserveConnectedIdentity)
+            .await
+            .expect("failed reconnect metadata should apply");
+
+        assert!(events.try_recv().is_err());
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .expect("connection metadata state should be requested");
+        let state = rx.await.expect("connection metadata state should arrive");
+        assert_eq!(state.connected_lv1_identity, Some(identity));
+        assert_eq!(state.pending_lv1_identity, None);
+        assert_eq!(state.reconnect, ReconnectState::default());
     }
 
     #[tokio::test]
@@ -1573,7 +1529,7 @@ mod tests {
         let (reply, rx) = oneshot::channel();
         lifecycle
             .show
-            .send(ShowCommand::EstablishConnectedLv1Identity {
+            .send(ShowCommand::CompleteLv1Connection {
                 identity: Lv1SystemIdentity {
                     uuid: None,
                     host: Some("Unreachable".to_string()),

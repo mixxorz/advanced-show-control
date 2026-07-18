@@ -77,16 +77,48 @@ pub struct ShowActorTask {
     rx: mpsc::Receiver<ShowCommand>,
     event_bus: AppEventBus,
     peers: ShowActorPeers,
+    state: ShowState,
 }
 
 impl ShowActorTask {
     pub fn spawn(self) {
-        tauri::async_runtime::spawn(run_show_actor(self.rx, self.event_bus, self.peers));
+        tauri::async_runtime::spawn(run_show_actor(
+            self.rx,
+            self.event_bus,
+            self.peers,
+            self.state,
+        ));
     }
 }
 
 pub fn build_show_actor(
     event_bus: AppEventBus,
+) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
+    build_show_actor_with_state(event_bus, ShowState::default())
+}
+
+#[cfg(test)]
+pub(crate) fn build_show_actor_with_connection_metadata_for_test(
+    event_bus: AppEventBus,
+    connected_lv1_identity: crate::connection_state::Lv1SystemIdentity,
+    pending_lv1_identity: Option<crate::connection_state::Lv1SystemIdentity>,
+    reconnect: crate::connection_state::ReconnectState,
+    last_event_at: Option<String>,
+) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
+    build_show_actor_with_state(
+        event_bus,
+        ShowState::with_connection_metadata_for_test(
+            connected_lv1_identity,
+            pending_lv1_identity,
+            reconnect,
+            last_event_at,
+        ),
+    )
+}
+
+fn build_show_actor_with_state(
+    event_bus: AppEventBus,
+    state: ShowState,
 ) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
     let (tx, rx) = mpsc::channel(32);
     let peers = ShowActorPeers::default();
@@ -94,6 +126,7 @@ pub fn build_show_actor(
         rx,
         event_bus,
         peers: peers.clone(),
+        state,
     };
     (ShowStateHandle::new(tx), task, peers)
 }
@@ -102,8 +135,8 @@ async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
     event_bus: AppEventBus,
     peers: ShowActorPeers,
+    mut state: ShowState,
 ) {
-    let mut state = ShowState::default();
     let mut events = event_bus.subscribe();
     let mut active_generation = 0;
     loop {
@@ -292,54 +325,6 @@ async fn handle_command(
             let result = refresh_lv1_discovery(state, event_bus, timeout_ms);
             if let Some(reply) = reply {
                 let _ = reply.send(result);
-            }
-        }
-        ShowCommand::SetPendingLv1Identity { identity, reply } => {
-            let changed = state.set_pending_lv1_identity(identity);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::EstablishConnectedLv1Identity { identity, reply } => {
-            let changed = state.establish_connected_lv1_identity(identity);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::ClearConnectedLv1Identity { reply } => {
-            let changed = state.clear_connected_lv1_identity();
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::SetReconnectState { reconnect, reply } => {
-            let changed = state.set_reconnect_state(reconnect);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
             }
         }
         ShowCommand::CompleteLv1Connection { identity, reply } => {

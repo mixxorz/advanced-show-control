@@ -191,36 +191,52 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_reconnect_preserves_connected_identity_and_noop_publishes_none() {
+    async fn failed_reconnect_preserves_connected_identity_with_one_full_projection() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus);
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
             host: Some("LV1-FOH".to_string()),
             address: "192.168.1.35".to_string(),
             port: 50_000,
         };
-        show.send(ShowCommand::CompleteLv1Connection {
-            identity: identity.clone(),
-            reply: None,
-        })
-        .await
-        .unwrap();
-        recv_show_event(&mut events, ShowProjectionReason::ConnectionMetadata).await;
+        let (show, task, _peers) =
+            super::super::actor::build_show_actor_with_connection_metadata_for_test(
+                event_bus,
+                identity.clone(),
+                Some(Lv1SystemIdentity {
+                    uuid: Some("pending-uuid".to_string()),
+                    host: Some("LV1-MON".to_string()),
+                    address: "192.168.1.36".to_string(),
+                    port: 50_000,
+                }),
+                ReconnectState {
+                    active: true,
+                    attempt: 3,
+                },
+                Some("2026-07-19T12:00:00.000Z".to_string()),
+            );
+        task.spawn();
 
         let (reply, rx) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::FailLv1Reconnect { reply: Some(reply) })
             .await
             .unwrap();
-        assert_eq!(rx.await.unwrap(), ShowCommandResult { changed: false });
+        assert_eq!(rx.await.unwrap(), ShowCommandResult { changed: true });
+        let AppEvent::Show(ShowEvent::StateChanged { reason, state }) =
+            events.recv().await.unwrap()
+        else {
+            panic!("expected Show projection");
+        };
+        assert_eq!(reason, ShowProjectionReason::ConnectionMetadata);
+        assert_eq!(state.connected_lv1_identity, Some(identity));
+        assert_eq!(state.pending_lv1_identity, None);
+        assert_eq!(state.reconnect, ReconnectState::default());
+        assert_eq!(
+            state.last_event_at.as_deref(),
+            Some("2026-07-19T12:00:00.000Z")
+        );
         assert!(events.try_recv().is_err());
-
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .unwrap();
-        assert_eq!(rx.await.unwrap().connected_lv1_identity, Some(identity));
     }
 
     #[tokio::test]
