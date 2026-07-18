@@ -1,4 +1,4 @@
-// Keep these types in sync with src-tauri/src/app_state/view.rs; Rust owns AppViewState snapshots; TS mirrors serialized Tauri event payloads; update both and run npm run typecheck.
+// Keep these types in sync with src-tauri/src/projector/view.rs; Rust owns AppViewState snapshots; TS mirrors serialized Tauri event payloads; update both and run npm run typecheck.
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 export type DiscoveredLv1Status =
   | "available"
@@ -35,6 +35,8 @@ export type AppSettings = {
   timeDisplay: TimeDisplayFormat;
   faderOverrideSensitivity: number;
   enableExtensiveDiagnostics: boolean;
+  sameSceneRecallEnabled: boolean;
+  sameSceneRecallThresholdMs: number;
 };
 
 export type TcpConnectLatencyResult = {
@@ -164,6 +166,8 @@ export const disconnectedAppViewState: AppViewState = {
     timeDisplay: "twentyFourHour",
     faderOverrideSensitivity: 9,
     enableExtensiveDiagnostics: false,
+    sameSceneRecallEnabled: true,
+    sameSceneRecallThresholdMs: 500,
   },
   connection: "disconnected",
   discoveredLv1Systems: [],

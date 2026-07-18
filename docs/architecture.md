@@ -328,7 +328,9 @@ waiting. Same-scene finishing behavior is tracked separately in #42.
 
 #### Scene-Owned Repeated Recall
 
-Every timed active target retains the exact LV1 scene index and scene name that created it. After normal recall validation, recalling that exact scene while it owns active targets rewrites only those targets for completion on the next eligible scheduler tick. The repeated recall resets the connection-wide post-recall readiness barrier; no final parameter write occurs until two qualifying same-generation pings release the barrier. The normal scheduler then sends each stored target value exactly and removes the completed target. Targets owned by other scenes remain active and resume after the shared readiness pause.
+Every timed active target retains the exact LV1 scene index and scene name that created it. The application-wide same-scene recall threshold controls only suppression of repeated identical scene observations and defaults to 500 ms. The 25 ms settle delay, connection-generation arming window, scene-list-edit suppression, and fresh-state timeout remain independent.
+
+After normal recall validation, enabled same-scene finishing rewrites active targets owned by the exact scene for completion after readiness. When finishing is disabled, matching target keys are replaced with full-duration timelines from their current interpolated or live values, using the same overlap path as a different-scene recall. Both paths reset and obey the connection-wide two-ping readiness barrier.
 
 ### 13.3 `scenes`
 
@@ -342,6 +344,7 @@ The module owns the following responsibilities:
 4. Dispatch of validated LV1 recall commands through wired peers.
 5. Dispatch of validated fade-start commands through wired peers.
 6. Recall status facts for skipped, blocked, and started recall outcomes.
+7. Fresh app-settings acquisition at each settled scene-observation boundary before recall validation and fade dispatch.
 
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 

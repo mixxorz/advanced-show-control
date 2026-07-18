@@ -16,6 +16,34 @@ mod tests {
     }
 
     #[test]
+    fn default_settings_enable_same_scene_finishing_with_500ms_threshold() {
+        let settings = AppSettings::default();
+
+        assert!(settings.same_scene_recall_enabled);
+        assert_eq!(settings.same_scene_recall_threshold_ms, 500);
+    }
+
+    #[test]
+    fn partial_settings_use_same_scene_defaults() {
+        let settings: AppSettings = serde_json::from_str(r#"{"autoSaveSessions":true}"#)
+            .expect("partial settings should deserialize");
+
+        assert!(settings.same_scene_recall_enabled);
+        assert_eq!(settings.same_scene_recall_threshold_ms, 500);
+    }
+
+    #[test]
+    fn normalization_clamps_same_scene_threshold() {
+        let settings = AppSettings {
+            same_scene_recall_threshold_ms: 9_999,
+            ..Default::default()
+        }
+        .normalized();
+
+        assert_eq!(settings.same_scene_recall_threshold_ms, 5_000);
+    }
+
+    #[test]
     fn normalization_clamps_sensitivity_and_trims_shortcuts() {
         let settings = AppSettings {
             fader_override_sensitivity: 99,
@@ -116,6 +144,8 @@ pub struct AppSettings {
     pub time_display: TimeDisplayFormat,
     pub fader_override_sensitivity: u8,
     pub enable_extensive_diagnostics: bool,
+    pub same_scene_recall_enabled: bool,
+    pub same_scene_recall_threshold_ms: u64,
 }
 
 impl Default for AppSettings {
@@ -127,6 +157,8 @@ impl Default for AppSettings {
             time_display: TimeDisplayFormat::TwentyFourHour,
             fader_override_sensitivity: 9,
             enable_extensive_diagnostics: false,
+            same_scene_recall_enabled: true,
+            same_scene_recall_threshold_ms: 500,
         }
     }
 }
@@ -134,6 +166,7 @@ impl Default for AppSettings {
 impl AppSettings {
     pub fn normalized(mut self) -> Self {
         self.fader_override_sensitivity = self.fader_override_sensitivity.clamp(1, 10);
+        self.same_scene_recall_threshold_ms = self.same_scene_recall_threshold_ms.clamp(0, 5_000);
         self.keyboard_shortcuts = self.keyboard_shortcuts.normalized();
         self
     }

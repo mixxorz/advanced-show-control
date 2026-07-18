@@ -46,6 +46,8 @@ describe("SettingsTab", () => {
         timeDisplay: "twentyFourHour" as const,
         faderOverrideSensitivity: 9,
         enableExtensiveDiagnostics: false,
+        sameSceneRecallEnabled: true,
+        sameSceneRecallThresholdMs: 500,
       },
     };
 
@@ -101,6 +103,65 @@ describe("SettingsTab", () => {
       enableExtensiveDiagnostics: true,
     });
   });
+
+  it("updates same-scene finishing while replacing the full settings object", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(screen.getByLabelText("Same scene recall finishing"));
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      sameSceneRecallEnabled: false,
+    });
+  });
+
+  it("updates the same-scene threshold in 100ms increments", () => {
+    renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    expect(screen.getByLabelText("Same scene recall threshold")).toHaveValue(
+      "500 ms",
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Increase Same scene recall threshold",
+      }),
+    );
+
+    expect(replaceAppSettings).toHaveBeenCalledWith({
+      ...disconnectedAppViewState.settings,
+      sameSceneRecallThresholdMs: 600,
+    });
+  });
+
+  it.each([
+    [0, "Decrease Same scene recall threshold"],
+    [5000, "Increase Same scene recall threshold"],
+  ] as const)(
+    "keeps same-scene threshold %i within bounds",
+    (value, buttonName) => {
+      renderWithAppProviders(<SettingsTab />, {
+        appState: {
+          ...disconnectedAppViewState,
+          settings: {
+            ...disconnectedAppViewState.settings,
+            sameSceneRecallEnabled: false,
+            sameSceneRecallThresholdMs: value,
+          },
+        },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: buttonName }));
+      expect(replaceAppSettings).toHaveBeenCalledWith({
+        ...disconnectedAppViewState.settings,
+        sameSceneRecallEnabled: false,
+        sameSceneRecallThresholdMs: value,
+      });
+    },
+  );
 
   it("composes rapid full-object setting updates before projection refreshes", () => {
     renderWithAppProviders(<SettingsTab />, {

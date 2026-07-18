@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::fade::{FadeCommand, FadeEngineHandle};
+use crate::fade::{FadeCommand, FadeEngineHandle, SameSceneRecallBehavior};
 use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
     SceneState,
@@ -17,6 +17,7 @@ use crate::scenes::{
     RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult, ScenesEvent,
     ScenesProjectionReason, ScenesState, SelectedSceneResult,
 };
+use crate::settings::{AppSettings, SettingsCommand, SettingsEvent, SettingsHandle};
 use crate::show::ShowEvent;
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
@@ -69,6 +70,8 @@ pub struct ScenesTask {
     peers: ScenesPeers,
     event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
+    settings_handle: SettingsHandle,
+    initial_settings: AppSettings,
     command_rx: mpsc::Receiver<ScenesCommand>,
     #[cfg(test)]
     pending_scene_observer: Option<oneshot::Sender<()>>,
@@ -84,6 +87,9 @@ pub fn build_scenes_actor(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     event_bus: AppEventBus,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    settings_handle: SettingsHandle,
+    initial_settings: AppSettings,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
 
@@ -93,8 +99,10 @@ pub fn build_scenes_actor(
         generation,
         runtime_generation,
         peers: peers.clone(),
-        events: event_bus.subscribe(),
+        events,
         event_bus,
+        settings_handle,
+        initial_settings,
         command_rx,
         #[cfg(test)]
         pending_scene_observer: None,
@@ -107,9 +115,19 @@ fn build_scenes_actor_with_pending_scene_observer(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     event_bus: AppEventBus,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    settings_handle: SettingsHandle,
+    initial_settings: AppSettings,
     pending_scene_observer: oneshot::Sender<()>,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
-    let (handle, mut task, peers) = build_scenes_actor(generation, runtime_generation, event_bus);
+    let (handle, mut task, peers) = build_scenes_actor(
+        generation,
+        runtime_generation,
+        event_bus,
+        events,
+        settings_handle,
+        initial_settings,
+    );
     task.pending_scene_observer = Some(pending_scene_observer);
     (handle, task, peers)
 }
@@ -121,12 +139,15 @@ async fn run_scenes_actor(task: ScenesTask) {
         peers,
         event_bus,
         mut events,
+        settings_handle,
+        initial_settings,
         mut command_rx,
         #[cfg(test)]
         mut pending_scene_observer,
     } = task;
 
     let mut recall_state = ScenesState::default();
+    let mut settings = initial_settings;
     let mut pending_scene: Option<PendingSceneObservation> = None;
 
     // Recall timing windows:
@@ -141,8 +162,8 @@ async fn run_scenes_actor(task: ScenesTask) {
     // - 2 s arming delay:     The first scene seen after arming is treated as the baseline
     //                         (current scene at arm time), not a scene change to recall.
     //
-    // - 500 ms repeat delay:  Prevents the same scene from triggering two consecutive recalls
-    //                         if a bounce or duplicate event arrives.
+    // - Configurable repeat delay (500 ms default): Prevents the same scene from triggering two
+    //                         consecutive recalls if a bounce or duplicate event arrives.
     loop {
         if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
             tokio::select! {
@@ -229,15 +250,28 @@ async fn run_scenes_actor(task: ScenesTask) {
                         Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) => {
                             recall_state.set_lockout(state.lockout);
                         }
+                        Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
+                            settings = updated_settings;
+                        }
                         Ok(_) => {}
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                             log_lagged_subscriber("scene-recall", count);
+                            let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
+                                break;
+                            };
+                            settings = updated_settings;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
                 _ = tokio::time::sleep_until(deadline) => {
                     if let Some(observation) = pending_scene.take() {
+                        let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
+                            break;
+                        };
+                        if settings != updated_settings {
+                            settings = updated_settings;
+                        }
                         let peer_handles = peers.handles();
                         process_scene_observation(
                             generation,
@@ -246,6 +280,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &peer_handles.fade,
                             &event_bus,
                             &mut recall_state,
+                            &settings,
                             observation,
                         ).await;
                     }
@@ -304,13 +339,45 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) => {
                         recall_state.set_lockout(state.lockout);
                     }
+                    Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
+                        settings = updated_settings;
+                    }
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("scene-recall", count);
+                        let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
+                            break;
+                        };
+                        settings = updated_settings;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
+        }
+    }
+}
+
+async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<AppSettings> {
+    let (reply, rx) = oneshot::channel();
+    if settings_handle
+        .send(SettingsCommand::GetSettings { reply })
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            event = "scene_recall_settings_unavailable",
+            "Scene recall automation stopped because current settings are unavailable"
+        );
+        return None;
+    }
+    match rx.await {
+        Ok(settings) => Some(settings),
+        Err(_) => {
+            tracing::error!(
+                event = "scene_recall_settings_unavailable",
+                "Scene recall automation stopped because current settings are unavailable"
+            );
+            None
         }
     }
 }
@@ -422,6 +489,7 @@ async fn process_scene_observation(
     fade: &FadeEngineHandle,
     event_bus: &AppEventBus,
     recall_state: &mut ScenesState,
+    settings: &AppSettings,
     observation: PendingSceneObservation,
 ) {
     let now = tokio::time::Instant::now();
@@ -433,7 +501,9 @@ async fn process_scene_observation(
         tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
         return;
     }
-    if !recall_state.accepts(&observation.scene) {
+    let same_scene_repeat_delay =
+        std::time::Duration::from_millis(settings.same_scene_recall_threshold_ms);
+    if !recall_state.accepts(&observation.scene, same_scene_repeat_delay) {
         let scene_label = scene_label(&observation.scene);
         let reason = "scene not accepted by recall policy";
         tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
@@ -498,12 +568,18 @@ async fn process_scene_observation(
                 },
             );
             let (reply, rx) = oneshot::channel();
+            let same_scene_behavior = if settings.same_scene_recall_enabled {
+                SameSceneRecallBehavior::FinishActiveTargets
+            } else {
+                SameSceneRecallBehavior::OverrideMatchingTargets
+            };
             let result = if !is_generation_current(generation, runtime_generation).await {
                 Err(AppCommandError::StaleGeneration)
             } else {
                 match fade
                     .send(FadeCommand::RecallSceneFade {
                         config: fade_config,
+                        same_scene_behavior,
                         expected_generation: Some(generation),
                         reply: Some(reply),
                     })
@@ -691,6 +767,8 @@ mod tests {
     use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
     use crate::scenes::events::ScenesEvent;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
+    use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
+    use std::collections::VecDeque;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -705,6 +783,8 @@ mod tests {
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct CapturedLogEvent {
         event: Option<String>,
+        message: Option<String>,
+        level: Option<tracing::Level>,
     }
 
     #[derive(Clone, Default)]
@@ -716,7 +796,10 @@ mod tests {
         S: for<'a> LookupSpan<'a>,
     {
         fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-            let mut visitor = CapturedLogEvent::default();
+            let mut visitor = CapturedLogEvent {
+                level: Some(*event.metadata().level()),
+                ..Default::default()
+            };
             event.record(&mut visitor);
             self.0.lock().unwrap().push(visitor);
         }
@@ -724,14 +807,20 @@ mod tests {
 
     impl Visit for CapturedLogEvent {
         fn record_str(&mut self, field: &Field, value: &str) {
-            if field.name() == "event" {
-                self.event = Some(value.to_string());
+            match field.name() {
+                "event" => self.event = Some(value.to_string()),
+                "message" => self.message = Some(value.to_string()),
+                _ => {}
             }
         }
 
         fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-            if field.name() == "event" {
-                self.event = Some(format!("{value:?}").trim_matches('"').to_string());
+            match field.name() {
+                "event" => self.event = Some(format!("{value:?}").trim_matches('"').to_string()),
+                "message" => {
+                    self.message = Some(format!("{value:?}").trim_matches('"').to_string())
+                }
+                _ => {}
             }
         }
     }
@@ -823,7 +912,14 @@ mod tests {
         let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
-        let (handle, task, peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+        );
         peers.set_peers(lv1, fade);
         task.spawn();
 
@@ -1059,7 +1155,14 @@ mod tests {
             }
         });
 
-        let (handle, task, peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+        );
         peers.set_peers(lv1, fade);
         task.spawn();
 
@@ -1148,7 +1251,14 @@ mod tests {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         let scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
-        let (handle, task, _peers) = build_scenes_actor(1, runtime_generation, event_bus.clone());
+        let (handle, task, _peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+        );
         task.spawn();
 
         let (reply, rx) = oneshot::channel();
@@ -1215,6 +1325,9 @@ mod tests {
             1,
             runtime_generation,
             event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
             pending_scene_observed,
         );
         task.spawn();
@@ -1555,7 +1668,8 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
 
-        let fade_command = next_fade_command(&mut fade_rx).await;
+        let (fade_command, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::FinishActiveTargets);
         assert_eq!(
             fade_command.scene,
             FadeSceneIdentity {
@@ -1578,6 +1692,530 @@ mod tests {
         assert_eq!(fade_starts.load(Ordering::SeqCst), 1);
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn initial_settings_control_same_scene_behavior_and_repeat_delay() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let events = event_bus.subscribe();
+        let settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_200,
+            ..Default::default()
+        };
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            events,
+            fake_settings_handle(settings.clone()),
+            settings,
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        tokio::time::advance(Duration::from_millis(900)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        assert!(matches!(
+            fade_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+
+        tokio::time::advance(Duration::from_millis(300)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn settled_observation_refreshes_current_settings_before_dispatch() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            ..Default::default()
+        };
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle_sequence(vec![AppSettings::default(), disabled_settings.clone()]),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn settled_observation_stops_when_settings_refresh_fails() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle_then_unavailable(AppSettings::default()),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        assert!(matches!(
+            fade_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(logs.lock().unwrap().iter().any(|log| {
+            log.event.as_deref() == Some("scene_recall_settings_unavailable")
+                && log.level == Some(tracing::Level::ERROR)
+                && log.message.as_deref()
+                    == Some(
+                        "Scene recall automation stopped because current settings are unavailable",
+                    )
+        }));
+
+        drop(peers);
+        drop(handle);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn live_settings_update_controls_same_scene_behavior_and_repeat_delay() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_000,
+            ..Default::default()
+        };
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle_sequence(vec![
+                AppSettings::default(),
+                disabled_settings.clone(),
+                disabled_settings.clone(),
+                disabled_settings.clone(),
+            ]),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+            settings: disabled_settings,
+        }));
+        yield_to_actor().await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        tokio::time::advance(Duration::from_millis(700)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        assert!(matches!(
+            fade_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+
+        tokio::time::advance(Duration::from_millis(300)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn settings_update_preserves_scene_settings_clipboard_and_pasted_recall_config() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_000,
+            ..Default::default()
+        };
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(disabled_settings.clone()),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+
+        let source_id = uuid::Uuid::from_u128(0x22222222222242228222222222222222);
+        let destination_id = intro_internal_scene_id();
+        let mut destination_document = intro_scene_document();
+        let destination = destination_document.scene_configs.remove(0);
+        install_scene_document(
+            &handle,
+            SceneDocument {
+                scene_configs: vec![
+                    SceneConfig {
+                        internal_scene_id: source_id,
+                        scene_index: Some(2),
+                        scene_name: "Source".to_string(),
+                        duration_ms: 7_777,
+                        channel_configs: vec![ChannelConfig {
+                            group: 0,
+                            channel: 2,
+                            fader_db: Some(-3.0),
+                            pan: None,
+                            balance: None,
+                            width: None,
+                            pan_mode: None,
+                        }],
+                        scoped_channels: vec![ChannelRef {
+                            group: 0,
+                            channel: 2,
+                        }],
+                        scope_toggles: SceneScopeToggles {
+                            faders: true,
+                            pan: false,
+                        },
+                    },
+                    destination,
+                ],
+                selected_scene_internal_id: None,
+            },
+        )
+        .await;
+
+        let (reply, copy_rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::CopySceneSettings {
+                source_internal_scene_id: source_id,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        copy_rx.await.unwrap().unwrap();
+
+        event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+            settings: disabled_settings,
+        }));
+        yield_to_actor().await;
+
+        let (reply, paste_rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::PasteSceneSettings {
+                destination_internal_scene_id: destination_id,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert!(paste_rx.await.unwrap().unwrap().changed);
+
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+        assert_eq!(config.duration_ms, 7_777);
+        assert_eq!(config.targets.len(), 1);
+        assert_eq!(config.targets[0].target, -3.0);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn queued_settings_update_after_snapshot_supersedes_initial_policy() {
+        let event_bus = AppEventBus::default();
+        let events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let disabled_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_000,
+            ..Default::default()
+        };
+        event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+            settings: disabled_settings.clone(),
+        }));
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            events,
+            fake_settings_handle(disabled_settings),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        tokio::time::advance(Duration::from_millis(700)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        assert!(matches!(
+            fade_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+
+        tokio::time::advance(Duration::from_millis(300)).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn lagged_settings_events_refresh_before_recall() {
+        let event_bus = AppEventBus::new(1);
+        let events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let settings_dir =
+            std::env::temp_dir().join(format!("scene-settings-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&settings_dir).unwrap();
+        let (settings_handle, settings_task, _) =
+            crate::settings::build_settings_actor(settings_dir, event_bus.clone());
+        settings_task.spawn();
+        let (reply, rx) = oneshot::channel();
+        settings_handle
+            .send(SettingsCommand::ReplaceSettings {
+                settings: AppSettings {
+                    same_scene_recall_enabled: false,
+                    ..Default::default()
+                },
+                reply,
+            })
+            .await
+            .unwrap();
+        rx.await.unwrap().unwrap();
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 1,
+            },
+        ));
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 2,
+            },
+        ));
+
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            events,
+            settings_handle,
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        yield_to_actor().await;
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        yield_to_actor().await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unavailable_settings_after_lag_stops_recall_automation() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let event_bus = AppEventBus::new(1);
+        let events = event_bus.subscribe();
+        let (settings_tx, settings_rx) = tokio::sync::mpsc::channel(1);
+        drop(settings_rx);
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            events,
+            SettingsHandle::new(settings_tx),
+            AppSettings::default(),
+        );
+        peers.set_peers(lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 3,
+            },
+        ));
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 4,
+            },
+        ));
+        yield_to_actor().await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 1,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        tokio::time::advance(Duration::from_millis(50)).await;
+        yield_to_actor().await;
+
+        assert!(matches!(
+            fade_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert!(logs.lock().unwrap().iter().any(|log| {
+            log.event.as_deref() == Some("scene_recall_settings_unavailable")
+                && log.level == Some(tracing::Level::ERROR)
+                && log.message.as_deref()
+                    == Some(
+                        "Scene recall automation stopped because current settings are unavailable",
+                    )
+        }));
+        drop(peers);
+        drop(handle);
         server.await.unwrap();
     }
 
@@ -1779,7 +2417,8 @@ mod tests {
         tokio::time::advance(Duration::from_millis(50)).await;
         yield_to_actor().await;
 
-        let fade_command = next_fade_command(&mut fade_rx).await;
+        let (fade_command, behavior) = next_fade_command(&mut fade_rx).await;
+        assert_eq!(behavior, SameSceneRecallBehavior::FinishActiveTargets);
         assert_eq!(
             fade_command.scene,
             FadeSceneIdentity {
@@ -1851,10 +2490,11 @@ mod tests {
         }
         assert!(seen_ready && seen_start_requested);
 
-        let fade_command = tokio::time::timeout(Duration::from_secs(1), fade_rx.recv())
+        let (fade_command, behavior) = tokio::time::timeout(Duration::from_secs(1), fade_rx.recv())
             .await
             .unwrap()
             .unwrap();
+        assert_eq!(behavior, SameSceneRecallBehavior::FinishActiveTargets);
         assert_eq!(
             fade_command.scene,
             FadeSceneIdentity {
@@ -1925,13 +2565,13 @@ mod tests {
         let mut state = ScenesState::default();
         let scene = intro_scene();
 
-        assert!(!state.accepts(&scene));
-        assert!(!state.accepts(&scene));
+        assert!(!state.accepts(&scene, std::time::Duration::from_millis(500)));
+        assert!(!state.accepts(&scene, std::time::Duration::from_millis(500)));
         tokio::time::advance(Duration::from_secs(2)).await;
-        assert!(state.accepts(&scene));
-        assert!(!state.accepts(&scene));
+        assert!(state.accepts(&scene, std::time::Duration::from_millis(500)));
+        assert!(!state.accepts(&scene, std::time::Duration::from_millis(500)));
         tokio::time::advance(Duration::from_millis(500)).await;
-        assert!(state.accepts(&scene));
+        assert!(state.accepts(&scene, std::time::Duration::from_millis(500)));
     }
 
     #[tokio::test(start_paused = true)]
@@ -2111,9 +2751,11 @@ mod tests {
         false
     }
 
+    type ObservedFadeCommand = (FadeConfig, SameSceneRecallBehavior);
+
     async fn next_fade_command(
-        fade_rx: &mut tokio::sync::mpsc::Receiver<FadeConfig>,
-    ) -> FadeConfig {
+        fade_rx: &mut tokio::sync::mpsc::Receiver<ObservedFadeCommand>,
+    ) -> ObservedFadeCommand {
         for _ in 0..1_000 {
             match fade_rx.try_recv() {
                 Ok(command) => return command,
@@ -2301,7 +2943,7 @@ mod tests {
 
     fn fake_fade_handle() -> (
         FadeEngineHandle,
-        tokio::sync::mpsc::Receiver<FadeConfig>,
+        tokio::sync::mpsc::Receiver<ObservedFadeCommand>,
         Arc<AtomicUsize>,
     ) {
         let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
@@ -2310,8 +2952,14 @@ mod tests {
         let starts_clone = starts.clone();
         tokio::spawn(async move {
             while let Some(command) = command_rx.recv().await {
-                if let FadeCommand::RecallSceneFade { config, reply, .. } = command {
-                    let _ = seen_tx.send(config.clone()).await;
+                if let FadeCommand::RecallSceneFade {
+                    config,
+                    same_scene_behavior,
+                    reply,
+                    ..
+                } = command
+                {
+                    let _ = seen_tx.send((config.clone(), same_scene_behavior)).await;
                     starts_clone.fetch_add(1, Ordering::SeqCst);
                     let _ = reply.unwrap().send(Ok(()));
                 }
@@ -2353,7 +3001,15 @@ mod tests {
         event_bus: AppEventBus,
         document: SceneDocument,
     ) -> ScenesHandle {
-        let (handle, task, peers) = build_scenes_actor(generation, runtime_generation, event_bus);
+        let events = event_bus.subscribe();
+        let (handle, task, peers) = build_scenes_actor(
+            generation,
+            runtime_generation,
+            event_bus,
+            events,
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+        );
         peers.set_peers(lv1, fade);
         task.spawn();
         let (reply, rx) = oneshot::channel();
@@ -2368,5 +3024,54 @@ mod tests {
             .unwrap();
         let _ = rx.await;
         handle
+    }
+
+    fn fake_settings_handle(settings: AppSettings) -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let SettingsCommand::GetSettings { reply } = command {
+                    let _ = reply.send(settings.clone());
+                }
+            }
+        });
+        SettingsHandle::new(tx)
+    }
+
+    fn fake_settings_handle_sequence(settings: Vec<AppSettings>) -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut settings = VecDeque::from(settings);
+            while let Some(command) = rx.recv().await {
+                if let SettingsCommand::GetSettings { reply } = command {
+                    let _ = reply.send(settings.pop_front().expect("unexpected settings refresh"));
+                }
+            }
+        });
+        SettingsHandle::new(tx)
+    }
+
+    fn fake_settings_handle_then_unavailable(settings: AppSettings) -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(SettingsCommand::GetSettings { reply }) = rx.recv().await {
+                let _ = reply.send(settings);
+            }
+        });
+        SettingsHandle::new(tx)
+    }
+
+    async fn install_scene_document(handle: &ScenesHandle, document: SceneDocument) {
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(ScenesCommand::ReplaceSceneDocument {
+                document,
+                reason: ScenesProjectionReason::FileReplacement,
+                persisted_scene_edit: false,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let _ = rx.await;
     }
 }

@@ -78,12 +78,16 @@ struct StartedConnectedRuntime {
     scene_recall_task: crate::scenes::ScenesTask,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_connected_runtime(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     identity: &crate::connection_state::Lv1SystemIdentity,
     show_peers: ShowActorPeers,
     event_bus: AppEventBus,
+    scene_events: tokio::sync::broadcast::Receiver<AppEvent>,
+    settings_handle: SettingsHandle,
+    initial_settings: crate::settings::AppSettings,
 ) -> BuiltConnectedRuntime {
     let (lv1, lv1_task) = build_actor(
         identity.address.clone(),
@@ -93,8 +97,14 @@ fn build_connected_runtime(
     );
     let (fade, fade_task, fade_peers) =
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
-    let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-        build_scenes_actor(generation, runtime_generation, event_bus);
+    let (scene_recall_fader, scene_recall_task, scene_recall_peers) = build_scenes_actor(
+        generation,
+        runtime_generation,
+        event_bus,
+        scene_events,
+        settings_handle,
+        initial_settings,
+    );
     show_peers.set_lv1(generation, lv1.clone());
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -201,6 +211,16 @@ impl AppLifecycle {
         self.settings.clone()
     }
 
+    async fn settings_snapshot(&self) -> Result<crate::settings::AppSettings, String> {
+        let (reply, rx) = oneshot::channel();
+        self.settings
+            .send(SettingsCommand::GetSettings { reply })
+            .await
+            .map_err(|_| "Settings are unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "Settings reply channel is closed".to_string())
+    }
+
     pub async fn begin_connecting(&self) -> Option<u64> {
         let mut inner = self.inner.lock().await;
         let generation = inner.generation.advance().await;
@@ -290,12 +310,17 @@ impl AppLifecycle {
         log_lv1_connecting(&identity);
         let event_bus = self.event_bus.clone();
         let runtime_generation = self.current_runtime_generation().await;
+        let scene_events = event_bus.subscribe();
+        let initial_settings = self.settings_snapshot().await?;
         let built_runtime = build_connected_runtime(
             generation,
             runtime_generation,
             &identity,
             self.show_peers.clone(),
             event_bus.clone(),
+            scene_events,
+            self.settings.clone(),
+            initial_settings,
         );
         let handles = built_runtime.runtime_targets();
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
@@ -368,6 +393,8 @@ impl AppLifecycle {
         fade: crate::fade::FadeEngineHandle,
         before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
     ) -> Result<ConnectCommandResult, String> {
+        let scene_events = event_bus.subscribe();
+        let initial_settings = self.settings_snapshot().await?;
         let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
 
         if self
@@ -402,8 +429,14 @@ impl AppLifecycle {
             before_scene_recall_start(runtime_generation.clone());
         }
         tokio::task::yield_now().await;
-        let (scene_recall_fader, scene_recall_task, scene_recall_peers) =
-            build_scenes_actor(generation, runtime_generation, event_bus);
+        let (scene_recall_fader, scene_recall_task, scene_recall_peers) = build_scenes_actor(
+            generation,
+            runtime_generation,
+            event_bus,
+            scene_events,
+            self.settings.clone(),
+            initial_settings,
+        );
         scene_recall_peers.set_peers(lv1.clone(), fade.clone());
         if !self
             .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
@@ -746,15 +779,7 @@ impl AppLifecycle {
                 last_recall_status: None,
             }
         };
-        let settings_handle = self.current_settings().await;
-        let (reply, rx) = oneshot::channel();
-        settings_handle
-            .send(SettingsCommand::GetSettings { reply })
-            .await
-            .map_err(|_| "Settings are unavailable".to_string())?;
-        let initial_settings = rx
-            .await
-            .map_err(|_| "Settings reply channel is closed".to_string())?;
+        let initial_settings = self.settings_snapshot().await?;
         let mut inner = self.inner.lock().await;
         if inner.frontend_ready {
             return Ok(());
@@ -1202,12 +1227,17 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
 
         let generation = lifecycle.begin_connecting().await.unwrap();
+        let scene_events = event_bus.subscribe();
+        let initial_settings = lifecycle.settings_snapshot().await.unwrap();
         let _built_runtime = build_connected_runtime(
             generation,
             runtime_generation,
             &identity,
             lifecycle.show_peers.clone(),
             event_bus,
+            scene_events,
+            lifecycle.settings.clone(),
+            initial_settings,
         );
 
         assert!(lifecycle.show_peers.scenes().is_none());

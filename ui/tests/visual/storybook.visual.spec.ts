@@ -11,6 +11,11 @@ type StorybookIndexEntry = {
   type: "docs" | "story";
 };
 
+const settingsVisualStoryIds = new Set([
+  "settings-settingstab--default",
+  "app-appshell--settings-tab",
+]);
+
 test("all Storybook stories match visual baselines", async ({ page }) => {
   await page.clock.setFixedTime(new Date("2026-01-01T12:00:00Z"));
 
@@ -34,6 +39,9 @@ test("all Storybook stories match visual baselines", async ({ page }) => {
       try {
         await expect(page).toHaveScreenshot(`${story.id}.png`, {
           fullPage: true,
+          ...(settingsVisualStoryIds.has(story.id)
+            ? { maxDiffPixelRatio: 0 }
+            : {}),
         });
       } catch (error) {
         failures.push(

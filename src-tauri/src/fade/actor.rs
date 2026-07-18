@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::fade::commands::FadeCommand;
+use crate::fade::commands::{FadeCommand, SameSceneRecallBehavior};
 use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::{EngineState, PingGateProgress, READINESS_PINGS_REQUIRED};
@@ -47,6 +47,7 @@ pub struct FadeEngineTask {
 enum RecallSceneFadeOutcome {
     Started,
     Finishing { target_count: usize },
+    Overriding { target_count: usize },
 }
 
 impl FadeEngineTask {
@@ -114,13 +115,13 @@ async fn run_engine(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None => break,
-                Some(FadeCommand::RecallSceneFade { config, expected_generation, reply }) => {
+                Some(FadeCommand::RecallSceneFade { config, same_scene_behavior, expected_generation, reply }) => {
                         let scene_index = config.scene.index;
                         let scene_name = config.scene.name.clone();
                         let duration_ms = config.duration_ms;
                         let target_count = config.targets.len();
                         let lv1 = peers.lv1();
-                        let result = handle_recall_scene_fade(&runtime_generation, &lv1, &mut state, config, expected_generation).await;
+                        let result = handle_recall_scene_fade(&runtime_generation, &lv1, &mut state, config, same_scene_behavior, expected_generation).await;
 
                         match result {
                             Ok(outcome) => {
@@ -132,6 +133,7 @@ async fn run_engine(
                                     match outcome {
                                         RecallSceneFadeOutcome::Started => tracing::info!(event = "fade_started", scene_index = scene_index, scene_name = %scene_name, duration_ms = duration_ms, target_count = target_count, "Fade started for {}: {} ({} targets, {} ms)", scene_index, scene_name, target_count, duration_ms),
                                         RecallSceneFadeOutcome::Finishing { target_count } => tracing::info!(event = "fade_same_scene_finishing", scene_index = scene_index, scene_name = %scene_name, target_count, "Repeated scene recall is finishing active fade targets for {}: {} ({} targets)", scene_index, scene_name, target_count),
+                                        RecallSceneFadeOutcome::Overriding { target_count } => tracing::info!(event = "fade_same_scene_overriding", scene_index = scene_index, scene_name = %scene_name, target_count, "Repeated scene recall is overriding active fade targets from their current values for {}: {} ({} targets)", scene_index, scene_name, target_count),
                                     }
                                     state.fan_out(FadeEvent::FadeStarted);
                                 } else {
@@ -376,6 +378,7 @@ async fn handle_recall_scene_fade(
     lv1: &Lv1ActorHandle,
     state: &mut EngineState,
     config: crate::fade::types::FadeConfig,
+    same_scene_behavior: SameSceneRecallBehavior,
     expected_generation: Option<u64>,
 ) -> Result<RecallSceneFadeOutcome, AppCommandError> {
     if let Some(expected_generation) = expected_generation
@@ -446,7 +449,33 @@ async fn handle_recall_scene_fade(
         return Ok(RecallSceneFadeOutcome::Started);
     }
 
-    let finishing_target_count = state.finish_scene_on_next_tick(&config.scene);
+    let scene_owns_active_targets = state
+        .channels
+        .iter()
+        .any(|active| active.scene == config.scene);
+    let overriding_target_count = if same_scene_behavior
+        == SameSceneRecallBehavior::OverrideMatchingTargets
+        && scene_owns_active_targets
+    {
+        state
+            .channels
+            .iter()
+            .filter(|active| {
+                config
+                    .targets
+                    .iter()
+                    .any(|target| active.key == target.key())
+            })
+            .count()
+    } else {
+        0
+    };
+    let finishing_target_count = match same_scene_behavior {
+        SameSceneRecallBehavior::FinishActiveTargets => {
+            state.finish_scene_on_next_tick(&config.scene)
+        }
+        SameSceneRecallBehavior::OverrideMatchingTargets => 0,
+    };
     let outcome = if finishing_target_count > 0 {
         RecallSceneFadeOutcome::Finishing {
             target_count: finishing_target_count,
@@ -491,7 +520,13 @@ async fn handle_recall_scene_fade(
                 expected_generation,
             }));
         }
-        RecallSceneFadeOutcome::Started
+        if overriding_target_count > 0 {
+            RecallSceneFadeOutcome::Overriding {
+                target_count: overriding_target_count,
+            }
+        } else {
+            RecallSceneFadeOutcome::Started
+        }
     };
 
     let readiness_action = if state.is_waiting_for_readiness() {
@@ -710,6 +745,7 @@ fn handle_pan_family_pan_report(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fade::SameSceneRecallBehavior;
     use crate::fade::curve::FadeCurve;
     use crate::fade::handle::FadeEngineHandle;
     use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
@@ -821,10 +857,26 @@ mod tests {
         config: FadeConfig,
         expected_generation: Option<u64>,
     ) -> Result<(), AppCommandError> {
+        start_fade_with_behavior(
+            engine,
+            config,
+            expected_generation,
+            SameSceneRecallBehavior::FinishActiveTargets,
+        )
+        .await
+    }
+
+    async fn start_fade_with_behavior(
+        engine: &FadeEngineHandle,
+        config: FadeConfig,
+        expected_generation: Option<u64>,
+        same_scene_behavior: SameSceneRecallBehavior,
+    ) -> Result<(), AppCommandError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
         engine
             .send(FadeCommand::RecallSceneFade {
                 config,
+                same_scene_behavior,
                 expected_generation,
                 reply: Some(reply),
             })
@@ -1754,6 +1806,7 @@ mod tests {
                 }],
                 120,
             ),
+            SameSceneRecallBehavior::FinishActiveTargets,
             Some(2),
         )
         .await;
@@ -1800,6 +1853,7 @@ mod tests {
                 }],
                 120,
             ),
+            SameSceneRecallBehavior::FinishActiveTargets,
             Some(2),
         )
         .await;
@@ -2839,6 +2893,229 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn repeated_scene_override_replaces_from_current_value_without_immediate_finish() {
+        let config = fade_config(
+            scene(17, "Verse"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+                target: 0.0,
+            }],
+            1_000,
+        );
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(40, vec![channel_info(1, -20.0, None)]),
+            connected_snapshot(42, vec![channel_info(1, -20.0, None)]),
+        ])
+        .await;
+
+        start_fade_for_generation(&engine, config.clone(), Some(7))
+            .await
+            .unwrap();
+        publish_ping(&event_bus, 7, 41);
+        publish_ping(&event_bus, 7, 42);
+        tokio::time::advance(Duration::from_millis(250)).await;
+        let before_override = next_write_batch(&mut write_rx).await;
+        let before_value = before_override
+            .iter()
+            .find(|write| write.channel == 1)
+            .expect("initial fade should be moving")
+            .value;
+        while write_rx.try_recv().is_ok() {}
+
+        start_fade_with_behavior(
+            &engine,
+            config,
+            Some(7),
+            SameSceneRecallBehavior::OverrideMatchingTargets,
+        )
+        .await
+        .unwrap();
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        publish_ping(&event_bus, 7, 43);
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            write_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        publish_ping(&event_bus, 7, 44);
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let after_override = next_write_batch(&mut write_rx).await;
+        let after_value = after_override
+            .iter()
+            .find(|write| write.channel == 1)
+            .expect("replacement fade should resume")
+            .value;
+
+        assert!(after_value >= before_value, "replacement must not rewind");
+        assert!(after_value < 0.0, "replacement must not finish immediately");
+
+        tokio::time::advance(Duration::from_millis(800)).await;
+        let before_deadline = next_write_batch(&mut write_rx).await;
+        assert!(before_deadline.iter().any(|write| {
+            write.channel == 1 && write.parameter == Lv1WriteParameter::FaderDb && write.value < 0.0
+        }));
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let at_deadline = next_write_batch(&mut write_rx).await;
+        assert!(at_deadline.contains(&Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: Lv1WriteParameter::FaderDb,
+            value: 0.0,
+        }));
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn repeated_scene_override_leaves_omitted_same_scene_target_active() {
+        let initial = fade_config(
+            scene(17, "Verse"),
+            vec![
+                FadeTarget {
+                    group: 0,
+                    channel: 1,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                },
+                FadeTarget {
+                    group: 0,
+                    channel: 2,
+                    parameter: FadeParameter::FaderDb,
+                    target: -5.0,
+                },
+            ],
+            1_000,
+        );
+        let reduced = fade_config(
+            scene(17, "Verse"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+                target: 0.0,
+            }],
+            1_000,
+        );
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(
+                40,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+            connected_snapshot(
+                42,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+        ])
+        .await;
+
+        start_fade_for_generation(&engine, initial, Some(7))
+            .await
+            .unwrap();
+        publish_ping(&event_bus, 7, 41);
+        publish_ping(&event_bus, 7, 42);
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let _ = next_write_batch(&mut write_rx).await;
+        while write_rx.try_recv().is_ok() {}
+
+        start_fade_with_behavior(
+            &engine,
+            reduced,
+            Some(7),
+            SameSceneRecallBehavior::OverrideMatchingTargets,
+        )
+        .await
+        .unwrap();
+        publish_ping(&event_bus, 7, 43);
+        publish_ping(&event_bus, 7, 44);
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let resumed = next_write_batch(&mut write_rx).await;
+        assert!(resumed.iter().any(|write| write.channel == 1));
+        assert!(resumed.iter().any(|write| write.channel == 2));
+        assert!(
+            !resumed
+                .iter()
+                .any(|write| write.channel == 2 && write.value == -5.0)
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn repeated_scene_finish_uses_active_ownership_when_incoming_scope_changed() {
+        let initial = fade_config(
+            scene(17, "Verse"),
+            vec![
+                FadeTarget {
+                    group: 0,
+                    channel: 1,
+                    parameter: FadeParameter::FaderDb,
+                    target: -10.0,
+                },
+                FadeTarget {
+                    group: 0,
+                    channel: 2,
+                    parameter: FadeParameter::FaderDb,
+                    target: -5.0,
+                },
+            ],
+            1_000,
+        );
+        let reduced = fade_config(
+            scene(17, "Verse"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+                target: 0.0,
+            }],
+            1_000,
+        );
+        let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(
+                40,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+            connected_snapshot(
+                42,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+        ])
+        .await;
+
+        start_fade_for_generation(&engine, initial, Some(7))
+            .await
+            .unwrap();
+        publish_ping(&event_bus, 7, 41);
+        publish_ping(&event_bus, 7, 42);
+        tokio::time::advance(Duration::from_millis(200)).await;
+        let _ = next_write_batch(&mut write_rx).await;
+        while write_rx.try_recv().is_ok() {}
+
+        start_fade_for_generation(&engine, reduced, Some(7))
+            .await
+            .unwrap();
+        publish_ping(&event_bus, 7, 43);
+        publish_ping(&event_bus, 7, 44);
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let writes = next_write_batch(&mut write_rx).await;
+        assert!(writes.contains(&Lv1ParameterWrite {
+            group: 0,
+            channel: 1,
+            parameter: Lv1WriteParameter::FaderDb,
+            value: -10.0,
+        }));
+        assert!(writes.contains(&Lv1ParameterWrite {
+            group: 0,
+            channel: 2,
+            parameter: Lv1WriteParameter::FaderDb,
+            value: -5.0,
+        }));
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
     async fn repeated_scene_manual_override_cancels_only_the_repeated_scene_target() {
         let boundary = 42;
         let manual_value = -50.0;
@@ -3568,6 +3845,112 @@ mod tests {
                 .count(),
             1,
             "the repeated command must not emit a second fade_started log"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_scene_override_logs_one_current_value_outcome() {
+        let captured = CapturedWarnEvents::default();
+        let subscriber = Registry::default().with(captured.clone());
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let (_event_bus, engine, _write_rx) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(
+                40,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+            connected_snapshot(
+                41,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+            connected_snapshot(
+                42,
+                vec![channel_info(1, -20.0, None), channel_info(2, -20.0, None)],
+            ),
+        ])
+        .await;
+        let chorus = fade_config(
+            scene(18, "Chorus"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 1,
+                parameter: FadeParameter::FaderDb,
+                target: -10.0,
+            }],
+            1_000,
+        );
+        let verse = fade_config(
+            scene(17, "Verse"),
+            vec![FadeTarget {
+                group: 0,
+                channel: 2,
+                parameter: FadeParameter::FaderDb,
+                target: -5.0,
+            }],
+            1_000,
+        );
+        let override_verse = fade_config(
+            scene(17, "Verse"),
+            vec![
+                FadeTarget {
+                    group: 0,
+                    channel: 1,
+                    parameter: FadeParameter::FaderDb,
+                    target: 0.0,
+                },
+                FadeTarget {
+                    group: 0,
+                    channel: 2,
+                    parameter: FadeParameter::FaderDb,
+                    target: 0.0,
+                },
+            ],
+            1_000,
+        );
+
+        start_fade_for_generation(&engine, chorus, Some(7))
+            .await
+            .unwrap();
+        start_fade_for_generation(&engine, verse, Some(7))
+            .await
+            .unwrap();
+        start_fade_with_behavior(
+            &engine,
+            override_verse,
+            Some(7),
+            SameSceneRecallBehavior::OverrideMatchingTargets,
+        )
+        .await
+        .unwrap();
+
+        let logs = captured.0.lock().unwrap();
+        let overriding_logs: Vec<_> = logs
+            .iter()
+            .filter(|event| event.event.as_deref() == Some("fade_same_scene_overriding"))
+            .collect();
+        assert_eq!(
+            overriding_logs,
+            vec![&CapturedWarnEvent {
+                level: Some("INFO".to_string()),
+                event: Some("fade_same_scene_overriding".to_string()),
+                message: Some(
+                    "Repeated scene recall is overriding active fade targets from their current values for 17: Verse (2 targets)"
+                        .to_string(),
+                ),
+                scene_index: Some("17".to_string()),
+                scene_name: Some("Verse".to_string()),
+                target_count: Some("2".to_string()),
+                ..Default::default()
+            }]
+        );
+        assert_eq!(
+            logs.iter()
+                .filter(|event| {
+                    event.level.as_deref() == Some("INFO")
+                        && event.event.as_deref() == Some("fade_started")
+                })
+                .count(),
+            2,
+            "the override command must not emit a third fade_started log"
         );
     }
 }
