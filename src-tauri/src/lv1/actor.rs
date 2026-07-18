@@ -22,6 +22,7 @@ use crate::runtime::events::AppEventBus;
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WRITER_QUEUE_CAPACITY: usize = 64;
+const PRODUCTION_DEVICE_NAME: &str = "Advanced Show Control";
 
 pub struct Lv1ActorTask {
     host: String,
@@ -248,9 +249,12 @@ async fn run_actor(
         };
         state.ping_sequence = 0;
 
-        let device_name = "lv1-state-mirror";
         let uuid = uuid::Uuid::new_v4().to_string();
-        if client.register_myfoh(device_name, &uuid).await.is_err() {
+        if client
+            .register_myfoh(PRODUCTION_DEVICE_NAME, &uuid)
+            .await
+            .is_err()
+        {
             if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
                 == DrainCommandsResult::CommandChannelClosed
             {
@@ -569,8 +573,56 @@ mod tests {
     use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
     use crate::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_parameter_write_batch};
     use crate::runtime::events::AppEventBus;
+    use tokio::io::AsyncReadExt;
     use tokio::sync::mpsc;
     use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn production_actor_registers_as_advanced_show_control() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (handle, task) = build_actor("127.0.0.1".to_string(), port, AppEventBus::default(), 0);
+        task.spawn();
+
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut decoder = FrameDecoder::default();
+        let mut messages = Vec::new();
+        let mut buffer = [0_u8; 1024];
+
+        while messages.len() < 2 {
+            let size = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut buffer))
+                .await
+                .expect("production actor did not send its registration batch")
+                .unwrap();
+            assert!(size > 0, "production actor closed before registration");
+            messages.extend(
+                decoder
+                    .push(&buffer[..size])
+                    .unwrap()
+                    .into_iter()
+                    .map(|frame| decode_frame_payload(&frame).unwrap()),
+            );
+        }
+
+        let device_name = messages
+            .iter()
+            .find(|message| message.address == "/device_name")
+            .expect("registration batch did not include /device_name");
+        assert_eq!(
+            device_name.args.first(),
+            Some(&OscArg::String("Advanced Show Control".to_string()))
+        );
+        match device_name.args.get(1) {
+            Some(OscArg::String(value)) => {
+                uuid::Uuid::parse_str(value).expect("registration UUID should be valid");
+            }
+            value => panic!("registration UUID should be a string, got {value:?}"),
+        }
+
+        drop(handle);
+    }
 
     #[tokio::test]
     async fn drain_commands_reports_closed_command_channel() {
