@@ -15,7 +15,7 @@ use super::tcp::{
     Lv1TcpClient, decode_frame_payload, encode_frame, encode_parameter_write_batch, pong_for_ping,
     read_next_async,
 };
-use super::types::ConnectionStatus;
+use super::types::{ConnectionStatus, RecallSceneDispatch};
 use crate::lv1::osc::OscArg;
 use crate::runtime::events::AppEventBus;
 
@@ -248,6 +248,7 @@ async fn run_actor(
             }
         };
         state.ping_sequence = 0;
+        state.scene_observation_sequence = 0;
 
         let uuid = uuid::Uuid::new_v4().to_string();
         if client
@@ -539,6 +540,9 @@ async fn run_connected(
                         .and_then(|bytes| {
                             enqueue_writer_bytes(&writer_tx, bytes)
                                 .map_err(|_| Lv1ActorError::CommandSendFailed)
+                        })
+                        .map(|()| RecallSceneDispatch {
+                            scene_observation_sequence: state.scene_observation_sequence,
                         });
 
                         let failed = result.is_err();

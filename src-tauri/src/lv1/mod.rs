@@ -18,7 +18,8 @@ pub use handle::Lv1ActorHandle;
 pub use probe::{TcpConnectProbeResult, probe_tcp_connect_latency};
 pub use tcp::{Lv1Frame, Lv1TcpClient, decode_frame_payload, encode_frame, pong_for_ping};
 pub use types::{
-    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, PanMode, SceneListEntry, SceneState,
+    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, PanMode, RecallSceneDispatch, SceneListEntry,
+    SceneObservation, SceneState,
 };
 
 #[cfg(test)]

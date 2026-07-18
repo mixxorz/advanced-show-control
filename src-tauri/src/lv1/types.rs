@@ -22,6 +22,17 @@ pub struct SceneState {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SceneObservation {
+    pub sequence: u64,
+    pub scene: SceneState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecallSceneDispatch {
+    pub scene_observation_sequence: u64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct SceneListEntry {
     pub index: i32,
     pub name: String,

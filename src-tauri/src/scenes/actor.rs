@@ -5,7 +5,7 @@ use tokio::sync::{mpsc, oneshot};
 use crate::fade::{FadeCommand, FadeEngineHandle, SameSceneRecallBehavior};
 use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
-    SceneState,
+    SceneObservation, SceneState,
 };
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
@@ -193,7 +193,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                                 publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
                             }
                         }
-                        Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(scene), .. }) => {
+                        Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(SceneObservation { scene, .. }), .. }) => {
                             pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
                             #[cfg(test)]
                             if let Some(observer) = pending_scene_observer.take() {
@@ -273,7 +273,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         }
                     }
                     Ok(AppEvent::Lv1 {
-                        event: Lv1Event::SceneChanged(scene),
+                        event: Lv1Event::SceneChanged(SceneObservation { scene, .. }),
                         ..
                     }) => {
                         pending_scene = Some(PendingSceneObservation::new(
@@ -977,7 +977,10 @@ mod tests {
         FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeParameter, FadeSceneIdentity,
         FadeTarget,
     };
-    use crate::lv1::{Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState};
+    use crate::lv1::{
+        Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, RecallSceneDispatch, SceneListEntry,
+        SceneObservation, SceneState,
+    };
     use crate::scenes::events::ScenesEvent;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
@@ -1009,10 +1012,13 @@ mod tests {
         }
     }
 
-    fn song_3_at(index: i32) -> SceneState {
-        SceneState {
-            index,
-            name: "Song 3".to_string(),
+    fn song_3_at(index: i32) -> SceneObservation {
+        SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index,
+                name: "Song 3".to_string(),
+            },
         }
     }
 
@@ -2746,7 +2752,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn arming_and_repeat_behavior() {
         let mut state = ScenesState::default();
-        let scene = intro_scene();
+        let scene = intro_scene().scene;
 
         assert!(!state.accepts(&scene, std::time::Duration::from_millis(500)));
         assert!(!state.accepts(&scene, std::time::Duration::from_millis(500)));
@@ -2967,7 +2973,7 @@ mod tests {
             let _ = release_rx.await;
             let snapshot = Lv1StateSnapshot {
                 connection: crate::lv1::ConnectionStatus::Connected,
-                scene: Some(intro_scene()),
+                scene: Some(intro_scene().scene),
                 scene_list: Vec::new(),
                 channels: vec![crate::lv1::ChannelInfo {
                     group: 0,
@@ -3004,7 +3010,9 @@ mod tests {
                         let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::RecallScene { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(RecallSceneDispatch {
+                            scene_observation_sequence: 1,
+                        }));
                     }
                     crate::lv1::Lv1Command::Flush { reply } => {
                         let _ = reply.unwrap().send(Ok(()));
@@ -3068,7 +3076,9 @@ mod tests {
                         let _ = reply.unwrap().send(Ok(()));
                     }
                     crate::lv1::Lv1Command::RecallScene { reply, .. } => {
-                        let _ = reply.unwrap().send(Ok(()));
+                        let _ = reply.unwrap().send(Ok(RecallSceneDispatch {
+                            scene_observation_sequence: 1,
+                        }));
                     }
                     crate::lv1::Lv1Command::Flush { reply } => {
                         let _ = reply.unwrap().send(Ok(()));
@@ -3151,10 +3161,13 @@ mod tests {
         (FadeEngineHandle::new(command_tx), seen_rx, starts)
     }
 
-    fn intro_scene() -> SceneState {
-        SceneState {
-            index: 1,
-            name: "Intro".to_string(),
+    fn intro_scene() -> SceneObservation {
+        SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
         }
     }
 

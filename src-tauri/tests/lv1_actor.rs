@@ -194,8 +194,20 @@ async fn actor_parses_and_emits_scene_changed() {
     .unwrap();
 
     let scene = scene_event.unwrap();
-    assert_eq!(scene.index, 0);
-    assert_eq!(scene.name, "Scene A");
+    assert_eq!(scene.sequence, 1);
+    assert_eq!(scene.scene.index, 0);
+    assert_eq!(scene.scene.name, "Scene A");
+
+    let (reply, rx) = oneshot::channel();
+    _handle
+        .send(Lv1Command::RecallScene {
+            scene_index: 1,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+    let dispatch = rx.await.unwrap().unwrap();
+    assert_eq!(dispatch.scene_observation_sequence, 1);
 }
 
 #[tokio::test]

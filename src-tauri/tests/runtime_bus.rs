@@ -3,7 +3,9 @@ use advanced_show_control::fade::{
     SameSceneRecallBehavior, build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
-use advanced_show_control::lv1::{Lv1Event, SceneState, build_actor, encode_frame};
+use advanced_show_control::lv1::{
+    Lv1Event, SceneObservation, SceneState, build_actor, encode_frame,
+};
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use advanced_show_control::runtime::generation::RuntimeGeneration;
 use std::io::Write;
@@ -17,9 +19,12 @@ async fn app_event_bus_carries_lv1_events_without_actor_subscriber_api() {
 
     bus.publish(AppEvent::Lv1 {
         generation: 0,
-        event: Lv1Event::SceneChanged(SceneState {
-            index: 4,
-            name: "Outro".to_string(),
+        event: Lv1Event::SceneChanged(SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index: 4,
+                name: "Outro".to_string(),
+            },
         }),
     });
 
@@ -29,8 +34,8 @@ async fn app_event_bus_carries_lv1_events_without_actor_subscriber_api() {
             event: Lv1Event::SceneChanged(scene),
             ..
         } => {
-            assert_eq!(scene.index, 4);
-            assert_eq!(scene.name, "Outro");
+            assert_eq!(scene.scene.index, 4);
+            assert_eq!(scene.scene.name, "Outro");
         }
         other => panic!("unexpected event: {other:?}"),
     }

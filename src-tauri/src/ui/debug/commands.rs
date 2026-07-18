@@ -118,6 +118,7 @@ pub async fn debug_smoke_recall_lv1_scene(
     rx.await
         .map_err(|_| "LV1 scene recall reply channel closed".to_string())?
         .map_err(|error| error.to_string())
+        .map(|_| ())
 }
 
 #[tauri::command]

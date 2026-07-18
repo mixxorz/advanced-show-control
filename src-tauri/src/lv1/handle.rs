@@ -160,13 +160,23 @@ mod tests {
 
         if let Some(Lv1Command::RecallScene { scene_index, reply }) = rx.recv().await {
             assert_eq!(scene_index, 4);
-            reply.unwrap().send(Ok(())).unwrap();
+            reply
+                .unwrap()
+                .send(Ok(crate::lv1::RecallSceneDispatch {
+                    scene_observation_sequence: 0,
+                }))
+                .unwrap();
         } else {
             panic!("expected RecallScene command");
         }
 
         assert!(recall.await.unwrap().is_ok());
-        assert_eq!(recall_rx.await.unwrap(), Ok(()));
+        assert_eq!(
+            recall_rx.await.unwrap(),
+            Ok(crate::lv1::RecallSceneDispatch {
+                scene_observation_sequence: 0,
+            })
+        );
     }
 
     #[tokio::test]

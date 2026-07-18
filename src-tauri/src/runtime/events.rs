@@ -80,7 +80,7 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::SceneState;
+    use crate::lv1::{SceneObservation, SceneState};
     use crate::show::ShowProjectionReason;
 
     #[tokio::test]
@@ -89,9 +89,12 @@ mod tests {
 
         let sent = bus.publish(AppEvent::Lv1 {
             generation: 0,
-            event: Lv1Event::SceneChanged(SceneState {
-                index: 1,
-                name: "test".to_string(),
+            event: Lv1Event::SceneChanged(SceneObservation {
+                sequence: 1,
+                scene: SceneState {
+                    index: 1,
+                    name: "test".to_string(),
+                },
             }),
         });
 
@@ -105,9 +108,12 @@ mod tests {
 
         bus.publish(AppEvent::Lv1 {
             generation: 0,
-            event: Lv1Event::SceneChanged(SceneState {
-                index: 2,
-                name: "capacity".to_string(),
+            event: Lv1Event::SceneChanged(SceneObservation {
+                sequence: 1,
+                scene: SceneState {
+                    index: 2,
+                    name: "capacity".to_string(),
+                },
             }),
         });
 
@@ -117,8 +123,8 @@ mod tests {
                 generation: 0,
                 event: Lv1Event::SceneChanged(scene),
             } => {
-                assert_eq!(scene.index, 2);
-                assert_eq!(scene.name, "capacity");
+                assert_eq!(scene.scene.index, 2);
+                assert_eq!(scene.scene.name, "capacity");
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -131,9 +137,12 @@ mod tests {
 
         bus.publish(AppEvent::Lv1 {
             generation: 0,
-            event: Lv1Event::SceneChanged(SceneState {
-                index: 7,
-                name: "Chorus".to_string(),
+            event: Lv1Event::SceneChanged(SceneObservation {
+                sequence: 1,
+                scene: SceneState {
+                    index: 7,
+                    name: "Chorus".to_string(),
+                },
             }),
         });
 
@@ -143,8 +152,8 @@ mod tests {
                 assert_eq!(generation, 0);
                 match event {
                     Lv1Event::SceneChanged(scene) => {
-                        assert_eq!(scene.index, 7);
-                        assert_eq!(scene.name, "Chorus");
+                        assert_eq!(scene.scene.index, 7);
+                        assert_eq!(scene.scene.name, "Chorus");
                     }
                     other => panic!("unexpected event: {other:?}"),
                 }
