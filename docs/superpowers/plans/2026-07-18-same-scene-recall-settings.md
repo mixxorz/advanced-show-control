@@ -4,7 +4,7 @@
 
 **Goal:** Add application settings that independently control same-scene finishing and the same-identity repeat suppression threshold so hardware duplicate-recall behavior can be diagnosed safely.
 
-**Architecture:** Persist and project both values through the existing `AppSettings` full-object replacement flow. Each connected scenes actor starts with the current settings snapshot, consumes ordered settings facts, applies the configurable threshold, and sends an explicit finish-or-override execution mode with each validated fade command; the fade actor remains responsible for safe target execution and readiness.
+**Architecture:** Persist and project both values through the existing `AppSettings` full-object replacement flow. Lifecycle subscribes each connected scenes actor to settings facts before acquiring its current settings snapshot, and the actor refreshes settings through the app-lifetime settings mailbox after any subscriber lag; this prevents stale finishing policy from surviving a missed event. The scenes actor applies the configurable threshold and sends an explicit finish-or-override execution mode with each validated fade command, while the fade actor remains responsible for safe target execution and readiness.
 
 **Tech Stack:** Rust, Tokio actors, Tauri, serde, tracing, React, TypeScript, Vitest, Storybook, Playwright visual tests, Zensical.
 
@@ -17,6 +17,7 @@
 - Disabled finishing replaces matching target timelines from current interpolated/live values for the full configured duration. It must not rewind to the first fade's original start or immediately send exact targets.
 - Both execution modes preserve exact scene identity validation, lockout, current-generation guards, post-recall two-ping readiness, five-second readiness timeout, manual override, Abort All, disconnect, overlap, and zero-duration behavior.
 - Blocked, skipped, stale, disconnected, or unsafe recalls must not alter active fades.
+- A scenes actor that cannot refresh settings after event-bus lag must stop processing recalls rather than continue with potentially stale same-scene policy.
 - Rust behavior tests must use pure unit tests or actor-mailbox/`AppEventBus` tests; do not inspect or mutate private actor state for side-effecting behavior.
 - Use `cargo nextest run`, not `cargo test`, for Rust verification.
 - Do not claim hardware behavior is verified unless `make smoke` runs against an LV1-compatible target and `logs/debug-smoke-report.txt` shows the authoritative passing result.
@@ -30,11 +31,13 @@
 - `src-tauri/src/fade/commands.rs`: explicit `SameSceneRecallBehavior` command contract.
 - `src-tauri/src/fade/actor.rs`: finish versus current-value override selection, readiness integration, and operational logs.
 - `src-tauri/src/scenes/state.rs`: parameterized same-identity repeat gate.
-- `src-tauri/src/scenes/actor.rs`: connected settings snapshot ownership, settings event updates, and validated mode dispatch.
+- `src-tauri/src/scenes/actor.rs`: connected settings snapshot ownership, lag recovery through `SettingsHandle`, settings event updates, and validated mode dispatch.
 - `src-tauri/src/lifecycle/mod.rs`: current settings lookup before constructing connected scenes actors.
 - `src-tauri/src/show/actor.rs`: test call-site updates for the scenes actor constructor.
 - `src-tauri/dev-tools/src/bin/lv1-probe.rs`, `src-tauri/tests/fade_engine.rs`, and `src-tauri/tests/runtime_bus.rs`: explicit behavior field at direct fade-command call sites.
-- `ui/src/types.ts`: TypeScript settings contract and disconnected defaults.
+- `src-tauri/src/ui/debug.rs`: production settings command registration for deterministic hardware smoke setup.
+- `ui/src/debug/main.tsx`: enabled and disabled hardware smoke coverage with deterministic settings restoration.
+- `ui/src/types.ts`: TypeScript settings contract, corrected Rust mirror reference, and disconnected defaults.
 - `ui/src/components/StepperControl.tsx`: reusable optional step size and value formatter.
 - `ui/src/components/SettingsTab.tsx`: toggle and threshold controls.
 - `ui/src/components/SettingsTab.test.tsx`: full-object replacement and bounded 100 ms interaction tests.
@@ -50,7 +53,7 @@
 **Files:**
 - Modify: `src-tauri/src/settings/types.rs:5-139`
 - Modify: `src-tauri/src/settings/actor.rs:149-160,188-242,471-487`
-- Modify: `ui/src/types.ts:31-38,149-166`
+- Modify: `ui/src/types.ts:1,31-38,151-168`
 - Modify: `ui/src/components/SettingsTab.test.tsx:20-59`
 
 **Interfaces:**
@@ -218,6 +221,12 @@ sameSceneRecallEnabled: true,
 sameSceneRecallThresholdMs: 500,
 ```
 
+Correct the contract comment at `ui/src/types.ts:1` while this boundary is being edited:
+
+```ts
+// Keep these types in sync with src-tauri/src/projector/view.rs; Rust owns AppViewState snapshots; TS mirrors serialized Tauri event payloads; update both and run npm run typecheck.
+```
+
 - [ ] **Step 8: Verify contract formatting and type safety**
 
 Run: `cargo fmt --all -- --check && npm --prefix ui run format:check && npm --prefix ui run typecheck`
@@ -239,7 +248,7 @@ git commit -m "feat: add same-scene recall settings"
 - Modify: `src-tauri/src/fade/commands.rs:1-16`
 - Modify: `src-tauri/src/fade/mod.rs:11-17`
 - Modify: `src-tauri/src/fade/actor.rs:46-50,112-151,374-519,710-834,2632-2839,3500-3572`
-- Modify: `src-tauri/src/scenes/actor.rs:443-452,1978-1995`
+- Modify: `src-tauri/src/scenes/actor.rs:500-509,2302-2320`
 - Modify: `src-tauri/dev-tools/src/bin/lv1-probe.rs:750-775,1155-1180`
 - Modify: `src-tauri/tests/fade_engine.rs:220-242`
 - Modify: `src-tauri/tests/runtime_bus.rs:88-104`
@@ -249,7 +258,7 @@ git commit -m "feat: add same-scene recall settings"
 - Produces: `FadeCommand::RecallSceneFade { same_scene_behavior, .. }`
 - Consumes: `EngineState::finish_scene_on_next_tick`, current parameter-key replacement path, fresh LV1 snapshot, generation checks, and readiness barrier.
 
-- [ ] **Step 1: Add a failing actor test for disabled-mode current-value replacement**
+- [ ] **Step 1: Add failing actor tests for disabled-mode current-value replacement**
 
 Add an explicit behavior argument helper beside `start_fade_for_generation`:
 
@@ -308,9 +317,17 @@ start_fade_with_behavior(
 )
 .await
 .unwrap();
-assert_no_write(&mut write_rx).await;
+tokio::task::yield_now().await;
+assert!(matches!(
+    write_rx.try_recv(),
+    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+));
 publish_ping(&event_bus, 7, 43);
-assert_no_write(&mut write_rx).await;
+tokio::task::yield_now().await;
+assert!(matches!(
+    write_rx.try_recv(),
+    Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+));
 publish_ping(&event_bus, 7, 44);
 tokio::time::advance(Duration::from_millis(100)).await;
 let after_override = next_write_batch(&mut write_rx).await;
@@ -324,11 +341,82 @@ assert!(after_value >= before_value, "replacement must not rewind");
 assert!(after_value < 0.0, "replacement must not finish immediately");
 ```
 
-Use fake snapshots with monotonically increasing ping boundaries matching the published sequences.
+Use non-advancing `try_recv` checks here rather than the existing 100 ms timeout helper so readiness assertions do not consume the replacement timeline under paused Tokio time.
+
+Continue the test through the replacement duration:
+
+```rust
+tokio::time::advance(Duration::from_millis(800)).await;
+let before_deadline = next_write_batch(&mut write_rx).await;
+assert!(before_deadline.iter().any(|write| {
+    write.channel == 1
+        && write.parameter == Lv1WriteParameter::FaderDb
+        && write.value < 0.0
+}));
+
+tokio::time::advance(Duration::from_millis(200)).await;
+let at_deadline = next_write_batch(&mut write_rx).await;
+assert!(at_deadline.contains(&Lv1ParameterWrite {
+    group: 0,
+    channel: 1,
+    parameter: Lv1WriteParameter::FaderDb,
+    value: 0.0,
+}));
+```
+
+This proves the second recall uses a full new duration rather than merely avoiding the first immediate write.
+
+Add `repeated_scene_override_leaves_omitted_same_scene_target_active`. Build the initial targets and reduced override explicitly:
+
+```rust
+let initial = fade_config(
+    scene(17, "Verse"),
+    vec![
+        FadeTarget { group: 0, channel: 1, parameter: FadeParameter::FaderDb, target: -10.0 },
+        FadeTarget { group: 0, channel: 2, parameter: FadeParameter::FaderDb, target: -5.0 },
+    ],
+    1_000,
+);
+let reduced = fade_config(
+    scene(17, "Verse"),
+    vec![FadeTarget { group: 0, channel: 1, parameter: FadeParameter::FaderDb, target: 0.0 }],
+    1_000,
+);
+```
+
+Start `initial`, release readiness, advance 200 ms, clear observed writes, then send `reduced` with `OverrideMatchingTargets` and release the reset barrier. Assert the next moving batch contains both channels and that channel 2 is not sent its exact `-5.0` target early:
+
+```rust
+let resumed = next_write_batch(&mut write_rx).await;
+assert!(resumed.iter().any(|write| write.channel == 1));
+assert!(resumed.iter().any(|write| write.channel == 2));
+assert!(!resumed.iter().any(|write| write.channel == 2 && write.value == -5.0));
+```
+
+Add `repeated_scene_finish_uses_active_ownership_when_incoming_scope_changed`: start the same `initial` two-target fade, then send `reduced` with `FinishActiveTargets`. After readiness, assert one completion batch contains both original stored exact values:
+
+```rust
+assert!(writes.contains(&Lv1ParameterWrite {
+    group: 0,
+    channel: 1,
+    parameter: Lv1WriteParameter::FaderDb,
+    value: -10.0,
+}));
+assert!(writes.contains(&Lv1ParameterWrite {
+    group: 0,
+    channel: 2,
+    parameter: Lv1WriteParameter::FaderDb,
+    value: -5.0,
+}));
+```
+
+This protects enabled finishing when copy/paste changes a scene's configured scope during an active fade.
+
+Use fake snapshots with monotonically increasing ping boundaries matching the published sequences. Interact only through the fade mailbox, fake LV1 mailbox, and `AppEventBus`; do not inspect `EngineState` directly.
 
 - [ ] **Step 2: Run the new actor test and verify failure**
 
-Run: `cargo nextest run -p advanced-show-control fade::actor::tests::repeated_scene_override_replaces_from_current_value_without_immediate_finish`
+Run: `cargo nextest run -p advanced-show-control repeated_scene_override`
 
 Expected: compilation fails because `SameSceneRecallBehavior` and the command field do not exist.
 
@@ -350,7 +438,7 @@ Add `same_scene_behavior: SameSceneRecallBehavior` to `FadeCommand::RecallSceneF
 pub use commands::{FadeCommand, SameSceneRecallBehavior};
 ```
 
-At all direct call sites outside the scenes actor, explicitly pass `SameSceneRecallBehavior::FinishActiveTargets` to preserve current behavior. Do not add hidden handle convenience methods.
+At every current direct call site, including `src-tauri/src/scenes/actor.rs:505-509`, explicitly pass `SameSceneRecallBehavior::FinishActiveTargets` to preserve current behavior and keep Task 2 independently compilable. Task 3 replaces only the scenes actor's temporary fixed value with settings-selected dispatch. Do not add hidden handle convenience methods.
 
 - [ ] **Step 4: Route the mode through the fade actor without changing zero-duration behavior**
 
@@ -378,31 +466,32 @@ let finishing_target_count = match same_scene_behavior {
 };
 ```
 
-Before mutating targets in override mode, count incoming keys that currently belong to the exact scene:
+Before mutating targets, establish whether this is actually a repeated active-scene recall and count the active keys the incoming command will replace. Count active targets rather than incoming targets so duplicate incoming keys cannot inflate diagnostics, and include overlapping keys currently owned by another scene because the existing replacement loop removes them too:
 
 ```rust
+let scene_owns_active_targets = state
+    .channels
+    .iter()
+    .any(|active| active.scene == config.scene);
 let overriding_target_count = if same_scene_behavior
     == SameSceneRecallBehavior::OverrideMatchingTargets
+    && scene_owns_active_targets
 {
-    config
-        .targets
+    state
+        .channels
         .iter()
-        .filter(|target| {
-            state.channels.iter().any(|active| {
-                active.scene == config.scene && active.key == target.key()
-            })
-        })
+        .filter(|active| config.targets.iter().any(|target| active.key == target.key()))
         .count()
 } else {
     0
 };
 ```
 
-Run the existing target-key replacement loop whenever `finishing_target_count == 0`. Extend `RecallSceneFadeOutcome` with `Overriding { target_count: usize }`; return it only when `overriding_target_count > 0`, otherwise return `Started`.
+Run the existing target-key replacement loop whenever `finishing_target_count == 0`. Extend `RecallSceneFadeOutcome` with `Overriding { target_count: usize }`; return it only when an exact-scene target was active and at least one active key was actually replaced. Otherwise return `Started`. Active exact-scene targets omitted from the incoming config remain untouched.
 
 - [ ] **Step 5: Add the distinct disabled-mode operational log test**
 
-Add `repeated_scene_override_logs_one_current_value_outcome` beside the finishing log test. Start the same scene twice, using override behavior for the second command, then assert exactly:
+Add `repeated_scene_override_logs_one_current_value_outcome` beside the finishing log test. Start `Chorus` owning channel 1 and `Verse` owning channel 2, then send an override-mode `Verse` config containing both keys. This proves the count includes every active key actually replaced while the exact repeated scene owns at least one active target. Assert exactly:
 
 ```rust
 CapturedWarnEvent {
@@ -419,7 +508,7 @@ CapturedWarnEvent {
 }
 ```
 
-Also assert only the initial command emits `fade_started`.
+Also assert the two initial commands emit exactly two `fade_started` logs and the override command emits no additional `fade_started` log.
 
 - [ ] **Step 6: Emit the mode-specific outcome without duplicate logs**
 
@@ -444,13 +533,13 @@ Do not emit a second `fade_started` for `Finishing` or `Overriding`. Both outcom
 
 Run: `cargo nextest run -p advanced-show-control fade::actor::tests`
 
-Expected: finish, override, overlap, exact-write, readiness, manual override, abort, disconnect, generation, timeout, and logging actor tests pass.
+Expected: finish, full-duration override, omitted-target continuation, overlap, exact-write, readiness, manual override, abort, disconnect, generation, timeout, and logging actor tests pass.
 
-- [ ] **Step 8: Run broader fade tests and lint**
+- [ ] **Step 8: Run broader fade tests, lint, and standalone probe checks**
 
-Run: `cargo nextest run -p advanced-show-control fade && cargo clippy -p advanced-show-control --all-targets -- -D warnings`
+Run: `cargo nextest run -p advanced-show-control fade && cargo clippy -p advanced-show-control --all-targets -- -D warnings && cargo check --manifest-path src-tauri/dev-tools/Cargo.toml --all-targets`
 
-Expected: all fade tests pass and clippy reports no warnings.
+Expected: all fade tests pass, clippy reports no warnings, and the standalone `lv1-probe` crate compiles with its explicit behavior field.
 
 - [ ] **Step 9: Commit explicit fade behavior**
 
@@ -464,15 +553,15 @@ git commit -m "feat: add same-scene fade override mode"
 ### Task 3: Apply Ordered Settings To The Recall Gate And Mode Dispatch
 
 **Files:**
-- Modify: `src-tauri/src/scenes/state.rs:1-61,279-350,442-516`
-- Modify: `src-tauri/src/scenes/actor.rs:5-19,66-99,101-280,360-507,628-802,1645-1657,1793-2047`
+- Modify: `src-tauri/src/scenes/state.rs:1-86,351-422,562-645`
+- Modify: `src-tauri/src/scenes/actor.rs:5-19,66-127,117-315,418-564,684-860,1900-1980,2114-2370`
 - Modify: `src-tauri/src/lifecycle/mod.rs:9-18,81-109,282-307,357-425,730-756,1200-1215`
-- Modify: `src-tauri/src/show/actor.rs` at every `build_scenes_actor` test call site.
+- Modify: `src-tauri/src/show/actor.rs:634,735,958,1004,1071,1222`
 
 **Interfaces:**
 - Consumes: `AppSettings::{same_scene_recall_enabled, same_scene_recall_threshold_ms}` from Task 1.
 - Consumes: `SameSceneRecallBehavior` from Task 2.
-- Produces: `build_scenes_actor(generation, runtime_generation, event_bus, initial_settings)`.
+- Produces: `build_scenes_actor(generation, runtime_generation, event_bus, events, settings_handle, initial_settings)` where `events` is subscribed before snapshot acquisition.
 - Produces: configurable `ScenesState::accepts(current_scene, same_scene_repeat_delay)`.
 - Produces: settings facts applied by the scenes actor before later ordered LV1 scene facts.
 
@@ -553,6 +642,8 @@ pub(crate) fn accepts_at(
 
 Pass `same_scene_repeat_delay` into `decide_armed` and use it in both existing `<` comparisons. Do not alter `RECALL_ARMING_DELAY` or `SCENE_LIST_EDIT_SUPPRESSION_WINDOW`.
 
+Update the `RecallGate` and `decide_armed` comments so they refer to the supplied same-scene repeat delay rather than the removed `SAME_SCENE_REPEAT_DELAY` constant. Update the scenes actor timing comment from a fixed `500 ms repeat delay` to a configurable repeat delay with a 500 ms default; leave the other fixed timing comments unchanged.
+
 - [ ] **Step 4: Run pure gate tests**
 
 Run: `cargo nextest run -p advanced-show-control scenes::state::tests`
@@ -567,7 +658,9 @@ Change the fake fade observation channel from `FadeConfig` to:
 type ObservedFadeCommand = (FadeConfig, SameSceneRecallBehavior);
 ```
 
-Capture both fields when matching `FadeCommand::RecallSceneFade`. Add an initial-settings test that builds with:
+Update `fake_fade_handle`, `next_fade_command`, and every existing caller to use `ObservedFadeCommand`. Destructure `(config, behavior)` before existing `FadeConfig` field assertions, and assert `FinishActiveTargets` in existing tests that preserve default behavior.
+
+Add an initial-settings test using `intro_scene_document()`, which explicitly enables fader scope and supplies a stored value for its scoped channel. Do not build this test from a newly aligned/default scene config because current defaults intentionally have empty scope. Build the actor with:
 
 ```rust
 AppSettings {
@@ -583,7 +676,7 @@ After arming, publish one accepted `Intro`, receive the fake fade command, and a
 assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
 ```
 
-Then publish the same identity at `1_199` ms and assert no second command; publish at the exact `1_200` ms boundary and assert a second override command.
+Then advance 900 ms, publish the same identity, advance through the 25 ms settle delay, and assert no second command. Advance until more than 1,200 ms has elapsed from the accepted trigger, publish again, settle, and assert a second override command. Keep exact-boundary coverage in the pure state test because actor acceptance intentionally occurs after the independent settle delay.
 
 Add a second actor test that starts with defaults, publishes:
 
@@ -598,6 +691,81 @@ event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
 ```
 
 before the next `SceneChanged`, then verifies the later command uses `OverrideMatchingTargets` and the 1,000 ms delay.
+
+Add `settings_update_preserves_scene_settings_clipboard_and_pasted_recall_config`:
+
+Install a document whose destination is the fake LV1's `Intro` and whose source has distinct settings:
+
+```rust
+let source_id = uuid::Uuid::from_u128(0x22222222222242228222222222222222);
+let destination_id = intro_internal_scene_id();
+let mut destination_document = intro_scene_document();
+let destination = destination_document.scene_configs.remove(0);
+let document = SceneDocument {
+    scene_configs: vec![
+        SceneConfig {
+            internal_scene_id: source_id,
+            scene_index: Some(2),
+            scene_name: "Source".to_string(),
+            duration_ms: 7_777,
+            channel_configs: vec![ChannelConfig {
+                group: 0,
+                channel: 2,
+                fader_db: Some(-3.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            scoped_channels: vec![ChannelRef { group: 0, channel: 2 }],
+            scope_toggles: SceneScopeToggles { faders: true, pan: false },
+        },
+        destination,
+    ],
+    selected_scene_internal_id: None,
+};
+```
+
+Install the document through `ReplaceSceneDocument`, then:
+
+```rust
+let (reply, copy_rx) = oneshot::channel();
+handle.send(ScenesCommand::CopySceneSettings {
+    source_internal_scene_id: source_id,
+    reply: Some(reply),
+}).await.unwrap();
+copy_rx.await.unwrap().unwrap();
+
+event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+    settings: AppSettings {
+        same_scene_recall_enabled: false,
+        same_scene_recall_threshold_ms: 1_000,
+        ..Default::default()
+    },
+}));
+yield_to_actor().await;
+
+let (reply, paste_rx) = oneshot::channel();
+handle.send(ScenesCommand::PasteSceneSettings {
+    destination_internal_scene_id: destination_id,
+    reply: Some(reply),
+}).await.unwrap();
+assert!(paste_rx.await.unwrap().unwrap().changed);
+```
+
+Arm recall tracking, publish `intro_scene()`, and destructure the observed command:
+
+```rust
+let (config, behavior) = next_fade_command(&mut fade_rx).await;
+assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
+assert_eq!(config.duration_ms, 7_777);
+assert_eq!(config.targets.len(), 1);
+assert_eq!(config.targets[0].target, -3.0);
+```
+
+Successful paste after the settings event proves the fact did not replace `ScenesState` or clear its actor-owned clipboard.
+
+This is an actor-mailbox/`AppEventBus` test. Do not inspect the private clipboard field directly.
 
 - [ ] **Step 6: Run the new actor tests and verify failure**
 
@@ -614,9 +782,13 @@ pub fn build_scenes_actor(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     event_bus: AppEventBus,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
+    settings_handle: SettingsHandle,
     initial_settings: AppSettings,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers)
 ```
+
+Store the supplied `events` receiver and app-lifetime `SettingsHandle` in `ScenesTask`; do not call `event_bus.subscribe()` inside this constructor. This makes subscription ordering explicit at every call site while retaining a recovery path for missed settings facts.
 
 Destructure it in `run_scenes_actor` as mutable local state:
 
@@ -624,7 +796,9 @@ Destructure it in `run_scenes_actor` as mutable local state:
 let mut settings = initial_settings;
 ```
 
-In both event-receive branches, consume settings facts:
+Keep settings as a local recall-policy snapshot beside `recall_state`; do not add settings to `ScenesState`, replace the scene document, clear `scene_settings_clipboard`, or publish `ScenesEvent::StateChanged` when settings change.
+
+In both current event-receive branches (`src-tauri/src/scenes/actor.rs:213-237` while a scene is pending and `:279-312` while idle), consume settings facts:
 
 ```rust
 Ok(AppEvent::Settings(SettingsEvent::StateChanged {
@@ -633,6 +807,37 @@ Ok(AppEvent::Settings(SettingsEvent::StateChanged {
     settings = updated_settings;
 }
 ```
+
+Add a narrow lag-recovery function that constructs the mailbox command explicitly:
+
+```rust
+async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<AppSettings> {
+    let (reply, rx) = oneshot::channel();
+    if settings_handle
+        .send(SettingsCommand::GetSettings { reply })
+        .await
+        .is_err()
+    {
+        tracing::error!(
+            event = "scene_recall_settings_unavailable",
+            "Scene recall automation stopped because current settings are unavailable after event subscriber lag"
+        );
+        return None;
+    }
+    match rx.await {
+        Ok(settings) => Some(settings),
+        Err(_) => {
+            tracing::error!(
+                event = "scene_recall_settings_unavailable",
+                "Scene recall automation stopped because current settings are unavailable after event subscriber lag"
+            );
+            None
+        }
+    }
+}
+```
+
+In both `RecvError::Lagged` branches, keep `log_lagged_subscriber`, then replace the local snapshot from this helper. If it returns `None`, break the actor loop. Do not process a pending or future scene observation with the pre-lag snapshot.
 
 Pass `&settings` into `process_scene_observation`. Compute the delay once per observation:
 
@@ -674,15 +879,45 @@ async fn settings_snapshot(&self) -> Result<crate::settings::AppSettings, String
 }
 ```
 
-In `connect_to_identity`, call it before `build_connected_runtime` and pass the snapshot into that function and then `build_scenes_actor`. In the test-only `finish_connect_transaction_inner`, call the same helper before constructing its scenes actor. Reuse the helper in `frontend_ready` instead of duplicating the mailbox exchange.
+In `connect_to_identity`, create `let scene_events = event_bus.subscribe();` **before** awaiting `settings_snapshot()`. Pass `scene_events`, `self.settings.clone()`, and the snapshot into `build_connected_runtime` and then `build_scenes_actor`. In the test-only `finish_connect_transaction_inner`, subscribe and fetch settings at the start of the function, before `install_runtime_transaction`; pass the same app-lifetime handle and do not introduce an error path that leaves LV1/fade handles installed without a scenes actor. Reuse the helper in `frontend_ready` instead of duplicating the mailbox exchange.
 
-At direct scenes actor construction in tests and show actor tests, pass `AppSettings::default()` unless the test explicitly exercises custom settings.
+Update every direct constructor and wrapper, including `build_scenes_actor_with_pending_scene_observer` and `build_and_spawn_scene_recall_fader_with_document`. Each ordinary test call creates `let events = event_bus.subscribe();` immediately before construction and passes a live test `SettingsHandle` plus `AppSettings::default()`; add a settings-handle-and-receiver-taking helper for policy ordering tests. Update all show actor and lifecycle test call sites the same way unless the test explicitly exercises custom settings.
+
+Add `queued_settings_update_after_snapshot_supersedes_initial_policy` with this ordering:
+
+```rust
+let event_bus = AppEventBus::default();
+let events = event_bus.subscribe();
+let initial_settings = AppSettings::default();
+event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+    settings: AppSettings {
+        same_scene_recall_enabled: false,
+        same_scene_recall_threshold_ms: 1_000,
+        ..Default::default()
+    },
+}));
+
+let (handle, task, peers) = build_scenes_actor(
+    1,
+    runtime_generation.clone(),
+    event_bus.clone(),
+    events,
+    settings_handle,
+    initial_settings,
+);
+peers.set_peers(lv1, fade);
+task.spawn();
+```
+
+Install `intro_scene_document()`, arm the actor, and publish `intro_scene()`. Assert the first observed command uses `OverrideMatchingTargets`; advance 700 ms, publish and settle another observation of the same identity, and assert no command. Advance until more than 1,000 ms has elapsed from the accepted trigger, publish and settle that same identity again, and assert an override command. This reproduces the snapshot/construction race and proves the queued fact wins without conflating actor settle timing with the pure exact-boundary rule.
+
+Add `lagged_settings_events_refresh_before_recall`: use an `AppEventBus` with a small test capacity, subscribe the scenes receiver, retain an enabled snapshot, replace settings through a real spawned settings actor with finishing disabled, and publish enough unrelated facts before spawning scenes to force `RecvError::Lagged`. After actor startup and lag recovery, publish an eligible configured scene observation and assert `OverrideMatchingTargets`. Add a companion with a closed fake settings mailbox and assert no fade command is sent after lag and one `ERROR` event named `scene_recall_settings_unavailable` carries the complete fail-closed message, proving recovery is both safe and visible.
 
 - [ ] **Step 10: Run scenes and lifecycle tests**
 
 Run: `cargo nextest run -p advanced-show-control scenes lifecycle show::actor::tests`
 
-Expected: actor settings ordering, configurable threshold, validation boundaries, lifecycle connection, and show integration tests pass.
+Expected: actor settings ordering, queued construction-race handling, configurable threshold, clipboard continuity, pasted recall configuration, validation boundaries, lifecycle connection, and show integration tests pass.
 
 - [ ] **Step 11: Run all Rust tests, formatting, and lint**
 
@@ -705,7 +940,7 @@ git commit -m "feat: configure same-scene recall policy"
 - Modify: `ui/src/components/StepperControl.tsx:1-45`
 - Modify: `ui/src/components/SettingsTab.tsx:96-185`
 - Modify: `ui/src/components/SettingsTab.test.tsx:15-118`
-- Modify: `ui/src/components/SettingsTab.stories.tsx:16-31` only if interaction state needs an explicit story assertion.
+- Modify: `ui/src/components/SettingsTab.stories.tsx:1-32`
 
 **Interfaces:**
 - Consumes: `AppSettings.sameSceneRecallEnabled` and `sameSceneRecallThresholdMs` from Task 1.
@@ -752,7 +987,34 @@ it("updates the same-scene threshold in 100ms increments", () => {
 });
 ```
 
-Add a bounded case using projected values `0` and `5000`; clicks beyond each bound must submit no value outside `0..=5000`. Keep the threshold control available when `sameSceneRecallEnabled` is false.
+Add a bounded case using projected values `0` and `5000`:
+
+```tsx
+it.each([
+  [0, "Decrease Same scene recall threshold"],
+  [5000, "Increase Same scene recall threshold"],
+] as const)("keeps same-scene threshold %i within bounds", (value, buttonName) => {
+  renderWithAppProviders(<SettingsTab />, {
+    appState: {
+      ...disconnectedAppViewState,
+      settings: {
+        ...disconnectedAppViewState.settings,
+        sameSceneRecallEnabled: false,
+        sameSceneRecallThresholdMs: value,
+      },
+    },
+  });
+
+  fireEvent.click(screen.getByRole("button", { name: buttonName }));
+  expect(replaceAppSettings).toHaveBeenCalledWith({
+    ...disconnectedAppViewState.settings,
+    sameSceneRecallEnabled: false,
+    sameSceneRecallThresholdMs: value,
+  });
+});
+```
+
+This also proves the threshold control remains available when `sameSceneRecallEnabled` is false. The existing backend no-op behavior handles a same-value bounded replacement.
 
 - [ ] **Step 2: Run the Settings tab tests and verify failure**
 
@@ -844,9 +1106,35 @@ Expected: all commands pass.
 
 - [ ] **Step 6: Run Storybook interaction tests**
 
+First import `expect`, `userEvent`, and `within` from `storybook/test`, then add a required interaction assertion to the default story:
+
+```tsx
+export const Default: Story = {
+  render: () => <InteractiveSettingsTab />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const finishing = canvas.getByLabelText("Same scene recall finishing");
+    const threshold = canvas.getByLabelText("Same scene recall threshold");
+
+    await expect(finishing).toHaveAttribute("aria-pressed", "true");
+    await expect(threshold).toHaveValue("500 ms");
+    await userEvent.click(finishing);
+    await expect(finishing).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(
+      canvas.getByRole("button", {
+        name: "Increase Same scene recall threshold",
+      }),
+    );
+    await expect(threshold).toHaveValue("600 ms");
+  },
+};
+```
+
+This proves the threshold remains editable while finishing is disabled.
+
 Run: `npm --prefix ui run test:storybook`
 
-Expected: all Storybook browser tests pass and the Settings stories render both controls.
+Expected: all Storybook browser tests pass, including the Settings defaults and disabled-finishing threshold interaction.
 
 - [ ] **Step 7: Commit the Settings UI**
 
@@ -857,17 +1145,136 @@ git commit -m "feat: add same-scene recall controls"
 
 ---
 
-### Task 5: Update Architecture, Manual, And Visual Baselines
+### Task 5: Make Hardware Smoke Settings Deterministic
 
 **Files:**
-- Modify: `docs/architecture.md:298-332`
+- Modify: `src-tauri/src/ui/debug.rs:39-70`
+- Modify: `ui/src/debug/main.tsx:1-32,48-55,250-320`
+
+**Interfaces:**
+- Consumes: production `replace_app_settings` and projected `AppViewState.settings` from Tasks 1 and 3.
+- Produces: debug smoke setup that explicitly restores enabled finishing and a 500 ms threshold.
+- Produces: hardware case `same-scene-override` while keeping `same-scene-finish` deterministic.
+
+- [ ] **Step 1: Register the production settings command in the debug app**
+
+Add this command to the debug `generate_handler!` list; do not create a debug-only settings mutation path:
+
+```rust
+crate::ui::commands::settings::replace_app_settings,
+```
+
+The smoke app must exercise the same full-object replacement adapter as the normal UI.
+
+- [ ] **Step 2: Add a full-object smoke settings helper**
+
+Import `AppSettings` and add:
+
+```ts
+async function setSameSceneSettings(
+  sameSceneRecallEnabled: boolean,
+  sameSceneRecallThresholdMs: number,
+) {
+  const current = state?.settings;
+  if (!current) throw new Error("projected settings are unavailable");
+  const settings: AppSettings = {
+    ...current,
+    sameSceneRecallEnabled,
+    sameSceneRecallThresholdMs,
+  };
+
+  await invoke("replace_app_settings", { settings });
+  await waitFor(
+    () =>
+      state?.settings.sameSceneRecallEnabled === sameSceneRecallEnabled &&
+      state.settings.sameSceneRecallThresholdMs ===
+        sameSceneRecallThresholdMs,
+    "projected same-scene recall settings",
+  );
+}
+```
+
+Add `same-scene-override` to the smoke test list immediately after `same-scene-finish`.
+
+- [ ] **Step 3: Make the existing finish smoke independent of persisted debug settings**
+
+Before `same-scene-finish` setup, call:
+
+```ts
+await setSameSceneSettings(true, 500);
+```
+
+In its `finally`, restore both the 1,000 ms scene duration and `setSameSceneSettings(true, 500)`. This prevents an earlier failed or interrupted smoke run from changing the expected enabled-mode result.
+
+- [ ] **Step 4: Add disabled-mode full-duration hardware smoke coverage**
+
+Add a production-command-driven test:
+
+```ts
+await test("same-scene-override", async () => {
+  try {
+    await setSameSceneSettings(false, 500);
+    await reset(sceneA, targetA);
+    await invoke("set_scene_duration_ms", {
+      internalSceneId: sceneB,
+      durationMs: sameSceneDurationMs,
+    });
+    await invoke("recall_scene", { internalSceneId: sceneB });
+    await waitFor(async () => {
+      const liveGain = await gain();
+      return liveGain >= targetA + sameSceneMovementThresholdDb && liveGain < targetB - tolerance;
+    }, "same-scene override movement before repeat");
+
+    const repeatedAt = Date.now();
+    await invoke("recall_scene", { internalSceneId: sceneB });
+    await sleep(1_000);
+    if (Math.abs((await gain()) - targetB) <= tolerance) {
+      throw new Error("disabled same-scene finishing completed immediately");
+    }
+    await waitFor(
+      async () => Math.abs((await gain()) - targetB) <= tolerance,
+      "same-scene override completion",
+      sameSceneDurationMs + 5_000,
+    );
+    if (Date.now() - repeatedAt < sameSceneDurationMs) {
+      throw new Error("same-scene override did not use the full configured duration");
+    }
+  } finally {
+    await invoke("set_scene_duration_ms", {
+      internalSceneId: sceneB,
+      durationMs: 1_000,
+    });
+    await setSameSceneSettings(true, 500);
+  }
+});
+```
+
+- [ ] **Step 5: Verify debug frontend and Tauri command registration compile**
+
+Run: `npm --prefix ui run format:check && npm --prefix ui run lint && npm --prefix ui run typecheck && cargo check -p advanced-show-control --all-targets`
+
+Expected: all commands pass, including the debug Tauri binary and smoke TypeScript entrypoint.
+
+- [ ] **Step 6: Commit deterministic hardware smoke coverage**
+
+```bash
+git add src-tauri/src/ui/debug.rs ui/src/debug/main.tsx
+git commit -m "test: smoke same-scene recall settings"
+```
+
+---
+
+### Task 6: Update Architecture, Manual, And Visual Baselines
+
+**Files:**
+- Modify: `docs/architecture.md:317-332`
 - Modify: `site/docs/settings.md:1-36`
 - Modify: `ui/tests/visual/storybook.visual.spec.ts-snapshots/settings-settingstab--default.png`
 - Modify: `ui/tests/visual/storybook.visual.spec.ts-snapshots/app-appshell--settings-tab.png`
 - Modify: `site/docs/assets/screenshots/settings.png`
 
 **Interfaces:**
-- Consumes: final behavior and exact UI labels from Tasks 1 through 4.
+- Consumes: final behavior and exact UI labels from Tasks 1 through 5.
 - Produces: revision-matched internal architecture, public operator guidance, and screenshots.
 
 - [ ] **Step 1: Update architecture behavior**
@@ -898,17 +1305,21 @@ Use these settings with **Extensive diagnostics** when investigating unexpected 
 
 Update the introduction so active same-scene behavior is included, and do not list either setting under Not active in v2.
 
+Keep scene copy/paste guidance in `site/docs/scenes.md` unchanged; it is a regression constraint, not part of the Settings documentation change.
+
 - [ ] **Step 3: Prove the current visual baselines detect the intentional UI change**
 
 Run: `make visual-test`
 
-Expected: FAIL only for Settings-related screenshots, including `settings-settingstab--default.png` and `app-appshell--settings-tab.png`. Investigate any unrelated difference before updating snapshots.
+Expected: FAIL only for `settings-settingstab--default.png` and `app-appshell--settings-tab.png`. The merged clipboard baselines `scenes-selected-scene-selectedsceneactions--clipboard-available.png`, `--clipboard-unavailable.png`, and `--unlinked-destination.png` must remain unchanged. Investigate any unrelated difference before updating snapshots.
 
 - [ ] **Step 4: Regenerate Docker-compatible visual baselines**
 
 Run: `make visual-update`
 
 Expected: Playwright updates the affected Settings screenshots using the CI-compatible Docker image.
+
+Run `git diff --name-only` immediately afterward and confirm only the two Settings snapshots changed. Do not retain regenerated scene clipboard baselines or unrelated screenshots.
 
 - [ ] **Step 5: Re-run visual tests**
 
@@ -935,19 +1346,21 @@ Expected: `zensical build --clean --strict --config-file site/zensical.toml` suc
 - [ ] **Step 8: Commit docs and visual baselines**
 
 ```bash
-git add docs/architecture.md site/docs/settings.md site/docs/assets/screenshots/settings.png ui/tests/visual/storybook.visual.spec.ts-snapshots
+git add docs/architecture.md site/docs/settings.md site/docs/assets/screenshots/settings.png \
+  ui/tests/visual/storybook.visual.spec.ts-snapshots/settings-settingstab--default.png \
+  ui/tests/visual/storybook.visual.spec.ts-snapshots/app-appshell--settings-tab.png
 git commit -m "docs: explain same-scene recall settings"
 ```
 
 ---
 
-### Task 6: Complete Verification And Hardware Handoff
+### Task 7: Complete Verification And Hardware Handoff
 
 **Files:**
 - Verify only; modify implementation files only to fix failures attributable to this feature.
 
 **Interfaces:**
-- Consumes: all implementation, tests, docs, and snapshots from Tasks 1 through 5.
+- Consumes: all implementation, tests, docs, and snapshots from Tasks 1 through 6.
 - Produces: CI-style verification evidence and explicit hardware-testing status.
 
 - [ ] **Step 1: Run the standard non-visual verification suite**
@@ -962,13 +1375,19 @@ Run: `make visual-test`
 
 Expected: all visual regression tests pass against committed baselines.
 
-- [ ] **Step 3: Re-run strict documentation build**
+- [ ] **Step 3: Compile the standalone LV1 probe workspace**
+
+Run: `cargo check --manifest-path src-tauri/dev-tools/Cargo.toml --all-targets`
+
+Expected: the standalone `lv1-probe` crate compiles with no missing fade command fields.
+
+- [ ] **Step 4: Re-run strict documentation build**
 
 Run: `make docs-build`
 
 Expected: the documentation site builds cleanly with strict validation.
 
-- [ ] **Step 4: Inspect repository state and final diff**
+- [ ] **Step 5: Inspect repository state and final diff**
 
 Run:
 
@@ -980,15 +1399,15 @@ git log --oneline -10
 
 Expected: no uncommitted implementation changes, no whitespace errors, and focused feature commits only. Do not alter unrelated user or agent changes.
 
-- [ ] **Step 5: Run hardware smoke only when an LV1-compatible target is available**
+- [ ] **Step 6: Run hardware smoke only when an LV1-compatible target is available**
 
 Run: `make smoke`
 
 Then read: `logs/debug-smoke-report.txt`
 
-Expected when hardware is available: the report states the full suite passed, including `same-scene-finish: PASS`. A successful shell exit without a passing report is not sufficient.
+Expected when hardware is available: the report states the full suite passed, including `same-scene-finish: PASS` and `same-scene-override: PASS`. A successful shell exit without a passing report is not sufficient.
 
-For manual hardware diagnosis, enable Extensive diagnostics and exercise this matrix:
+After smoke, use the normal application Settings UI with Extensive diagnostics enabled to exercise this diagnostic matrix against naturally observed hardware notifications:
 
 | Finishing | Threshold | Expected accepted repeat behavior |
 | --- | ---: | --- |
@@ -997,9 +1416,9 @@ For manual hardware diagnosis, enable Extensive diagnostics and exercise this ma
 | On | Above observed duplicate delay | The delayed duplicate is suppressed; no finishing event occurs. |
 | Off | Above observed duplicate delay | The delayed duplicate is suppressed; no override event occurs. |
 
-If hardware is unavailable, record that smoke and manual diagnosis were not run; do not claim LV1 duplicate timing is verified.
+Use the extensive diagnostic file to confirm that the expected repeated `/Notify/CurSceneIndex` and `/Notify/Scene/Name` pair actually arrived and was followed by `scene_recall_skipped` rather than `fade_same_scene_finishing` or `fade_same_scene_overriding` during each manual threshold trial. Without those observations, natural fade completion alone does not prove threshold suppression. If hardware is unavailable, record that smoke and manual diagnosis were not run; do not claim LV1 duplicate timing is verified.
 
-- [ ] **Step 6: Request final code review**
+- [ ] **Step 7: Request final code review**
 
 Review the complete diff against `docs/superpowers/specs/2026-07-18-same-scene-recall-settings-design.md`, with findings prioritized around:
 

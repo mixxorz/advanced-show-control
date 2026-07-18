@@ -60,7 +60,7 @@ All independent timing and safety gates remain unchanged:
 
 ## Settings Delivery And Ordering
 
-Lifecycle obtains the current `AppSettings` snapshot when constructing a connected scenes actor. The scenes actor retains the relevant settings and updates them from ordered `SettingsEvent::StateChanged` facts.
+Lifecycle subscribes the connected scenes actor to `AppEventBus` before obtaining the current `AppSettings` snapshot. It then constructs the actor with that pre-subscribed receiver, the snapshot, and the app-lifetime `SettingsHandle`. The scenes actor retains the relevant settings and updates them from ordered `SettingsEvent::StateChanged` facts. Subscribing first prevents a replacement published between snapshot acquisition and actor construction from normally being lost; any such fact remains queued for the actor and supersedes the snapshot before a later scene observation is processed. If the event receiver reports lag, the scenes actor refreshes its settings snapshot through `SettingsCommand::GetSettings` before processing more observations. If that refresh is unavailable, the scenes actor stops instead of continuing recall automation with potentially stale finishing policy.
 
 The settings actor publishes `SettingsEvent::StateChanged` before acknowledging a successful replacement. Event-bus ordering therefore lets a scenes actor consume that settings fact before a later LV1 scene fact produced by a subsequent recall. A settings replacement that fails to persist publishes no event, so connected actors retain the last accepted settings.
 
