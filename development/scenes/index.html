@@ -411,10 +411,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#unavailable-controls" class="md-nav__link">
+  <a href="#copy-and-paste-scene-settings" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Unavailable controls
+        Copy and paste scene settings
       </span>
     </span>
   </a>
@@ -757,10 +757,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#unavailable-controls" class="md-nav__link">
+  <a href="#copy-and-paste-scene-settings" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
-        Unavailable controls
+        Copy and paste scene settings
       </span>
     </span>
   </a>
@@ -811,15 +811,15 @@
 <ol>
 <li>Select the scene in the <strong>Scene library</strong>.</li>
 <li>Set LV1 to the mix you want the scene to reach.</li>
-<li>Select <strong>Store</strong> to capture the current fader and pan values.</li>
 <li>Choose the channels that may move.</li>
-<li>Turn <strong>FADER</strong> and <strong>PAN</strong> on or off as needed.</li>
+<li>Turn on <strong>FADER</strong>. Turn on <strong>PAN</strong> if pan controls should move as well.</li>
+<li>Select <strong>Store</strong> to capture the current fader and pan values.</li>
 <li>Set <strong>X-Fade</strong> and save the session.</li>
 </ol>
 <p>Scope is the combination of selected channels and enabled controls. Advanced Show Control moves only the faders and pans in scope.</p>
 <div class="admonition warning">
 <p class="admonition-title">Store with an empty scope</p>
-<p>If no channels are in scope when you select <strong>Store</strong>, all current channels are added. Remove any channels that should not move before recall. <strong>Store</strong> preserves the current <strong>FADER</strong> and <strong>PAN</strong> selections.</p>
+<p>A new scene fade has no selected channels, and <strong>FADER</strong> and <strong>PAN</strong> are off. Select the intended channels and enable the controls before you select <strong>Store</strong>. If no channels are in scope when you select <strong>Store</strong>, all current channels are added. <strong>Store</strong> preserves the current <strong>FADER</strong> and <strong>PAN</strong> selections.</p>
 </div>
 <h2 id="scene-library">Scene library<a class="headerlink" href="#scene-library" title="Permanent link">&para;</a></h2>
 <p>The library shows the LV1 scene number, scene name, and <strong>X-Fade</strong> time for each scene fade. Select a row to edit it.</p>
@@ -859,6 +859,7 @@
 </tr>
 </tbody>
 </table>
+<p>Every new scene fade starts with an empty scope: no channels are selected, and <strong>FADER</strong> and <strong>PAN</strong> are off. Select the intended channels and enable the controls before you store or recall the fade.</p>
 <p>If both <strong>FADER</strong> and <strong>PAN</strong> are off, LV1 can still recall the scene, but Advanced Show Control will not move any controls.</p>
 <h2 id="fade-time">Fade time<a class="headerlink" href="#fade-time" title="Permanent link">&para;</a></h2>
 <p>Set <strong>X-Fade</strong> to <code>0</code> for an immediate cut or from <code>0.1</code> to <code>120</code> seconds for a timed transition. Press <code>Enter</code> or move away from the field to apply the value. You can include a trailing <code>s</code>.</p>
@@ -884,8 +885,17 @@
 </ol>
 <p>If <strong>Overwrite Existing Fade Settings?</strong> appears, continue only when you intend to replace the fade already linked to that LV1 scene.</p>
 <p><strong>Delete</strong> removes the scene fade from Advanced Show Control. It does not delete the scene in LV1.</p>
-<h2 id="unavailable-controls">Unavailable controls<a class="headerlink" href="#unavailable-controls" title="Permanent link">&para;</a></h2>
-<p>In version 2, <strong>Copy</strong> does not copy or change a scene fade, and <strong>Paste</strong> is disabled.</p>
+<h2 id="copy-and-paste-scene-settings">Copy and paste scene settings<a class="headerlink" href="#copy-and-paste-scene-settings" title="Permanent link">&para;</a></h2>
+<p>Use <strong>Copy</strong> to retain the settings from the selected scene fade for a later paste. <strong>Copy</strong> retains the <strong>X-Fade</strong> time, <strong>FADER</strong> and <strong>PAN</strong> selections, stored channel target data, and selected channel scope. It does not change the source scene fade.</p>
+<p>You can copy settings from a linked or unlinked scene fade. <strong>Paste</strong> is available only when copied settings are present and the destination scene fade is linked to an LV1 scene.</p>
+<ol>
+<li>Select the scene fade whose settings you want to copy.</li>
+<li>Select <strong>Copy</strong>.</li>
+<li>Select the linked destination scene fade.</li>
+<li>Select <strong>Paste</strong>.</li>
+</ol>
+<p><strong>Paste</strong> replaces the destination fade's copied settings but retains the destination's LV1 scene number and name. It does not change the source scene fade. If the destination already has identical settings, <strong>Paste</strong> makes no change and does not mark the session as changed.</p>
+<p>The copied settings are available only for the current session. Creating, opening, or replacing a session clears the copied settings. Copy the settings again after changing sessions.</p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="../troubleshooting/#scene-is-unlinked">Scene Is Unlinked</a></li>

@@ -409,6 +409,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#same-scene-recall" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Same-scene recall
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#extensive-diagnostics" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -665,6 +676,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#same-scene-recall" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Same-scene recall
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#extensive-diagnostics" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -729,9 +751,13 @@
 
 
 <h1 id="settings">Settings<a class="headerlink" href="#settings" title="Permanent link">&para;</a></h1>
-<p>Use <strong>Settings</strong> to change the shortcuts and diagnostic detail available in v2. If a setting cannot be saved, the screen restores the last confirmed value and shows an error.</p>
+<p>Use <strong>Settings</strong> to change same-scene recall behavior, shortcuts, and diagnostic detail available in v2. If a setting cannot be saved, the screen restores the last confirmed value and shows an error.</p>
 <p><img alt="The Settings screen." src="../assets/screenshots/settings.png" /></p>
 <h2 id="active-in-v2">Active in v2<a class="headerlink" href="#active-in-v2" title="Permanent link">&para;</a></h2>
+<h3 id="same-scene-recall">Same-scene recall<a class="headerlink" href="#same-scene-recall" title="Permanent link">&para;</a></h3>
+<p><strong>Same scene recall finishing</strong> is on by default. When it is on, recalling an app-managed scene again while that exact scene still owns active fade targets completes those targets after LV1's post-recall readiness check. When it is off, matching fades continue from their current values over the full configured scene duration instead of completing immediately.</p>
+<p><strong>Same scene recall threshold</strong> defaults to <code>500 ms</code> and accepts values from <code>0 ms</code> through <code>5000 ms</code> in <code>100 ms</code> steps. Repeated identical LV1 scene notifications below the threshold are ignored. A notification at the threshold is eligible for normal recall validation. The threshold does not change connection arming, scene-list-edit suppression, exact scene matching, SAFE, or disconnect behavior.</p>
+<p>Use these settings with <strong>Extensive diagnostics</strong> when investigating unexpected immediate fade completion. If disabling finishing removes the jump, same-scene finishing was selected. Increase the threshold to test whether delayed duplicate LV1 scene notifications are being accepted. Rehearse any changed value before show use.</p>
 <h3 id="extensive-diagnostics">Extensive diagnostics<a class="headerlink" href="#extensive-diagnostics" title="Permanent link">&para;</a></h3>
 <p>Enable <strong>Extensive diagnostics</strong> only while you investigate a problem. When it is off, diagnostic files include <code>INFO</code>, <code>WARN</code>, and <code>ERROR</code>. When it is on, they also include <code>DEBUG</code>, so files can grow quickly. Disable it after you collect the information you need.</p>
 <h3 id="keyboard-shortcuts">Keyboard shortcuts<a class="headerlink" href="#keyboard-shortcuts" title="Permanent link">&para;</a></h3>
