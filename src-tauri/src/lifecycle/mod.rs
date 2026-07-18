@@ -108,6 +108,34 @@ fn build_connected_runtime(
     }
 }
 
+fn startup_auto_connect_target(
+    remembered: &crate::connection_state::Lv1SystemIdentity,
+    systems: &[crate::connection_state::DiscoveredLv1System],
+) -> Option<crate::connection_state::Lv1SystemIdentity> {
+    let available: Vec<_> = systems
+        .iter()
+        .filter(|system| system.status == crate::connection_state::DiscoveredLv1Status::Available)
+        .collect();
+
+    if let Some(uuid) = remembered.uuid.as_deref()
+        && let Some(system) = available
+            .iter()
+            .find(|system| system.identity.uuid.as_deref() == Some(uuid))
+    {
+        return Some(system.identity.clone());
+    }
+
+    let host = remembered.host.as_deref()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let mut matches = available
+        .into_iter()
+        .filter(|system| system.identity.host.as_deref().map(str::trim) == Some(host));
+    let target = matches.next()?.identity.clone();
+    matches.next().is_none().then_some(target)
+}
+
 #[derive(Clone, Copy)]
 pub enum ConnectFailureMode {
     ClearConnectedIdentity,
@@ -123,12 +151,11 @@ impl RuntimeInstallRejection {
 }
 
 struct LifecycleInner {
-    generation: u64,
+    generation: RuntimeGeneration,
     connecting: bool,
     frontend_ready: bool,
     handles: RuntimeHandles,
     projector: Option<JoinHandle<()>>,
-    runtime_generation: RuntimeGeneration,
 }
 
 #[derive(Clone)]
@@ -149,19 +176,17 @@ impl AppLifecycle {
         show_peers: ShowActorPeers,
         settings: SettingsHandle,
     ) -> Self {
-        let runtime_generation = RuntimeGeneration::new();
         let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
         show_peers.set_cue_lists(cue_lists.clone());
         cue_lists_task.spawn();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
-                generation: 0,
+                generation: RuntimeGeneration::new(),
                 connecting: false,
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
                 projector: None,
-                runtime_generation,
             })),
             event_bus,
             show,
@@ -178,9 +203,8 @@ impl AppLifecycle {
 
     pub async fn begin_connecting(&self) -> Option<u64> {
         let mut inner = self.inner.lock().await;
-        inner.generation = inner.generation.saturating_add(1);
+        let generation = inner.generation.advance().await;
         inner.connecting = true;
-        let generation = inner.generation;
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
@@ -188,7 +212,7 @@ impl AppLifecycle {
     }
 
     pub async fn active_generation(&self) -> u64 {
-        self.inner.lock().await.generation
+        self.inner.lock().await.generation.current().await
     }
 
     pub async fn install_runtime_transaction(
@@ -197,7 +221,7 @@ impl AppLifecycle {
         handles: RuntimeHandles,
     ) -> Result<(), RuntimeInstallRejection> {
         let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if inner.generation.current().await != generation {
             return Err(RuntimeInstallRejection::StaleGeneration { handles });
         }
 
@@ -205,7 +229,6 @@ impl AppLifecycle {
             return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles });
         }
 
-        inner.runtime_generation.set(generation).await;
         inner.handles = handles;
         inner.connecting = false;
         Ok(())
@@ -217,7 +240,7 @@ impl AppLifecycle {
         handle: ScenesHandle,
     ) -> bool {
         let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if inner.generation.current().await != generation {
             return false;
         }
 
@@ -229,15 +252,13 @@ impl AppLifecycle {
 
     pub async fn clear_runtime_transaction(&self, generation: u64) {
         let mut inner = self.inner.lock().await;
-        if inner.generation != generation {
+        if inner.generation.current().await != generation {
             return;
         }
         inner.handles.abort_all();
         self.show_peers.clear_lv1(generation);
         self.cue_lists_peers.clear_scenes();
-        inner.runtime_generation.set(inner.generation).await;
-        inner.generation = inner.generation.saturating_add(1);
-        let generation = inner.generation;
+        let generation = inner.generation.advance().await;
         drop(inner);
         self.event_bus
             .publish_runtime_generation_changed(generation);
@@ -252,7 +273,7 @@ impl AppLifecycle {
         let (generation, runtime_generation) = {
             let mut inner = self.inner.lock().await;
             inner.handles.abort_all();
-            (inner.generation, inner.runtime_generation.clone())
+            (inner.generation.current().await, inner.generation.clone())
         };
         self.show_peers.clear_lv1(generation);
         runtime_generation.set(generation).await;
@@ -324,6 +345,10 @@ impl AppLifecycle {
             self.clear_runtime_transaction(generation).await;
             return Err("generation is stale".to_string());
         }
+        if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
+            self.log_last_connected_lv1_save_failure(generation, error)
+                .await;
+        }
         started_runtime.scene_recall_task.spawn();
         let _ = app;
         Ok(connect_result)
@@ -392,6 +417,10 @@ impl AppLifecycle {
             handles.abort_all();
             self.clear_runtime_transaction(generation).await;
             return Err("generation is stale".to_string());
+        }
+        if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
+            self.log_last_connected_lv1_save_failure(generation, error)
+                .await;
         }
         scene_recall_task.spawn();
         let _ = app;
@@ -493,7 +522,7 @@ impl AppLifecycle {
     }
 
     pub async fn current_runtime_generation(&self) -> RuntimeGeneration {
-        self.inner.lock().await.runtime_generation.clone()
+        self.inner.lock().await.generation.clone()
     }
 
     pub async fn current_show(&self) -> ShowStateHandle {
@@ -527,6 +556,52 @@ impl AppLifecycle {
             .map_err(|_| ())
             .ok()?;
         rx.await.ok()?.connected_lv1_identity
+    }
+
+    async fn last_connected_lv1_identity(
+        &self,
+    ) -> Result<Option<crate::connection_state::Lv1SystemIdentity>, String> {
+        let (reply, rx) = oneshot::channel();
+        self.settings
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .map_err(|_| "Settings are unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "Settings reply channel is closed".to_string())
+    }
+
+    async fn remember_last_connected_lv1(
+        &self,
+        expected_generation: u64,
+        identity: crate::connection_state::Lv1SystemIdentity,
+    ) -> Result<(), String> {
+        let (reply, rx) = oneshot::channel();
+        let runtime_generation = self.current_runtime_generation().await;
+        self.settings
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity,
+                runtime_generation,
+                expected_generation,
+                reply,
+            })
+            .await
+            .map_err(|_| "Settings are unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "Settings reply channel is closed".to_string())?
+            .map(|_| ())
+    }
+
+    async fn log_last_connected_lv1_save_failure(&self, generation: u64, error: String) {
+        let runtime_generation = self.current_runtime_generation().await;
+        let _ = runtime_generation
+            .if_current(generation, || {
+                tracing::error!(
+                    event = "last_connected_lv1_save_failed",
+                    error = %error,
+                    "Connected to LV1, but the connection could not be remembered for next startup"
+                );
+            })
+            .await;
     }
 
     pub async fn connect_lv1_system<R: Runtime>(
@@ -574,7 +649,45 @@ impl AppLifecycle {
         &self,
         app: AppHandle<R>,
     ) -> Result<ConnectCommandResult, String> {
-        let Some(identity) = self.connected_lv1_identity().await else {
+        let Some(remembered) = self.last_connected_lv1_identity().await? else {
+            return Ok(ConnectCommandResult { changed: false });
+        };
+
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::RefreshLv1Discovery {
+                timeout_ms: None,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| "Show state is unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "Show state reply channel is closed".to_string())??;
+
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .map_err(|_| "Show state is unavailable".to_string())?;
+        let state = rx
+            .await
+            .map_err(|_| "Show state reply channel is closed".to_string())?;
+
+        self.startup_auto_connect_with_discovered(app, remembered, &state.discovered_lv1_systems)
+            .await
+    }
+
+    async fn startup_auto_connect_with_discovered<R: Runtime>(
+        &self,
+        app: AppHandle<R>,
+        remembered: crate::connection_state::Lv1SystemIdentity,
+        systems: &[crate::connection_state::DiscoveredLv1System],
+    ) -> Result<ConnectCommandResult, String> {
+        let Some(identity) = startup_auto_connect_target(&remembered, systems) else {
+            tracing::debug!(
+                event = "startup_auto_connect_no_match",
+                "No safe discovered LV1 match for the remembered startup target"
+            );
             return Ok(ConnectCommandResult { changed: false });
         };
         self.abort_current_runtime().await;
@@ -647,7 +760,7 @@ impl AppLifecycle {
             return Ok(());
         }
         inner.frontend_ready = true;
-        let generation = inner.generation;
+        let generation = inner.generation.current().await;
         inner.projector = Some(crate::projector::spawn_projector(
             crate::projector::ProjectorInputs {
                 app,
@@ -732,13 +845,14 @@ fn log_lv1_connect_failed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connection_state::Lv1SystemIdentity;
     use crate::connection_state::ReconnectState;
+    use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::cue_lists::CueListsEvent;
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::show::{ShowEvent, ShowProjectionReason};
+    use std::path::PathBuf;
     use std::sync::{Arc, Mutex as StdMutex};
     use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};
@@ -751,6 +865,8 @@ mod tests {
     #[derive(Debug, Default, Clone, PartialEq, Eq)]
     struct CapturedLogEvent {
         event: Option<String>,
+        level: Option<tracing::Level>,
+        message: Option<String>,
         host: Option<String>,
         port: Option<u16>,
     }
@@ -766,6 +882,7 @@ mod tests {
         fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
             let mut visitor = CapturedLogEvent::default();
             event.record(&mut visitor);
+            visitor.level = Some(*event.metadata().level());
             self.0.lock().unwrap().push(visitor);
         }
     }
@@ -774,6 +891,7 @@ mod tests {
         fn record_str(&mut self, field: &Field, value: &str) {
             match field.name() {
                 "event" => self.event = Some(value.to_string()),
+                "message" => self.message = Some(value.to_string()),
                 "host" => self.host = Some(value.to_string()),
                 _ => {}
             }
@@ -795,6 +913,7 @@ mod tests {
             let value = format!("{value:?}").trim_matches('"').to_string();
             match field.name() {
                 "event" => self.event = Some(value),
+                "message" => self.message = Some(value),
                 "host" => self.host = Some(value),
                 _ => {}
             }
@@ -813,13 +932,97 @@ mod tests {
         test_actor_handle(tx)
     }
 
-    fn lifecycle_for_test(event_bus: AppEventBus) -> AppLifecycle {
-        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+    struct TestSettingsDir {
+        path: PathBuf,
+    }
+
+    impl TestSettingsDir {
+        fn new() -> Self {
+            let path =
+                std::env::temp_dir().join(format!("asc-lifecycle-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).expect("temporary settings directory should exist");
+            Self { path }
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestSettingsDir {
+        fn drop(&mut self) {
+            if self.path.is_dir() {
+                let _ = std::fs::remove_dir_all(&self.path);
+            } else {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    struct LifecycleTestFixture {
+        lifecycle: AppLifecycle,
+        settings_dir: TestSettingsDir,
+    }
+
+    impl std::ops::Deref for LifecycleTestFixture {
+        type Target = AppLifecycle;
+
+        fn deref(&self) -> &Self::Target {
+            &self.lifecycle
+        }
+    }
+
+    fn settings_handle_for_test(
+        settings_dir: &TestSettingsDir,
+        event_bus: AppEventBus,
+    ) -> SettingsHandle {
         let (settings, settings_task, _initial_settings) =
-            crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
-        show_task.spawn();
+            crate::settings::build_settings_actor(settings_dir.path().to_path_buf(), event_bus);
         settings_task.spawn();
+        settings
+    }
+
+    fn lifecycle_for_test_with_settings(
+        event_bus: AppEventBus,
+        settings: SettingsHandle,
+    ) -> AppLifecycle {
+        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
         AppLifecycle::new(event_bus, show, show_peers, settings)
+    }
+
+    fn lifecycle_for_test(event_bus: AppEventBus) -> LifecycleTestFixture {
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        LifecycleTestFixture {
+            lifecycle: lifecycle_for_test_with_settings(event_bus, settings),
+            settings_dir,
+        }
+    }
+
+    async fn set_last_connected_lv1(settings: &SettingsHandle, identity: Lv1SystemIdentity) {
+        let (reply, rx) = oneshot::channel();
+        settings
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity,
+                runtime_generation: RuntimeGeneration::default(),
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .expect("remembered identity command should send");
+        rx.await
+            .expect("remembered identity reply should arrive")
+            .expect("remembered identity should save");
+    }
+
+    async fn get_last_connected_lv1(settings: &SettingsHandle) -> Option<Lv1SystemIdentity> {
+        let (reply, rx) = oneshot::channel();
+        settings
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .expect("remembered identity query should send");
+        rx.await.expect("remembered identity reply should arrive")
     }
 
     fn connected_snapshot() -> Lv1StateSnapshot {
@@ -840,6 +1043,124 @@ mod tests {
             channels: vec![],
             ping_sequence: 0,
         }
+    }
+
+    fn identity(uuid: Option<&str>, host: Option<&str>, address: &str) -> Lv1SystemIdentity {
+        Lv1SystemIdentity {
+            uuid: uuid.map(str::to_string),
+            host: host.map(str::to_string),
+            address: address.to_string(),
+            port: 50000,
+        }
+    }
+
+    fn system(
+        uuid: Option<&str>,
+        host: Option<&str>,
+        address: &str,
+        status: DiscoveredLv1Status,
+    ) -> DiscoveredLv1System {
+        DiscoveredLv1System {
+            identity: identity(uuid, host, address),
+            status,
+        }
+    }
+
+    #[test]
+    fn lifecycle_test_fixture_removes_settings_directory() {
+        let fixture = lifecycle_for_test(AppEventBus::default());
+        let path = fixture.settings_dir.path().to_path_buf();
+
+        assert!(path.exists());
+        drop(fixture);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn startup_target_prefers_uuid_over_hostname() {
+        let remembered = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
+        let systems = vec![
+            system(
+                Some("uuid-2"),
+                Some("LV1-FOH"),
+                "10.0.0.20",
+                DiscoveredLv1Status::Available,
+            ),
+            system(
+                Some("uuid-1"),
+                Some("Renamed"),
+                "10.0.0.21",
+                DiscoveredLv1Status::Available,
+            ),
+        ];
+
+        assert_eq!(
+            startup_auto_connect_target(&remembered, &systems)
+                .unwrap()
+                .address,
+            "10.0.0.21"
+        );
+    }
+
+    #[test]
+    fn startup_target_uses_one_exact_trimmed_hostname() {
+        let remembered = identity(None, Some(" LV1-FOH "), "192.168.1.35");
+        let systems = vec![system(
+            None,
+            Some("LV1-FOH"),
+            "10.0.0.20",
+            DiscoveredLv1Status::Available,
+        )];
+
+        assert_eq!(
+            startup_auto_connect_target(&remembered, &systems)
+                .unwrap()
+                .address,
+            "10.0.0.20"
+        );
+    }
+
+    #[test]
+    fn startup_target_rejects_ambiguous_or_address_only_matches() {
+        let remembered = identity(None, Some("LV1-FOH"), "10.0.0.20");
+        let duplicate_hosts = vec![
+            system(
+                None,
+                Some("LV1-FOH"),
+                "10.0.0.20",
+                DiscoveredLv1Status::Available,
+            ),
+            system(
+                None,
+                Some("LV1-FOH"),
+                "10.0.0.21",
+                DiscoveredLv1Status::Available,
+            ),
+        ];
+        assert!(startup_auto_connect_target(&remembered, &duplicate_hosts).is_none());
+
+        let address_only = vec![system(
+            None,
+            Some("Different"),
+            "10.0.0.20",
+            DiscoveredLv1Status::Available,
+        )];
+        assert!(startup_auto_connect_target(&remembered, &address_only).is_none());
+    }
+
+    #[test]
+    fn startup_target_ignores_unavailable_uuid_and_hostname_matches() {
+        let uuid_remembered = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
+        let hostname_remembered = identity(None, Some("LV1-FOH"), "192.168.1.35");
+        let systems = vec![system(
+            Some("uuid-1"),
+            Some("LV1-FOH"),
+            "10.0.0.20",
+            DiscoveredLv1Status::Unavailable,
+        )];
+
+        assert!(startup_auto_connect_target(&uuid_remembered, &systems).is_none());
+        assert!(startup_auto_connect_target(&hostname_remembered, &systems).is_none());
     }
 
     #[tokio::test]
@@ -1372,10 +1693,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_auto_connect_noops_without_stored_identity() {
+    async fn startup_without_remembered_identity_does_not_advance_generation() {
         let app = mock_app();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
+        let before = lifecycle.active_generation().await;
 
         let result = lifecycle
             .startup_auto_connect_lv1(app.handle().clone())
@@ -1383,6 +1705,237 @@ mod tests {
             .expect("startup without a stored identity should not fail");
 
         assert!(!result.changed);
+        assert_eq!(lifecycle.active_generation().await, before);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_startup_match_preserves_generation_and_remembered_identity() {
+        let app = mock_app();
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let lifecycle = lifecycle_for_test_with_settings(event_bus, settings.clone());
+        let remembered = identity(None, Some("LV1-FOH"), "192.168.1.35");
+        set_last_connected_lv1(&settings, remembered.clone()).await;
+        let systems = vec![
+            system(
+                None,
+                Some("LV1-FOH"),
+                "10.0.0.20",
+                DiscoveredLv1Status::Available,
+            ),
+            system(
+                None,
+                Some("LV1-FOH"),
+                "10.0.0.21",
+                DiscoveredLv1Status::Available,
+            ),
+        ];
+        let before = lifecycle.active_generation().await;
+
+        let result = lifecycle
+            .startup_auto_connect_with_discovered(
+                app.handle().clone(),
+                remembered.clone(),
+                &systems,
+            )
+            .await
+            .expect("ambiguous startup match should not fail");
+
+        assert!(!result.changed);
+        assert_eq!(lifecycle.active_generation().await, before);
+        assert_eq!(get_last_connected_lv1(&settings).await, Some(remembered));
+    }
+
+    #[tokio::test]
+    async fn accepted_connect_remembers_confirmed_identity() {
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
+        let identity = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity.clone(),
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(get_last_connected_lv1(&settings).await, Some(identity));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn accepted_connect_logs_one_error_when_identity_cannot_be_remembered() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("test tracing subscriber should install");
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        std::fs::remove_dir_all(settings_dir.path())
+            .expect("settings test directory should remove");
+        std::fs::write(settings_dir.path(), "not a directory")
+            .expect("settings test path should become a file");
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                None,
+            )
+            .await;
+
+        assert!(result.is_ok());
+        assert!(lifecycle.current_lv1().await.is_some());
+        let errors: Vec<_> = logs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|log| log.level == Some(tracing::Level::ERROR))
+            .cloned()
+            .collect();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(
+            errors[0].event.as_deref(),
+            Some("last_connected_lv1_save_failed")
+        );
+        assert_eq!(
+            errors[0].message.as_deref(),
+            Some("Connected to LV1, but the connection could not be remembered for next startup")
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_connect_does_not_replace_remembered_identity() {
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
+        let remembered = identity(Some("uuid-old"), Some("LV1-FOH"), "192.168.1.35");
+        set_last_connected_lv1(&settings, remembered.clone()).await;
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let lifecycle_for_hook = lifecycle.clone();
+        let (flip_tx, flip_rx) = oneshot::channel();
+
+        let result = lifecycle
+            .finish_connect_transaction_inner(
+                mock_app().handle().clone(),
+                identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
+                ConnectFailureMode::ClearConnectedIdentity,
+                generation,
+                runtime_generation,
+                event_bus,
+                lv1,
+                fade,
+                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                    let lifecycle = lifecycle_for_hook.clone();
+                    tokio::spawn(async move {
+                        lifecycle.begin_connecting().await;
+                        let _ = flip_tx.send(());
+                    });
+                })),
+            )
+            .await;
+
+        assert!(flip_rx.await.is_ok());
+        assert!(matches!(result, Err(message) if message == "generation is stale"));
+        assert_eq!(get_last_connected_lv1(&settings).await, Some(remembered));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_persistence_handoff_does_not_store_identity_or_log_an_error() {
+        let captured = CapturedLogEvents::default();
+        let logs = captured.0.clone();
+        let subscriber = Registry::default().with(captured);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        let (settings, settings_task, _) = crate::settings::build_settings_actor(
+            settings_dir.path().to_path_buf(),
+            event_bus.clone(),
+        );
+        let (write_received_tx, write_received_rx) = oneshot::channel();
+        let (release_write_tx, release_write_rx) = oneshot::channel();
+        settings_task
+            .pause_set_last_connected_lv1(write_received_tx, release_write_rx)
+            .spawn();
+        let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let fade = FadeEngineHandle::new(fade_tx);
+        let identity = identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36");
+        let lifecycle_for_connect = lifecycle.clone();
+
+        let connect = tokio::spawn(async move {
+            lifecycle_for_connect
+                .finish_connect_transaction_inner(
+                    mock_app().handle().clone(),
+                    identity,
+                    ConnectFailureMode::ClearConnectedIdentity,
+                    generation,
+                    runtime_generation,
+                    event_bus,
+                    lv1,
+                    fade,
+                    None,
+                )
+                .await
+        });
+
+        write_received_rx
+            .await
+            .expect("settings write should be reached after scene-peer acceptance");
+        assert!(lifecycle.current_scene_recall_fader().await.is_some());
+        lifecycle.begin_connecting().await.unwrap();
+        std::fs::remove_dir_all(settings_dir.path())
+            .expect("settings directory should be removable while the write is paused");
+        std::fs::write(settings_dir.path(), "not a directory")
+            .expect("settings path should prevent a stale write");
+        release_write_tx.send(()).unwrap();
+
+        assert!(connect.await.unwrap().is_ok());
+        assert_eq!(get_last_connected_lv1(&settings).await, None);
+        assert!(
+            !logs
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|log| { log.event.as_deref() == Some("last_connected_lv1_save_failed") })
+        );
     }
 
     #[tokio::test]

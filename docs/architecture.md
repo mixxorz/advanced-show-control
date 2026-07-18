@@ -86,7 +86,7 @@ An actor module normally defines four interface concepts:
 3. A task object, such as `Lv1ActorTask`, `FadeEngineTask`, `ScenesTask`, or `ShowActorTask`.
 4. A peer-wiring object, when the actor requires direct access to other actors after construction.
 
-`SettingsActor` is an app-lifetime actor. It is not tied to LV1 connection generation. It owns `AppSettings`, loads `settings.json` from the Tauri app config directory during startup, accepts full-object replacement through `SettingsCommand::ReplaceSettings`, saves changed settings immediately, and publishes `SettingsEvent::StateChanged` through `AppEventBus` for projector consumption.
+`SettingsActor` is an app-lifetime actor. It is not tied to LV1 connection generation. It owns `AppSettings` and private remembered LV1 identity metadata in `settings.json`, loads them from the Tauri app config directory during startup, accepts full-object replacement through `SettingsCommand::ReplaceSettings`, saves changed settings immediately, and publishes `SettingsEvent::StateChanged` through `AppEventBus` for projector consumption. Remembered identity is not projected as public settings; lifecycle accesses it through explicit settings commands.
 
 The actor handle owns a Tokio sender. The handle shall remain dumb. It shall not provide domain-specific helpers that hide mailbox command construction.
 
@@ -240,14 +240,15 @@ The smoke suite shall assert behavior through production command results, `app-s
 The smoke suite shall validate the following paths:
 
 1. LV1 discovery and connection.
-2. New show creation from the connected LV1.
-3. Capture of Smoke A and Smoke B scene configurations from LV1.
-4. Test-channel scope and duration configuration for both app-managed scenes.
-5. Production scene recall updates projected current scene state.
-6. Recall from Smoke A to Smoke B starts live fader movement.
-7. Recall fade reaches the stored target within tolerance.
-8. Alternating scene recalls with decreasing fade durations complete at the expected targets.
-9. Lockout blocks recall and prevents fader movement.
+2. Same-process startup auto-connect after a production-command disconnect, validated against the projected connected LV1 identity.
+3. New show creation from the connected LV1.
+4. Capture of Smoke A and Smoke B scene configurations from LV1.
+5. Test-channel scope and duration configuration for both app-managed scenes.
+6. Production scene recall updates projected current scene state.
+7. Recall from Smoke A to Smoke B starts live fader movement.
+8. Recall fade reaches the stored target within tolerance.
+9. Alternating scene recalls with decreasing fade durations complete at the expected targets.
+10. Lockout blocks recall and prevents fader movement.
 
 ## 12.0 Projector Cache and Frontend Emission
 

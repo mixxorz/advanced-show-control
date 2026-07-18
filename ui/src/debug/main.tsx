@@ -18,6 +18,7 @@ const sameSceneFinishTimeoutMs = 3_000;
 const tests = [
   "cue-list-create",
   "connection",
+  "startup-auto-connect",
   "empty-scene-settings-defaults",
   "scene-settings-copy-paste",
   "new-session-clears-scene-settings-clipboard",
@@ -30,6 +31,7 @@ const tests = [
   "lockout-blocks-recall",
 ].map((name) => ({ name, status: "pending", detail: "" }));
 let state: AppViewState | undefined;
+let connectedIdentity: Lv1SystemIdentity | undefined;
 let suiteStatus = "Running";
 let closeIn: number | undefined;
 
@@ -86,12 +88,42 @@ async function run() {
       );
       await invoke("connect_lv1_system", { identity });
       await waitFor(() => state?.connection === "connected", "LV1 connected");
+      connectedIdentity = await waitFor(
+        () => state?.connectedLv1Identity,
+        "projected connected LV1 identity",
+      );
+      if (!connectedIdentity.uuid) {
+        throw new Error("startup auto-connect smoke requires an LV1 UUID");
+      }
       const scenes = await waitFor(() => {
         return resolveSmokeSceneIds();
       }, "smoke scene configs");
       sceneA = scenes.sceneA;
       sceneB = scenes.sceneB;
       await log(`CONNECTED ${label(identity)}`);
+    });
+    await test("startup-auto-connect", async () => {
+      const expectedUuid = connectedIdentity?.uuid;
+      if (!expectedUuid) {
+        throw new Error("connected LV1 UUID is unavailable");
+      }
+
+      await invoke("disconnect_lv1");
+      await waitFor(
+        () => state?.connection === "disconnected",
+        "LV1 disconnected",
+      );
+
+      await invoke("startup_auto_connect_lv1");
+      const reconnected = await waitFor(
+        () =>
+          state?.connection === "connected" &&
+          state.connectedLv1Identity?.uuid === expectedUuid
+            ? state.connectedLv1Identity
+            : undefined,
+        "startup auto-connected LV1 identity",
+      );
+      await log(`AUTO_CONNECTED ${label(reconnected)}`);
     });
 
     await test("empty-scene-settings-defaults", async () => {
@@ -454,13 +486,20 @@ async function setup() {
 async function newSceneSettingsSession() {
   const previousSceneA = sceneA;
   const previousSceneB = sceneB;
-  await invoke("new_show_file");
+  const newShow = await invoke<{ selected_scene_internal_id: string | null }>(
+    "new_show_file",
+  );
+  const selectedSceneInternalId = newShow.selected_scene_internal_id;
+  if (!selectedSceneInternalId) {
+    throw new Error("new show did not return a selected scene");
+  }
   const scenes = await waitFor(() => {
     const next = resolveSmokeSceneIds();
     if (!next) return undefined;
     if (next.sceneA === previousSceneA || next.sceneB === previousSceneB) {
       return undefined;
     }
+    if (next.sceneA !== selectedSceneInternalId) return undefined;
     return next;
   }, "smoke scene configs after new show");
   sceneA = scenes.sceneA;
