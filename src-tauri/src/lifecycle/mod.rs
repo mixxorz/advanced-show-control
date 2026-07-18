@@ -1810,11 +1810,8 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn accepted_connect_logs_one_error_when_identity_cannot_be_remembered() {
-        let captured = CapturedLogEvents::default();
-        let logs = captured.0.clone();
-        let subscriber = Registry::default().with(captured);
-        tracing::subscriber::set_global_default(subscriber)
-            .expect("test tracing subscriber should install");
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
         let settings_dir = TestSettingsDir::new();
         std::fs::remove_dir_all(settings_dir.path())
@@ -1845,18 +1842,8 @@ mod tests {
 
         assert!(result.is_ok());
         assert!(lifecycle.current_lv1().await.is_some());
-        let errors: Vec<_> = logs
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|log| log.level == Some(tracing::Level::ERROR))
-            .cloned()
-            .collect();
+        let errors = capture.matching("last_connected_lv1_save_failed", tracing::Level::ERROR);
         assert_eq!(errors.len(), 1);
-        assert_eq!(
-            errors[0].event.as_deref(),
-            Some("last_connected_lv1_save_failed")
-        );
         assert_eq!(
             errors[0].message.as_deref(),
             Some("Connected to LV1, but the connection could not be remembered for next startup")
