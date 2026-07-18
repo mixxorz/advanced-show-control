@@ -179,10 +179,6 @@ impl AppLifecycle {
         }
     }
 
-    pub async fn current_settings(&self) -> SettingsHandle {
-        self.settings.clone()
-    }
-
     async fn settings_snapshot(&self) -> Result<crate::settings::AppSettings, String> {
         let (reply, rx) = oneshot::channel();
         self.settings
@@ -528,10 +524,6 @@ impl AppLifecycle {
 
     pub async fn current_runtime_generation(&self) -> RuntimeGeneration {
         self.inner.lock().await.generation.clone()
-    }
-
-    pub async fn current_show(&self) -> ShowStateHandle {
-        self.show.clone()
     }
 
     #[cfg(any(test, debug_assertions))]

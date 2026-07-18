@@ -1,7 +1,8 @@
 use super::map_app_command_error;
-use crate::lifecycle::AppLifecycle;
 use crate::runtime::errors::AppCommandError;
-use crate::show::{LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult};
+use crate::show::{
+    LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult, ShowStateHandle,
+};
 use crate::show_file::default_show_folder;
 use std::path::PathBuf;
 use tauri::State;
@@ -10,10 +11,9 @@ use tokio::task::spawn_blocking;
 
 #[tauri::command]
 pub async fn refresh_lv1_discovery(
-    lifecycle: State<'_, AppLifecycle>,
+    show: State<'_, ShowStateHandle>,
     timeout_ms: Option<u64>,
 ) -> Result<ShowCommandResult, String> {
-    let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::RefreshLv1Discovery {
         timeout_ms,
@@ -28,10 +28,7 @@ pub async fn refresh_lv1_discovery(
 }
 
 #[tauri::command]
-pub async fn new_show_file(
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<NewShowFileResult, String> {
-    let show = lifecycle.current_show().await;
+pub async fn new_show_file(show: State<'_, ShowStateHandle>) -> Result<NewShowFileResult, String> {
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
         .await
@@ -44,7 +41,7 @@ pub async fn new_show_file(
 
 #[tauri::command]
 pub async fn open_show_file_dialog(
-    lifecycle: State<'_, AppLifecycle>,
+    show: State<'_, ShowStateHandle>,
 ) -> Result<LoadShowFileResult, String> {
     let path = spawn_blocking(|| -> Result<Option<PathBuf>, String> {
         let folder = default_show_folder();
@@ -56,7 +53,6 @@ pub async fn open_show_file_dialog(
     .await
     .map_err(|err| format!("Failed to open file dialog: {err}"))??
     .ok_or_else(|| "Open session cancelled".to_string())?;
-    let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::LoadShowFileFromPath {
         path,
@@ -71,10 +67,7 @@ pub async fn open_show_file_dialog(
 }
 
 #[tauri::command]
-pub async fn save_show_file(
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<ShowCommandResult, String> {
-    let show = lifecycle.current_show().await;
+pub async fn save_show_file(show: State<'_, ShowStateHandle>) -> Result<ShowCommandResult, String> {
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::CurrentShowFilePath { reply })
         .await
@@ -113,7 +106,7 @@ pub async fn save_show_file(
 
 #[tauri::command]
 pub async fn save_show_file_as_dialog(
-    lifecycle: State<'_, AppLifecycle>,
+    show: State<'_, ShowStateHandle>,
 ) -> Result<ShowCommandResult, String> {
     let path = spawn_blocking(|| -> Result<Option<PathBuf>, String> {
         let folder = default_show_folder();
@@ -126,7 +119,6 @@ pub async fn save_show_file_as_dialog(
     .await
     .map_err(|err| format!("Failed to open save dialog: {err}"))??
     .ok_or_else(|| "Save session cancelled".to_string())?;
-    let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SaveShowFileAs {
         path,
@@ -142,10 +134,9 @@ pub async fn save_show_file_as_dialog(
 
 #[tauri::command]
 pub async fn set_lockout(
-    lifecycle: State<'_, AppLifecycle>,
+    show: State<'_, ShowStateHandle>,
     enabled: bool,
 ) -> Result<ShowCommandResult, String> {
-    let show = lifecycle.current_show().await;
     let (reply, rx) = oneshot::channel();
     show.send(ShowCommand::SetLockout {
         enabled,
