@@ -366,7 +366,7 @@ async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<
     {
         tracing::error!(
             event = "scene_recall_settings_unavailable",
-            "Scene recall automation stopped because current settings are unavailable after event subscriber lag"
+            "Scene recall automation stopped because current settings are unavailable"
         );
         return None;
     }
@@ -375,7 +375,7 @@ async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<
         Err(_) => {
             tracing::error!(
                 event = "scene_recall_settings_unavailable",
-                "Scene recall automation stopped because current settings are unavailable after event subscriber lag"
+                "Scene recall automation stopped because current settings are unavailable"
             );
             None
         }
@@ -1840,7 +1840,7 @@ mod tests {
                 && log.level == Some(tracing::Level::ERROR)
                 && log.message.as_deref()
                     == Some(
-                        "Scene recall automation stopped because current settings are unavailable after event subscriber lag",
+                        "Scene recall automation stopped because current settings are unavailable",
                     )
         }));
 
@@ -2211,7 +2211,7 @@ mod tests {
                 && log.level == Some(tracing::Level::ERROR)
                 && log.message.as_deref()
                     == Some(
-                        "Scene recall automation stopped because current settings are unavailable after event subscriber lag",
+                        "Scene recall automation stopped because current settings are unavailable",
                     )
         }));
         drop(peers);
