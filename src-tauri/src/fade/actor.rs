@@ -1143,6 +1143,28 @@ mod tests {
         }
     }
 
+    async fn start_owned_readiness(
+        engine: &FadeEngineHandle,
+        deadline: Instant,
+    ) -> oneshot::Receiver<Result<(), RecallReadinessError>> {
+        let (completion, completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+        engine
+            .send(FadeCommand::WaitForRecallReadiness {
+                scene: scene(2, "Verse"),
+                expected_generation: 7,
+                readiness: RecallReadinessRequest {
+                    deadline,
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        completed
+    }
+
     async fn assert_pan_family_aux_event_does_not_override(parameter: FadeParameter) {
         let (event_bus, engine, mut rx) = spawn_runtime_for_test().await;
         let mut events = event_bus.subscribe();
@@ -2254,6 +2276,134 @@ mod tests {
                 scene_name: "Verse".to_string(),
                 observed_ping_count: 0,
             }),
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn pings_after_readiness_deadline_time_out_without_releasing_or_writing() {
+        let (event_bus, engine, mut writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                10,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let (completion, completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+
+        engine
+            .send(FadeCommand::RecallSceneFade {
+                config: fade_config(
+                    scene(2, "Verse"),
+                    vec![FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -10.0,
+                    }],
+                    1_000,
+                ),
+                same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                expected_generation: Some(7),
+                readiness: RecallReadinessRequest {
+                    deadline: Instant::now() + Duration::from_millis(200),
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        tokio::time::advance(Duration::from_millis(201)).await;
+        publish_ping(&event_bus, 7, 11);
+        publish_ping(&event_bus, 7, 12);
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::TimedOut {
+                generation: 7,
+                scene_index: 2,
+                scene_name: "Verse".to_string(),
+                observed_ping_count: 0,
+            }),
+        );
+        assert_no_write_after_cancellation(&mut writes).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn abort_all_cancels_readiness_completion() {
+        let (_event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        engine
+            .send(FadeCommand::AbortAll { reply: None })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::Aborted,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_cancels_readiness_completion() {
+        let (event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        event_bus.publish_lv1(
+            7,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::Disconnected,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn generation_change_cancels_readiness_completion() {
+        let (event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 8 },
+        ));
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::GenerationChanged,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn actor_stop_cancels_readiness_completion() {
+        let (_event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        drop(engine);
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::ActorStopped,
+            )),
         );
     }
 
@@ -3861,50 +4011,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
-    async fn qualifying_ping_at_readiness_deadline_releases_before_timeout() {
+    async fn ping_at_readiness_deadline_times_out() {
         for _ in 0..8 {
             let (event_bus, engine, mut write_rx) =
-                spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
-                    40,
-                    vec![channel_info(0, -20.0, None)],
-                )])
-                .await;
-            let mut events = event_bus.subscribe();
-
-            start_fade_for_generation(
-                &engine,
-                fade_config(
-                    scene(1, "Intro"),
-                    vec![FadeTarget {
-                        group: 0,
-                        channel: 0,
-                        parameter: FadeParameter::FaderDb,
-                        target: -10.0,
-                    }],
-                    1_000,
-                ),
-                Some(7),
-            )
-            .await
-            .unwrap();
+                spawn_runtime_for_ping_gate_test(vec![connected_snapshot(40, vec![])]).await;
+            let completed =
+                start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
             event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 41 });
             tokio::task::yield_now().await;
 
             tokio::time::advance(Duration::from_secs(5)).await;
             event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 42 });
-            tokio::task::yield_now().await;
-            assert_no_additional_fade_abort(&mut events).await;
-
-            tokio::time::advance(Duration::from_millis(40)).await;
-            let writes = write_rx
-                .recv()
-                .await
-                .expect("boundary ping should release fade");
-            assert!(
-                writes
-                    .iter()
-                    .any(|write| write.parameter == Lv1WriteParameter::FaderDb)
+            assert_eq!(
+                completed.await.unwrap(),
+                Err(RecallReadinessError::TimedOut {
+                    generation: 7,
+                    scene_index: 2,
+                    scene_name: "Verse".to_string(),
+                    observed_ping_count: 1,
+                }),
             );
+            assert_no_write_after_cancellation(&mut write_rx).await;
         }
     }
 

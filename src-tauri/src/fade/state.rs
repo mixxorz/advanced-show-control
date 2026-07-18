@@ -137,7 +137,8 @@ impl EngineState {
             return PingGateProgress::Ignored;
         };
 
-        if barrier.missed_events
+        if now >= barrier.deadline
+            || barrier.missed_events
             || generation != barrier.generation
             || sequence <= barrier.last_counted_ping_sequence
         {
