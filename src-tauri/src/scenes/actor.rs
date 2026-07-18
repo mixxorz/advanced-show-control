@@ -1,8 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::fade::{FadeCommand, FadeEngineHandle, SameSceneRecallBehavior};
+use crate::fade::{FadeCommand, FadeEngineHandle, RecallReadinessRequest, SameSceneRecallBehavior};
 use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
     SceneObservation, SceneState,
@@ -711,6 +714,7 @@ async fn process_scene_observation(
     observation: PendingSceneObservation,
 ) {
     let now = tokio::time::Instant::now();
+    let readiness_deadline = now + Duration::from_secs(5);
     if recall_state.is_scene_list_edit_suppressed(observation.seen_at)
         || recall_state.is_scene_list_edit_suppressed(now)
     {
@@ -799,6 +803,7 @@ async fn process_scene_observation(
                         config: fade_config,
                         same_scene_behavior,
                         expected_generation: Some(generation),
+                        readiness: RecallReadinessRequest::detached(readiness_deadline),
                         reply: Some(reply),
                     })
                     .await

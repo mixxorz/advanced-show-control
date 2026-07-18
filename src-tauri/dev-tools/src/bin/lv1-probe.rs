@@ -1,6 +1,6 @@
 use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
-    FadeSceneIdentity, FadeTarget, SameSceneRecallBehavior, build_engine,
+    FadeSceneIdentity, FadeTarget, RecallReadinessRequest, SameSceneRecallBehavior, build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
 use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
@@ -781,6 +781,9 @@ async fn run_fade_test(
             },
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
             expected_generation: None,
+            readiness: RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            ),
             reply: Some(reply),
         })
         .await?;
@@ -1175,6 +1178,9 @@ async fn run_pan_family_smoke_step(
             config,
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
             expected_generation: None,
+            readiness: RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            ),
             reply: Some(reply),
         })
         .await?;

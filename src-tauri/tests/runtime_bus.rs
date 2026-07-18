@@ -1,6 +1,6 @@
 use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget,
-    SameSceneRecallBehavior, build_engine,
+    RecallReadinessRequest, SameSceneRecallBehavior, build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
 use advanced_show_control::lv1::{
@@ -115,6 +115,9 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
             },
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
             expected_generation: None,
+            readiness: RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            ),
             reply: Some(reply),
         })
         .await
