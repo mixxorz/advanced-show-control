@@ -19,6 +19,9 @@ const tests = [
   "cue-list-create",
   "connection",
   "startup-auto-connect",
+  "empty-scene-settings-defaults",
+  "scene-settings-copy-paste",
+  "new-session-clears-scene-settings-clipboard",
   "scene-recall",
   "fade-starts",
   "fade-completes",
@@ -121,6 +124,127 @@ async function run() {
         "startup auto-connected LV1 identity",
       );
       await log(`AUTO_CONNECTED ${label(reconnected)}`);
+    });
+
+    await test("empty-scene-settings-defaults", async () => {
+      await newSceneSettingsSession();
+      await assertEmptySceneSettings(sceneA, "Smoke A");
+      await assertEmptySceneSettings(sceneB, "Smoke B");
+    });
+    await test("scene-settings-copy-paste", async () => {
+      await loadSceneSettingsSmokeSession();
+      await invoke("store_scene_config", { internalSceneId: sceneA });
+      await invoke("set_scene_scope_faders_enabled", {
+        internalSceneId: sceneA,
+        enabled: true,
+      });
+      await invoke("set_scene_scope_pan_enabled", {
+        internalSceneId: sceneA,
+        enabled: true,
+      });
+      await invoke("set_channel_scoped", {
+        internalSceneId: sceneA,
+        group,
+        channel,
+        scoped: true,
+      });
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneA,
+        durationMs: 1234,
+      });
+
+      const sourceBeforePaste = structuredClone(
+        await waitFor(() => {
+          const source = sceneConfig(sceneA);
+          if (
+            !source ||
+            source.durationMs !== 1234 ||
+            !source.scopeToggles.faders ||
+            !source.scopeToggles.pan ||
+            source.channelConfigs.length === 0 ||
+            source.scopedChannels.length === 0
+          ) {
+            return undefined;
+          }
+          return source;
+        }, "projected configured Smoke A scene settings"),
+      );
+      const destinationBeforePaste = await waitFor(
+        () => sceneConfig(sceneB),
+        "projected Smoke B scene settings",
+      );
+      await invoke("copy_scene_settings", { internalSceneId: sceneA });
+      await waitFor(
+        () => state?.sceneSettingsClipboardAvailable,
+        "projected scene settings clipboard",
+      );
+      await invoke("save_show_file");
+      await waitFor(
+        () => state && !state.showFileDirty,
+        "clean projected show file before paste",
+      );
+      await invoke("paste_scene_settings", { internalSceneId: sceneB });
+
+      const destination = await waitFor(() => {
+        const next = sceneConfig(sceneB);
+        if (!next || !state?.showFileDirty) return undefined;
+        if (
+          next.durationMs !== sourceBeforePaste.durationMs ||
+          !sameValue(next.scopeToggles, sourceBeforePaste.scopeToggles) ||
+          !sameValue(next.channelConfigs, sourceBeforePaste.channelConfigs) ||
+          !sameValue(next.scopedChannels, sourceBeforePaste.scopedChannels)
+        ) {
+          return undefined;
+        }
+        return next;
+      }, "projected pasted Smoke B scene settings");
+      const sourceAfterPaste = await waitFor(
+        () => sceneConfig(sceneA),
+        "projected Smoke A scene settings after paste",
+      );
+
+      if (
+        destination.internalSceneId !== destinationBeforePaste.internalSceneId
+      ) {
+        throw new Error("paste changed Smoke B internal scene ID");
+      }
+      if (destination.sceneIndex !== destinationBeforePaste.sceneIndex) {
+        throw new Error("paste changed Smoke B scene index");
+      }
+      if (destination.sceneName !== destinationBeforePaste.sceneName) {
+        throw new Error("paste changed Smoke B scene name");
+      }
+      if (destination.durationMs !== sourceBeforePaste.durationMs) {
+        throw new Error("paste did not copy Smoke A duration");
+      }
+      if (
+        !sameValue(destination.scopeToggles, sourceBeforePaste.scopeToggles)
+      ) {
+        throw new Error("paste did not copy Smoke A scope toggles");
+      }
+      if (
+        !sameValue(destination.channelConfigs, sourceBeforePaste.channelConfigs)
+      ) {
+        throw new Error("paste did not copy Smoke A channel configs");
+      }
+      if (
+        !sameValue(destination.scopedChannels, sourceBeforePaste.scopedChannels)
+      ) {
+        throw new Error("paste did not copy Smoke A scoped channels");
+      }
+      if (!sameValue(sourceAfterPaste, sourceBeforePaste)) {
+        throw new Error("paste changed Smoke A scene settings");
+      }
+      if (!state?.showFileDirty) {
+        throw new Error("paste did not mark the show file dirty");
+      }
+    });
+    await test("new-session-clears-scene-settings-clipboard", async () => {
+      await newSceneSettingsSession();
+      await waitFor(
+        () => state && !state.sceneSettingsClipboardAvailable,
+        "cleared projected scene settings clipboard",
+      );
     });
 
     await setup();
@@ -333,6 +457,33 @@ function escapeHtml(value: string) {
 }
 
 async function setup() {
+  await newSceneSettingsSession();
+  await rawReset(0, targetA);
+  await invoke("store_scene_config", { internalSceneId: sceneA });
+  await rawReset(1, targetB);
+  await invoke("store_scene_config", { internalSceneId: sceneB });
+  for (const internalSceneId of [sceneA, sceneB]) {
+    await invoke("set_scene_scope_faders_enabled", {
+      internalSceneId,
+      enabled: true,
+    });
+    await invoke("set_channel_scoped", {
+      internalSceneId,
+      group,
+      channel,
+      scoped: true,
+    });
+    await invoke("set_scene_duration_ms", {
+      internalSceneId,
+      durationMs: 1000,
+    });
+  }
+  await log(
+    `SETUP ${sceneA}=${targetA} ${sceneB}=${targetB} channel=${group}:${channel}`,
+  );
+}
+
+async function newSceneSettingsSession() {
   const previousSceneA = sceneA;
   const previousSceneB = sceneB;
   const newShow = await invoke<{ selected_scene_internal_id: string | null }>(
@@ -353,25 +504,22 @@ async function setup() {
   }, "smoke scene configs after new show");
   sceneA = scenes.sceneA;
   sceneB = scenes.sceneB;
-  await rawReset(0, targetA);
-  await invoke("store_scene_config", { internalSceneId: sceneA });
-  await rawReset(1, targetB);
-  await invoke("store_scene_config", { internalSceneId: sceneB });
-  for (const internalSceneId of [sceneA, sceneB]) {
-    await invoke("set_channel_scoped", {
-      internalSceneId,
-      group,
-      channel,
-      scoped: true,
-    });
-    await invoke("set_scene_duration_ms", {
-      internalSceneId,
-      durationMs: 1000,
-    });
-  }
-  await log(
-    `SETUP ${sceneA}=${targetA} ${sceneB}=${targetB} channel=${group}:${channel}`,
-  );
+}
+
+async function loadSceneSettingsSmokeSession() {
+  const previousSceneA = sceneA;
+  const previousSceneB = sceneB;
+  await invoke("debug_smoke_load_scene_settings_session");
+  const scenes = await waitFor(() => {
+    const next = resolveSmokeSceneIds();
+    if (!next) return undefined;
+    if (next.sceneA === previousSceneA || next.sceneB === previousSceneB) {
+      return undefined;
+    }
+    return next;
+  }, "scene settings smoke session");
+  sceneA = scenes.sceneA;
+  sceneB = scenes.sceneB;
 }
 
 async function reset(internalSceneId: string, target: number) {
@@ -417,6 +565,31 @@ function resolveSmokeSceneIds() {
     sceneA: smokeScenes.sceneA.internalSceneId,
     sceneB: smokeScenes.sceneB.internalSceneId,
   };
+}
+
+function sceneConfig(internalSceneId: string) {
+  return state?.sceneConfigs.find(
+    (scene) => scene.internalSceneId === internalSceneId,
+  );
+}
+
+async function assertEmptySceneSettings(internalSceneId: string, name: string) {
+  const scene = await waitFor(
+    () => sceneConfig(internalSceneId),
+    `projected ${name} scene settings`,
+  );
+  if (
+    scene.scopeToggles.faders ||
+    scene.scopeToggles.pan ||
+    scene.channelConfigs.length !== 0 ||
+    scene.scopedChannels.length !== 0
+  ) {
+    throw new Error(`${name} scene settings were not empty in a new session`);
+  }
+}
+
+function sameValue(left: unknown, right: unknown) {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 async function waitFor<T>(

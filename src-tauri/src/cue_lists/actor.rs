@@ -572,6 +572,7 @@ mod tests {
                 state: crate::scenes::ScenesProjectionState {
                     scene_configs: vec![],
                     selected_scene_internal_id: None,
+                    scene_settings_clipboard_available: false,
                 },
                 persisted_scene_edit: true,
             },
@@ -601,6 +602,7 @@ mod tests {
                 state: crate::scenes::ScenesProjectionState {
                     scene_configs: vec![],
                     selected_scene_internal_id: None,
+                    scene_settings_clipboard_available: false,
                 },
                 persisted_scene_edit: true,
             },

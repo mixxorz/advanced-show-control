@@ -729,6 +729,7 @@ impl AppLifecycle {
             crate::scenes::ScenesProjectionState {
                 scene_configs: Vec::new(),
                 selected_scene_internal_id: None,
+                scene_settings_clipboard_available: false,
             }
         };
         let initial_cue_lists_state = if let Some(cue_lists_handle) = self.show_peers.cue_lists() {

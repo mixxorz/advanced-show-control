@@ -26,6 +26,7 @@ export type AppRuntimeServices = {
   abortAll: () => Promise<void> | void;
   attemptReconnectLv1: () => Promise<unknown>;
   connectLv1System: (identity: Lv1SystemIdentity) => Promise<unknown>;
+  copySceneSettings: (internalSceneId: string) => Promise<unknown>;
   disconnectLv1: () => Promise<unknown>;
   addSceneToActiveCueList: (
     sceneInternalId: string,
@@ -37,6 +38,7 @@ export type AppRuntimeServices = {
   listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
   newShowFile: () => Promise<unknown>;
   openShowFile: () => Promise<unknown>;
+  pasteSceneSettings: (internalSceneId: string) => Promise<unknown>;
   removeCueEntry: (cueEntryId: string) => Promise<unknown>;
   recallCuedCue: () => Promise<unknown>;
   reconnectTimedOut: (attempt: number) => Promise<unknown>;
@@ -313,12 +315,16 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       ),
     createCueList: (name) =>
       void runCommand(() => services.createCueList(name)),
+    copySceneSettings: (internalSceneId) =>
+      void runCommand(() => services.copySceneSettings(internalSceneId)),
     cueEntry: (cueEntryId) =>
       void runCommand(() => services.cueEntry(cueEntryId)),
     deleteCueList: (cueListId) =>
       void runCommand(() => services.deleteCueList(cueListId)),
     newShowFile: () => runCommand(() => services.newShowFile()),
     openShowFile: () => runCommand(() => services.openShowFile()),
+    pasteSceneSettings: (internalSceneId) =>
+      void runCommand(() => services.pasteSceneSettings(internalSceneId)),
     removeCueEntry: (cueEntryId) =>
       void runCommand(() => services.removeCueEntry(cueEntryId)),
     recallCuedCue: async () => {

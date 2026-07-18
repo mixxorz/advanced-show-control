@@ -42,21 +42,12 @@ pub struct ShowFileSceneConfig {
     pub scope_toggles: ShowFileSceneScopeToggles,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 #[serde(default)]
 pub struct ShowFileSceneScopeToggles {
     pub faders: bool,
     pub pan: bool,
-}
-
-impl Default for ShowFileSceneScopeToggles {
-    fn default() -> Self {
-        Self {
-            faders: true,
-            pan: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

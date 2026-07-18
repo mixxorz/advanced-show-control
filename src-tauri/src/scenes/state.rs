@@ -4,7 +4,7 @@ use tokio::time::Instant;
 
 use crate::lv1::{SceneListEntry, SceneState};
 use crate::scenes::scene_alignment::align_scene_configs;
-use crate::scenes::{SceneConfig, SceneDocument};
+use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
 
 const RECALL_ARMING_DELAY: Duration = Duration::from_millis(2_000);
 const SAME_SCENE_REPEAT_DELAY: Duration = Duration::from_millis(500);
@@ -30,6 +30,20 @@ impl From<&SceneState> for RecallSceneIdentity {
 struct ObservedScene {
     scene: RecallSceneIdentity,
     at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct SceneSettingsClipboard {
+    duration_ms: u64,
+    scope_toggles: SceneScopeToggles,
+    channel_configs: Vec<ChannelConfig>,
+    scoped_channels: Vec<ChannelRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CopySceneSettingsResult {
+    pub contents_changed: bool,
+    pub availability_changed: bool,
 }
 
 /// Gate deciding whether a scene observation is an operator recall.
@@ -65,6 +79,7 @@ pub struct ScenesState {
     lockout: bool,
     scene_configs: Vec<SceneConfig>,
     selected_scene_internal_id: Option<String>,
+    scene_settings_clipboard: Option<SceneSettingsClipboard>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
@@ -83,6 +98,7 @@ impl ScenesState {
         crate::scenes::ScenesProjectionState {
             scene_configs: self.scene_configs.clone(),
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
+            scene_settings_clipboard_available: self.scene_settings_clipboard.is_some(),
         }
     }
 
@@ -100,6 +116,7 @@ impl ScenesState {
 
     pub(crate) fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
         self.replace_snapshot(snapshot);
+        self.scene_settings_clipboard = None;
         self.reset_recall_tracking();
     }
 
@@ -165,6 +182,61 @@ impl ScenesState {
             return Ok(false);
         }
         self.selected_scene_internal_id = next;
+        Ok(true)
+    }
+
+    pub(crate) fn copy_scene_settings(
+        &mut self,
+        source_internal_scene_id: uuid::Uuid,
+    ) -> Result<CopySceneSettingsResult, String> {
+        let source = self
+            .scene_configs
+            .iter()
+            .find(|scene| scene.internal_scene_id == source_internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        let clipboard = SceneSettingsClipboard {
+            duration_ms: source.duration_ms,
+            scope_toggles: source.scope_toggles.clone(),
+            channel_configs: source.channel_configs.clone(),
+            scoped_channels: source.scoped_channels.clone(),
+        };
+        let contents_changed = self.scene_settings_clipboard.as_ref() != Some(&clipboard);
+        let availability_changed = self.scene_settings_clipboard.is_none();
+        self.scene_settings_clipboard = Some(clipboard);
+        Ok(CopySceneSettingsResult {
+            contents_changed,
+            availability_changed,
+        })
+    }
+
+    pub(crate) fn paste_scene_settings(
+        &mut self,
+        destination_internal_scene_id: uuid::Uuid,
+    ) -> Result<bool, String> {
+        let clipboard = self
+            .scene_settings_clipboard
+            .as_ref()
+            .ok_or_else(|| "Scene settings clipboard is empty".to_string())?;
+        let destination_index = self
+            .scene_configs
+            .iter()
+            .position(|scene| scene.internal_scene_id == destination_internal_scene_id)
+            .ok_or_else(|| "Scene config not found".to_string())?;
+        let destination = &self.scene_configs[destination_index];
+        if destination.scene_index.is_none() {
+            return Err("Paste blocked: destination scene is not linked".to_string());
+        }
+        let prospective = SceneConfig {
+            duration_ms: clipboard.duration_ms,
+            scope_toggles: clipboard.scope_toggles.clone(),
+            channel_configs: clipboard.channel_configs.clone(),
+            scoped_channels: clipboard.scoped_channels.clone(),
+            ..destination.clone()
+        };
+        if *destination == prospective {
+            return Ok(false);
+        }
+        self.scene_configs[destination_index] = prospective;
         Ok(true)
     }
 
@@ -354,6 +426,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    use crate::scenes::{ChannelConfig, ChannelRef, SceneScopeToggles};
+
     fn scene(index: i32, name: &str) -> SceneState {
         SceneState {
             index,
@@ -366,6 +440,51 @@ mod tests {
             index,
             name: name.to_string(),
         }
+    }
+
+    fn scene_config(id: uuid::Uuid, seed: i32, linked: bool) -> SceneConfig {
+        SceneConfig {
+            internal_scene_id: id,
+            scene_index: linked.then_some(seed),
+            scene_name: format!("Scene {seed}"),
+            duration_ms: (seed as u64) * 1_000,
+            channel_configs: vec![ChannelConfig {
+                group: seed,
+                channel: seed + 1,
+                fader_db: Some(-(seed as f64)),
+                pan: Some(seed as f64 / 10.0),
+                balance: Some(-(seed as f64) / 10.0),
+                width: Some(seed as f64 / 5.0),
+                pan_mode: Some(crate::lv1::PanMode::Stereo),
+            }],
+            scoped_channels: vec![ChannelRef {
+                group: seed,
+                channel: seed + 1,
+            }],
+            scope_toggles: SceneScopeToggles {
+                faders: seed % 2 == 0,
+                pan: seed % 2 != 0,
+            },
+        }
+    }
+
+    fn replace_scene_configs(state: &mut ScenesState, scene_configs: Vec<SceneConfig>) {
+        state.replace_snapshot(SceneDocument {
+            scene_configs,
+            selected_scene_internal_id: None,
+        });
+    }
+
+    fn assert_copied_settings(
+        destination: &SceneConfig,
+        source: &SceneConfig,
+        destination_id: uuid::Uuid,
+    ) {
+        assert_eq!(destination.duration_ms, source.duration_ms);
+        assert_eq!(destination.scope_toggles, source.scope_toggles);
+        assert_eq!(destination.channel_configs, source.channel_configs);
+        assert_eq!(destination.scoped_channels, source.scoped_channels);
+        assert_eq!(destination.internal_scene_id, destination_id);
     }
 
     fn initial_scene_list() -> Vec<SceneListEntry> {
@@ -596,5 +715,257 @@ mod tests {
 
         assert!(!state.is_scene_list_edit_suppressed(now));
         assert!(!state.accepts_at(&scene(1, "Intro"), now + Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn copies_settings_from_a_linked_scene() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+        assert!(state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn copies_settings_from_an_unlinked_scene() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, false)]);
+
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+        assert!(state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn copying_different_settings_changes_contents_without_changing_availability() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let other_source_id = uuid::Uuid::from_u128(2);
+        let destination_id = uuid::Uuid::from_u128(3);
+        let source = scene_config(source_id, 1, true);
+        let other_source = scene_config(other_source_id, 2, true);
+        let destination = scene_config(destination_id, 3, true);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![source, other_source.clone(), destination]);
+
+        assert_eq!(
+            state.copy_scene_settings(source_id),
+            Ok(CopySceneSettingsResult {
+                contents_changed: true,
+                availability_changed: true,
+            })
+        );
+        assert_eq!(
+            state.copy_scene_settings(other_source_id),
+            Ok(CopySceneSettingsResult {
+                contents_changed: true,
+                availability_changed: false,
+            })
+        );
+        assert_eq!(state.paste_scene_settings(destination_id), Ok(true));
+        assert_copied_settings(
+            &state.get_scene_config(destination_id).unwrap(),
+            &other_source,
+            destination_id,
+        );
+    }
+
+    #[test]
+    fn copy_rejects_a_missing_source_scene() {
+        let mut state = ScenesState::default();
+
+        assert_eq!(
+            state.copy_scene_settings(uuid::Uuid::from_u128(1)),
+            Err("Scene config not found".to_string())
+        );
+        assert!(!state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn copied_settings_do_not_change_with_the_source_scene() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let destination_id = uuid::Uuid::from_u128(2);
+        let source = scene_config(source_id, 1, true);
+        let mut state = ScenesState::default();
+        replace_scene_configs(
+            &mut state,
+            vec![source.clone(), scene_config(destination_id, 2, true)],
+        );
+
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+        state.get_scene_config_mut(source_id).unwrap().duration_ms = 9_999;
+
+        assert_eq!(state.paste_scene_settings(destination_id), Ok(true));
+        assert_copied_settings(
+            &state.get_scene_config(destination_id).unwrap(),
+            &source,
+            destination_id,
+        );
+    }
+
+    #[test]
+    fn paste_rejects_a_missing_clipboard() {
+        let destination_id = uuid::Uuid::from_u128(2);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(destination_id, 2, true)]);
+
+        assert_eq!(
+            state.paste_scene_settings(destination_id),
+            Err("Scene settings clipboard is empty".to_string())
+        );
+    }
+
+    #[test]
+    fn paste_rejects_a_missing_destination_scene() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        assert_eq!(
+            state.paste_scene_settings(uuid::Uuid::from_u128(2)),
+            Err("Scene config not found".to_string())
+        );
+    }
+
+    #[test]
+    fn paste_rejects_an_unlinked_destination_without_mutating_it() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let destination_id = uuid::Uuid::from_u128(2);
+        let source = scene_config(source_id, 1, true);
+        let destination = scene_config(destination_id, 2, false);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![source.clone(), destination.clone()]);
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        assert_eq!(
+            state.paste_scene_settings(destination_id),
+            Err("Paste blocked: destination scene is not linked".to_string())
+        );
+        let pasted = state.get_scene_config(destination_id).unwrap();
+        assert_eq!(pasted, destination);
+    }
+
+    #[test]
+    fn paste_changes_a_linked_destination_without_changing_its_identity() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let destination_id = uuid::Uuid::from_u128(2);
+        let source = scene_config(source_id, 1, true);
+        let destination = scene_config(destination_id, 2, true);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![source.clone(), destination.clone()]);
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        assert_eq!(state.paste_scene_settings(destination_id), Ok(true));
+        let pasted = state.get_scene_config(destination_id).unwrap();
+        assert_copied_settings(&pasted, &source, destination_id);
+        assert_eq!(pasted.scene_index, destination.scene_index);
+        assert_eq!(pasted.scene_name, destination.scene_name);
+    }
+
+    #[test]
+    fn paste_is_a_no_op_when_destination_already_matches_the_clipboard() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let destination_id = uuid::Uuid::from_u128(2);
+        let source = scene_config(source_id, 1, true);
+        let mut destination = source.clone();
+        destination.internal_scene_id = destination_id;
+        destination.scene_index = Some(2);
+        destination.scene_name = "Destination".to_string();
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![source, destination]);
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        assert_eq!(state.paste_scene_settings(destination_id), Ok(false));
+    }
+
+    #[test]
+    fn paste_leaves_the_source_scene_unchanged() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let destination_id = uuid::Uuid::from_u128(2);
+        let source = scene_config(source_id, 1, true);
+        let mut state = ScenesState::default();
+        replace_scene_configs(
+            &mut state,
+            vec![source.clone(), scene_config(destination_id, 2, true)],
+        );
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        assert_eq!(state.paste_scene_settings(destination_id), Ok(true));
+        assert_eq!(state.get_scene_config(source_id), Some(source));
+    }
+
+    #[test]
+    fn session_document_replacement_clears_the_settings_clipboard() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        state.replace_snapshot_for_session(SceneDocument::empty());
+
+        assert!(!state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn ordinary_snapshot_replacement_preserves_the_settings_clipboard() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+        assert!(
+            state
+                .copy_scene_settings(source_id)
+                .unwrap()
+                .contents_changed
+        );
+
+        state.replace_snapshot(SceneDocument::empty());
+
+        assert!(state.projection_state().scene_settings_clipboard_available);
     }
 }

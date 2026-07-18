@@ -1,9 +1,12 @@
 import type { SceneConfig } from "../types";
-import { useAppCommands } from "../appHooks";
+import { useAppCommands, useAppState } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
 
 export function SelectedSceneActions(props: { scene: SceneConfig }) {
   const commands = useAppCommands();
+  const {
+    appState: { sceneSettingsClipboardAvailable },
+  } = useAppState();
   const unlinked = props.scene.sceneIndex === null;
 
   return (
@@ -15,8 +18,17 @@ export function SelectedSceneActions(props: { scene: SceneConfig }) {
       >
         Store
       </ConsoleButton>
-      <ConsoleButton variant="secondary">Copy</ConsoleButton>
-      <ConsoleButton disabled variant="secondary">
+      <ConsoleButton
+        onClick={() => commands.copySceneSettings(props.scene.internalSceneId)}
+        variant="secondary"
+      >
+        Copy
+      </ConsoleButton>
+      <ConsoleButton
+        disabled={!sceneSettingsClipboardAvailable || unlinked}
+        onClick={() => commands.pasteSceneSettings(props.scene.internalSceneId)}
+        variant="secondary"
+      >
         Paste
       </ConsoleButton>
     </div>

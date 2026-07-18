@@ -30,6 +30,7 @@ pub struct ProjectionCache {
     selected_scene_internal_id: Option<String>,
     lockout: bool,
     scene_configs: Vec<crate::scenes::SceneConfig>,
+    scene_settings_clipboard_available: bool,
     cue_lists: Vec<crate::cue_lists::CueList>,
     active_cue_list_id: Option<String>,
     cued_cue_entry_id: Option<String>,
@@ -63,6 +64,7 @@ impl ProjectionCache {
             selected_scene_internal_id: None,
             lockout: false,
             scene_configs: Vec::new(),
+            scene_settings_clipboard_available: false,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -104,6 +106,7 @@ impl ProjectionCache {
     pub fn apply_scenes_state(&mut self, state: ScenesProjectionState) {
         self.scene_configs = state.scene_configs;
         self.selected_scene_internal_id = state.selected_scene_internal_id;
+        self.scene_settings_clipboard_available = state.scene_settings_clipboard_available;
     }
 
     pub fn apply_cue_lists_state(&mut self, state: CueListsProjectionState) {
@@ -260,6 +263,7 @@ impl ProjectionCache {
         self.reconnect_state = snapshot.reconnect.clone();
         self.fade_state = snapshot.fade_state.clone();
         self.selected_scene_internal_id = snapshot.selected_scene_internal_id.clone();
+        self.scene_settings_clipboard_available = snapshot.scene_settings_clipboard_available;
         self.show_file_path = snapshot.show_file_path.as_ref().map(PathBuf::from);
         self.show_file_dirty = snapshot.show_file_dirty;
         self.show_file_last_saved_at = snapshot.show_file_last_saved_at.clone();
@@ -332,6 +336,7 @@ impl ProjectionCache {
             fade_state: self.fade_state.clone(),
             lockout: self.lockout,
             scene_configs: self.scene_configs.clone(),
+            scene_settings_clipboard_available: self.scene_settings_clipboard_available,
             cue_lists: self.cue_lists.clone(),
             active_cue_list_id: self.active_cue_list_id.clone(),
             cued_cue_entry_id: self.cued_cue_entry_id.clone(),
@@ -457,6 +462,7 @@ mod tests {
             fade_state: AppFadeState::Idle,
             lockout: false,
             scene_configs: Vec::new(),
+            scene_settings_clipboard_available: false,
             cue_lists: Vec::new(),
             active_cue_list_id: None,
             cued_cue_entry_id: None,
@@ -602,6 +608,7 @@ mod tests {
                 scope_toggles: Default::default(),
             }],
             selected_scene_internal_id: Some("selected-id".to_string()),
+            scene_settings_clipboard_available: true,
         });
 
         let snapshot = cache.build_snapshot();
@@ -612,6 +619,7 @@ mod tests {
             snapshot.selected_scene_internal_id.as_deref(),
             Some("selected-id")
         );
+        assert!(snapshot.scene_settings_clipboard_available);
     }
 
     #[test]

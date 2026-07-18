@@ -207,6 +207,7 @@ function makeBaseDisconnectedAppState(
     logs: [],
     lastEventAt: null,
     sceneConfigs: [],
+    sceneSettingsClipboardAvailable: false,
     selectedSceneInternalId: null,
     cueLists: overrides.cueLists ?? [],
     activeCueListId: overrides.activeCueListId ?? null,

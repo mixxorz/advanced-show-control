@@ -38,14 +38,14 @@ Create the scene in LV1 first, then use Advanced Show Control to add the fade.
 
 1. Open **Scenes** and select the scene.
 2. Set the faders and pans in LV1 to the values you want the scene to reach.
-3. Select **Store**.
-4. In **Scope**, keep only the channels you want Advanced Show Control to move.
-5. Leave **FADER** on. Turn on **PAN** if pan controls should move as well.
+3. In **Scope**, select only the channels you want Advanced Show Control to move.
+4. Turn on **FADER**. Turn on **PAN** if pan controls should move as well.
+5. Select **Store**.
 6. Set **X-Fade** to the transition time you want.
 7. Save the session.
 
 !!! warning "Check scope before recall"
-    If no channels are in scope when you select **Store**, all current channels are added. Remove any channels that should not move. **Store** keeps the current **FADER** and **PAN** selections, so check those as well.
+    A new scene fade has no selected channels, and **FADER** and **PAN** are off. Select the intended channels and enable the controls before you select **Store**. If no channels are in scope when you select **Store**, all current channels are added. **Store** keeps the current **FADER** and **PAN** selections.
 
 Set **X-Fade** to `0` for an immediate cut. For a timed transition, use a value from `0.1` to `120` seconds.
 

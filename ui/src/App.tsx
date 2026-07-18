@@ -6,6 +6,7 @@ import type { AppViewState } from "./types";
 import {
   addSceneToActiveCueList,
   attemptReconnectLv1,
+  copySceneSettings,
   createCueList,
   cueEntry,
   recallCuedCue,
@@ -13,6 +14,7 @@ import {
   deleteCueList,
   deleteSceneConfig,
   linkSceneConfig,
+  pasteSceneSettings,
   probeLv1TcpConnectLatency,
   reconnectTimedOut,
   refreshLv1Discovery,
@@ -30,6 +32,7 @@ const services: AppRuntimeServices = {
   addSceneToActiveCueList,
   attemptReconnectLv1,
   connectLv1System,
+  copySceneSettings,
   createCueList,
   cueEntry,
   deleteCueList,
@@ -40,6 +43,7 @@ const services: AppRuntimeServices = {
     ),
   newShowFile: () => invoke<void>("new_show_file"),
   openShowFile: () => invoke<void>("open_show_file_dialog"),
+  pasteSceneSettings,
   removeCueEntry,
   recallCuedCue,
   recallScene: (internalSceneId) =>

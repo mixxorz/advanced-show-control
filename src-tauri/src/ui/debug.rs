@@ -43,10 +43,14 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::show::open_show_file_dialog,
             crate::ui::commands::show::save_show_file,
             crate::ui::commands::show::save_show_file_as_dialog,
+            crate::ui::commands::scenes::copy_scene_settings,
             crate::ui::commands::scenes::link_scene_config,
+            crate::ui::commands::scenes::paste_scene_settings,
             crate::ui::commands::scenes::recall_scene,
             crate::ui::commands::scenes::set_channel_scoped,
             crate::ui::commands::scenes::set_scene_duration_ms,
+            crate::ui::commands::scenes::set_scene_scope_faders_enabled,
+            crate::ui::commands::scenes::set_scene_scope_pan_enabled,
             crate::ui::commands::scenes::store_scene_config,
             crate::ui::commands::lifecycle::connect_lv1_system,
             crate::ui::commands::lifecycle::attempt_reconnect_lv1,
@@ -61,6 +65,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             commands::debug_smoke_set_channel_gain,
             commands::debug_smoke_recall_lv1_scene,
             commands::debug_smoke_get_channel_gain,
+            commands::debug_smoke_load_scene_settings_session,
             commands::debug_smoke_load_unlinked_scene_session,
         ])
 }

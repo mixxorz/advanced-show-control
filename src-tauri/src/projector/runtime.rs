@@ -175,6 +175,7 @@ mod tests {
             initial_scenes_state: ScenesProjectionState {
                 scene_configs: Vec::new(),
                 selected_scene_internal_id: None,
+                scene_settings_clipboard_available: false,
             },
             initial_cue_lists_state: CueListsProjectionState {
                 document: crate::cue_lists::CueListDocument::default(),
@@ -320,6 +321,7 @@ mod tests {
                         scope_toggles: Default::default(),
                     }],
                     selected_scene_internal_id: Some("selected-id".to_string()),
+                    scene_settings_clipboard_available: false,
                 },
                 persisted_scene_edit: false,
             },
@@ -410,6 +412,7 @@ mod tests {
             initial_scenes_state: ScenesProjectionState {
                 scene_configs: Vec::new(),
                 selected_scene_internal_id: None,
+                scene_settings_clipboard_available: false,
             },
             initial_cue_lists_state: CueListsProjectionState {
                 document: crate::cue_lists::CueListDocument::default(),

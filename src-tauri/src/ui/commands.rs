@@ -17,9 +17,10 @@ pub use lifecycle::{
     probe_lv1_tcp_connect_latency, reconnect_timed_out, startup_auto_connect_lv1,
 };
 pub use scenes::{
-    delete_scene_config, link_scene_config, recall_scene, select_scene_config,
-    set_all_channels_scoped, set_channel_scoped, set_scene_duration_ms,
-    set_scene_scope_faders_enabled, set_scene_scope_pan_enabled, store_scene_config,
+    copy_scene_settings, delete_scene_config, link_scene_config, paste_scene_settings,
+    recall_scene, select_scene_config, set_all_channels_scoped, set_channel_scoped,
+    set_scene_duration_ms, set_scene_scope_faders_enabled, set_scene_scope_pan_enabled,
+    store_scene_config,
 };
 pub use settings::replace_app_settings;
 pub use show::{

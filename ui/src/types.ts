@@ -134,6 +134,7 @@ export type AppViewState = {
   logs: AppLogEntry[];
   lastEventAt: string | null;
   sceneConfigs: SceneConfig[];
+  sceneSettingsClipboardAvailable: boolean;
   selectedSceneInternalId: string | null;
   cueLists: CueList[];
   activeCueListId: string | null;
@@ -179,6 +180,7 @@ export const disconnectedAppViewState: AppViewState = {
   logs: [],
   lastEventAt: null,
   sceneConfigs: [],
+  sceneSettingsClipboardAvailable: false,
   selectedSceneInternalId: null,
   cueLists: [],
   activeCueListId: null,
