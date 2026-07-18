@@ -1,8 +1,24 @@
 use std::path::{Path, PathBuf};
 
 use crate::connection_state::Lv1SystemIdentity;
+use serde::{Deserialize, Serialize};
 
-use super::{AppSettings, PersistedSettings};
+use super::AppSettings;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct PersistedSettings {
+    #[serde(flatten)]
+    settings: AppSettings,
+    last_connected_lv1: Option<Lv1SystemIdentity>,
+}
+
+impl PersistedSettings {
+    fn normalized(mut self) -> Self {
+        self.settings = self.settings.normalized();
+        self
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SettingsState {
@@ -158,5 +174,24 @@ mod tests {
         let reloaded = SettingsState::load(dir);
         assert!(reloaded.settings().auto_save_sessions);
         assert_eq!(reloaded.last_connected_lv1(), Some(identity));
+    }
+
+    #[test]
+    fn remembered_identity_uses_the_existing_flat_private_schema() {
+        let dir = temp_settings_dir("flat-private-schema");
+        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
+        let mut state = SettingsState::load(dir.clone());
+        state
+            .set_last_connected_lv1(identity)
+            .expect("remembered identity should save");
+
+        let document: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("settings.json"))
+                .expect("settings document should exist"),
+        )
+        .expect("settings document should be JSON");
+        assert_eq!(document["lastConnectedLv1"]["uuid"], "uuid-1");
+        assert_eq!(document["lastConnectedLv1"]["host"], "LV1-FOH");
+        assert!(document.get("settings").is_none());
     }
 }

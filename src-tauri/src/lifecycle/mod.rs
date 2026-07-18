@@ -593,7 +593,6 @@ impl AppLifecycle {
             .map_err(|_| "Settings are unavailable".to_string())?;
         rx.await
             .map_err(|_| "Settings reply channel is closed".to_string())?
-            .map(|_| ())
     }
 
     async fn log_last_connected_lv1_save_failure(&self, generation: u64, error: String) {

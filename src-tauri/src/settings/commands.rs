@@ -22,7 +22,7 @@ pub enum SettingsCommand {
         identity: Lv1SystemIdentity,
         runtime_generation: RuntimeGeneration,
         expected_generation: u64,
-        reply: oneshot::Sender<Result<SettingsCommandResult, String>>,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 

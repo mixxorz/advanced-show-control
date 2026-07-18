@@ -135,12 +135,10 @@ async fn handle_command(
             }
             let result = runtime_generation
                 .if_current(expected_generation, || {
-                    state
-                        .set_last_connected_lv1(identity)
-                        .map(|changed| SettingsCommandResult { changed })
+                    state.set_last_connected_lv1(identity).map(|_changed| ())
                 })
                 .await
-                .unwrap_or(Ok(SettingsCommandResult { changed: false }));
+                .unwrap_or(Ok(()));
             let _ = reply.send(result);
         }
     }
@@ -411,10 +409,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(
-            rx.await.unwrap().unwrap(),
-            SettingsCommandResult { changed: true }
-        );
+        assert_eq!(rx.await.unwrap(), Ok(()));
 
         let (reply, rx) = oneshot::channel();
         handle
@@ -444,10 +439,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(
-            rx.await.unwrap().unwrap(),
-            SettingsCommandResult { changed: true }
-        );
+        assert_eq!(rx.await.unwrap(), Ok(()));
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
                 .await
@@ -480,6 +472,82 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(identity));
+    }
+
+    #[tokio::test]
+    async fn actor_treats_stale_remembered_identity_update_as_successful_noop() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("stale-remembered-identity");
+        let (handle, task, _) = build_settings_actor(dir, event_bus);
+        task.spawn();
+        let runtime_generation = crate::runtime::generation::RuntimeGeneration::default();
+        runtime_generation.advance().await;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: identity("uuid-new", "LV1-FOH", "192.168.1.36"),
+                runtime_generation,
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .expect("stale identity command should send");
+        assert_eq!(
+            rx.await.expect("stale identity reply should arrive"),
+            Ok(())
+        );
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn actor_preserves_remembered_identity_when_replacement_write_fails() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("failed-remembered-identity-write");
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        task.spawn();
+        let runtime_generation = runtime_generation();
+        let original = identity("uuid-old", "LV1-FOH", "192.168.1.35");
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: original.clone(),
+                runtime_generation: runtime_generation.clone(),
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), Ok(()));
+
+        std::fs::remove_file(dir.join("settings.json")).unwrap();
+        std::fs::remove_dir(&dir).unwrap();
+        std::fs::write(&dir, "not a directory").unwrap();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::SetLastConnectedLv1 {
+                identity: identity("uuid-new", "LV1-FOH", "192.168.1.36"),
+                runtime_generation,
+                expected_generation: 0,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert!(rx.await.unwrap().is_err());
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        assert_eq!(rx.await.unwrap(), Some(original));
     }
 
     #[tokio::test]
