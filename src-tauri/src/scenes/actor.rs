@@ -2304,29 +2304,25 @@ mod tests {
         );
         peers.set_peers(lv1, fade);
         task.spawn();
-        for _ in 0..1_000 {
-            if captured
-                .matching("event_subscriber_lagged", tracing::Level::DEBUG)
-                .iter()
-                .any(|event| {
-                    event.fields.get("subscriber").map(String::as_str) == Some("scene-recall")
-                })
-            {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert!(
-            captured
-                .matching("event_subscriber_lagged", tracing::Level::DEBUG)
-                .iter()
-                .any(|event| {
-                    event.fields.get("subscriber").map(String::as_str) == Some("scene-recall")
-                })
-        );
+        captured
+            .wait_for_matching("event_subscriber_lagged", tracing::Level::DEBUG, |event| {
+                event.fields.get("subscriber").map(String::as_str) == Some("scene-recall")
+            })
+            .await;
         install_scene_document(&handle, intro_scene_document()).await;
         release_lv1.send(()).unwrap();
-        arm_recall_state(&event_bus).await;
+        event_bus.publish(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::SceneChanged(intro_scene()),
+        });
+        captured
+            .wait_for_matching("scene_recall_skipped", tracing::Level::DEBUG, |event| {
+                event.fields.get("reason").map(String::as_str)
+                    == Some("scene not accepted by recall policy")
+            })
+            .await;
+        tokio::time::advance(Duration::from_millis(2_550)).await;
+        yield_to_actor().await;
         event_bus.publish(AppEvent::Lv1 {
             generation: 1,
             event: Lv1Event::SceneChanged(intro_scene()),

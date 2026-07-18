@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::watch;
 use tracing::field::{Field, Visit};
 use tracing::{Level, Subscriber};
 use tracing_subscriber::Layer;
@@ -16,9 +17,20 @@ pub(crate) struct CapturedTracingEvent {
     pub(crate) fields: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub(crate) struct TracingCapture {
     events: Arc<Mutex<Vec<CapturedTracingEvent>>>,
+    revision: watch::Sender<u64>,
+}
+
+impl Default for TracingCapture {
+    fn default() -> Self {
+        let (revision, _) = watch::channel(0);
+        Self {
+            events: Arc::new(Mutex::new(Vec::new())),
+            revision,
+        }
+    }
 }
 
 impl TracingCapture {
@@ -48,6 +60,24 @@ impl TracingCapture {
             .filter(|captured| captured.level == level && captured.event.as_deref() == Some(event))
             .collect()
     }
+
+    pub(crate) async fn wait_for_matching(
+        &self,
+        event: &str,
+        level: Level,
+        predicate: impl Fn(&CapturedTracingEvent) -> bool,
+    ) -> CapturedTracingEvent {
+        let mut revisions = self.revision.subscribe();
+        loop {
+            if let Some(captured) = self.matching(event, level).into_iter().find(&predicate) {
+                return captured;
+            }
+            revisions
+                .changed()
+                .await
+                .expect("tracing capture revision channel closed");
+        }
+    }
 }
 
 impl<S> Layer<S> for TracingCapture
@@ -67,6 +97,8 @@ where
             .lock()
             .expect("tracing capture lock poisoned")
             .push(captured);
+        self.revision
+            .send_modify(|revision| *revision = revision.wrapping_add(1));
     }
 }
 
@@ -165,5 +197,31 @@ mod tests {
                 .iter()
                 .all(|event| event.event.as_deref() != Some("first"))
         );
+    }
+
+    #[tokio::test]
+    async fn waits_for_the_next_event_matching_structured_fields() {
+        let capture = TracingCapture::new();
+        let _guard = capture.install();
+
+        let wait = capture.wait_for_matching("scene_recall_skipped", Level::DEBUG, |event| {
+            event.fields.get("reason").map(String::as_str) == Some("baseline")
+        });
+        let emit = async {
+            tracing::debug!(
+                event = "scene_recall_skipped",
+                reason = "different event",
+                "Different event"
+            );
+            tokio::task::yield_now().await;
+            tracing::debug!(
+                event = "scene_recall_skipped",
+                reason = "baseline",
+                "Baseline observed"
+            );
+        };
+
+        let (event, ()) = tokio::join!(wait, emit);
+        assert_eq!(event.message.as_deref(), Some("Baseline observed"));
     }
 }
