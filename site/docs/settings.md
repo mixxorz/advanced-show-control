@@ -1,10 +1,18 @@
 # Settings
 
-Use **Settings** to change the shortcuts and diagnostic detail available in v2. If a setting cannot be saved, the screen restores the last confirmed value and shows an error.
+Use **Settings** to change same-scene recall behavior, shortcuts, and diagnostic detail available in v2. If a setting cannot be saved, the screen restores the last confirmed value and shows an error.
 
 ![The Settings screen.](assets/screenshots/settings.png)
 
 ## Active in v2
+
+### Same-scene recall
+
+**Same scene recall finishing** is on by default. When it is on, recalling an app-managed scene again while that exact scene still owns active fade targets completes those targets after LV1's post-recall readiness check. When it is off, matching fades continue from their current values over the full configured scene duration instead of completing immediately.
+
+**Same scene recall threshold** defaults to `500 ms` and accepts values from `0 ms` through `5000 ms` in `100 ms` steps. Repeated identical LV1 scene notifications below the threshold are ignored. A notification at the threshold is eligible for normal recall validation. The threshold does not change connection arming, scene-list-edit suppression, exact scene matching, SAFE, or disconnect behavior.
+
+Use these settings with **Extensive diagnostics** when investigating unexpected immediate fade completion. If disabling finishing removes the jump, same-scene finishing was selected. Increase the threshold to test whether delayed duplicate LV1 scene notifications are being accepted. Rehearse any changed value before show use.
 
 ### Extensive diagnostics
 
