@@ -18,7 +18,7 @@ use crate::scenes::{
     ScenesProjectionReason, ScenesState, SelectedSceneResult,
 };
 use crate::settings::{AppSettings, SettingsCommand, SettingsEvent, SettingsHandle};
-use crate::show::ShowEvent;
+use crate::show::ShowLockoutReader;
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
 
@@ -72,6 +72,7 @@ pub struct ScenesTask {
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     settings_handle: SettingsHandle,
     initial_settings: AppSettings,
+    lockout: ShowLockoutReader,
     command_rx: mpsc::Receiver<ScenesCommand>,
     #[cfg(test)]
     pending_scene_observer: Option<oneshot::Sender<()>>,
@@ -90,6 +91,7 @@ pub fn build_scenes_actor(
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     settings_handle: SettingsHandle,
     initial_settings: AppSettings,
+    lockout: ShowLockoutReader,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
 
@@ -103,6 +105,7 @@ pub fn build_scenes_actor(
         event_bus,
         settings_handle,
         initial_settings,
+        lockout,
         command_rx,
         #[cfg(test)]
         pending_scene_observer: None,
@@ -111,6 +114,7 @@ pub fn build_scenes_actor(
 }
 
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn build_scenes_actor_with_pending_scene_observer(
     generation: u64,
     runtime_generation: RuntimeGeneration,
@@ -118,6 +122,7 @@ fn build_scenes_actor_with_pending_scene_observer(
     events: tokio::sync::broadcast::Receiver<AppEvent>,
     settings_handle: SettingsHandle,
     initial_settings: AppSettings,
+    lockout: ShowLockoutReader,
     pending_scene_observer: oneshot::Sender<()>,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
     let (handle, mut task, peers) = build_scenes_actor(
@@ -127,6 +132,7 @@ fn build_scenes_actor_with_pending_scene_observer(
         events,
         settings_handle,
         initial_settings,
+        lockout,
     );
     task.pending_scene_observer = Some(pending_scene_observer);
     (handle, task, peers)
@@ -141,6 +147,7 @@ async fn run_scenes_actor(task: ScenesTask) {
         mut events,
         settings_handle,
         initial_settings,
+        lockout,
         mut command_rx,
         #[cfg(test)]
         mut pending_scene_observer,
@@ -177,6 +184,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         &peers,
                         &event_bus,
                         generation,
+                        &lockout,
                     )
                     .await
                         == ScenesCommandDispatch::Shutdown
@@ -199,9 +207,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                             if let Some(observer) = pending_scene_observer.take() {
                                 let _ = observer.send(());
                             }
-                        }
-                        Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) => {
-                            recall_state.set_lockout(state.lockout);
                         }
                         Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
                             settings = updated_settings;
@@ -234,6 +239,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &event_bus,
                             &mut recall_state,
                             &settings,
+                            &lockout,
                             observation,
                         ).await;
                     }
@@ -253,6 +259,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     &peers,
                     &event_bus,
                     generation,
+                    &lockout,
                 )
                 .await
                     == ScenesCommandDispatch::Shutdown
@@ -285,9 +292,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                             let _ = observer.send(());
                         }
                     }
-                    Ok(AppEvent::Show(ShowEvent::StateChanged { state, .. })) => {
-                        recall_state.set_lockout(state.lockout);
-                    }
                     Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
                         settings = updated_settings;
                     }
@@ -318,6 +322,7 @@ async fn dispatch_scenes_command(
     peers: &ScenesPeers,
     event_bus: &AppEventBus,
     generation: u64,
+    lockout: &ShowLockoutReader,
 ) -> ScenesCommandDispatch {
     match command {
         ScenesCommand::GetSceneDocument { reply } => {
@@ -554,7 +559,7 @@ async fn dispatch_scenes_command(
         } => {
             let peer_handles = peers.handles();
             let scene_document = recall_state.snapshot();
-            let lockout = recall_state.lockout();
+            let lockout = lockout.current();
             let _ = reply.send(
                 handle_explicit_recall_scene(
                     lockout,
@@ -703,6 +708,7 @@ async fn process_scene_observation(
     event_bus: &AppEventBus,
     recall_state: &mut ScenesState,
     settings: &AppSettings,
+    lockout: &ShowLockoutReader,
     observation: PendingSceneObservation,
 ) {
     let now = tokio::time::Instant::now();
@@ -744,7 +750,7 @@ async fn process_scene_observation(
         }
     };
 
-    let lockout = recall_state.lockout();
+    let lockout = lockout.current();
     let scene_config = recall_state
         .scene_configs()
         .iter()
@@ -992,6 +998,11 @@ mod tests {
     };
     use std::time::Duration;
 
+    fn test_lockout_reader() -> ShowLockoutReader {
+        let (_show, _task, _peers, lockout) = crate::show::build_show_actor(AppEventBus::default());
+        lockout
+    }
+
     async fn arm_recall_state(event_bus: &AppEventBus) {
         event_bus.publish(AppEvent::Lv1 {
             generation: 0,
@@ -1089,6 +1100,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(AppSettings::default()),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -1330,6 +1342,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(AppSettings::default()),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -1426,6 +1439,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(AppSettings::default()),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
 
@@ -1496,6 +1510,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(AppSettings::default()),
             AppSettings::default(),
+            test_lockout_reader(),
             pending_scene_observed,
         );
         task.spawn();
@@ -1883,6 +1898,7 @@ mod tests {
             events,
             fake_settings_handle(settings.clone()),
             settings,
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -1944,6 +1960,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle_sequence(vec![AppSettings::default(), disabled_settings.clone()]),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -1982,6 +1999,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle_then_unavailable(AppSettings::default()),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -2043,6 +2061,7 @@ mod tests {
                 disabled_settings.clone(),
             ]),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -2109,6 +2128,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(disabled_settings.clone()),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -2218,6 +2238,7 @@ mod tests {
             events,
             fake_settings_handle(disabled_settings),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -2307,6 +2328,7 @@ mod tests {
             events,
             settings_handle,
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -2362,6 +2384,7 @@ mod tests {
             events,
             SettingsHandle::new(settings_tx),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();
@@ -3205,6 +3228,7 @@ mod tests {
             events,
             fake_settings_handle(AppSettings::default()),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         peers.set_peers(lv1, fade);
         task.spawn();

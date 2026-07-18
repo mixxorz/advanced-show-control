@@ -11,7 +11,7 @@ pub struct ShowStateHandle {
 
 impl ShowStateHandle {
     pub fn new_empty(event_bus: AppEventBus) -> Self {
-        let (handle, task, _peers) = super::actor::build_show_actor(event_bus);
+        let (handle, task, _peers, _lockout) = super::actor::build_show_actor(event_bus);
         task.spawn();
         handle
     }
@@ -32,10 +32,16 @@ impl ShowStateHandle {
 mod tests {
     use super::*;
     use crate::connection_state::{Lv1SystemIdentity, ReconnectState};
-    use crate::lv1::Lv1Event;
+    use crate::cue_lists::build_cue_lists_actor_with_scenes;
+    use crate::lv1::{ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+    use crate::runtime::generation::RuntimeGeneration;
+    use crate::scenes::build_scenes_actor;
+    use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
-    use crate::show::{ConnectCommandResult, ShowCommand, ShowCommandResult};
+    use crate::show::{
+        ConnectCommandResult, ShowCommand, ShowCommandResult, ShowFile, ShowFileSafety,
+    };
 
     async fn recv_show_event(
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
@@ -50,6 +56,110 @@ mod tests {
                 break;
             }
         }
+    }
+
+    fn fake_settings_handle() -> SettingsHandle {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = rx.recv().await {
+                if let SettingsCommand::GetSettings { reply } = command {
+                    let _ = reply.send(AppSettings::default());
+                }
+            }
+        });
+        SettingsHandle::new(tx)
+    }
+
+    #[tokio::test]
+    async fn lockout_reader_tracks_the_latest_show_owned_value() {
+        let event_bus = AppEventBus::default();
+        let (show, task, _peers, mut lockout) = super::super::actor::build_show_actor(event_bus);
+        task.spawn();
+
+        assert!(!lockout.current());
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLockout {
+            enabled: true,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        rx.await.unwrap();
+
+        assert!(lockout.changed().await.unwrap());
+        assert!(lockout.current());
+    }
+
+    #[tokio::test]
+    async fn lockout_reader_tracks_imported_show_file_lockout() {
+        let event_bus = AppEventBus::default();
+        let (show, task, peers, mut lockout) =
+            super::super::actor::build_show_actor(event_bus.clone());
+        let (scenes, scenes_task, _scenes_peers) = build_scenes_actor(
+            0,
+            RuntimeGeneration::default(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(),
+            AppSettings::default(),
+            lockout.clone(),
+        );
+        let (cue_lists, cue_lists_task, _cue_lists_peers) =
+            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
+        peers.set_scenes(scenes);
+        peers.set_cue_lists(cue_lists);
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            while let Some(command) = lv1_rx.recv().await {
+                if let crate::lv1::Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(Lv1StateSnapshot {
+                        connection: ConnectionStatus::Connected,
+                        scene: None,
+                        scene_list: vec![SceneListEntry {
+                            index: 1,
+                            name: "Intro".to_string(),
+                        }],
+                        channels: Vec::new(),
+                        ping_sequence: 0,
+                    });
+                }
+            }
+        });
+        peers.set_lv1(0, crate::lv1::test_actor_handle(lv1_tx));
+        task.spawn();
+        scenes_task.spawn();
+        cue_lists_task.spawn();
+
+        let path = std::env::temp_dir().join(format!("show-lockout-{}.ascs", uuid::Uuid::new_v4()));
+        crate::show_file::write_show_file(
+            &path,
+            &ShowFile {
+                schema_version: crate::show::SHOW_FILE_SCHEMA_VERSION,
+                app_version: "test".to_string(),
+                saved_at: "123".to_string(),
+                safety: ShowFileSafety { lockout: true },
+                scene_configs: Vec::new(),
+                cue_lists: Vec::new(),
+                active_cue_list_id: None,
+                cued_cue_entry_id: None,
+            },
+            &crate::show_file::backup_folder(),
+        )
+        .unwrap();
+
+        let (reply, rx) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::LoadShowFileFromPath {
+            path: path.clone(),
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        let result = rx.await.unwrap();
+        assert!(result.is_ok(), "show import failed: {result:?}");
+
+        assert!(lockout.changed().await.unwrap());
+        assert!(lockout.current());
+        std::fs::remove_file(path).unwrap();
     }
 
     #[tokio::test]
@@ -200,7 +310,7 @@ mod tests {
             address: "192.168.1.35".to_string(),
             port: 50_000,
         };
-        let (show, task, _peers) =
+        let (show, task, _peers, _lockout) =
             super::super::actor::build_show_actor_with_connection_metadata_for_test(
                 event_bus,
                 identity.clone(),

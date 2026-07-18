@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::cue_lists::{CueListDocument, CueListsCommand, CueListsEvent, CueListsHandle};
 use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot};
@@ -14,6 +14,7 @@ use crate::show_file::{backup_folder, read_show_file, write_show_file};
 use super::commands::ShowCommand;
 use super::events::{ShowEvent, ShowProjectionReason};
 use super::handle::ShowStateHandle;
+use super::lockout::ShowLockoutReader;
 use super::show_file::import_show_file;
 use super::state::ShowState;
 use super::{LoadShowFileResult, NewShowFileResult, ShowCommandResult};
@@ -78,6 +79,7 @@ pub struct ShowActorTask {
     event_bus: AppEventBus,
     peers: ShowActorPeers,
     state: ShowState,
+    lockout_tx: watch::Sender<bool>,
 }
 
 impl ShowActorTask {
@@ -87,13 +89,19 @@ impl ShowActorTask {
             self.event_bus,
             self.peers,
             self.state,
+            self.lockout_tx,
         ));
     }
 }
 
 pub fn build_show_actor(
     event_bus: AppEventBus,
-) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
+) -> (
+    ShowStateHandle,
+    ShowActorTask,
+    ShowActorPeers,
+    ShowLockoutReader,
+) {
     build_show_actor_with_state(event_bus, ShowState::default())
 }
 
@@ -104,7 +112,12 @@ pub(crate) fn build_show_actor_with_connection_metadata_for_test(
     pending_lv1_identity: Option<crate::connection_state::Lv1SystemIdentity>,
     reconnect: crate::connection_state::ReconnectState,
     last_event_at: Option<String>,
-) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
+) -> (
+    ShowStateHandle,
+    ShowActorTask,
+    ShowActorPeers,
+    ShowLockoutReader,
+) {
     build_show_actor_with_state(
         event_bus,
         ShowState::with_connection_metadata_for_test(
@@ -119,16 +132,28 @@ pub(crate) fn build_show_actor_with_connection_metadata_for_test(
 fn build_show_actor_with_state(
     event_bus: AppEventBus,
     state: ShowState,
-) -> (ShowStateHandle, ShowActorTask, ShowActorPeers) {
+) -> (
+    ShowStateHandle,
+    ShowActorTask,
+    ShowActorPeers,
+    ShowLockoutReader,
+) {
     let (tx, rx) = mpsc::channel(32);
+    let (lockout_tx, lockout_rx) = watch::channel(state.lockout());
     let peers = ShowActorPeers::default();
     let task = ShowActorTask {
         rx,
         event_bus,
         peers: peers.clone(),
         state,
+        lockout_tx,
     };
-    (ShowStateHandle::new(tx), task, peers)
+    (
+        ShowStateHandle::new(tx),
+        task,
+        peers,
+        ShowLockoutReader::new(lockout_rx),
+    )
 }
 
 async fn run_show_actor(
@@ -136,6 +161,7 @@ async fn run_show_actor(
     event_bus: AppEventBus,
     peers: ShowActorPeers,
     mut state: ShowState,
+    lockout_tx: watch::Sender<bool>,
 ) {
     let mut events = event_bus.subscribe();
     let mut active_generation = 0;
@@ -144,6 +170,7 @@ async fn run_show_actor(
             command = rx.recv() => {
                 let Some(command) = command else { break; };
                 handle_command(command, &mut state, &event_bus, &peers).await;
+                publish_lockout_if_changed(&lockout_tx, &state);
             }
             event = events.recv() => {
                 match event {
@@ -156,6 +183,15 @@ async fn run_show_actor(
             }
         }
     }
+}
+
+fn publish_lockout_if_changed(lockout_tx: &watch::Sender<bool>, state: &ShowState) {
+    lockout_tx.send_if_modified(|current| {
+        let next = state.lockout();
+        let changed = *current != next;
+        *current = next;
+        changed
+    });
 }
 
 fn handle_app_event(
@@ -660,6 +696,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
         peers.set_scenes(scenes);
@@ -670,8 +707,13 @@ mod tests {
         peers
     }
 
+    fn test_lockout_reader() -> super::ShowLockoutReader {
+        let (_sender, receiver) = tokio::sync::watch::channel(false);
+        super::ShowLockoutReader::new(receiver)
+    }
+
     fn show_actor(event_bus: AppEventBus) -> (ShowStateHandle, super::ShowActorPeers) {
-        let (handle, task, peers) = super::build_show_actor(event_bus);
+        let (handle, task, peers, _lockout) = super::build_show_actor(event_bus);
         task.spawn();
         (handle, peers)
     }
@@ -779,6 +821,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
         peers.set_scenes(scenes.clone());
@@ -1008,6 +1051,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
         peers.set_scenes(scenes.clone());
@@ -1060,6 +1104,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
         peers.set_scenes(scenes.clone());
@@ -1133,6 +1178,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
         peers.set_scenes(scenes.clone());
@@ -1290,6 +1336,7 @@ mod tests {
             event_bus.subscribe(),
             fake_settings_handle(),
             AppSettings::default(),
+            test_lockout_reader(),
         );
         task.spawn();
         peers.set_scenes(scenes.clone());
