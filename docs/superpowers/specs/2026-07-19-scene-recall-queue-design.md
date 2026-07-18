@@ -72,11 +72,13 @@ all fader writes. The barrier accepts the original absolute deadline from
 `scenes` for ASC recalls so observation time consumes part of the same five
 seconds rather than restarting the timeout.
 
-Timed ASC recalls attach a queue-completion sender to the existing fade-recall
-command. ASC recalls that do not produce timed targets use a narrow
-readiness-only fade command. Both commands initialize the same private barrier
-state and use the same ping boundary, generation checks, lag handling, release,
-and timeout behavior. There is no second readiness state machine.
+ASC recalls that produce a fade configuration attach a queue-completion sender
+to the existing fade-recall command. This includes zero-duration configurations,
+whose existing immediate writes remain unchanged. ASC recalls that produce no
+fade configuration use a narrow readiness-only fade command. Both commands
+initialize the same private barrier state and use the same ping boundary,
+generation checks, lag handling, release, and timeout behavior. There is no
+second readiness state machine.
 
 The delayed readiness result is separate from the fade command's immediate
 acceptance reply. `scenes` can therefore keep processing its mailbox while
@@ -166,13 +168,16 @@ After exact observation, `scenes` runs normal scene-recall and fade policy using
 fresh state and settings. It then hands the in-flight request ID, generation,
 scene identity, and original absolute deadline to `FadeEngine`:
 
-- A timed fade uses the fade-recall command with the attached delayed completion
-  sender.
-- A disabled, zero-duration, empty-scope, or otherwise no-target ASC recall uses
-  the readiness-only command.
+- A started fade policy decision, including a zero-duration configuration, uses
+  the fade-recall command with the attached delayed completion sender.
+- A disabled, skipped, blocked, empty-scope, or otherwise no-configuration ASC
+  recall uses the readiness-only command.
 
 The readiness-only path creates no targets and sends no fader commands. It can
 still pause unrelated active targets because LV1 readiness is connection-wide.
+The zero-duration fade path keeps its existing immediate parameter writes, then
+uses the barrier only to control queue progression and any unrelated active
+targets.
 
 `FadeEngine` records the current fresh LV1 ping sequence as the observation
 boundary. It counts only strictly newer pings from the same generation. One ping
