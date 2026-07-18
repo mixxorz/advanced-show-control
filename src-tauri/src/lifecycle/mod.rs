@@ -66,16 +66,22 @@ impl BuiltConnectedRuntime {
         self.fade_task.spawn();
         StartedConnectedRuntime {
             lv1: self.lv1,
+            fade: self.fade,
             scene_recall_fader: self.scene_recall_fader,
             scene_recall_task: self.scene_recall_task,
+            #[cfg(test)]
+            before_scene_recall_start: None,
         }
     }
 }
 
 struct StartedConnectedRuntime {
     lv1: Lv1ActorHandle,
+    fade: FadeEngineHandle,
     scene_recall_fader: ScenesHandle,
     scene_recall_task: crate::scenes::ScenesTask,
+    #[cfg(test)]
+    before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -319,76 +325,26 @@ impl AppLifecycle {
         }
         let started_runtime = built_runtime.spawn_lv1_and_fade();
 
-        let (reply, rx) = oneshot::channel();
-        started_runtime
-            .lv1
-            .send(Lv1Command::GetState { reply })
-            .await
-            .map_err(|error| error.to_string())?;
-        let initial_snapshot = rx
-            .await
-            .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())?;
-
-        if initial_snapshot.connection != ConnectionStatus::Connected {
-            self.clear_runtime_transaction(generation).await;
-            let _ = self.fail_lv1_connection_metadata(failure_mode).await;
-            log_lv1_connect_failed(&identity, failure_mode);
-            return Err("LV1 did not connect".to_string());
-        }
-
-        let connect_result = self
-            .complete_lv1_connection_metadata(identity.clone())
-            .await
-            .map_err(|error| error.to_string())?;
-        log_lv1_connected(&identity);
-        if !self
-            .install_accepted_scene_recall_fader(
-                generation,
-                started_runtime.scene_recall_fader.clone(),
-            )
-            .await
-        {
-            let handles = RuntimeHandles {
-                lv1: Some(started_runtime.lv1),
-                fade: None,
-                scene_recall_fader: None,
-            };
-            self.abort_rejected_connection_transaction(generation, handles)
-                .await;
-            return Err("generation is stale".to_string());
-        }
-        if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
-            self.log_last_connected_lv1_save_failure(generation, error)
-                .await;
-        }
-        started_runtime.scene_recall_task.spawn();
         let _ = app;
-        Ok(connect_result)
+        self.finish_connect_transaction(identity, failure_mode, generation, started_runtime)
+            .await
     }
 
-    #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
-    async fn finish_connect_transaction_inner<R: Runtime>(
+    async fn finish_connect_transaction(
         &self,
-        app: AppHandle<R>,
         identity: crate::connection_state::Lv1SystemIdentity,
         failure_mode: ConnectFailureMode,
         generation: u64,
-        runtime_generation: RuntimeGeneration,
-        event_bus: AppEventBus,
-        lv1: crate::lv1::Lv1ActorHandle,
-        fade: crate::fade::FadeEngineHandle,
-        before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
+        started_runtime: StartedConnectedRuntime,
     ) -> Result<ConnectCommandResult, String> {
-        let scene_events = event_bus.subscribe();
-        let initial_settings = self.settings_snapshot().await?;
-        let handles = RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone());
-
-        if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
-            self.abort_rejected_connection_transaction(generation, rejection.into_handles())
-                .await;
-            return Err("generation is stale".to_string());
-        }
+        let StartedConnectedRuntime {
+            lv1,
+            fade,
+            scene_recall_fader,
+            scene_recall_task,
+            #[cfg(test)]
+            before_scene_recall_start,
+        } = started_runtime;
 
         let (reply, rx) = oneshot::channel();
         lv1.send(Lv1Command::GetState { reply })
@@ -397,6 +353,7 @@ impl AppLifecycle {
         let initial_snapshot = rx
             .await
             .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())?;
+
         if initial_snapshot.connection != ConnectionStatus::Connected {
             self.clear_runtime_transaction(generation).await;
             let _ = self.fail_lv1_connection_metadata(failure_mode).await;
@@ -408,39 +365,35 @@ impl AppLifecycle {
             .complete_lv1_connection_metadata(identity.clone())
             .await
             .map_err(|error| error.to_string())?;
-        log_lv1_connected(&identity);
+
+        #[cfg(test)]
         if let Some(before_scene_recall_start) = before_scene_recall_start {
-            before_scene_recall_start(runtime_generation.clone());
+            before_scene_recall_start(self.current_runtime_generation().await);
         }
+        #[cfg(test)]
         tokio::task::yield_now().await;
-        let (scene_recall_fader, scene_recall_task, scene_recall_peers) = build_scenes_actor(
-            generation,
-            runtime_generation,
-            event_bus,
-            scene_events,
-            self.settings.clone(),
-            initial_settings,
-        );
-        scene_recall_peers.set_peers(lv1.clone(), fade.clone());
+
         if !self
             .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
             .await
         {
-            let handles = RuntimeHandles {
-                lv1: Some(lv1),
-                fade: Some(fade),
-                scene_recall_fader: None,
-            };
-            self.abort_rejected_connection_transaction(generation, handles)
-                .await;
+            self.abort_rejected_connection_transaction(
+                generation,
+                RuntimeHandles {
+                    lv1: Some(lv1),
+                    fade: Some(fade),
+                    scene_recall_fader: Some(scene_recall_fader),
+                },
+            )
+            .await;
             return Err("generation is stale".to_string());
         }
+        log_lv1_connected(&identity);
         if let Err(error) = self.remember_last_connected_lv1(generation, identity).await {
             self.log_last_connected_lv1_save_failure(generation, error)
                 .await;
         }
         scene_recall_task.spawn();
-        let _ = app;
         Ok(connect_result)
     }
 
@@ -966,6 +919,44 @@ mod tests {
         }
     }
 
+    async fn started_runtime_for_test(
+        lifecycle: &AppLifecycle,
+        generation: u64,
+        runtime_generation: RuntimeGeneration,
+        event_bus: AppEventBus,
+        lv1: Lv1ActorHandle,
+        fade: FadeEngineHandle,
+        before_scene_recall_start: Option<Box<dyn FnOnce(RuntimeGeneration) + Send>>,
+    ) -> StartedConnectedRuntime {
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    generation,
+                    RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone()),
+                )
+                .await
+                .is_ok(),
+            "test runtime targets should install"
+        );
+        let initial_settings = lifecycle.settings_snapshot().await.unwrap();
+        let (scene_recall_fader, scene_recall_task, scene_recall_peers) = build_scenes_actor(
+            generation,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            lifecycle.settings.clone(),
+            initial_settings,
+        );
+        scene_recall_peers.set_peers(lv1.clone(), fade.clone());
+        StartedConnectedRuntime {
+            lv1,
+            fade,
+            scene_recall_fader,
+            scene_recall_task,
+            before_scene_recall_start,
+        }
+    }
+
     async fn set_last_connected_lv1(settings: &SettingsHandle, identity: Lv1SystemIdentity) {
         let (reply, rx) = oneshot::channel();
         settings
@@ -1113,18 +1104,23 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let connect_result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity,
                 ConnectFailureMode::PreserveConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                None,
+                started_runtime,
             )
             .await;
 
@@ -1150,24 +1146,29 @@ mod tests {
         };
         let (flip_tx, flip_rx) = oneshot::channel();
         let lifecycle_for_hook = lifecycle.clone();
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                let lifecycle = lifecycle_for_hook.clone();
+                tokio::spawn(async move {
+                    let _ = lifecycle.begin_connecting().await;
+                    let _ = flip_tx.send(());
+                });
+            })),
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity,
                 ConnectFailureMode::PreserveConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                    let lifecycle = lifecycle_for_hook.clone();
-                    tokio::spawn(async move {
-                        let _ = lifecycle.begin_connecting().await;
-                        let _ = flip_tx.send(());
-                    });
-                })),
+                started_runtime,
             )
             .await;
 
@@ -1292,18 +1293,23 @@ mod tests {
             address: "192.168.1.35".to_string(),
             port: 50000,
         };
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            lifecycle.event_bus.clone(),
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity,
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                lifecycle.event_bus.clone(),
-                lv1,
-                fade,
-                None,
+                started_runtime,
             )
             .await;
 
@@ -1332,29 +1338,34 @@ mod tests {
             port: 50000,
         };
         let (seen_tx, seen_rx) = oneshot::channel();
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                let seen_tx = seen_tx;
+                tokio::spawn(async move {
+                    let (reply, rx) = oneshot::channel();
+                    let ok = lv1_for_assertion
+                        .send(Lv1Command::GetState { reply })
+                        .await
+                        .is_ok()
+                        && matches!(rx.await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
+                    let _ = seen_tx.send(ok);
+                });
+            })),
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity,
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                    let seen_tx = seen_tx;
-                    tokio::spawn(async move {
-                        let (reply, rx) = oneshot::channel();
-                        let ok = lv1_for_assertion
-                            .send(Lv1Command::GetState { reply })
-                            .await
-                            .is_ok()
-                            && matches!(rx.await, Ok(snapshot) if snapshot.connection == ConnectionStatus::Connected);
-                        let _ = seen_tx.send(ok);
-                    });
-                })),
+                started_runtime,
             )
             .await;
 
@@ -1375,10 +1386,19 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 Lv1SystemIdentity {
                     uuid: Some("uuid-1".to_string()),
                     host: Some("LV1-FOH".to_string()),
@@ -1387,11 +1407,7 @@ mod tests {
                 },
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                None,
+                started_runtime,
             )
             .await;
 
@@ -1412,10 +1428,19 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 Lv1SystemIdentity {
                     uuid: Some("uuid-1".to_string()),
                     host: Some("LV1-FOH".to_string()),
@@ -1424,11 +1449,7 @@ mod tests {
                 },
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                None,
+                started_runtime,
             )
             .await;
 
@@ -1644,18 +1665,23 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity.clone(),
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                None,
+                started_runtime,
             )
             .await;
 
@@ -1680,18 +1706,23 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = FadeEngineHandle::new(fade_tx);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                None,
+                started_runtime,
             )
             .await;
 
@@ -1720,24 +1751,29 @@ mod tests {
         let fade = FadeEngineHandle::new(fade_tx);
         let lifecycle_for_hook = lifecycle.clone();
         let (flip_tx, flip_rx) = oneshot::channel();
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+                let lifecycle = lifecycle_for_hook.clone();
+                tokio::spawn(async move {
+                    lifecycle.begin_connecting().await;
+                    let _ = flip_tx.send(());
+                });
+            })),
+        )
+        .await;
 
         let result = lifecycle
-            .finish_connect_transaction_inner(
-                mock_app().handle().clone(),
+            .finish_connect_transaction(
                 identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
                 ConnectFailureMode::ClearConnectedIdentity,
                 generation,
-                runtime_generation,
-                event_bus,
-                lv1,
-                fade,
-                Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
-                    let lifecycle = lifecycle_for_hook.clone();
-                    tokio::spawn(async move {
-                        lifecycle.begin_connecting().await;
-                        let _ = flip_tx.send(());
-                    });
-                })),
+                started_runtime,
             )
             .await;
 
@@ -1771,19 +1807,24 @@ mod tests {
         let fade = FadeEngineHandle::new(fade_tx);
         let identity = identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36");
         let lifecycle_for_connect = lifecycle.clone();
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            lv1,
+            fade,
+            None,
+        )
+        .await;
 
         let connect = tokio::spawn(async move {
             lifecycle_for_connect
-                .finish_connect_transaction_inner(
-                    mock_app().handle().clone(),
+                .finish_connect_transaction(
                     identity,
                     ConnectFailureMode::ClearConnectedIdentity,
                     generation,
-                    runtime_generation,
-                    event_bus,
-                    lv1,
-                    fade,
-                    None,
+                    started_runtime,
                 )
                 .await
         });
