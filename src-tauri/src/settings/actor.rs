@@ -154,6 +154,8 @@ fn log_settings_updated(settings: &AppSettings) {
         time_display = time_display_label(&settings.time_display),
         fader_override_sensitivity = settings.fader_override_sensitivity,
         enable_extensive_diagnostics = settings.enable_extensive_diagnostics,
+        same_scene_recall_enabled = settings.same_scene_recall_enabled,
+        same_scene_recall_threshold_ms = settings.same_scene_recall_threshold_ms,
         go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
         cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
         "Settings updated"
@@ -204,6 +206,8 @@ mod tests {
     struct CapturedLogEvent {
         event: Option<String>,
         enable_extensive_diagnostics: Option<bool>,
+        same_scene_recall_enabled: Option<bool>,
+        same_scene_recall_threshold_ms: Option<String>,
     }
 
     #[derive(Clone, Default)]
@@ -235,6 +239,12 @@ mod tests {
                 }
                 "enable_extensive_diagnostics" => {
                     self.enable_extensive_diagnostics = Some(format!("{value:?}") == "true");
+                }
+                "same_scene_recall_enabled" => {
+                    self.same_scene_recall_enabled = Some(format!("{value:?}") == "true");
+                }
+                "same_scene_recall_threshold_ms" => {
+                    self.same_scene_recall_threshold_ms = Some(format!("{value:?}"));
                 }
                 _ => {}
             }
@@ -327,6 +337,7 @@ mod tests {
                 settings: AppSettings {
                     auto_save_sessions: true,
                     fader_override_sensitivity: 99,
+                    same_scene_recall_threshold_ms: 9_999,
                     ..Default::default()
                 },
                 reply,
@@ -341,12 +352,15 @@ mod tests {
         let saved = std::fs::read_to_string(dir.join("settings.json")).unwrap();
         assert!(saved.contains("autoSaveSessions"));
         assert!(saved.contains("\"faderOverrideSensitivity\": 10"));
+        assert!(saved.contains("\"sameSceneRecallThresholdMs\": 5000"));
 
         let received = events.recv().await.unwrap();
         assert!(matches!(
             received,
             AppEvent::Settings(SettingsEvent::StateChanged { settings })
-                if settings.auto_save_sessions && settings.fader_override_sensitivity == 10
+                if settings.auto_save_sessions
+                    && settings.fader_override_sensitivity == 10
+                    && settings.same_scene_recall_threshold_ms == 5_000
         ));
     }
 
@@ -469,13 +483,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_logs_extensive_diagnostics_setting_on_update() {
+    async fn actor_logs_settings_update_fields() {
         let captured = CapturedLogEvents::default();
         let subscriber = Registry::default().with(captured.clone());
         let _guard = tracing::subscriber::set_default(subscriber);
 
         super::log_settings_updated(&AppSettings {
             enable_extensive_diagnostics: true,
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_200,
             ..Default::default()
         });
 
@@ -483,6 +499,8 @@ mod tests {
         assert!(events.iter().any(|event| {
             event.event.as_deref() == Some("settings_updated")
                 && event.enable_extensive_diagnostics == Some(true)
+                && event.same_scene_recall_enabled == Some(false)
+                && event.same_scene_recall_threshold_ms.as_deref() == Some("1200")
         }));
     }
 }

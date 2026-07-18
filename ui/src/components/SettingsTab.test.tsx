@@ -46,6 +46,8 @@ describe("SettingsTab", () => {
         timeDisplay: "twentyFourHour" as const,
         faderOverrideSensitivity: 9,
         enableExtensiveDiagnostics: false,
+        sameSceneRecallEnabled: true,
+        sameSceneRecallThresholdMs: 500,
       },
     };
 
