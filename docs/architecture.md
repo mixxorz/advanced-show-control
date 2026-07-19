@@ -367,6 +367,8 @@ state immediately before dispatch, so queued intent cannot bypass a later lockou
 Abort All clears queued recall intent through `scenes` and active target state through
 `FadeEngine`. It does not release queued requests or permit deferred fader writes.
 
+Late-canceled observation correlation is runtime-only, capped at eight five-second records, and uses a five-second fail-closed suppression fallback on overflow.
+
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 
 ### 13.4 `cue_lists`

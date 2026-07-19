@@ -31,6 +31,8 @@ use crate::settings::{AppSettings, SettingsCommand, SettingsEvent, SettingsHandl
 use crate::show::ShowLockoutReader;
 
 const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(25);
+const LATE_CANCELED_OBSERVATION_CAPACITY: usize = 8;
+const LATE_CANCELED_OBSERVATION_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[derive(Clone, Default)]
 pub struct ScenesPeers {
@@ -70,11 +72,19 @@ struct LateCanceledObservation {
     generation: u64,
     dispatch_sequence: u64,
     scene: SceneState,
+    expires_at: tokio::time::Instant,
 }
 
 #[derive(Default)]
 struct LateCanceledObservations {
     entries: Vec<LateCanceledObservation>,
+    suppress_all_until: Option<(u64, tokio::time::Instant)>,
+}
+
+#[derive(Clone, Copy)]
+enum LateCanceledObservationSuppression {
+    Exact,
+    Fallback,
 }
 
 impl LateCanceledObservations {
@@ -85,30 +95,77 @@ impl LateCanceledObservations {
         else {
             return;
         };
-        self.entries.push(LateCanceledObservation {
-            generation: in_flight.generation,
+        self.record(
+            in_flight.generation,
             dispatch_sequence,
-            scene: SceneState {
+            SceneState {
                 index: in_flight.result.lv1_scene_index,
                 name: in_flight.result.scene.scene_name,
             },
+            tokio::time::Instant::now(),
+        );
+    }
+
+    fn record(
+        &mut self,
+        generation: u64,
+        dispatch_sequence: u64,
+        scene: SceneState,
+        now: tokio::time::Instant,
+    ) {
+        self.purge(now);
+        let expires_at = now + LATE_CANCELED_OBSERVATION_TTL;
+        if self.entries.len() >= LATE_CANCELED_OBSERVATION_CAPACITY {
+            self.suppress_all_until = Some(match self.suppress_all_until {
+                Some((current_generation, current_until)) if current_generation == generation => {
+                    (generation, current_until.max(expires_at))
+                }
+                _ => (generation, expires_at),
+            });
+            return;
+        }
+        self.entries.push(LateCanceledObservation {
+            generation,
+            dispatch_sequence,
+            scene,
+            expires_at,
         });
     }
 
-    fn consume_matching(&mut self, observation: &PendingSceneObservation) -> bool {
-        let Some(index) = self.entries.iter().position(|entry| {
+    fn suppresses(
+        &mut self,
+        observation: &PendingSceneObservation,
+        now: tokio::time::Instant,
+    ) -> Option<LateCanceledObservationSuppression> {
+        self.purge(now);
+        if matches!(
+            self.suppress_all_until,
+            Some((generation, until)) if generation == observation.generation && now < until
+        ) {
+            return Some(LateCanceledObservationSuppression::Fallback);
+        }
+        let index = self.entries.iter().position(|entry| {
             entry.generation == observation.generation
                 && observation.sequence > entry.dispatch_sequence
                 && entry.scene == observation.scene
-        }) else {
-            return false;
-        };
+        })?;
         self.entries.remove(index);
-        true
+        Some(LateCanceledObservationSuppression::Exact)
+    }
+
+    fn purge(&mut self, now: tokio::time::Instant) {
+        self.entries.retain(|entry| entry.expires_at > now);
+        if self
+            .suppress_all_until
+            .is_some_and(|(_, until)| until <= now)
+        {
+            self.suppress_all_until = None;
+        }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.suppress_all_until = None;
     }
 }
 
@@ -1161,14 +1218,21 @@ async fn process_scene_observation(
         );
         return;
     }
-    if queue_readiness.is_none() && late_canceled_observations.consume_matching(&observation) {
+    let suppression = queue_readiness
+        .is_none()
+        .then(|| late_canceled_observations.suppresses(&observation, now));
+    if let Some(Some(suppression)) = suppression {
         tracing::debug!(
             event = "scene_recall_late_observation_suppressed",
             generation = observation.generation,
             scene_index = observation.scene.index,
             scene_name = %observation.scene.name,
             sequence = observation.sequence,
-            "Ignored a late scene observation from a canceled scene recall"
+            suppression = match suppression {
+                LateCanceledObservationSuppression::Exact => "exact_late_observation",
+                LateCanceledObservationSuppression::Fallback => "bounded_fallback",
+            },
+            "Ignored a scene observation while canceled recall suppression is active"
         );
         return;
     }
@@ -2484,6 +2548,138 @@ mod tests {
         }
     }
 
+    fn pending_late_observation(
+        generation: u64,
+        sequence: u64,
+        scene: SceneState,
+        now: tokio::time::Instant,
+    ) -> PendingSceneObservation {
+        PendingSceneObservation::new(generation, sequence, scene, now)
+    }
+
+    #[test]
+    fn late_canceled_observations_expire_after_five_seconds() {
+        let now = tokio::time::Instant::now();
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        let mut observations = LateCanceledObservations::default();
+
+        observations.record(1, 10, scene.clone(), now);
+
+        assert_eq!(observations.entries.len(), 1);
+        assert!(
+            observations
+                .suppresses(&pending_late_observation(1, 10, scene.clone(), now), now)
+                .is_none()
+        );
+        assert!(
+            observations
+                .suppresses(
+                    &pending_late_observation(1, 12, scene, now + LATE_CANCELED_OBSERVATION_TTL,),
+                    now + LATE_CANCELED_OBSERVATION_TTL,
+                )
+                .is_none()
+        );
+        assert!(observations.entries.is_empty());
+    }
+
+    #[test]
+    fn late_canceled_observations_retain_exactly_eight_records_then_use_fallback() {
+        let now = tokio::time::Instant::now();
+        let mut observations = LateCanceledObservations::default();
+
+        for index in 0..LATE_CANCELED_OBSERVATION_CAPACITY {
+            observations.record(
+                1,
+                index as u64,
+                SceneState {
+                    index: index as i32,
+                    name: format!("Scene {index}"),
+                },
+                now,
+            );
+        }
+        observations.record(
+            1,
+            100,
+            SceneState {
+                index: 100,
+                name: "Overflow".to_string(),
+            },
+            now,
+        );
+
+        assert_eq!(
+            observations.entries.len(),
+            LATE_CANCELED_OBSERVATION_CAPACITY
+        );
+        assert_eq!(
+            observations.suppress_all_until,
+            Some((1, now + LATE_CANCELED_OBSERVATION_TTL))
+        );
+        let extended_at = now + Duration::from_secs(1);
+        observations.record(
+            1,
+            101,
+            SceneState {
+                index: 101,
+                name: "Later overflow".to_string(),
+            },
+            extended_at,
+        );
+        assert_eq!(
+            observations.suppress_all_until,
+            Some((1, extended_at + LATE_CANCELED_OBSERVATION_TTL))
+        );
+        assert!(
+            observations
+                .suppresses(
+                    &pending_late_observation(
+                        1,
+                        101,
+                        SceneState {
+                            index: 999,
+                            name: "Independent".to_string(),
+                        },
+                        now,
+                    ),
+                    now,
+                )
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn repeated_late_canceled_recalls_suppress_one_exact_observation_each() {
+        let now = tokio::time::Instant::now();
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        let mut observations = LateCanceledObservations::default();
+
+        for sequence in 10..13 {
+            observations.record(1, sequence, scene.clone(), now);
+        }
+        for sequence in 13..16 {
+            assert!(
+                observations
+                    .suppresses(
+                        &pending_late_observation(1, sequence, scene.clone(), now),
+                        now,
+                    )
+                    .is_some()
+            );
+        }
+        assert!(
+            observations
+                .suppresses(&pending_late_observation(1, 16, scene, now), now,)
+                .is_none()
+        );
+    }
+
     async fn enqueue_in_flight_and_waiting(
         fixture: &mut RecallQueueFixture,
     ) -> oneshot::Receiver<Result<RecallSceneResult, AppCommandError>> {
@@ -2882,6 +3078,124 @@ mod tests {
 
         assert_no_queue_fade_command(&mut fixture).await;
         assert!(fixture.try_next_lv1_recall().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_late_canceled_observation_allows_independent_manual_recall_policy() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene_with_fader(1, "Intro", 1_000),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        arm_queue_recall_gate(&fixture).await;
+        let recall = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(recall.await.unwrap().is_ok());
+
+        let (abort_reply, abort_result) = oneshot::channel();
+        fixture
+            .handle
+            .send(ScenesCommand::AbortAll { reply: abort_reply })
+            .await
+            .unwrap();
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
+        assert_eq!(abort_result.await.unwrap(), Ok(()));
+        tokio::time::advance(LATE_CANCELED_OBSERVATION_TTL + Duration::from_millis(1)).await;
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(scene.clone()),
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            channels: vec![crate::lv1::ChannelInfo {
+                group: 0,
+                channel: 0,
+                name: "Channel 0".to_string(),
+                gain_db: 0.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            ping_sequence: 10,
+        });
+        fixture.publish_scene_observation(1, 11, scene);
+        tokio::time::advance(Duration::from_millis(30)).await;
+
+        assert_eq!(
+            fixture.next_fade_command().await,
+            QueueFadeCommand::Recall { duration_ms: 1_000 }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn current_recall_takes_precedence_while_late_cancellation_fallback_is_active() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene_with_fader(1, "Intro", 1_000),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        arm_queue_recall_gate(&fixture).await;
+
+        for sequence in 10..=(10 + LATE_CANCELED_OBSERVATION_CAPACITY as u64) {
+            let recall = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+            let dispatch = fixture.next_lv1_recall().await;
+            dispatch.reply(Ok(RecallSceneDispatch {
+                scene_observation_sequence: sequence,
+            }));
+            assert!(recall.await.unwrap().is_ok());
+            let (abort_reply, abort_result) = oneshot::channel();
+            fixture
+                .handle
+                .send(ScenesCommand::AbortAll { reply: abort_reply })
+                .await
+                .unwrap();
+            assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
+            assert_eq!(abort_result.await.unwrap(), Ok(()));
+        }
+
+        let current = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let current_dispatch = fixture.next_lv1_recall().await;
+        current_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 20,
+        }));
+        assert!(current.await.unwrap().is_ok());
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(scene.clone()),
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            channels: vec![crate::lv1::ChannelInfo {
+                group: 0,
+                channel: 0,
+                name: "Channel 0".to_string(),
+                gain_db: 0.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            ping_sequence: 10,
+        });
+        fixture.publish_scene_observation(1, 21, scene);
+        tokio::time::advance(Duration::from_millis(30)).await;
+
+        assert_eq!(
+            fixture.next_fade_command().await,
+            QueueFadeCommand::Recall { duration_ms: 1_000 }
+        );
     }
 
     #[tokio::test(start_paused = true)]
