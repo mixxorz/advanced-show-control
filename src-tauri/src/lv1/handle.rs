@@ -20,6 +20,13 @@ impl Lv1ActorHandle {
             .await
             .map_err(|_| Lv1ActorError::CommandChannelClosed)
     }
+
+    pub async fn reserve(&self) -> Result<mpsc::Permit<'_, Lv1Command>, Lv1ActorError> {
+        self.tx
+            .reserve()
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)
+    }
 }
 
 #[cfg(test)]

@@ -18,6 +18,12 @@ impl FadeEngineHandle {
     ) -> Result<(), mpsc::error::SendError<FadeCommand>> {
         self.tx.send(command).await
     }
+
+    pub async fn reserve(
+        &self,
+    ) -> Result<mpsc::Permit<'_, FadeCommand>, mpsc::error::SendError<()>> {
+        self.tx.reserve().await
+    }
 }
 
 #[cfg(test)]

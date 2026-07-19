@@ -879,6 +879,7 @@ async fn handle_readiness_completion(
         recall_state,
         recall_queue,
         generation,
+        Some(runtime_generation),
     )
     .await;
 }
@@ -990,6 +991,7 @@ async fn process_scene_observation(
     match decision {
         RecallPolicyDecision::Start(fade_config) => {
             let scene_label = scene_label(&observation.scene);
+            let queued_handoff = queue_readiness.is_some();
             #[cfg(test)]
             if let Some(BeforeFadeHandoff { reached, resume }) = before_fade_handoff.take() {
                 let _ = reached.send(());
@@ -1052,24 +1054,34 @@ async fn process_scene_observation(
             } else {
                 SameSceneRecallBehavior::OverrideMatchingTargets
             };
+            let permit = match fade.reserve().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    event_bus.publish_scenes(
+                        generation,
+                        ScenesEvent::Blocked {
+                            scene_label,
+                            reason: "failed to start fade: FadeUnavailable".to_string(),
+                        },
+                    );
+                    return;
+                }
+            };
             let result = if !is_generation_current(generation, runtime_generation).await {
                 Err(AppCommandError::StaleGeneration)
+            } else if queued_handoff && lockout.current() {
+                return;
             } else {
-                match fade
-                    .send(FadeCommand::RecallSceneFade {
-                        config: fade_config,
-                        same_scene_behavior,
-                        expected_generation: Some(generation),
-                        readiness,
-                        reply: Some(reply),
-                    })
-                    .await
-                {
-                    Ok(()) => match rx.await {
-                        Ok(result) => result,
-                        Err(_) => Err(AppCommandError::ReplyChannelClosed),
-                    },
-                    Err(_) => Err(AppCommandError::FadeUnavailable),
+                permit.send(FadeCommand::RecallSceneFade {
+                    config: fade_config,
+                    same_scene_behavior,
+                    expected_generation: Some(generation),
+                    readiness,
+                    reply: Some(reply),
+                });
+                match rx.await {
+                    Ok(result) => result,
+                    Err(_) => Err(AppCommandError::ReplyChannelClosed),
                 }
             };
             match result {
@@ -1107,18 +1119,23 @@ async fn process_scene_observation(
                 ) else {
                     return;
                 };
+                let Ok(permit) = fade.reserve().await else {
+                    return;
+                };
+                if !is_generation_current(generation, runtime_generation).await || lockout.current()
+                {
+                    return;
+                }
                 let (reply, rx) = oneshot::channel();
-                let _ = fade
-                    .send(FadeCommand::WaitForRecallReadiness {
-                        scene: FadeSceneIdentity {
-                            index: observation.scene.index,
-                            name: observation.scene.name.clone(),
-                        },
-                        expected_generation: generation,
-                        readiness,
-                        reply: Some(reply),
-                    })
-                    .await;
+                permit.send(FadeCommand::WaitForRecallReadiness {
+                    scene: FadeSceneIdentity {
+                        index: observation.scene.index,
+                        name: observation.scene.name.clone(),
+                    },
+                    expected_generation: generation,
+                    readiness,
+                    reply: Some(reply),
+                });
                 let _ = rx.await;
             }
         }
@@ -1151,18 +1168,23 @@ async fn process_scene_observation(
                 ) else {
                     return;
                 };
+                let Ok(permit) = fade.reserve().await else {
+                    return;
+                };
+                if !is_generation_current(generation, runtime_generation).await || lockout.current()
+                {
+                    return;
+                }
                 let (reply, rx) = oneshot::channel();
-                let _ = fade
-                    .send(FadeCommand::WaitForRecallReadiness {
-                        scene: FadeSceneIdentity {
-                            index: observation.scene.index,
-                            name: observation.scene.name.clone(),
-                        },
-                        expected_generation: generation,
-                        readiness,
-                        reply: Some(reply),
-                    })
-                    .await;
+                permit.send(FadeCommand::WaitForRecallReadiness {
+                    scene: FadeSceneIdentity {
+                        index: observation.scene.index,
+                        name: observation.scene.name.clone(),
+                    },
+                    expected_generation: generation,
+                    readiness,
+                    reply: Some(reply),
+                });
                 let _ = rx.await;
             }
         }
@@ -1221,7 +1243,7 @@ async fn admit_explicit_recall_scene(
         reply,
     });
     if recall_queue.in_flight.is_none() {
-        dispatch_next_recall(lockout, lv1, recall_state, recall_queue, generation).await;
+        dispatch_next_recall(lockout, lv1, recall_state, recall_queue, generation, None).await;
     }
 }
 
@@ -1231,6 +1253,7 @@ async fn dispatch_next_recall(
     recall_state: &ScenesState,
     recall_queue: &mut RecallQueue,
     generation: u64,
+    runtime_generation: Option<&RuntimeGeneration>,
 ) {
     while let Some(queued) = recall_queue.take_next() {
         let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
@@ -1256,7 +1279,37 @@ async fn dispatch_next_recall(
             }
         };
 
-        let dispatch = send_explicit_recall(lv1, result.lv1_scene_index).await;
+        let permit = match lv1.reserve().await {
+            Ok(permit) => permit,
+            Err(error) => {
+                let error = AppCommandError::CommandFailed(error.to_string());
+                log_explicit_recall_blocked(queued.internal_scene_id, &error);
+                let _ = queued.reply.send(Err(error));
+                return;
+            }
+        };
+        if let Some(runtime_generation) = runtime_generation
+            && runtime_generation.current().await != generation
+        {
+            return;
+        }
+        if lockout.current() {
+            return;
+        }
+        let (reply, rx) = oneshot::channel();
+        permit.send(Lv1Command::RecallScene {
+            scene_index: result.lv1_scene_index,
+            reply: Some(reply),
+        });
+        let dispatch = rx
+            .await
+            .map_err(|_| AppCommandError::ReplyChannelClosed)
+            .and_then(|result| {
+                result.map_err(|error| match error {
+                    Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+                    other => AppCommandError::CommandFailed(other.to_string()),
+                })
+            });
         let dispatch = match dispatch {
             Ok(dispatch) => dispatch,
             Err(error) => {
@@ -1319,28 +1372,6 @@ fn validate_explicit_recall(
         internal_scene_id,
     )
     .map_err(AppCommandError::CommandFailed)
-}
-
-async fn send_explicit_recall(
-    lv1: &Lv1ActorHandle,
-    scene_index: i32,
-) -> Result<crate::lv1::RecallSceneDispatch, AppCommandError> {
-    let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::RecallScene {
-        scene_index,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|error| match error {
-        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-        other => AppCommandError::CommandFailed(other.to_string()),
-    })?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)?
-        .map_err(|error| match error {
-            Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-            other => AppCommandError::CommandFailed(other.to_string()),
-        })
 }
 
 fn log_explicit_recall_blocked(internal_scene_id: uuid::Uuid, error: &AppCommandError) {
