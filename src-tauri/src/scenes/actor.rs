@@ -5,7 +5,10 @@ use std::{
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::fade::{FadeCommand, FadeEngineHandle, RecallReadinessRequest, SameSceneRecallBehavior};
+use crate::fade::{
+    FadeCommand, FadeEngineHandle, FadeSceneIdentity, RecallReadinessCancellation,
+    RecallReadinessError, RecallReadinessRequest, SameSceneRecallBehavior,
+};
 use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
     SceneObservation, SceneState,
@@ -17,7 +20,7 @@ use crate::scenes::handle::ScenesHandle;
 use crate::scenes::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scenes::recall_queue::{
     InFlightPhase, InFlightRecall, QueuedRecall, RECALL_COMPLETION_TIMEOUT, RECALL_QUEUE_CAPACITY,
-    RecallQueue,
+    RecallQueue, RecallReadinessCompletion,
 };
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
@@ -56,14 +59,18 @@ impl ScenesPeers {
 }
 
 struct PendingSceneObservation {
+    generation: u64,
+    sequence: u64,
     scene: SceneState,
     seen_at: tokio::time::Instant,
     settle_after: tokio::time::Instant,
 }
 
 impl PendingSceneObservation {
-    fn new(scene: SceneState, now: tokio::time::Instant) -> Self {
+    fn new(generation: u64, sequence: u64, scene: SceneState, now: tokio::time::Instant) -> Self {
         Self {
+            generation,
+            sequence,
             scene,
             seen_at: now,
             settle_after: now + SCENE_CHANGED_SETTLE_DELAY,
@@ -164,6 +171,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut recall_queue = RecallQueue::default();
     let mut settings = initial_settings;
     let mut pending_scene: Option<PendingSceneObservation> = None;
+    let (readiness_completion_tx, mut readiness_completion_rx) = mpsc::channel(8);
 
     // Recall timing windows:
     //
@@ -210,8 +218,8 @@ async fn run_scenes_actor(task: ScenesTask) {
                                 publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
                             }
                         }
-                        Ok(AppEvent::Lv1 { event: Lv1Event::SceneChanged(SceneObservation { scene, .. }), .. }) => {
-                            pending_scene = Some(PendingSceneObservation::new(scene, tokio::time::Instant::now()));
+                        Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) => {
+                            pending_scene = Some(PendingSceneObservation::new(event_generation, sequence, scene, tokio::time::Instant::now()));
                             #[cfg(test)]
                             if let Some(observer) = pending_scene_observer.take() {
                                 let _ = observer.send(());
@@ -249,9 +257,24 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &mut recall_state,
                             &settings,
                             &lockout,
+                            &mut recall_queue,
+                            &readiness_completion_tx,
                             observation,
                         ).await;
                     }
+                }
+                completion = readiness_completion_rx.recv() => {
+                    let Some(completion) = completion else {
+                        break;
+                    };
+                    handle_readiness_completion(
+                        completion,
+                        &mut recall_queue,
+                        &peers,
+                        &lockout,
+                        &recall_state,
+                        generation,
+                    ).await;
                 }
             }
             continue;
@@ -290,10 +313,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                         }
                     }
                     Ok(AppEvent::Lv1 {
-                        event: Lv1Event::SceneChanged(SceneObservation { scene, .. }),
-                        ..
+                        generation: event_generation,
+                        event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }),
                     }) => {
                         pending_scene = Some(PendingSceneObservation::new(
+                            event_generation,
+                            sequence,
                             scene,
                             tokio::time::Instant::now(),
                         ));
@@ -315,6 +340,19 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
+            }
+            completion = readiness_completion_rx.recv() => {
+                let Some(completion) = completion else {
+                    break;
+                };
+                handle_readiness_completion(
+                    completion,
+                    &mut recall_queue,
+                    &peers,
+                    &lockout,
+                    &recall_state,
+                    generation,
+                ).await;
             }
         }
     }
@@ -713,6 +751,93 @@ async fn store_scene_config_from_current_lv1(
     Ok(ScenesCommandResult { changed })
 }
 
+struct QueueReadiness {
+    request_id: uuid::Uuid,
+    generation: u64,
+    deadline: tokio::time::Instant,
+}
+
+impl QueueReadiness {
+    fn attach_completion(
+        self,
+        completion_tx: mpsc::Sender<RecallReadinessCompletion>,
+    ) -> RecallReadinessRequest {
+        let (completion, completed) = oneshot::channel();
+        let request_id = self.request_id;
+        let generation = self.generation;
+        tokio::spawn(async move {
+            let result = completed
+                .await
+                .unwrap_or(Err(RecallReadinessError::Cancelled(
+                    RecallReadinessCancellation::ActorStopped,
+                )));
+            let _ = completion_tx
+                .send(RecallReadinessCompletion {
+                    request_id,
+                    generation,
+                    result,
+                })
+                .await;
+        });
+        RecallReadinessRequest {
+            deadline: self.deadline,
+            completion: Some(completion),
+        }
+    }
+}
+
+fn exact_queue_readiness(
+    observation: &PendingSceneObservation,
+    recall_queue: &RecallQueue,
+) -> Option<QueueReadiness> {
+    let in_flight = recall_queue.in_flight.as_ref()?;
+    let InFlightPhase::AwaitingObservation {
+        dispatch_sequence,
+        deadline,
+    } = in_flight.phase
+    else {
+        return None;
+    };
+    (observation.generation == in_flight.generation
+        && observation.sequence > dispatch_sequence
+        && observation.scene.index == in_flight.result.lv1_scene_index
+        && observation.scene.name == in_flight.result.scene.scene_name)
+        .then_some(QueueReadiness {
+            request_id: in_flight.request_id,
+            generation: in_flight.generation,
+            deadline,
+        })
+}
+
+async fn handle_readiness_completion(
+    completion: RecallReadinessCompletion,
+    recall_queue: &mut RecallQueue,
+    peers: &ScenesPeers,
+    lockout: &ShowLockoutReader,
+    recall_state: &ScenesState,
+    generation: u64,
+) {
+    let matches_in_flight = recall_queue.in_flight.as_ref().is_some_and(|in_flight| {
+        in_flight.request_id == completion.request_id
+            && in_flight.generation == completion.generation
+            && matches!(in_flight.phase, InFlightPhase::AwaitingReadiness { .. })
+    });
+    if !matches_in_flight || completion.result.is_err() {
+        return;
+    }
+
+    recall_queue.in_flight = None;
+    let peer_handles = peers.handles();
+    dispatch_next_recall(
+        lockout,
+        &peer_handles.lv1,
+        recall_state,
+        recall_queue,
+        generation,
+    )
+    .await;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn process_scene_observation(
     generation: u64,
@@ -723,23 +848,35 @@ async fn process_scene_observation(
     recall_state: &mut ScenesState,
     settings: &AppSettings,
     lockout: &ShowLockoutReader,
+    recall_queue: &mut RecallQueue,
+    readiness_completion_tx: &mpsc::Sender<RecallReadinessCompletion>,
     observation: PendingSceneObservation,
 ) {
     let now = tokio::time::Instant::now();
-    let readiness_deadline = now + Duration::from_secs(5);
-    if recall_state.is_scene_list_edit_suppressed(observation.seen_at)
-        || recall_state.is_scene_list_edit_suppressed(now)
+    let queue_readiness = exact_queue_readiness(&observation, recall_queue);
+    if queue_readiness
+        .as_ref()
+        .is_some_and(|readiness| now >= readiness.deadline)
     {
-        let scene_label = scene_label(&observation.scene);
-        let reason = "scene list edit suppression";
-        tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
+        // Task 6 owns queue cancellation. Do not create a new Fade barrier after
+        // the dispatch-time deadline has already expired.
         return;
     }
-    let same_scene_repeat_delay =
-        std::time::Duration::from_millis(settings.same_scene_recall_threshold_ms);
-    if !recall_state.accepts(&observation.scene, same_scene_repeat_delay) {
+
+    let skipped_reason = if recall_state.is_scene_list_edit_suppressed(observation.seen_at)
+        || recall_state.is_scene_list_edit_suppressed(now)
+    {
+        Some("scene list edit suppression".to_string())
+    } else {
+        let same_scene_repeat_delay =
+            std::time::Duration::from_millis(settings.same_scene_recall_threshold_ms);
+        (!recall_state.accepts(&observation.scene, same_scene_repeat_delay))
+            .then(|| "scene not accepted by recall policy".to_string())
+    };
+    if let Some(reason) = skipped_reason.as_deref()
+        && queue_readiness.is_none()
+    {
         let scene_label = scene_label(&observation.scene);
-        let reason = "scene not accepted by recall policy";
         tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
         return;
     }
@@ -764,8 +901,28 @@ async fn process_scene_observation(
             return;
         }
     };
-
     let lockout = lockout.current();
+
+    let queue_readiness = if let Some(readiness) = queue_readiness {
+        if tokio::time::Instant::now() >= readiness.deadline {
+            return;
+        }
+        let Some(in_flight) = recall_queue.in_flight.as_mut() else {
+            return;
+        };
+        if in_flight.request_id != readiness.request_id
+            || in_flight.generation != readiness.generation
+        {
+            return;
+        }
+        in_flight.phase = InFlightPhase::AwaitingReadiness {
+            deadline: readiness.deadline,
+        };
+        Some(readiness.attach_completion(readiness_completion_tx.clone()))
+    } else {
+        None
+    };
+
     let scene_config = recall_state
         .scene_configs()
         .iter()
@@ -775,12 +932,17 @@ async fn process_scene_observation(
         })
         .cloned();
 
-    match decide_scene_recall(RecallPolicyInput {
-        recalled_scene: observation.scene.clone(),
-        lv1_snapshot,
-        lockout,
-        scene_config,
-    }) {
+    let decision = if let Some(reason) = skipped_reason {
+        RecallPolicyDecision::Skip { reason }
+    } else {
+        decide_scene_recall(RecallPolicyInput {
+            recalled_scene: observation.scene.clone(),
+            lv1_snapshot,
+            lockout,
+            scene_config,
+        })
+    };
+    match decision {
         RecallPolicyDecision::Start(fade_config) => {
             let scene_label = scene_label(&observation.scene);
             if !is_generation_current(generation, runtime_generation).await {
@@ -807,6 +969,11 @@ async fn process_scene_observation(
             } else {
                 SameSceneRecallBehavior::OverrideMatchingTargets
             };
+            let readiness = queue_readiness.unwrap_or_else(|| {
+                RecallReadinessRequest::detached(
+                    tokio::time::Instant::now() + Duration::from_secs(5),
+                )
+            });
             let result = if !is_generation_current(generation, runtime_generation).await {
                 Err(AppCommandError::StaleGeneration)
             } else {
@@ -815,7 +982,7 @@ async fn process_scene_observation(
                         config: fade_config,
                         same_scene_behavior,
                         expected_generation: Some(generation),
-                        readiness: RecallReadinessRequest::detached(readiness_deadline),
+                        readiness,
                         reply: Some(reply),
                     })
                     .await
@@ -851,6 +1018,21 @@ async fn process_scene_observation(
                     reason,
                 },
             );
+            if let Some(readiness) = queue_readiness {
+                let (reply, rx) = oneshot::channel();
+                let _ = fade
+                    .send(FadeCommand::WaitForRecallReadiness {
+                        scene: FadeSceneIdentity {
+                            index: observation.scene.index,
+                            name: observation.scene.name.clone(),
+                        },
+                        expected_generation: generation,
+                        readiness,
+                        reply: Some(reply),
+                    })
+                    .await;
+                let _ = rx.await;
+            }
         }
         RecallPolicyDecision::Blocked { reason } => {
             if !is_generation_current(generation, runtime_generation).await {
@@ -870,6 +1052,21 @@ async fn process_scene_observation(
                     reason,
                 },
             );
+            if let Some(readiness) = queue_readiness {
+                let (reply, rx) = oneshot::channel();
+                let _ = fade
+                    .send(FadeCommand::WaitForRecallReadiness {
+                        scene: FadeSceneIdentity {
+                            index: observation.scene.index,
+                            name: observation.scene.name.clone(),
+                        },
+                        expected_generation: generation,
+                        readiness,
+                        reply: Some(reply),
+                    })
+                    .await;
+                let _ = rx.await;
+            }
         }
     }
 }
@@ -988,7 +1185,7 @@ async fn dispatch_next_recall(
             result: result.clone(),
             phase: InFlightPhase::AwaitingObservation {
                 dispatch_sequence: dispatch.scene_observation_sequence,
-                deadline: std::time::Instant::now() + RECALL_COMPLETION_TIMEOUT,
+                deadline: tokio::time::Instant::now() + RECALL_COMPLETION_TIMEOUT,
             },
         });
         let _ = queued.reply.send(Ok(result));
@@ -1127,8 +1324,10 @@ mod tests {
     struct RecallQueueFixture {
         handle: ScenesHandle,
         show: crate::show::ShowStateHandle,
+        event_bus: AppEventBus,
         snapshot: tokio::sync::watch::Sender<Lv1StateSnapshot>,
         lv1_recalls: tokio::sync::mpsc::Receiver<ObservedLv1Recall>,
+        fade_commands: tokio::sync::mpsc::Receiver<QueueFadeCommand>,
     }
 
     impl RecallQueueFixture {
@@ -1180,7 +1379,7 @@ mod tests {
             let runtime_generation = RuntimeGeneration::new();
             runtime_generation.set(1).await;
             let lv1 = crate::lv1::test_actor_handle(lv1_tx);
-            let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+            let (fade, fade_commands) = fake_queue_fade_handle(event_bus.clone());
             let (handle, task, peers) = build_scenes_actor(
                 1,
                 runtime_generation,
@@ -1204,8 +1403,10 @@ mod tests {
             Self {
                 handle,
                 show,
+                event_bus,
                 snapshot,
                 lv1_recalls,
+                fade_commands,
             }
         }
 
@@ -1232,9 +1433,42 @@ mod tests {
             self.lv1_recalls.try_recv().ok()
         }
 
+        async fn next_fade_command(&mut self) -> QueueFadeCommand {
+            self.fade_commands
+                .recv()
+                .await
+                .expect("expected Fade command")
+        }
+
         fn set_snapshot(&self, snapshot: Lv1StateSnapshot) {
             self.snapshot.send_replace(snapshot);
         }
+
+        fn set_current_scene(&self, scene: SceneState) {
+            let mut snapshot = self.snapshot.borrow().clone();
+            snapshot.scene = Some(scene);
+            self.snapshot.send_replace(snapshot);
+        }
+
+        fn publish_scene_observation(&self, generation: u64, sequence: u64, scene: SceneState) {
+            self.event_bus.publish(AppEvent::Lv1 {
+                generation,
+                event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }),
+            });
+        }
+
+        fn publish_ping(&self, generation: u64, sequence: u64) {
+            self.event_bus.publish(AppEvent::Lv1 {
+                generation,
+                event: Lv1Event::PingReceived { sequence },
+            });
+        }
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum QueueFadeCommand {
+        Recall { duration_ms: u64 },
+        Wait,
     }
 
     fn queue_scene(index: i32, name: &str) -> SceneConfig {
@@ -1269,6 +1503,223 @@ mod tests {
         yield_to_actor().await;
         assert!(second.try_recv().is_err());
         assert!(fixture.try_next_lv1_recall().is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_waits_for_exact_newer_observation_and_two_later_pings() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+
+        let first_dispatch = fixture.next_lv1_recall().await;
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert_eq!(first.await.unwrap().unwrap().lv1_scene_index, 1);
+
+        let exact_scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_current_scene(exact_scene.clone());
+        fixture.publish_scene_observation(1, 10, exact_scene.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(fixture.try_next_lv1_recall().is_none());
+
+        fixture.publish_scene_observation(0, 11, exact_scene.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(fixture.try_next_lv1_recall().is_none());
+
+        let wrong_scene = SceneState {
+            index: exact_scene.index,
+            name: "Wrong".to_string(),
+        };
+        fixture.set_current_scene(wrong_scene.clone());
+        fixture.publish_scene_observation(1, 11, wrong_scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(fixture.try_next_lv1_recall().is_none());
+
+        fixture.set_current_scene(exact_scene.clone());
+        fixture.publish_ping(1, 11);
+        fixture.publish_scene_observation(1, 12, exact_scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        fixture.publish_ping(1, 12);
+        yield_to_actor().await;
+        assert!(fixture.try_next_lv1_recall().is_none());
+        fixture.publish_ping(1, 13);
+
+        let second_dispatch = fixture.next_lv1_recall().await;
+        assert_eq!(second_dispatch.scene_index, 2);
+        second_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 13,
+        }));
+        assert!(second.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_keeps_repeated_same_scene_requests_distinct() {
+        let mut fixture =
+            RecallQueueFixture::connected_with_scenes(vec![queue_scene(1, "Intro")]).await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let second = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+
+        let first_dispatch = fixture.next_lv1_recall().await;
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_current_scene(scene.clone());
+        fixture.publish_scene_observation(1, 11, scene.clone());
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+        fixture.publish_ping(1, 11);
+        fixture.publish_ping(1, 12);
+
+        let second_dispatch = fixture.next_lv1_recall().await;
+        second_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 12,
+        }));
+        assert!(second.await.unwrap().is_ok());
+
+        fixture.publish_scene_observation(1, 13, scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+    }
+
+    #[tokio::test]
+    async fn recall_queue_waits_for_readiness_when_scene_scope_is_disabled() {
+        let mut disabled = queue_scene(1, "Intro");
+        disabled.scoped_channels = vec![ChannelRef {
+            group: 0,
+            channel: 0,
+        }];
+        disabled.channel_configs = vec![ChannelConfig {
+            group: 0,
+            channel: 0,
+            fader_db: Some(-12.5),
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }];
+        let mut fixture =
+            RecallQueueFixture::connected_with_scenes(vec![disabled, queue_scene(2, "Verse")])
+                .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(scene.clone()),
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            channels: vec![crate::lv1::ChannelInfo {
+                group: 0,
+                channel: 0,
+                name: "Channel 0".to_string(),
+                gain_db: 0.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            ping_sequence: 10,
+        });
+        fixture.publish_scene_observation(1, 11, scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+        fixture.publish_ping(1, 11);
+        yield_to_actor().await;
+        assert!(fixture.try_next_lv1_recall().is_none());
+        fixture.publish_ping(1, 12);
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 12,
+        }));
+        assert!(second.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_zero_duration_scene_waits_for_readiness() {
+        let mut zero_duration = queue_scene(1, "Intro");
+        zero_duration.duration_ms = 0;
+        zero_duration.scope_toggles.faders = true;
+        zero_duration.scoped_channels = vec![ChannelRef {
+            group: 0,
+            channel: 0,
+        }];
+        zero_duration.channel_configs = vec![ChannelConfig {
+            group: 0,
+            channel: 0,
+            fader_db: Some(-12.5),
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }];
+        let mut fixture =
+            RecallQueueFixture::connected_with_scenes(vec![zero_duration, queue_scene(2, "Verse")])
+                .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(scene.clone()),
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            channels: vec![crate::lv1::ChannelInfo {
+                group: 0,
+                channel: 0,
+                name: "Channel 0".to_string(),
+                gain_db: 0.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            ping_sequence: 10,
+        });
+        fixture.publish_scene_observation(1, 11, scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+        fixture.publish_ping(1, 11);
+        yield_to_actor().await;
+        assert!(fixture.try_next_lv1_recall().is_none());
+        fixture.publish_ping(1, 12);
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 12,
+        }));
+        assert!(second.await.unwrap().is_ok());
     }
 
     #[tokio::test]
@@ -3706,6 +4157,70 @@ mod tests {
             }
         });
         (FadeEngineHandle::new(command_tx), seen_rx, starts)
+    }
+
+    fn fake_queue_fade_handle(
+        event_bus: AppEventBus,
+    ) -> (
+        FadeEngineHandle,
+        tokio::sync::mpsc::Receiver<QueueFadeCommand>,
+    ) {
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::channel(8);
+        let (seen_tx, seen_rx) = tokio::sync::mpsc::channel(8);
+        tokio::spawn(async move {
+            let mut events = event_bus.subscribe();
+            let mut readiness = None;
+            loop {
+                tokio::select! {
+                    command = command_rx.recv() => match command {
+                        Some(FadeCommand::RecallSceneFade { config, expected_generation, readiness: request, reply, .. }) => {
+                            let _ = seen_tx.send(QueueFadeCommand::Recall { duration_ms: config.duration_ms }).await;
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(()));
+                            }
+                            readiness = request.completion.map(|completion| (expected_generation.unwrap_or(1), 0, 0, completion));
+                        }
+                        Some(FadeCommand::WaitForRecallReadiness { expected_generation, readiness: request, reply, .. }) => {
+                            let _ = seen_tx.send(QueueFadeCommand::Wait).await;
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(()));
+                            }
+                            readiness = request.completion.map(|completion| (expected_generation, 0, 0, completion));
+                        }
+                        Some(FadeCommand::AbortAll { reply }) => {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(()));
+                            }
+                        }
+                        None => break,
+                    },
+                    event = events.recv() => match event {
+                        Ok(AppEvent::Lv1 { generation, event: Lv1Event::PingReceived { sequence } }) => {
+                            let Some((expected_generation, last_sequence, _, _)) = readiness.as_ref() else {
+                                continue;
+                            };
+                            if generation != *expected_generation || sequence <= *last_sequence {
+                                continue;
+                            }
+                            let released = {
+                                let (_, last_sequence, count, _) = readiness.as_mut().expect("readiness must remain present");
+                                *last_sequence = sequence;
+                                *count += 1;
+                                *count == 2
+                            };
+                            if !released {
+                                continue;
+                            }
+                            let (_, _, _, completion) = readiness.take().expect("readiness must remain present");
+                            let _ = completion.send(Ok(()));
+                        }
+                        Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    },
+                }
+            }
+        });
+        (FadeEngineHandle::new(command_tx), seen_rx)
     }
 
     fn intro_scene() -> SceneObservation {

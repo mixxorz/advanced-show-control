@@ -1,11 +1,10 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, time::Duration};
 
 use tokio::sync::oneshot;
+use tokio::time::Instant;
 use uuid::Uuid;
 
+use crate::fade::RecallReadinessError;
 use crate::runtime::errors::AppCommandError;
 
 use super::RecallSceneResult;
@@ -36,6 +35,12 @@ pub(super) struct InFlightRecall {
     pub generation: u64,
     pub result: RecallSceneResult,
     pub phase: InFlightPhase,
+}
+
+pub(super) struct RecallReadinessCompletion {
+    pub request_id: Uuid,
+    pub generation: u64,
+    pub result: Result<(), RecallReadinessError>,
 }
 
 #[derive(Default)]
