@@ -318,6 +318,10 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
         }
     }
+
+    recall_queue.drain_pending(AppCommandError::RecallCanceled(
+        "Scenes actor stopped".to_string(),
+    ));
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1265,6 +1269,56 @@ mod tests {
         yield_to_actor().await;
         assert!(second.try_recv().is_err());
         assert!(fixture.try_next_lv1_recall().is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_shutdown_cancels_waiting_recall_without_rejecting_in_flight_reply() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+
+        fixture.handle.send(ScenesCommand::Shutdown).await.unwrap();
+
+        assert!(matches!(
+            second.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "Scenes actor stopped"
+        ));
+        assert!(fixture.try_next_lv1_recall().is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_command_channel_closure_cancels_waiting_recall() {
+        let second = {
+            let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+                queue_scene(1, "Intro"),
+                queue_scene(2, "Verse"),
+            ])
+            .await;
+            let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+            let dispatch = fixture.next_lv1_recall().await;
+            dispatch.reply(Ok(RecallSceneDispatch {
+                scene_observation_sequence: 10,
+            }));
+            assert!(first.await.unwrap().is_ok());
+            let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+
+            drop(fixture);
+            second
+        };
+
+        assert!(matches!(
+            second.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "Scenes actor stopped"
+        ));
     }
 
     #[tokio::test]
