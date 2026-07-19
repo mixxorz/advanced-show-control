@@ -1,7 +1,6 @@
 //! Show-owned application command handlers.
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
-use crate::scenes::SceneConfig;
 use crate::show::show_file::LoadValidationReport;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
@@ -63,12 +62,6 @@ pub struct ShowCommandResult {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectCommandResult {
     pub changed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[allow(dead_code)]
-pub struct SelectedSceneResult {
-    pub scene: SceneConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

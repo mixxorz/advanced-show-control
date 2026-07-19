@@ -335,7 +335,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             .as_ref()
             .and_then(|in_flight| match in_flight.phase {
                 InFlightPhase::AwaitingObservation { deadline, .. } => Some(deadline),
-                InFlightPhase::AwaitingReadiness { .. } => None,
+                InFlightPhase::AwaitingReadiness => None,
             });
         let recall_timeout = async move {
             match recall_deadline {
@@ -1101,7 +1101,7 @@ async fn handle_readiness_completion(
     let matches_in_flight = recall_queue.in_flight.as_ref().is_some_and(|in_flight| {
         in_flight.request_id == completion.request_id
             && in_flight.generation == completion.generation
-            && matches!(in_flight.phase, InFlightPhase::AwaitingReadiness { .. })
+            && matches!(in_flight.phase, InFlightPhase::AwaitingReadiness)
     });
     if !matches_in_flight {
         return;
@@ -1182,9 +1182,7 @@ fn accept_queue_readiness(recall_queue: &mut RecallQueue, readiness: QueueReadin
     if !matches!(in_flight.phase, InFlightPhase::AwaitingObservation { .. }) {
         return false;
     }
-    in_flight.phase = InFlightPhase::AwaitingReadiness {
-        deadline: readiness.deadline,
-    };
+    in_flight.phase = InFlightPhase::AwaitingReadiness;
     true
 }
 

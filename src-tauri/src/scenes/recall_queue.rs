@@ -18,18 +18,14 @@ pub(super) struct QueuedRecall {
     pub reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
 }
 
-#[allow(dead_code)] // Task 5 consumes the observation and readiness phases.
 pub(super) enum InFlightPhase {
     AwaitingObservation {
         dispatch_sequence: u64,
         deadline: Instant,
     },
-    AwaitingReadiness {
-        deadline: Instant,
-    },
+    AwaitingReadiness,
 }
 
-#[allow(dead_code)] // Task 5 consumes the stored completion metadata.
 pub(super) struct InFlightRecall {
     pub request_id: Uuid,
     pub generation: u64,
