@@ -9,7 +9,10 @@ mod tick;
 mod types;
 
 pub use actor::{FadeEnginePeers, FadeEngineTask, build_engine};
-pub use commands::{FadeCommand, SameSceneRecallBehavior};
+pub use commands::{
+    FadeCommand, RecallReadinessCancellation, RecallReadinessError, RecallReadinessRequest,
+    SameSceneRecallBehavior,
+};
 pub use curve::FadeCurve;
 pub use events::FadeEvent;
 pub use fader_law::pos_to_db;

@@ -7,7 +7,9 @@ use crate::runtime::events::AppEventBus;
 
 use super::events::Lv1Event;
 use super::parsers::{parse_channels_batch, parse_scene_list};
-use super::types::{ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneState};
+use super::types::{
+    ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneObservation, SceneState,
+};
 
 /// Pairs `/Notify/CurSceneIndex` and `/Notify/Scene/Name` OSC messages into a
 /// complete `SceneState`. LV1 sends these as two separate messages that always
@@ -137,6 +139,7 @@ pub(super) struct ActorState {
     pub(super) scene_list: Vec<SceneListEntry>,
     pub(super) channels: Vec<ChannelInfo>,
     pub(super) ping_sequence: u64,
+    pub(super) scene_observation_sequence: u64,
     pub(super) scene_buf: SceneBuffer,
     pub(super) last_ping: Instant,
     pub(super) event_bus: AppEventBus,
@@ -151,6 +154,7 @@ impl ActorState {
             scene_list: Vec::new(),
             channels: Vec::new(),
             ping_sequence: 0,
+            scene_observation_sequence: 0,
             scene_buf: SceneBuffer::default(),
             last_ping: Instant::now(),
             event_bus,
@@ -176,6 +180,15 @@ impl ActorState {
     }
 }
 
+fn observe_scene(state: &mut ActorState, scene: SceneState) {
+    state.scene_observation_sequence = state.scene_observation_sequence.saturating_add(1);
+    state.scene = Some(scene.clone());
+    state.fan_out(Lv1Event::SceneChanged(SceneObservation {
+        sequence: state.scene_observation_sequence,
+        scene,
+    }));
+}
+
 pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscMessage) {
     if is_diagnostic_address(&msg.address) {
         state.diagnose(format!(
@@ -199,16 +212,14 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             if let Some(crate::lv1::osc::OscArg::Int(index)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_index(*index)
             {
-                state.scene = Some(scene.clone());
-                state.fan_out(Lv1Event::SceneChanged(scene));
+                observe_scene(state, scene);
             }
         }
         "/Notify/Scene/Name" => {
             if let Some(crate::lv1::osc::OscArg::String(name)) = msg.args.first()
                 && let Some(scene) = state.scene_buf.apply_name(name.clone())
             {
-                state.scene = Some(scene.clone());
-                state.fan_out(Lv1Event::SceneChanged(scene));
+                observe_scene(state, scene);
             }
         }
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
@@ -314,51 +325,6 @@ fn is_diagnostic_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::events::AppEvent;
-
-    #[tokio::test]
-    async fn actor_publishes_scene_changes_to_event_bus() {
-        use crate::lv1::events::Lv1Event;
-        use crate::runtime::events::AppEventBus;
-
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-        let mut state = ActorState::new(bus.clone(), 7);
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/CurSceneIndex".to_string(),
-                args: vec![crate::lv1::osc::OscArg::Int(3)],
-            },
-        );
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Scene/Name".to_string(),
-                args: vec![crate::lv1::osc::OscArg::String("Bridge".to_string())],
-            },
-        );
-
-        let event = loop {
-            let event = rx.recv().await.unwrap();
-            if matches!(event, AppEvent::Lv1 { .. }) {
-                break event;
-            }
-        };
-        match event {
-            AppEvent::Lv1 {
-                generation,
-                event: Lv1Event::SceneChanged(scene),
-                ..
-            } => {
-                assert_eq!(generation, 7);
-                assert_eq!(scene.index, 3);
-                assert_eq!(scene.name, "Bridge");
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
 
     #[tokio::test]
     async fn channels_parse_failure_logs_diagnostic_without_event_bus_fact() {

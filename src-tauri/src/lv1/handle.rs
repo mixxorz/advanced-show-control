@@ -20,6 +20,13 @@ impl Lv1ActorHandle {
             .await
             .map_err(|_| Lv1ActorError::CommandChannelClosed)
     }
+
+    pub async fn reserve(&self) -> Result<mpsc::Permit<'_, Lv1Command>, Lv1ActorError> {
+        self.tx
+            .reserve()
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)
+    }
 }
 
 #[cfg(test)]
@@ -160,13 +167,23 @@ mod tests {
 
         if let Some(Lv1Command::RecallScene { scene_index, reply }) = rx.recv().await {
             assert_eq!(scene_index, 4);
-            reply.unwrap().send(Ok(())).unwrap();
+            reply
+                .unwrap()
+                .send(Ok(crate::lv1::RecallSceneDispatch {
+                    scene_observation_sequence: 0,
+                }))
+                .unwrap();
         } else {
             panic!("expected RecallScene command");
         }
 
         assert!(recall.await.unwrap().is_ok());
-        assert_eq!(recall_rx.await.unwrap(), Ok(()));
+        assert_eq!(
+            recall_rx.await.unwrap(),
+            Ok(crate::lv1::RecallSceneDispatch {
+                scene_observation_sequence: 0,
+            })
+        );
     }
 
     #[tokio::test]

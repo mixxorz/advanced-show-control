@@ -1,7 +1,7 @@
 use advanced_show_control::lv1::osc::OscArg;
 use advanced_show_control::lv1::{
-    ConnectionStatus, Lv1Command, Lv1Event, Lv1Frame, build_actor, decode_frame_payload,
-    encode_frame,
+    ConnectionStatus, Lv1Command, Lv1Event, Lv1Frame, SceneObservation, SceneState, build_actor,
+    decode_frame_payload, encode_frame,
 };
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus};
 use std::io::Write;
@@ -67,6 +67,20 @@ async fn wait_for_connected(events: &mut tokio::sync::broadcast::Receiver<AppEve
     })
     .await
     .unwrap();
+}
+
+async fn recv_scene_observation(
+    events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+) -> SceneObservation {
+    loop {
+        if let AppEvent::Lv1 {
+            event: Lv1Event::SceneChanged(observation),
+            ..
+        } = events.recv().await.unwrap()
+        {
+            return observation;
+        }
+    }
 }
 
 #[tokio::test]
@@ -151,9 +165,10 @@ async fn actor_emits_disconnected_and_reconnects_when_server_closes() {
 }
 
 #[tokio::test]
-async fn actor_parses_and_emits_scene_changed() {
+async fn actor_publishes_monotonic_scene_observations_and_recall_dispatch_boundary() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
+    let (send_second_scene_tx, send_second_scene_rx) = std::sync::mpsc::channel();
 
     tokio::task::spawn_blocking(move || {
         let (mut stream, _) = listener.accept().unwrap();
@@ -162,13 +177,26 @@ async fn actor_parses_and_emits_scene_changed() {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
         stream
+            .write_all(&make_lv1_frame("/Notify/CurSceneIndex", &[OscArg::Int(3)]))
+            .unwrap();
+        stream
             .write_all(&make_lv1_frame(
                 "/Notify/Scene/Name",
-                &[OscArg::String("Scene A".to_string())],
+                &[OscArg::String("Bridge".to_string())],
+            ))
+            .unwrap();
+
+        send_second_scene_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        stream
+            .write_all(&make_lv1_frame(
+                "/Notify/Scene/Name",
+                &[OscArg::String("Chorus".to_string())],
             ))
             .unwrap();
         stream
-            .write_all(&make_lv1_frame("/Notify/CurSceneIndex", &[OscArg::Int(0)]))
+            .write_all(&make_lv1_frame("/Notify/CurSceneIndex", &[OscArg::Int(4)]))
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(200));
     });
@@ -177,25 +205,133 @@ async fn actor_parses_and_emits_scene_changed() {
     let mut events = event_bus.subscribe();
     let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
-    let mut scene_event = None;
-    tokio::time::timeout(std::time::Duration::from_secs(3), async {
-        while let Ok(event) = events.recv().await {
-            if let AppEvent::Lv1 {
-                event: Lv1Event::SceneChanged(s),
-                ..
-            } = event
-            {
-                scene_event = Some(s);
-                break;
-            }
-        }
-    })
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        recv_scene_observation(&mut events),
+    )
     .await
     .unwrap();
+    assert_eq!(
+        first,
+        SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index: 3,
+                name: "Bridge".to_string(),
+            },
+        }
+    );
 
-    let scene = scene_event.unwrap();
-    assert_eq!(scene.index, 0);
-    assert_eq!(scene.name, "Scene A");
+    let (reply, rx) = oneshot::channel();
+    _handle
+        .send(Lv1Command::RecallScene {
+            scene_index: 1,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+    let dispatch = rx.await.unwrap().unwrap();
+    assert_eq!(dispatch.scene_observation_sequence, 1);
+
+    send_second_scene_tx.send(()).unwrap();
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        recv_scene_observation(&mut events),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        second,
+        SceneObservation {
+            sequence: 2,
+            scene: SceneState {
+                index: 4,
+                name: "Chorus".to_string(),
+            },
+        }
+    );
+}
+
+#[tokio::test]
+async fn actor_resets_scene_observation_sequence_after_reconnecting() {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (release_first_peer_tx, release_first_peer_rx) = std::sync::mpsc::channel();
+    let (release_second_peer_tx, release_second_peer_rx) = std::sync::mpsc::channel();
+
+    let server = tokio::task::spawn_blocking(move || {
+        for (connection_index, (index, name)) in
+            [(3, "Bridge"), (4, "Chorus")].into_iter().enumerate()
+        {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
+                .unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            stream
+                .write_all(&make_lv1_frame(
+                    "/Notify/CurSceneIndex",
+                    &[OscArg::Int(index)],
+                ))
+                .unwrap();
+            stream
+                .write_all(&make_lv1_frame(
+                    "/Notify/Scene/Name",
+                    &[OscArg::String(name.to_string())],
+                ))
+                .unwrap();
+
+            match connection_index {
+                0 => release_first_peer_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap(),
+                1 => release_second_peer_rx
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap(),
+                _ => unreachable!(),
+            }
+        }
+    });
+
+    let event_bus = AppEventBus::default();
+    let mut events = event_bus.subscribe();
+    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        recv_scene_observation(&mut events),
+    )
+    .await
+    .expect("actor did not publish the first scene observation");
+    assert_eq!(
+        first,
+        SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index: 3,
+                name: "Bridge".to_string(),
+            },
+        }
+    );
+    release_first_peer_tx.send(()).unwrap();
+    let second = tokio::time::timeout(
+        std::time::Duration::from_secs(8),
+        recv_scene_observation(&mut events),
+    )
+    .await
+    .expect("actor did not publish the scene observation after reconnect");
+    assert_eq!(
+        second,
+        SceneObservation {
+            sequence: 1,
+            scene: SceneState {
+                index: 4,
+                name: "Chorus".to_string(),
+            },
+        }
+    );
+    release_second_peer_tx.send(()).unwrap();
+    server.await.unwrap();
 }
 
 #[tokio::test]

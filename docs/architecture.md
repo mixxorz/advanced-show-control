@@ -27,7 +27,7 @@ The runtime consists of the following primary components:
 | `lv1`       | Maintains the LV1 TCP connection and raw LV1 state mirror.                                                                                |
 | `fade`      | Executes active fade timing, overlap behavior, and LV1 parameter writes.                                                                  |
 | `settings`  | Maintains app-level preferences, loads/saves app-config `settings.json`, validates normalized settings replacements, and publishes settings projection facts. |
-| `scenes`    | Performs scene recall automation and recall policy enforcement.                                                                           |
+| `scenes`    | Performs scene recall automation, recall policy enforcement, and bounded ASC recall queue ownership.                                    |
 | `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, and application-managed scene configuration state. |
 | `lifecycle` | Constructs the connected runtime, wires actor peers, installs handles, tears down runtime state, and owns generation changes.             |
 | `projector` | Maintains the backend-to-frontend projection cache and emits `app-status-changed`.                                                        |
@@ -135,6 +135,11 @@ Show(ShowEvent)
 increasing sequence of an accepted LV1 keepalive ping. It is an operational fact
 for runtime consumers and does not produce frontend log traffic.
 
+LV1 scene observations carry a connection-local sequence used only for post-dispatch
+boundaries. The sequence lets `scenes` distinguish an observation caused after an ASC
+recall dispatch from one already present before that dispatch; it is not frontend state
+or a general ordering contract.
+
 `AppEventBus` shall satisfy the following rules:
 
 1. Events shall represent facts, not requests.
@@ -160,7 +165,7 @@ The following peer relationships are defined:
 | Actor    | Peer Handles Received                                                             | Purpose                                                                                                         |
 | -------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `fade`   | `Lv1ActorHandle` through `FadeEnginePeers`                                        | Allows active fades to write parameters to LV1.                                                                 |
-| `scenes` | `Lv1ActorHandle` and `FadeEngineHandle` through `ScenesPeers`                     | Allows recall automation to validate LV1 state, send LV1 recall commands, and start fades.                      |
+| `scenes` | `Lv1ActorHandle` and `FadeEngineHandle` through `ScenesPeers`; `ShowLockoutReader` at construction | Allows recall automation to validate LV1 state, send LV1 recall commands, start fades, and read the latest lockout state. |
 | `show`   | `ScenesHandle` and `Lv1ActorHandle` through `ShowActorPeers`                      | Allows show-owned workflows to coordinate scene persistence and obtain fresh LV1 state.                         |
 
 ## 9.0 Runtime Lifecycle and Generations
@@ -326,6 +331,12 @@ The barrier pauses ASC parameter writes only. It does not ignore LV1 parameter
 feedback, and normal manual override detection remains active while the barrier is
 waiting. Same-scene finishing behavior is tracked separately in #42.
 
+For an ASC recall queue item, one five-second deadline transfers from the `scenes`
+observation wait to `FadeEngine` readiness. The queue advances only after the exact
+post-dispatch observation and Fade readiness complete; this applies to every ASC
+recall, including no-fade and zero-duration recalls. A deadline expiry fails closed
+and clears queued recall intent rather than releasing another request.
+
 #### Scene-Owned Repeated Recall
 
 Every timed active target retains the exact LV1 scene index and scene name that created it. The application-wide same-scene recall threshold controls only suppression of repeated identical scene observations and defaults to 500 ms. The 25 ms settle delay, connection-generation arming window, scene-list-edit suppression, and fresh-state timeout remain independent.
@@ -345,6 +356,18 @@ The module owns the following responsibilities:
 5. Dispatch of validated fade-start commands through wired peers.
 6. Recall status facts for skipped, blocked, and started recall outcomes.
 7. Fresh app-settings acquisition at each settled scene-observation boundary before recall validation and fade dispatch.
+8. A bounded eight-request FIFO for ASC-originated recalls. `scenes` retains each
+   caller reply until its request has actually dispatched, so cue-list auto-next
+   remains tied to dispatch rather than queue admission.
+
+`show` exposes lockout through a latest-value `ShowLockoutReader`; `scenes` has no
+reverse mailbox dependency on `show`. It revalidates with that reader and fresh LV1
+state immediately before dispatch, so queued intent cannot bypass a later lockout.
+
+Abort All clears queued recall intent through `scenes` and active target state through
+`FadeEngine`. It does not release queued requests or permit deferred fader writes.
+
+Late-canceled observation correlation is runtime-only, capped at eight five-second records, and uses a five-second fail-closed suppression fallback on overflow.
 
 The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
 

@@ -1,7 +1,7 @@
 use tokio::sync::oneshot;
 
 use super::events::Lv1ActorError;
-use super::types::Lv1StateSnapshot;
+use super::types::{Lv1StateSnapshot, RecallSceneDispatch};
 
 pub enum Lv1Command {
     GetState {
@@ -40,7 +40,7 @@ pub enum Lv1Command {
     },
     RecallScene {
         scene_index: i32,
-        reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,
+        reply: Option<oneshot::Sender<Result<RecallSceneDispatch, Lv1ActorError>>>,
     },
     Flush {
         reply: Option<oneshot::Sender<Result<(), Lv1ActorError>>>,

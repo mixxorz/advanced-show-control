@@ -15,13 +15,18 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             let event_bus = AppEventBus::default();
             let logging_runtime = logging::init_logging(app.handle())?;
             logging_runtime.spawn_settings_watcher(event_bus.subscribe());
-            let (show, show_task, show_peers) = build_show_actor(event_bus.clone());
+            let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
             let settings_dir = app.path().app_config_dir()?;
             let (settings, settings_task, initial_settings) =
                 build_settings_actor(settings_dir, event_bus.clone());
             logging_runtime.apply_settings(&initial_settings);
-            let lifecycle =
-                AppLifecycle::new(event_bus, show.clone(), show_peers, settings.clone());
+            let lifecycle = AppLifecycle::new(
+                event_bus,
+                show.clone(),
+                show_peers,
+                lockout,
+                settings.clone(),
+            );
             show_task.spawn();
             settings_task.spawn();
             app.manage(show);

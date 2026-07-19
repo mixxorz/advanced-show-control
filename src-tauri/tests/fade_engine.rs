@@ -1,6 +1,7 @@
 use advanced_show_control::fade::{
     FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeEvent, FadeParameter,
-    FadeSceneIdentity, FadeTarget, FadeTargetKey, SameSceneRecallBehavior, build_engine,
+    FadeSceneIdentity, FadeTarget, FadeTargetKey, RecallReadinessRequest, SameSceneRecallBehavior,
+    build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
 use advanced_show_control::lv1::{
@@ -232,6 +233,9 @@ async fn start_fade(engine: &FadeEngineHandle, config: FadeConfig) -> Result<(),
             config,
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
             expected_generation: None,
+            readiness: RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+            ),
             reply: Some(reply),
         })
         .await

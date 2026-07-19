@@ -1,13 +1,15 @@
-use std::time::Duration;
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 
+use crate::fade::commands::{
+    RecallReadinessCancellation, RecallReadinessError, RecallReadinessRequest,
+};
 use crate::fade::events::FadeEvent;
 use crate::fade::tick::ActiveTarget;
 use crate::fade::types::FadeSceneIdentity;
 use crate::runtime::events::AppEventBus;
 
 pub(super) const READINESS_PINGS_REQUIRED: u8 = 2;
-const READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct ReadinessBarrier {
     generation: u64,
@@ -17,6 +19,8 @@ struct ReadinessBarrier {
     observed_ping_count: u8,
     missed_events: bool,
     deadline: tokio::time::Instant,
+    completion: Option<oneshot::Sender<Result<(), RecallReadinessError>>>,
+    timeout_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +36,8 @@ pub(super) struct ReadinessTimeoutContext {
     pub(super) scene_index: i32,
     pub(super) scene_name: String,
     pub(super) observed_ping_count: u8,
+    pub(super) completion_owned: bool,
+    pub(super) timeout_ms: u64,
 }
 
 pub(crate) struct EngineState {
@@ -81,8 +87,19 @@ impl EngineState {
         scene_name: String,
         ping_sequence: u64,
         now: Instant,
-        readiness_now: tokio::time::Instant,
+        readiness: RecallReadinessRequest,
     ) {
+        let RecallReadinessRequest {
+            deadline,
+            completion,
+        } = readiness;
+        if let Some(previous) = self.readiness_barrier.take()
+            && let Some(completion) = previous.completion
+        {
+            let _ = completion.send(Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::Superseded,
+            )));
+        }
         for channel in &mut self.channels {
             channel.pause(now);
         }
@@ -94,7 +111,13 @@ impl EngineState {
             last_counted_ping_sequence: ping_sequence,
             observed_ping_count: 0,
             missed_events: false,
-            deadline: readiness_now + READINESS_TIMEOUT,
+            deadline,
+            timeout_ms: deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_millis()
+                .try_into()
+                .unwrap_or(u64::MAX),
+            completion,
         });
     }
 
@@ -114,7 +137,8 @@ impl EngineState {
             return PingGateProgress::Ignored;
         };
 
-        if barrier.missed_events
+        if now >= barrier.deadline
+            || barrier.missed_events
             || generation != barrier.generation
             || sequence <= barrier.last_counted_ping_sequence
         {
@@ -129,9 +153,15 @@ impl EngineState {
             };
         }
 
-        self.readiness_barrier = None;
+        let barrier = self
+            .readiness_barrier
+            .take()
+            .expect("readiness barrier must remain present until release");
         for channel in &mut self.channels {
             channel.resume(now);
+        }
+        if let Some(completion) = barrier.completion {
+            let _ = completion.send(Ok(()));
         }
         PingGateProgress::Released
     }
@@ -142,28 +172,40 @@ impl EngineState {
             .map(|barrier| barrier.deadline)
     }
 
-    pub(super) fn readiness_timeout_context(&self) -> Option<ReadinessTimeoutContext> {
-        self.readiness_barrier
-            .as_ref()
-            .map(|barrier| ReadinessTimeoutContext {
+    pub(super) fn timeout_readiness(&mut self) -> Option<ReadinessTimeoutContext> {
+        self.readiness_barrier.take().map(|barrier| {
+            let context = ReadinessTimeoutContext {
                 generation: barrier.generation,
                 scene_index: barrier.scene_index,
                 scene_name: barrier.scene_name.clone(),
                 observed_ping_count: barrier.observed_ping_count,
-            })
+                completion_owned: barrier.completion.is_some(),
+                timeout_ms: barrier.timeout_ms,
+            };
+            if let Some(completion) = barrier.completion {
+                let _ = completion.send(Err(RecallReadinessError::TimedOut {
+                    generation: context.generation,
+                    scene_index: context.scene_index,
+                    scene_name: context.scene_name.clone(),
+                    observed_ping_count: context.observed_ping_count,
+                }));
+            }
+            self.channels.clear();
+            context
+        })
     }
 
     pub(super) fn is_waiting_for_readiness(&self) -> bool {
         self.readiness_barrier.is_some()
     }
 
-    pub(super) fn clear_readiness_barrier(&mut self) {
-        self.readiness_barrier = None;
-    }
-
-    pub(crate) fn cancel_all_in_place(&mut self) {
+    pub(crate) fn cancel_all_in_place(&mut self, cancellation: RecallReadinessCancellation) {
         self.channels.clear();
-        self.readiness_barrier = None;
+        if let Some(barrier) = self.readiness_barrier.take()
+            && let Some(completion) = barrier.completion
+        {
+            let _ = completion.send(Err(RecallReadinessError::Cancelled(cancellation)));
+        }
     }
 }
 
@@ -207,23 +249,19 @@ mod tests {
         let readiness_now = tokio::time::Instant::now();
         let mut state = EngineState::new(AppEventBus::default(), 4);
 
-        state.start_or_reset_readiness(4, 17, "Verse".to_string(), 10, now, readiness_now);
+        let deadline = readiness_now + Duration::from_secs(5);
+        state.start_or_reset_readiness(
+            4,
+            17,
+            "Verse".to_string(),
+            10,
+            now,
+            RecallReadinessRequest::detached(deadline),
+        );
 
         assert_eq!(state.generation(), 4);
         assert!(state.is_waiting_for_readiness());
-        assert_eq!(
-            state.readiness_deadline(),
-            Some(readiness_now + READINESS_TIMEOUT)
-        );
-        assert_eq!(
-            state.readiness_timeout_context(),
-            Some(ReadinessTimeoutContext {
-                generation: 4,
-                scene_index: 17,
-                scene_name: "Verse".to_string(),
-                observed_ping_count: 0,
-            })
-        );
+        assert_eq!(state.readiness_deadline(), Some(deadline));
         assert_eq!(state.observe_ping(4, 10, now), PingGateProgress::Ignored);
         assert_eq!(
             state.observe_ping(4, 11, now),
@@ -234,7 +272,6 @@ mod tests {
         assert_eq!(state.observe_ping(4, 12, now), PingGateProgress::Released);
         assert!(!state.is_waiting_for_readiness());
         assert_eq!(state.readiness_deadline(), None);
-        assert_eq!(state.readiness_timeout_context(), None);
     }
 
     #[test]
@@ -257,7 +294,7 @@ mod tests {
             "Verse".to_string(),
             10,
             now + Duration::from_millis(100),
-            tokio::time::Instant::now(),
+            RecallReadinessRequest::detached(tokio::time::Instant::now() + Duration::from_secs(5)),
         );
         state.start_or_reset_readiness(
             4,
@@ -265,7 +302,7 @@ mod tests {
             "Chorus".to_string(),
             20,
             now + Duration::from_millis(200),
-            tokio::time::Instant::now(),
+            RecallReadinessRequest::detached(tokio::time::Instant::now() + Duration::from_secs(5)),
         );
 
         assert!(state.channels[0].is_paused());
@@ -276,15 +313,6 @@ mod tests {
         assert_eq!(
             state.observe_ping(4, 21, now + Duration::from_millis(400)),
             PingGateProgress::Waiting { observed: 1 }
-        );
-        assert_eq!(
-            state.readiness_timeout_context(),
-            Some(ReadinessTimeoutContext {
-                generation: 4,
-                scene_index: 18,
-                scene_name: "Chorus".to_string(),
-                observed_ping_count: 1,
-            })
         );
 
         assert_eq!(
@@ -314,10 +342,10 @@ mod tests {
             "Verse".to_string(),
             10,
             now,
-            tokio::time::Instant::now(),
+            RecallReadinessRequest::detached(tokio::time::Instant::now() + Duration::from_secs(5)),
         );
 
-        state.cancel_all_in_place();
+        state.cancel_all_in_place(RecallReadinessCancellation::Aborted);
 
         assert!(state.channels.is_empty());
         assert!(!state.is_waiting_for_readiness());

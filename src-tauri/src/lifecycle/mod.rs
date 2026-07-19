@@ -20,7 +20,8 @@ use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::{ScenesHandle, build_scenes_actor};
 use crate::settings::{SettingsCommand, SettingsHandle};
 use crate::show::{
-    ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowStateHandle,
+    ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowLockoutReader,
+    ShowStateHandle,
 };
 
 #[derive(Default)]
@@ -101,6 +102,7 @@ fn build_connected_runtime(
     scene_events: tokio::sync::broadcast::Receiver<AppEvent>,
     settings_handle: SettingsHandle,
     initial_settings: crate::settings::AppSettings,
+    lockout: ShowLockoutReader,
 ) -> BuiltConnectedRuntime {
     let (lv1, lv1_task) = build_actor(
         identity.address.clone(),
@@ -117,6 +119,7 @@ fn build_connected_runtime(
         scene_events,
         settings_handle,
         initial_settings,
+        lockout,
     );
     fade_peers.set_lv1(lv1.clone());
     scene_recall_peers.set_peers(lv1.clone(), fade.clone());
@@ -159,6 +162,7 @@ pub struct AppLifecycle {
     event_bus: AppEventBus,
     show: ShowStateHandle,
     show_peers: ShowActorPeers,
+    lockout: ShowLockoutReader,
     cue_lists: CueListsHandle,
     cue_lists_peers: CueListsPeers,
     settings: SettingsHandle,
@@ -169,6 +173,7 @@ impl AppLifecycle {
         event_bus: AppEventBus,
         show: ShowStateHandle,
         show_peers: ShowActorPeers,
+        lockout: ShowLockoutReader,
         settings: SettingsHandle,
     ) -> Self {
         let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
@@ -187,6 +192,7 @@ impl AppLifecycle {
             event_bus,
             show,
             show_peers,
+            lockout,
             cue_lists,
             cue_lists_peers,
             settings,
@@ -324,6 +330,7 @@ impl AppLifecycle {
             scene_events,
             self.settings.clone(),
             initial_settings,
+            self.lockout.clone(),
         );
         let handles = built_runtime.runtime_targets();
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
@@ -705,12 +712,13 @@ impl AppLifecycle {
 impl Default for AppLifecycle {
     fn default() -> Self {
         let event_bus = AppEventBus::default();
-        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        let (show, show_task, show_peers, lockout) =
+            crate::show::build_show_actor(event_bus.clone());
         let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
-        Self::new(event_bus, show, show_peers, settings)
+        Self::new(event_bus, show, show_peers, lockout, settings)
     }
 }
 
@@ -848,9 +856,10 @@ mod tests {
         event_bus: AppEventBus,
         settings: SettingsHandle,
     ) -> AppLifecycle {
-        let (show, show_task, show_peers) = crate::show::build_show_actor(event_bus.clone());
+        let (show, show_task, show_peers, lockout) =
+            crate::show::build_show_actor(event_bus.clone());
         show_task.spawn();
-        AppLifecycle::new(event_bus, show, show_peers, settings)
+        AppLifecycle::new(event_bus, show, show_peers, lockout, settings)
     }
 
     fn lifecycle_for_test(event_bus: AppEventBus) -> LifecycleTestFixture {
@@ -889,6 +898,7 @@ mod tests {
             event_bus.subscribe(),
             lifecycle.settings.clone(),
             initial_settings,
+            lifecycle.lockout.clone(),
         );
         scene_recall_peers.set_peers(lv1.clone(), fade.clone());
         StartedConnectedRuntime {
@@ -1025,6 +1035,7 @@ mod tests {
             scene_events,
             lifecycle.settings.clone(),
             initial_settings,
+            lifecycle.lockout.clone(),
         );
 
         assert!(lifecycle.show_peers.scenes().is_none());
@@ -1092,6 +1103,7 @@ mod tests {
             event_bus.subscribe(),
             lifecycle.settings.clone(),
             lifecycle.settings_snapshot().await.unwrap(),
+            lifecycle.lockout.clone(),
         );
         newer_task.spawn();
         let lv1 = fake_lv1_handle(connected_snapshot());
@@ -1911,6 +1923,7 @@ mod tests {
             event_bus.subscribe(),
             lifecycle.settings.clone(),
             lifecycle.settings_snapshot().await.unwrap(),
+            lifecycle.lockout.clone(),
         );
         assert!(
             lifecycle
@@ -1956,6 +1969,7 @@ mod tests {
             event_bus.subscribe(),
             lifecycle.settings.clone(),
             lifecycle.settings_snapshot().await.unwrap(),
+            lifecycle.lockout.clone(),
         );
         let Err(rejection) = lifecycle
             .install_runtime_transaction(stale_generation, stale_runtime.runtime_targets())

@@ -16,4 +16,8 @@ pub enum AppCommandError {
     CommandFailed(String),
     #[error("generation is stale")]
     StaleGeneration,
+    #[error("scene recall queue is full")]
+    RecallQueueFull,
+    #[error("scene recall canceled: {0}")]
+    RecallCanceled(String),
 }

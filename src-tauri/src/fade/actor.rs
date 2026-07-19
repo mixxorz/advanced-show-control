@@ -5,7 +5,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
-use crate::fade::commands::{FadeCommand, SameSceneRecallBehavior};
+use crate::fade::commands::{
+    FadeCommand, RecallReadinessCancellation, RecallReadinessRequest, SameSceneRecallBehavior,
+};
 use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::{EngineState, PingGateProgress, READINESS_PINGS_REQUIRED};
@@ -115,13 +117,13 @@ async fn run_engine(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None => break,
-                Some(FadeCommand::RecallSceneFade { config, same_scene_behavior, expected_generation, reply }) => {
+                Some(FadeCommand::RecallSceneFade { config, same_scene_behavior, expected_generation, readiness, reply }) => {
                         let scene_index = config.scene.index;
                         let scene_name = config.scene.name.clone();
                         let duration_ms = config.duration_ms;
                         let target_count = config.targets.len();
                         let lv1 = peers.lv1();
-                        let result = handle_recall_scene_fade(&runtime_generation, &lv1, &mut state, config, same_scene_behavior, expected_generation).await;
+                        let result = handle_recall_scene_fade(&runtime_generation, &lv1, &mut state, config, same_scene_behavior, expected_generation, readiness).await;
 
                         match result {
                             Ok(outcome) => {
@@ -138,7 +140,9 @@ async fn run_engine(
                                     state.fan_out(FadeEvent::FadeStarted);
                                 } else {
                                     tick_interval = None;
-                                    complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
+                                    if !state.is_waiting_for_readiness() {
+                                        complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
+                                    }
                                 }
                                 if let Some(reply) = reply {
                                     let _ = reply.send(Ok(()));
@@ -151,8 +155,23 @@ async fn run_engine(
                             }
                         }
                     }
+                    Some(FadeCommand::WaitForRecallReadiness { scene, expected_generation, readiness, reply }) => {
+                        let lv1 = peers.lv1();
+                        let result = handle_wait_for_recall_readiness(
+                            &runtime_generation,
+                            &lv1,
+                            &mut state,
+                            scene,
+                            expected_generation,
+                            readiness,
+                        )
+                        .await;
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
+                        }
+                    }
                     Some(FadeCommand::AbortAll { reply }) => {
-                        state.cancel_all_in_place();
+                        state.cancel_all_in_place(RecallReadinessCancellation::Aborted);
                         tick_interval = None;
                         state.fan_out(FadeEvent::FadeAborted);
                         if let Some(reply) = reply {
@@ -214,7 +233,7 @@ async fn run_engine(
                         event: Lv1Event::Disconnected { .. },
                     }) if event_generation == generation => {
                         if state.is_active() || state.is_waiting_for_readiness() {
-                            state.cancel_all_in_place();
+                            state.cancel_all_in_place(RecallReadinessCancellation::Disconnected);
                             tick_interval = None;
                             fade_completed_emitted = false;
                             tracing::warn!(event = "fade_aborted", "Fade aborted");
@@ -227,7 +246,7 @@ async fn run_engine(
                         },
                     )) if event_generation != generation => {
                         if state.is_active() || state.is_waiting_for_readiness() {
-                            state.cancel_all_in_place();
+                            state.cancel_all_in_place(RecallReadinessCancellation::GenerationChanged);
                             tick_interval = None;
                             fade_completed_emitted = false;
                             state.fan_out(FadeEvent::FadeAborted);
@@ -259,19 +278,30 @@ async fn run_engine(
             }
 
             _ = readiness_timeout_fut => {
-                if let Some(context) = state.readiness_timeout_context() {
-                    state.cancel_all_in_place();
+                if let Some(context) = state.timeout_readiness() {
                     tick_interval = None;
                     fade_completed_emitted = false;
-                    tracing::warn!(
-                        event = "fade_post_recall_ping_timeout",
-                        generation = context.generation,
-                        scene_index = context.scene_index,
-                        scene_name = %context.scene_name,
-                        observed_ping_count = context.observed_ping_count,
-                        timeout_ms = 5_000_u64,
-                        "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
-                    );
+                    if context.completion_owned {
+                        tracing::debug!(
+                            event = "fade_post_recall_ping_timeout",
+                            generation = context.generation,
+                            scene_index = context.scene_index,
+                            scene_name = %context.scene_name,
+                            observed_ping_count = context.observed_ping_count,
+                            timeout_ms = context.timeout_ms,
+                            "Fade readiness timed out after scene recall"
+                        );
+                    } else {
+                        tracing::warn!(
+                            event = "fade_post_recall_ping_timeout",
+                            generation = context.generation,
+                            scene_index = context.scene_index,
+                            scene_name = %context.scene_name,
+                            observed_ping_count = context.observed_ping_count,
+                            timeout_ms = context.timeout_ms,
+                            "Fades were aborted because LV1 did not resume its keepalive cadence after scene recall"
+                        );
+                    }
                     state.fan_out(FadeEvent::FadeAborted);
                 }
             }
@@ -346,6 +376,11 @@ async fn run_engine(
             }
         }
     }
+
+    if state.is_active() || state.is_waiting_for_readiness() {
+        state.cancel_all_in_place(RecallReadinessCancellation::ActorStopped);
+        state.fan_out(FadeEvent::FadeAborted);
+    }
 }
 
 fn maybe_complete_fade(
@@ -366,7 +401,6 @@ fn complete_fade(
     if *fade_completed_emitted {
         return;
     }
-    state.clear_readiness_barrier();
     *fade_completed_emitted = true;
     *tick_interval = None;
     tracing::info!(event = "fade_completed", "Fade completed");
@@ -380,6 +414,7 @@ async fn handle_recall_scene_fade(
     config: crate::fade::types::FadeConfig,
     same_scene_behavior: SameSceneRecallBehavior,
     expected_generation: Option<u64>,
+    readiness: RecallReadinessRequest,
 ) -> Result<RecallSceneFadeOutcome, AppCommandError> {
     if let Some(expected_generation) = expected_generation
         && runtime_generation.current().await != expected_generation
@@ -387,7 +422,8 @@ async fn handle_recall_scene_fade(
         return Err(AppCommandError::StaleGeneration);
     }
 
-    if config.targets.is_empty() {
+    let completion_owned = readiness.completion.is_some();
+    if config.targets.is_empty() && !completion_owned {
         return Ok(RecallSceneFadeOutcome::Started);
     }
 
@@ -407,6 +443,19 @@ async fn handle_recall_scene_fade(
 
     let now = Instant::now();
     let duration = Duration::from_millis(config.duration_ms);
+
+    if config.targets.is_empty() {
+        start_readiness_barrier(
+            state,
+            expected_generation.unwrap_or(state.generation()),
+            config.scene.index,
+            config.scene.name,
+            snapshot.ping_sequence,
+            now,
+            readiness,
+        );
+        return Ok(RecallSceneFadeOutcome::Started);
+    }
 
     if duration.is_zero() {
         let writes = config
@@ -445,6 +494,17 @@ async fn handle_recall_scene_fade(
                 parameter: target.parameter,
             });
             tracing::debug!(event = "fade_channel_completed", group = target.group, channel = target.channel, parameter = ?target.parameter, "Fade channel completed: group {}, channel {}", target.group, target.channel);
+        }
+        if completion_owned {
+            start_readiness_barrier(
+                state,
+                expected_generation.unwrap_or(state.generation()),
+                config.scene.index,
+                config.scene.name,
+                snapshot.ping_sequence,
+                now,
+                readiness,
+            );
         }
         return Ok(RecallSceneFadeOutcome::Started);
     }
@@ -529,31 +589,89 @@ async fn handle_recall_scene_fade(
         }
     };
 
+    start_readiness_barrier(
+        state,
+        expected_generation.unwrap_or(state.generation()),
+        config.scene.index,
+        config.scene.name,
+        snapshot.ping_sequence,
+        now,
+        readiness,
+    );
+
+    Ok(outcome)
+}
+
+async fn handle_wait_for_recall_readiness(
+    runtime_generation: &RuntimeGeneration,
+    lv1: &Lv1ActorHandle,
+    state: &mut EngineState,
+    scene: crate::fade::types::FadeSceneIdentity,
+    expected_generation: u64,
+    readiness: RecallReadinessRequest,
+) -> Result<(), AppCommandError> {
+    if runtime_generation.current().await != expected_generation {
+        return Err(AppCommandError::StaleGeneration);
+    }
+
+    let (reply, rx) = oneshot::channel();
+    lv1.send(Lv1Command::GetState { reply })
+        .await
+        .map_err(|error| match error {
+            crate::lv1::Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+            other => AppCommandError::CommandFailed(other.to_string()),
+        })?;
+    let snapshot = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
+    if runtime_generation.current().await != expected_generation {
+        return Err(AppCommandError::StaleGeneration);
+    }
+    if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
+        return Err(AppCommandError::Lv1Unavailable);
+    }
+
+    start_readiness_barrier(
+        state,
+        expected_generation,
+        scene.index,
+        scene.name,
+        snapshot.ping_sequence,
+        Instant::now(),
+        readiness,
+    );
+
+    Ok(())
+}
+
+fn start_readiness_barrier(
+    state: &mut EngineState,
+    generation: u64,
+    scene_index: i32,
+    scene_name: String,
+    ping_sequence: u64,
+    now: Instant,
+    readiness: RecallReadinessRequest,
+) {
     let readiness_action = if state.is_waiting_for_readiness() {
         "reset"
     } else {
         "started"
     };
-    let scene_index = config.scene.index;
-    let scene_name = config.scene.name;
     state.start_or_reset_readiness(
-        expected_generation.unwrap_or(state.generation()),
+        generation,
         scene_index,
         scene_name.clone(),
-        snapshot.ping_sequence,
+        ping_sequence,
         now,
-        now,
+        readiness,
     );
     tracing::debug!(
         event = "fade_post_recall_ping_barrier",
         action = readiness_action,
-        generation = expected_generation.unwrap_or(state.generation()),
+        generation,
         scene_index,
         scene_name = %scene_name,
         "Fade readiness barrier {readiness_action} after scene recall"
     );
-
-    Ok(outcome)
 }
 
 fn live_value_for_snapshot(channel: &crate::lv1::ChannelInfo, target: &FadeTarget) -> Option<f64> {
@@ -745,10 +863,10 @@ fn handle_pan_family_pan_report(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fade::SameSceneRecallBehavior;
     use crate::fade::curve::FadeCurve;
     use crate::fade::handle::FadeEngineHandle;
     use crate::fade::types::{FadeConfig, FadeSceneIdentity, FadeTarget};
+    use crate::fade::{RecallReadinessError, SameSceneRecallBehavior};
     use crate::lv1::{
         ConnectionStatus, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1StateSnapshot,
         Lv1WriteParameter, test_actor_handle,
@@ -874,6 +992,9 @@ mod tests {
                 config,
                 same_scene_behavior,
                 expected_generation,
+                readiness: RecallReadinessRequest::detached(
+                    Instant::now() + Duration::from_secs(5),
+                ),
                 reply: Some(reply),
             })
             .await
@@ -1020,6 +1141,28 @@ mod tests {
                 "cancellation must emit only one FadeAborted event"
             );
         }
+    }
+
+    async fn start_owned_readiness(
+        engine: &FadeEngineHandle,
+        deadline: Instant,
+    ) -> oneshot::Receiver<Result<(), RecallReadinessError>> {
+        let (completion, completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+        engine
+            .send(FadeCommand::WaitForRecallReadiness {
+                scene: scene(2, "Verse"),
+                expected_generation: 7,
+                readiness: RecallReadinessRequest {
+                    deadline,
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        completed
     }
 
     async fn assert_pan_family_aux_event_does_not_override(parameter: FadeParameter) {
@@ -1743,6 +1886,7 @@ mod tests {
             ),
             SameSceneRecallBehavior::FinishActiveTargets,
             Some(2),
+            RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
         )
         .await;
 
@@ -1790,6 +1934,7 @@ mod tests {
             ),
             SameSceneRecallBehavior::FinishActiveTargets,
             Some(2),
+            RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
         )
         .await;
 
@@ -2025,6 +2170,270 @@ mod tests {
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn readiness_only_command_completes_after_two_newer_pings() {
+        let (event_bus, engine, mut writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let (completion, mut completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+
+        engine
+            .send(FadeCommand::WaitForRecallReadiness {
+                scene: scene(2, "Verse"),
+                expected_generation: 7,
+                readiness: RecallReadinessRequest {
+                    deadline: Instant::now() + Duration::from_secs(5),
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        publish_ping(&event_bus, 7, 11);
+        assert!(completed.try_recv().is_err());
+        publish_ping(&event_bus, 7, 12);
+        assert_eq!(completed.await.unwrap(), Ok(()));
+        assert!(writes.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn newer_readiness_command_cancels_previous_completion_as_superseded() {
+        let (_event_bus, engine, _writes) = spawn_runtime_for_ping_gate_test(vec![
+            connected_snapshot(10, vec![]),
+            connected_snapshot(11, vec![]),
+        ])
+        .await;
+        let (first_completion, first_completed) = oneshot::channel();
+        let (first_reply, first_accepted) = oneshot::channel();
+        let (second_reply, second_accepted) = oneshot::channel();
+
+        engine
+            .send(FadeCommand::WaitForRecallReadiness {
+                scene: scene(1, "Intro"),
+                expected_generation: 7,
+                readiness: RecallReadinessRequest {
+                    deadline: Instant::now() + Duration::from_secs(5),
+                    completion: Some(first_completion),
+                },
+                reply: Some(first_reply),
+            })
+            .await
+            .unwrap();
+        assert_eq!(first_accepted.await.unwrap(), Ok(()));
+
+        engine
+            .send(FadeCommand::WaitForRecallReadiness {
+                scene: scene(2, "Verse"),
+                expected_generation: 7,
+                readiness: RecallReadinessRequest::detached(
+                    Instant::now() + Duration::from_secs(5),
+                ),
+                reply: Some(second_reply),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(second_accepted.await.unwrap(), Ok(()));
+        assert_eq!(
+            first_completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::Superseded,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn readiness_only_command_uses_its_absolute_deadline() {
+        let (_event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let (completion, completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+
+        engine
+            .send(FadeCommand::WaitForRecallReadiness {
+                scene: scene(2, "Verse"),
+                expected_generation: 7,
+                readiness: RecallReadinessRequest {
+                    deadline: Instant::now() + Duration::from_millis(200),
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        tokio::time::advance(Duration::from_millis(200)).await;
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::TimedOut {
+                generation: 7,
+                scene_index: 2,
+                scene_name: "Verse".to_string(),
+                observed_ping_count: 0,
+            }),
+        );
+    }
+
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
+    async fn pings_after_readiness_deadline_time_out_without_releasing_or_writing() {
+        let (event_bus, engine, mut writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
+                10,
+                vec![channel_info(0, -20.0, None)],
+            )])
+            .await;
+        let (completion, completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+
+        engine
+            .send(FadeCommand::RecallSceneFade {
+                config: fade_config(
+                    scene(2, "Verse"),
+                    vec![FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -10.0,
+                    }],
+                    1_000,
+                ),
+                same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                expected_generation: Some(7),
+                readiness: RecallReadinessRequest {
+                    deadline: Instant::now() + Duration::from_millis(200),
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        tokio::time::advance(Duration::from_millis(201)).await;
+        publish_ping(&event_bus, 7, 11);
+        publish_ping(&event_bus, 7, 12);
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::TimedOut {
+                generation: 7,
+                scene_index: 2,
+                scene_name: "Verse".to_string(),
+                observed_ping_count: 0,
+            }),
+        );
+        assert_no_write_after_cancellation(&mut writes).await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn abort_all_cancels_readiness_completion() {
+        let (_event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        engine
+            .send(FadeCommand::AbortAll { reply: None })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::Aborted,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_cancels_readiness_completion() {
+        let (event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        event_bus.publish_lv1(
+            7,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::Disconnected,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn generation_change_cancels_readiness_completion() {
+        let (event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        event_bus.publish(AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 8 },
+        ));
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::GenerationChanged,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn actor_stop_cancels_readiness_completion() {
+        let (_event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let completed =
+            start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
+
+        drop(engine);
+
+        assert_eq!(
+            completed.await.unwrap(),
+            Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::ActorStopped,
+            )),
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn empty_recall_with_completion_waits_without_completing_the_fade() {
+        let (event_bus, engine, _writes) =
+            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(10, vec![])]).await;
+        let mut events = event_bus.subscribe();
+        let (completion, completed) = oneshot::channel();
+        let (reply, accepted) = oneshot::channel();
+
+        engine
+            .send(FadeCommand::RecallSceneFade {
+                config: fade_config(scene(2, "Verse"), vec![], 1_000),
+                same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                expected_generation: Some(7),
+                readiness: RecallReadinessRequest {
+                    deadline: Instant::now() + Duration::from_secs(5),
+                    completion: Some(completion),
+                },
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.await.unwrap(), Ok(()));
+        assert!(events.try_recv().is_err());
+        publish_ping(&event_bus, 7, 11);
+        publish_ping(&event_bus, 7, 12);
+        assert_eq!(completed.await.unwrap(), Ok(()));
     }
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
@@ -3543,7 +3952,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
-    async fn last_manual_override_clears_gate_without_timeout_abort_or_warning() {
+    async fn last_manual_override_keeps_readiness_barrier_until_timeout() {
         let captured = TracingCapture::new();
         let _guard = captured.install();
         let (event_bus, engine, mut write_rx) =
@@ -3591,10 +4000,10 @@ mod tests {
             }
         }
         tokio::time::advance(Duration::from_secs(5)).await;
-        assert_no_additional_fade_abort(&mut events).await;
+        wait_for_fade_aborted(&mut events).await;
         assert_no_write_after_cancellation(&mut write_rx).await;
         assert!(
-            !captured
+            captured
                 .events()
                 .iter()
                 .any(|event| event.event.as_deref() == Some("fade_post_recall_ping_timeout"))
@@ -3602,50 +4011,27 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
-    async fn qualifying_ping_at_readiness_deadline_releases_before_timeout() {
+    async fn ping_at_readiness_deadline_times_out() {
         for _ in 0..8 {
             let (event_bus, engine, mut write_rx) =
-                spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
-                    40,
-                    vec![channel_info(0, -20.0, None)],
-                )])
-                .await;
-            let mut events = event_bus.subscribe();
-
-            start_fade_for_generation(
-                &engine,
-                fade_config(
-                    scene(1, "Intro"),
-                    vec![FadeTarget {
-                        group: 0,
-                        channel: 0,
-                        parameter: FadeParameter::FaderDb,
-                        target: -10.0,
-                    }],
-                    1_000,
-                ),
-                Some(7),
-            )
-            .await
-            .unwrap();
+                spawn_runtime_for_ping_gate_test(vec![connected_snapshot(40, vec![])]).await;
+            let completed =
+                start_owned_readiness(&engine, Instant::now() + Duration::from_secs(5)).await;
             event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 41 });
             tokio::task::yield_now().await;
 
             tokio::time::advance(Duration::from_secs(5)).await;
             event_bus.publish_lv1(7, Lv1Event::PingReceived { sequence: 42 });
-            tokio::task::yield_now().await;
-            assert_no_additional_fade_abort(&mut events).await;
-
-            tokio::time::advance(Duration::from_millis(40)).await;
-            let writes = write_rx
-                .recv()
-                .await
-                .expect("boundary ping should release fade");
-            assert!(
-                writes
-                    .iter()
-                    .any(|write| write.parameter == Lv1WriteParameter::FaderDb)
+            assert_eq!(
+                completed.await.unwrap(),
+                Err(RecallReadinessError::TimedOut {
+                    generation: 7,
+                    scene_index: 2,
+                    scene_name: "Verse".to_string(),
+                    observed_ping_count: 1,
+                }),
             );
+            assert_no_write_after_cancellation(&mut write_rx).await;
         }
     }
 

@@ -128,7 +128,7 @@ impl ProjectionCache {
                 self.lv1_snapshot = None;
             }
             Lv1Event::PingReceived { .. } => return false,
-            Lv1Event::SceneChanged(scene) => {
+            Lv1Event::SceneChanged(crate::lv1::SceneObservation { scene, .. }) => {
                 self.ensure_lv1_snapshot().scene = Some(scene.clone());
             }
             Lv1Event::SceneListChanged(scene_list) => {
@@ -411,9 +411,12 @@ mod tests {
         cache.apply_lv1_event(0, &Lv1Event::Connected);
         cache.apply_lv1_event(
             0,
-            &Lv1Event::SceneChanged(SceneState {
-                index: 3,
-                name: "Bridge".to_string(),
+            &Lv1Event::SceneChanged(crate::lv1::SceneObservation {
+                sequence: 1,
+                scene: SceneState {
+                    index: 3,
+                    name: "Bridge".to_string(),
+                },
             }),
         );
         cache.apply_lv1_event(

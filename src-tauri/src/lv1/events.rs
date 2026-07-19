@@ -1,4 +1,4 @@
-use super::types::{ChannelInfo, SceneListEntry, SceneState};
+use super::types::{ChannelInfo, SceneListEntry, SceneObservation};
 use thiserror::Error;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -24,7 +24,7 @@ pub enum Lv1Event {
     PingReceived {
         sequence: u64,
     },
-    SceneChanged(SceneState),
+    SceneChanged(SceneObservation),
     SceneListChanged(Vec<SceneListEntry>),
     FaderChanged {
         group: i32,
