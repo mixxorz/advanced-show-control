@@ -1439,9 +1439,10 @@ async fn dispatch_next_recall(
     while let Some(queued) = recall_queue.take_next() {
         let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
             Ok(snapshot) => snapshot,
-            Err(error) => {
-                log_explicit_recall_blocked(queued.internal_scene_id, &error);
-                let _ = queued.reply.send(Err(error));
+            Err(_) => {
+                let _ = queued.reply.send(Err(AppCommandError::RecallCanceled(
+                    "LV1 state is unavailable".to_string(),
+                )));
                 cancel_recall_queue(recall_queue, "LV1 state is unavailable", true);
                 return;
             }
@@ -1640,6 +1641,8 @@ mod tests {
         event_bus: AppEventBus,
         runtime_generation: RuntimeGeneration,
         snapshot: tokio::sync::watch::Sender<Lv1StateSnapshot>,
+        close_lv1_peer: Option<oneshot::Sender<()>>,
+        lv1_peer_closed: Option<oneshot::Receiver<()>>,
         lv1_recalls: tokio::sync::mpsc::Receiver<ObservedLv1Recall>,
         fade_commands: tokio::sync::mpsc::Receiver<QueueFadeCommand>,
     }
@@ -1819,26 +1822,36 @@ mod tests {
             let (snapshot, snapshot_rx) = tokio::sync::watch::channel(initial_snapshot);
             let (recall_tx, lv1_recalls) = tokio::sync::mpsc::channel(8);
             let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+            let (close_lv1_peer, close_lv1_peer_rx) = oneshot::channel();
+            let (lv1_peer_closed, lv1_peer_closed_rx) = oneshot::channel();
             tokio::spawn(async move {
-                while let Some(command) = lv1_rx.recv().await {
-                    match command {
-                        Lv1Command::GetState { reply } => {
-                            let _ = reply.send(snapshot_rx.borrow().clone());
-                        }
-                        Lv1Command::RecallScene {
-                            scene_index,
-                            reply: Some(reply),
-                        } => {
-                            recall_tx
-                                .send(ObservedLv1Recall { scene_index, reply })
-                                .await
-                                .unwrap();
-                        }
-                        Lv1Command::RecallScene { reply: None, .. } => {
-                            panic!("queued recalls require an LV1 reply");
-                        }
-                        _ => panic!("unexpected LV1 command"),
+                tokio::select! {
+                    biased;
+                    _ = close_lv1_peer_rx => {
+                        let _ = lv1_peer_closed.send(());
                     }
+                    _ = async {
+                        while let Some(command) = lv1_rx.recv().await {
+                            match command {
+                                Lv1Command::GetState { reply } => {
+                                    let _ = reply.send(snapshot_rx.borrow().clone());
+                                }
+                                Lv1Command::RecallScene {
+                                    scene_index,
+                                    reply: Some(reply),
+                                } => {
+                                    recall_tx
+                                        .send(ObservedLv1Recall { scene_index, reply })
+                                        .await
+                                        .unwrap();
+                                }
+                                Lv1Command::RecallScene { reply: None, .. } => {
+                                    panic!("queued recalls require an LV1 reply");
+                                }
+                                _ => panic!("unexpected LV1 command"),
+                            }
+                        }
+                    } => {}
                 }
             });
 
@@ -1884,6 +1897,8 @@ mod tests {
                 event_bus,
                 runtime_generation,
                 snapshot,
+                close_lv1_peer: Some(close_lv1_peer),
+                lv1_peer_closed: Some(lv1_peer_closed_rx),
                 lv1_recalls,
                 fade_commands,
             }
@@ -1941,6 +1956,19 @@ mod tests {
                 generation,
                 event: Lv1Event::PingReceived { sequence },
             });
+        }
+
+        async fn close_lv1_peer(&mut self) {
+            self.close_lv1_peer
+                .take()
+                .expect("LV1 peer should remain available")
+                .send(())
+                .expect("LV1 peer should accept closure");
+            self.lv1_peer_closed
+                .take()
+                .expect("LV1 peer closure should be observable")
+                .await
+                .expect("LV1 peer should close its command receiver");
         }
     }
 
@@ -2526,6 +2554,148 @@ mod tests {
             waiting.await.unwrap(),
             Err(AppCommandError::RecallCanceled(reason)) if reason == "Fade engine is unavailable"
         ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recall_queue_cancels_waiting_when_lv1_peer_closes_during_completion_dispatch() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+            queue_scene(3, "Chorus"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let first_dispatch = fixture.next_lv1_recall().await;
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        let third = fixture.send_recall(uuid::Uuid::from_u128(3)).await;
+
+        let recalled_scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_current_scene(recalled_scene.clone());
+        fixture.publish_scene_observation(1, 11, recalled_scene);
+        tokio::time::advance(Duration::from_millis(30)).await;
+        yield_to_actor().await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+
+        fixture.close_lv1_peer().await;
+        fixture.publish_ping(1, 11);
+        fixture.publish_ping(1, 12);
+        yield_to_actor().await;
+
+        for reply in [second, third] {
+            assert!(matches!(
+                reply.await.unwrap(),
+                Err(AppCommandError::RecallCanceled(reason)) if reason == "LV1 state is unavailable"
+            ));
+        }
+        assert!(fixture.try_next_lv1_recall().is_none());
+        assert!(fixture.fade_commands.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recall_queue_skips_blocked_fresh_revalidation_and_dispatches_later_valid_recall() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+            queue_scene(3, "Chorus"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let first_dispatch = fixture.next_lv1_recall().await;
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        let third = fixture.send_recall(uuid::Uuid::from_u128(3)).await;
+
+        let recalled_scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(recalled_scene.clone()),
+            scene_list: vec![
+                scene_entry(1, "Intro"),
+                scene_entry(2, "Renamed"),
+                scene_entry(3, "Chorus"),
+            ],
+            channels: vec![],
+            ping_sequence: 10,
+        });
+        fixture.publish_scene_observation(1, 11, recalled_scene);
+        tokio::time::advance(Duration::from_millis(30)).await;
+        yield_to_actor().await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+
+        fixture.publish_ping(1, 11);
+        fixture.publish_ping(1, 12);
+        let third_dispatch = fixture.next_lv1_recall().await;
+        assert_eq!(third_dispatch.scene_index, 3);
+        third_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 12,
+        }));
+
+        assert!(matches!(
+            second.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message)) if message == "Recall blocked: scene identity mismatch"
+        ));
+        assert!(third.await.unwrap().is_ok());
+        assert!(fixture.fade_commands.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn recall_queue_cancels_later_waiting_when_lv1_recall_dispatch_fails() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+            queue_scene(3, "Chorus"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let first_dispatch = fixture.next_lv1_recall().await;
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        let third = fixture.send_recall(uuid::Uuid::from_u128(3)).await;
+
+        let recalled_scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_current_scene(recalled_scene.clone());
+        fixture.publish_scene_observation(1, 11, recalled_scene);
+        tokio::time::advance(Duration::from_millis(30)).await;
+        yield_to_actor().await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
+
+        fixture.publish_ping(1, 11);
+        fixture.publish_ping(1, 12);
+        let second_dispatch = fixture.next_lv1_recall().await;
+        assert_eq!(second_dispatch.scene_index, 2);
+        second_dispatch.reply(Err(Lv1ActorError::CommandSendFailed));
+
+        assert!(matches!(
+            second.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message))
+                if message == "LV1 actor failed to send command to LV1"
+        ));
+        assert!(matches!(
+            third.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason))
+                if reason == "LV1 recall command is unavailable"
+        ));
+        assert!(fixture.try_next_lv1_recall().is_none());
+        assert!(fixture.fade_commands.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -3448,6 +3618,7 @@ mod tests {
             }));
             assert!(first.await.unwrap().is_ok());
             let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+            confirm_runtime_signal_queue_admission(&fixture.handle).await;
 
             drop(fixture);
             second
