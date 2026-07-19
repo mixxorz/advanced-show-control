@@ -1,21 +1,22 @@
 use super::map_app_command_error;
-use crate::fade::FadeCommand;
 use crate::lifecycle::AppLifecycle;
 use crate::runtime::errors::AppCommandError;
+use crate::scenes::ScenesCommand;
 use tauri::State;
 use tokio::sync::oneshot;
 
 #[tauri::command]
 pub async fn abort_all_fades(lifecycle: State<'_, AppLifecycle>) -> Result<(), String> {
-    let fade = lifecycle
-        .current_fade()
+    let scenes = lifecycle
+        .current_scene_recall_fader()
         .await
-        .ok_or(AppCommandError::FadeUnavailable)
+        .ok_or(AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     let (reply, rx) = oneshot::channel();
-    fade.send(FadeCommand::AbortAll { reply: Some(reply) })
+    scenes
+        .send(ScenesCommand::AbortAll { reply })
         .await
-        .map_err(|_| AppCommandError::FadeUnavailable)
+        .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
     rx.await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
