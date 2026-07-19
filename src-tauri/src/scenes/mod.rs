@@ -4,6 +4,7 @@ mod commands;
 mod events;
 mod handle;
 mod policy;
+mod recall_queue;
 mod scene_alignment;
 mod state;
 mod types;

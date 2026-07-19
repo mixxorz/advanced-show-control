@@ -15,6 +15,10 @@ use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::handle::ScenesHandle;
 use crate::scenes::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
+use crate::scenes::recall_queue::{
+    InFlightPhase, InFlightRecall, QueuedRecall, RECALL_COMPLETION_TIMEOUT, RECALL_QUEUE_CAPACITY,
+    RecallQueue,
+};
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
     RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult, ScenesEvent,
@@ -157,6 +161,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     } = task;
 
     let mut recall_state = ScenesState::default();
+    let mut recall_queue = RecallQueue::default();
     let mut settings = initial_settings;
     let mut pending_scene: Option<PendingSceneObservation> = None;
 
@@ -184,6 +189,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     if dispatch_scenes_command(
                         command,
                         &mut recall_state,
+                        &mut recall_queue,
                         &peers,
                         &event_bus,
                         generation,
@@ -259,6 +265,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 if dispatch_scenes_command(
                     command,
                     &mut recall_state,
+                    &mut recall_queue,
                     &peers,
                     &event_bus,
                     generation,
@@ -322,6 +329,7 @@ enum ScenesCommandDispatch {
 async fn dispatch_scenes_command(
     command: ScenesCommand,
     recall_state: &mut ScenesState,
+    recall_queue: &mut RecallQueue,
     peers: &ScenesPeers,
     event_bus: &AppEventBus,
     generation: u64,
@@ -561,16 +569,16 @@ async fn dispatch_scenes_command(
             reply,
         } => {
             let peer_handles = peers.handles();
-            let scene_document = recall_state.snapshot();
-            let _ = reply.send(
-                handle_explicit_recall_scene(
-                    lockout,
-                    &peer_handles.lv1,
-                    &scene_document,
-                    internal_scene_id,
-                )
-                .await,
-            );
+            admit_explicit_recall_scene(
+                lockout,
+                &peer_handles.lv1,
+                recall_state,
+                recall_queue,
+                generation,
+                internal_scene_id,
+                reply,
+            )
+            .await;
         }
         ScenesCommand::Shutdown => return ScenesCommandDispatch::Shutdown,
     }
@@ -866,18 +874,127 @@ fn scene_label(scene: &SceneState) -> String {
     format!("{}: {}", scene.index, scene.name)
 }
 
-async fn handle_explicit_recall_scene(
+async fn admit_explicit_recall_scene(
     lockout: &ShowLockoutReader,
     lv1: &Lv1ActorHandle,
-    scene_document: &SceneDocument,
+    recall_state: &ScenesState,
+    recall_queue: &mut RecallQueue,
+    generation: u64,
     internal_scene_id: uuid::Uuid,
-) -> Result<RecallSceneResult, AppCommandError> {
+    reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
+) {
     tracing::debug!(
         event = "scene_recall_requested",
         internal_scene_id = %internal_scene_id,
         "Scene recall requested"
     );
 
+    let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            log_explicit_recall_blocked(internal_scene_id, &error);
+            let _ = reply.send(Err(error));
+            return;
+        }
+    };
+    let scene_document = recall_state.snapshot();
+    if let Err(error) =
+        validate_explicit_recall(lockout, &scene_document, &lv1_snapshot, internal_scene_id)
+    {
+        log_explicit_recall_blocked(internal_scene_id, &error);
+        let _ = reply.send(Err(error));
+        return;
+    }
+    if recall_queue.is_full() {
+        tracing::warn!(
+            event = "scene_recall_queue_full",
+            internal_scene_id = %internal_scene_id,
+            capacity = RECALL_QUEUE_CAPACITY,
+            "Scene recall blocked because the recall queue is full"
+        );
+        let _ = reply.send(Err(AppCommandError::RecallQueueFull));
+        return;
+    }
+
+    recall_queue.admit(QueuedRecall {
+        request_id: uuid::Uuid::new_v4(),
+        internal_scene_id,
+        reply,
+    });
+    if recall_queue.in_flight.is_none() {
+        dispatch_next_recall(lockout, lv1, recall_state, recall_queue, generation).await;
+    }
+}
+
+async fn dispatch_next_recall(
+    lockout: &ShowLockoutReader,
+    lv1: &Lv1ActorHandle,
+    recall_state: &ScenesState,
+    recall_queue: &mut RecallQueue,
+    generation: u64,
+) {
+    while let Some(queued) = recall_queue.take_next() {
+        let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                log_explicit_recall_blocked(queued.internal_scene_id, &error);
+                let _ = queued.reply.send(Err(error));
+                continue;
+            }
+        };
+        let scene_document = recall_state.snapshot();
+        let result = match validate_explicit_recall(
+            lockout,
+            &scene_document,
+            &lv1_snapshot,
+            queued.internal_scene_id,
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                log_explicit_recall_blocked(queued.internal_scene_id, &error);
+                let _ = queued.reply.send(Err(error));
+                continue;
+            }
+        };
+
+        let dispatch = send_explicit_recall(lv1, result.lv1_scene_index).await;
+        let dispatch = match dispatch {
+            Ok(dispatch) => dispatch,
+            Err(error) => {
+                log_explicit_recall_blocked(queued.internal_scene_id, &error);
+                let _ = queued.reply.send(Err(error));
+                recall_queue.drain_pending(AppCommandError::RecallCanceled(
+                    "LV1 recall command is unavailable".to_string(),
+                ));
+                return;
+            }
+        };
+
+        tracing::debug!(
+            event = "scene_recall_command_sent",
+            internal_scene_id = %result.scene.internal_scene_id,
+            scene_index = result.scene.scene_index,
+            scene_name = %result.scene.scene_name,
+            "Scene recall command sent: {}",
+            result.scene.scene_name
+        );
+        recall_queue.set_in_flight(InFlightRecall {
+            request_id: queued.request_id,
+            generation,
+            result: result.clone(),
+            phase: InFlightPhase::AwaitingObservation {
+                dispatch_sequence: dispatch.scene_observation_sequence,
+                deadline: std::time::Instant::now() + RECALL_COMPLETION_TIMEOUT,
+            },
+        });
+        let _ = queued.reply.send(Ok(result));
+        return;
+    }
+}
+
+async fn explicit_recall_lv1_snapshot(
+    lv1: &Lv1ActorHandle,
+) -> Result<Lv1StateSnapshot, AppCommandError> {
     let (reply, rx) = oneshot::channel();
     lv1.send(Lv1Command::GetState { reply })
         .await
@@ -886,47 +1003,32 @@ async fn handle_explicit_recall_scene(
                 "Recall blocked: LV1 state is unavailable".to_string(),
             ),
             other => AppCommandError::CommandFailed(other.to_string()),
-        })
-        .map_err(|error| {
-            tracing::warn!(
-                event = "scene_recall_blocked",
-                internal_scene_id = %internal_scene_id,
-                reason = %error,
-                "Scene recall blocked: {error}"
-            );
-            error
         })?;
-    let lv1_snapshot = rx
-        .await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(|error| {
-            tracing::warn!(
-                event = "scene_recall_blocked",
-                internal_scene_id = %internal_scene_id,
-                reason = %error,
-                "Scene recall blocked: {error}"
-            );
-            error
-        })?;
-    let result = crate::scenes::validate_recall_scene_request(
+    rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)
+}
+
+fn validate_explicit_recall(
+    lockout: &ShowLockoutReader,
+    scene_document: &SceneDocument,
+    lv1_snapshot: &Lv1StateSnapshot,
+    internal_scene_id: uuid::Uuid,
+) -> Result<RecallSceneResult, AppCommandError> {
+    crate::scenes::validate_recall_scene_request(
         lockout.current(),
         scene_document,
-        &lv1_snapshot,
+        lv1_snapshot,
         internal_scene_id,
     )
-    .map_err(|message| {
-        tracing::warn!(
-            event = "scene_recall_blocked",
-            internal_scene_id = %internal_scene_id,
-            reason = %message,
-            "Scene recall blocked: {message}"
-        );
-        AppCommandError::CommandFailed(message)
-    })?;
+    .map_err(AppCommandError::CommandFailed)
+}
 
+async fn send_explicit_recall(
+    lv1: &Lv1ActorHandle,
+    scene_index: i32,
+) -> Result<crate::lv1::RecallSceneDispatch, AppCommandError> {
     let (reply, rx) = oneshot::channel();
     lv1.send(Lv1Command::RecallScene {
-        scene_index: result.lv1_scene_index,
+        scene_index,
         reply: Some(reply),
     })
     .await
@@ -939,16 +1041,16 @@ async fn handle_explicit_recall_scene(
         .map_err(|error| match error {
             Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
             other => AppCommandError::CommandFailed(other.to_string()),
-        })?;
-    tracing::debug!(
-        event = "scene_recall_command_sent",
-        internal_scene_id = %result.scene.internal_scene_id,
-        scene_index = result.scene.scene_index,
-        scene_name = %result.scene.scene_name,
-        "Scene recall command sent: {}",
-        result.scene.scene_name
+        })
+}
+
+fn log_explicit_recall_blocked(internal_scene_id: uuid::Uuid, error: &AppCommandError) {
+    tracing::warn!(
+        event = "scene_recall_blocked",
+        internal_scene_id = %internal_scene_id,
+        reason = %error,
+        "Scene recall blocked: {error}"
     );
-    Ok(result)
 }
 
 async fn fresh_lv1_snapshot(
@@ -1005,6 +1107,284 @@ mod tests {
     fn test_lockout_reader() -> ShowLockoutReader {
         let (_show, _task, _peers, lockout) = crate::show::build_show_actor(AppEventBus::default());
         lockout
+    }
+
+    struct ObservedLv1Recall {
+        scene_index: i32,
+        reply: oneshot::Sender<Result<RecallSceneDispatch, Lv1ActorError>>,
+    }
+
+    impl ObservedLv1Recall {
+        fn reply(self, result: Result<RecallSceneDispatch, Lv1ActorError>) {
+            let _ = self.reply.send(result);
+        }
+    }
+
+    struct RecallQueueFixture {
+        handle: ScenesHandle,
+        show: crate::show::ShowStateHandle,
+        snapshot: tokio::sync::watch::Sender<Lv1StateSnapshot>,
+        lv1_recalls: tokio::sync::mpsc::Receiver<ObservedLv1Recall>,
+    }
+
+    impl RecallQueueFixture {
+        async fn connected_with_scenes(scene_configs: Vec<SceneConfig>) -> Self {
+            let event_bus = AppEventBus::default();
+            let (show, show_task, _show_peers, lockout) =
+                crate::show::build_show_actor(event_bus.clone());
+            show_task.spawn();
+
+            let initial_snapshot = Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: scene_configs
+                    .iter()
+                    .map(|scene| SceneListEntry {
+                        index: scene.scene_index.unwrap(),
+                        name: scene.scene_name.clone(),
+                    })
+                    .collect(),
+                channels: vec![],
+                ping_sequence: 10,
+            };
+            let (snapshot, snapshot_rx) = tokio::sync::watch::channel(initial_snapshot);
+            let (recall_tx, lv1_recalls) = tokio::sync::mpsc::channel(8);
+            let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+            tokio::spawn(async move {
+                while let Some(command) = lv1_rx.recv().await {
+                    match command {
+                        Lv1Command::GetState { reply } => {
+                            let _ = reply.send(snapshot_rx.borrow().clone());
+                        }
+                        Lv1Command::RecallScene {
+                            scene_index,
+                            reply: Some(reply),
+                        } => {
+                            recall_tx
+                                .send(ObservedLv1Recall { scene_index, reply })
+                                .await
+                                .unwrap();
+                        }
+                        Lv1Command::RecallScene { reply: None, .. } => {
+                            panic!("queued recalls require an LV1 reply");
+                        }
+                        _ => panic!("unexpected LV1 command"),
+                    }
+                }
+            });
+
+            let runtime_generation = RuntimeGeneration::new();
+            runtime_generation.set(1).await;
+            let lv1 = crate::lv1::test_actor_handle(lv1_tx);
+            let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+            let (handle, task, peers) = build_scenes_actor(
+                1,
+                runtime_generation,
+                event_bus.clone(),
+                event_bus.subscribe(),
+                fake_settings_handle(AppSettings::default()),
+                AppSettings::default(),
+                lockout,
+            );
+            peers.set_peers(lv1, fade);
+            task.spawn();
+            install_scene_document(
+                &handle,
+                SceneDocument {
+                    scene_configs,
+                    selected_scene_internal_id: None,
+                },
+            )
+            .await;
+
+            Self {
+                handle,
+                show,
+                snapshot,
+                lv1_recalls,
+            }
+        }
+
+        async fn send_recall(
+            &self,
+            internal_scene_id: uuid::Uuid,
+        ) -> oneshot::Receiver<Result<RecallSceneResult, AppCommandError>> {
+            let (reply, rx) = oneshot::channel();
+            self.handle
+                .send(ScenesCommand::RecallScene {
+                    internal_scene_id,
+                    reply,
+                })
+                .await
+                .unwrap();
+            rx
+        }
+
+        async fn next_lv1_recall(&mut self) -> ObservedLv1Recall {
+            self.lv1_recalls.recv().await.expect("expected LV1 recall")
+        }
+
+        fn try_next_lv1_recall(&mut self) -> Option<ObservedLv1Recall> {
+            self.lv1_recalls.try_recv().ok()
+        }
+
+        fn set_snapshot(&self, snapshot: Lv1StateSnapshot) {
+            self.snapshot.send_replace(snapshot);
+        }
+    }
+
+    fn queue_scene(index: i32, name: &str) -> SceneConfig {
+        SceneConfig {
+            internal_scene_id: uuid::Uuid::from_u128(index as u128),
+            scene_index: Some(index),
+            scene_name: name.to_string(),
+            duration_ms: 1_000,
+            channel_configs: vec![],
+            scoped_channels: vec![],
+            scope_toggles: SceneScopeToggles::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn recall_queue_first_recall_dispatches_and_second_reply_stays_pending() {
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let mut second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+
+        let first_dispatch = fixture.next_lv1_recall().await;
+        assert_eq!(first_dispatch.scene_index, 1);
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert_eq!(first.await.unwrap().unwrap().lv1_scene_index, 1);
+
+        yield_to_actor().await;
+        assert!(second.try_recv().is_err());
+        assert!(fixture.try_next_lv1_recall().is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_capacity_counts_the_in_flight_recall() {
+        let scenes = (1..=9)
+            .map(|index| queue_scene(index, &format!("Scene {index}")))
+            .collect();
+        let mut fixture = RecallQueueFixture::connected_with_scenes(scenes).await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let first_dispatch = fixture.next_lv1_recall().await;
+        first_dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+
+        let mut waiting = Vec::new();
+        for index in 2..=8 {
+            waiting.push(fixture.send_recall(uuid::Uuid::from_u128(index)).await);
+        }
+        let ninth = fixture.send_recall(uuid::Uuid::from_u128(9)).await;
+
+        yield_to_actor().await;
+        assert_eq!(ninth.await.unwrap(), Err(AppCommandError::RecallQueueFull));
+        for reply in &mut waiting {
+            assert!(reply.try_recv().is_err());
+        }
+        assert!(fixture.try_next_lv1_recall().is_none());
+    }
+
+    #[tokio::test]
+    async fn recall_queue_rejects_invalid_requests_without_admission_or_dispatch() {
+        let mut fixture =
+            RecallQueueFixture::connected_with_scenes(vec![queue_scene(1, "Intro")]).await;
+
+        let (lockout_reply, lockout_rx) = oneshot::channel();
+        fixture
+            .show
+            .send(crate::show::ShowCommand::SetLockout {
+                enabled: true,
+                reply: Some(lockout_reply),
+            })
+            .await
+            .unwrap();
+        lockout_rx.await.unwrap();
+        let lockout = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        assert!(matches!(
+            lockout.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message)) if message == "Recall blocked: lockout is enabled"
+        ));
+
+        let (unlock_reply, unlock_rx) = oneshot::channel();
+        fixture
+            .show
+            .send(crate::show::ShowCommand::SetLockout {
+                enabled: false,
+                reply: Some(unlock_reply),
+            })
+            .await
+            .unwrap();
+        unlock_rx.await.unwrap();
+
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Disconnected,
+            scene: None,
+            scene_list: vec![scene_entry(1, "Intro")],
+            channels: vec![],
+            ping_sequence: 10,
+        });
+        let disconnected = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        assert!(matches!(
+            disconnected.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message)) if message == "Recall blocked: LV1 is disconnected"
+        ));
+
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![scene_entry(1, "Renamed")],
+            channels: vec![],
+            ping_sequence: 10,
+        });
+        let missing = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        assert!(matches!(
+            missing.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message)) if message == "Scene config not found"
+        ));
+
+        let mismatch = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        assert!(matches!(
+            mismatch.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message)) if message == "Recall blocked: scene identity mismatch"
+        ));
+
+        assert!(fixture.try_next_lv1_recall().is_none());
+
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![scene_entry(1, "Intro")],
+            channels: vec![],
+            ping_sequence: 10,
+        });
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let mut waiting = Vec::new();
+        for _ in 0..7 {
+            waiting.push(fixture.send_recall(uuid::Uuid::from_u128(1)).await);
+        }
+        let ninth = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+
+        yield_to_actor().await;
+        assert_eq!(ninth.await.unwrap(), Err(AppCommandError::RecallQueueFull));
+        for reply in &mut waiting {
+            assert!(reply.try_recv().is_err());
+        }
+        assert!(fixture.try_next_lv1_recall().is_none());
     }
 
     async fn arm_recall_state(event_bus: &AppEventBus) {
