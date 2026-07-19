@@ -419,7 +419,7 @@ mod tests {
     use crate::runtime::events::AppEvent;
     use crate::scenes::{RecallSceneResult, SceneConfig, SceneScopeToggles, ScenesCommand};
     use crate::test_support::TracingCapture;
-    use tokio::sync::{mpsc, oneshot};
+    use tokio::sync::{mpsc, oneshot, oneshot::error::TryRecvError};
     use tracing::Level;
     use uuid::Uuid;
 
@@ -826,43 +826,27 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_cued_cue_routes_through_scenes_and_advances_on_success() {
+    async fn recall_cued_cue_advances_only_after_scenes_dispatch_reply() {
         let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
         let (scenes, mut scene_rx) = fake_scenes_handle();
         let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
         task.spawn();
 
         let scene_id = Uuid::from_u128(0x11111111111141118111111111111111);
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(CueListsCommand::CreateCueList {
-                name: "Main".to_string(),
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        rx.await.unwrap().unwrap();
+        let first_entry = create_and_cue_entry(&handle, scene_id).await;
         let (reply, rx) = oneshot::channel();
         handle
             .send(CueListsCommand::AddSceneToActiveCueList {
-                scene_internal_id: scene_id,
-                insert_index: 0,
+                scene_internal_id: id(2),
+                insert_index: 1,
                 reply: Some(reply),
             })
             .await
             .unwrap();
-        let entry = rx.await.unwrap().unwrap().entry.unwrap();
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(CueListsCommand::CueEntry {
-                cue_entry_id: Some(entry.id),
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        rx.await.unwrap().unwrap();
+        let second_entry = rx.await.unwrap().unwrap().entry.unwrap();
 
+        let (dispatch_seen, dispatched) = oneshot::channel();
+        let (release_reply, release) = oneshot::channel();
         let recall_task = tokio::spawn(async move {
             match scene_rx.recv().await.unwrap() {
                 ScenesCommand::RecallScene {
@@ -870,6 +854,8 @@ mod tests {
                     reply,
                 } => {
                     assert_eq!(internal_scene_id, scene_id);
+                    let _ = dispatch_seen.send(());
+                    release.await.unwrap();
                     let _ = reply.send(Ok(RecallSceneResult {
                         scene: scene_config(scene_id),
                         lv1_scene_index: 1,
@@ -879,29 +865,77 @@ mod tests {
             }
         });
 
+        let (reply, mut rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::RecallCuedCue { reply })
+            .await
+            .unwrap();
+
+        dispatched.await.unwrap();
+        assert_eq!(rx.try_recv(), Err(TryRecvError::Empty));
+        let _ = release_reply.send(());
+
+        let result = rx.await.unwrap().unwrap();
+        assert_eq!(result.recalled_entry_id, first_entry.id);
+        assert_eq!(result.next_cued_entry_id, Some(second_entry.id));
+        recall_task.await.unwrap();
+
+        assert_eq!(
+            current_document(&handle).await.cued_cue_entry_id,
+            Some(second_entry.id)
+        );
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recall_cued_cue_does_not_advance_when_scenes_cancels_recall() {
+        let event_bus = AppEventBus::default();
+        let (scenes, mut scene_rx) = fake_scenes_handle();
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
+        task.spawn();
+
+        let scene_id = Uuid::from_u128(0x11111111111141118111111111111111);
+        let first_entry = create_and_cue_entry(&handle, scene_id).await;
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::AddSceneToActiveCueList {
+                scene_internal_id: id(2),
+                insert_index: 1,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let second_entry = rx.await.unwrap().unwrap().entry.unwrap();
+
+        let recall_task = tokio::spawn(async move {
+            let ScenesCommand::RecallScene { reply, .. } = scene_rx.recv().await.unwrap() else {
+                panic!("expected RecallScene");
+            };
+            let _ = reply.send(Err(AppCommandError::RecallCanceled(
+                "LV1 disconnected".to_string(),
+            )));
+        });
+
         let (reply, rx) = oneshot::channel();
         handle
             .send(CueListsCommand::RecallCuedCue { reply })
             .await
             .unwrap();
-        let result = rx.await.unwrap().unwrap();
-        assert_eq!(result.recalled_entry_id, entry.id);
-        assert_eq!(result.next_cued_entry_id, None);
-        recall_task.await.unwrap();
 
-        loop {
-            if let AppEvent::CueLists(CueListsEvent::StateChanged {
-                reason,
-                persisted_cue_list_edit,
-                state,
-            }) = events.recv().await.unwrap()
-            {
-                assert_eq!(reason, CueListsProjectionReason::CueListState);
-                assert!(persisted_cue_list_edit);
-                assert!(state.document.cued_cue_entry_id.is_none());
-                break;
-            }
-        }
+        assert!(matches!(
+            rx.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "LV1 disconnected"
+        ));
+        recall_task.await.unwrap();
+        assert_eq!(
+            current_document(&handle).await.cued_cue_entry_id,
+            Some(first_entry.id)
+        );
+        assert_ne!(
+            current_document(&handle).await.cued_cue_entry_id,
+            Some(second_entry.id)
+        );
 
         handle.send(CueListsCommand::Shutdown).await.unwrap();
     }

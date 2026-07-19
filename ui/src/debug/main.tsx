@@ -23,6 +23,7 @@ const tests = [
   "scene-settings-copy-paste",
   "new-session-clears-scene-settings-clipboard",
   "scene-recall",
+  "rapid-scene-recall-queue",
   "fade-starts",
   "fade-completes",
   "same-scene-finish",
@@ -253,6 +254,49 @@ async function run() {
     await test("scene-recall", async () => {
       await invoke("recall_scene", { internalSceneId: sceneA });
       await waitScene("Smoke A");
+    });
+    await test("rapid-scene-recall-queue", async () => {
+      try {
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneA,
+          durationMs: 0,
+        });
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneB,
+          durationMs: 0,
+        });
+
+        await invoke("recall_scene", { internalSceneId: sceneB });
+        const dispatchOrder: string[] = [];
+        const second = invoke("recall_scene", { internalSceneId: sceneA }).then(
+          () => {
+            dispatchOrder.push("Smoke A");
+          },
+        );
+        await sleep(10);
+        const third = invoke("recall_scene", { internalSceneId: sceneB }).then(
+          () => {
+            dispatchOrder.push("Smoke B");
+          },
+        );
+
+        await Promise.all([second, third]);
+        if (dispatchOrder.join(",") !== "Smoke A,Smoke B") {
+          throw new Error(
+            `recall dispatch order was ${dispatchOrder.join(",")}`,
+          );
+        }
+        await waitScene("Smoke B");
+      } finally {
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneA,
+          durationMs: 1_000,
+        });
+        await invoke("set_scene_duration_ms", {
+          internalSceneId: sceneB,
+          durationMs: 1_000,
+        });
+      }
     });
     await test("fade-starts", async () => {
       await reset(sceneA, targetA);
