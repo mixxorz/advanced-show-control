@@ -301,7 +301,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
                 lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
-                    Ok(true) => cancel_recall_queue(&mut recall_queue, "lockout was enabled", true),
+                    Ok(true) => {
+                        cancel_recall_queue(&mut recall_queue, "lockout was enabled", true);
+                    }
                     Ok(false) => {}
                     Err(_) => {
                         cancel_recall_queue(&mut recall_queue, "lockout state is unavailable", true);
@@ -427,7 +429,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
             }
             lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
-                Ok(true) => cancel_recall_queue(&mut recall_queue, "lockout was enabled", true),
+                Ok(true) => {
+                    cancel_recall_queue(&mut recall_queue, "lockout was enabled", true);
+                }
                 Ok(false) => {}
                 Err(_) => {
                     cancel_recall_queue(&mut recall_queue, "lockout state is unavailable", true);
@@ -457,7 +461,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     cancel_recall_queue(&mut recall_queue, "Scenes actor stopped", true);
 }
 
-fn cancel_recall_queue(recall_queue: &mut RecallQueue, reason: &str, emit_log: bool) {
+fn cancel_recall_queue(recall_queue: &mut RecallQueue, reason: &str, emit_log: bool) -> bool {
     let had_in_flight = recall_queue.in_flight.take().is_some();
     let had_waiting = !recall_queue.waiting.is_empty();
     recall_queue.drain_pending(AppCommandError::RecallCanceled(reason.to_string()));
@@ -468,6 +472,7 @@ fn cancel_recall_queue(recall_queue: &mut RecallQueue, reason: &str, emit_log: b
             "Queued scene recalls were canceled because {reason}"
         );
     }
+    had_in_flight || had_waiting
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -878,6 +883,7 @@ async fn store_scene_config_from_current_lv1(
     Ok(ScenesCommandResult { changed })
 }
 
+#[derive(Clone, Copy)]
 struct QueueReadiness {
     request_id: uuid::Uuid,
     generation: u64,
@@ -956,6 +962,26 @@ async fn handle_readiness_completion(
     if !matches_in_flight {
         return;
     }
+    if let Err(RecallReadinessError::TimedOut {
+        generation,
+        scene_index,
+        scene_name,
+        observed_ping_count,
+    }) = completion.result
+    {
+        if cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", false) {
+            tracing::warn!(
+                event = "scene_recall_queue_cancelled",
+                generation,
+                scene_index,
+                scene_name = %scene_name,
+                observed_ping_count,
+                timeout_ms = RECALL_COMPLETION_TIMEOUT.as_millis(),
+                "Paused fades were aborted and queued scene recalls were canceled because LV1 did not resume its keepalive cadence after scene recall"
+            );
+        }
+        return;
+    }
     if completion.result.is_err() {
         cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
         return;
@@ -974,23 +1000,37 @@ async fn handle_readiness_completion(
     .await;
 }
 
-fn attach_queue_readiness(
-    recall_queue: &mut RecallQueue,
+fn prepare_queue_readiness(
+    recall_queue: &RecallQueue,
     readiness: QueueReadiness,
     readiness_completion_tx: mpsc::Sender<RecallReadinessCompletion>,
 ) -> Option<RecallReadinessRequest> {
     if tokio::time::Instant::now() >= readiness.deadline {
         return None;
     }
-    let in_flight = recall_queue.in_flight.as_mut()?;
+    let in_flight = recall_queue.in_flight.as_ref()?;
     if in_flight.request_id != readiness.request_id || in_flight.generation != readiness.generation
     {
         return None;
     }
+    Some(readiness.attach_completion(readiness_completion_tx))
+}
+
+fn accept_queue_readiness(recall_queue: &mut RecallQueue, readiness: QueueReadiness) -> bool {
+    let Some(in_flight) = recall_queue.in_flight.as_mut() else {
+        return false;
+    };
+    if in_flight.request_id != readiness.request_id || in_flight.generation != readiness.generation
+    {
+        return false;
+    }
+    if !matches!(in_flight.phase, InFlightPhase::AwaitingObservation { .. }) {
+        return false;
+    }
     in_flight.phase = InFlightPhase::AwaitingReadiness {
         deadline: readiness.deadline,
     };
-    Some(readiness.attach_completion(readiness_completion_tx))
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1086,39 +1126,44 @@ async fn process_scene_observation(
                 let _ = reached.send(());
                 let _ = resume.await;
             }
-            let (fade_config, readiness) = if let Some(queue_readiness) = queue_readiness {
-                // Lockout can change while the settled observation is awaiting
-                // handoff, so policy is re-evaluated at the final safe point.
-                let current_lockout = lockout.current();
-                if current_lockout {
-                    return;
-                }
-                let RecallPolicyDecision::Start(fade_config) =
-                    decide_scene_recall(RecallPolicyInput {
-                        recalled_scene: observation.scene.clone(),
-                        lv1_snapshot,
-                        lockout: current_lockout,
-                        scene_config,
-                    })
-                else {
-                    return;
+            let (fade_config, readiness, queued_readiness) =
+                if let Some(queue_readiness) = queue_readiness {
+                    // Lockout can change while the settled observation is awaiting
+                    // handoff, so policy is re-evaluated at the final safe point.
+                    let current_lockout = lockout.current();
+                    if current_lockout {
+                        cancel_recall_queue(recall_queue, "lockout was enabled", true);
+                        return;
+                    }
+                    let RecallPolicyDecision::Start(fade_config) =
+                        decide_scene_recall(RecallPolicyInput {
+                            recalled_scene: observation.scene.clone(),
+                            lv1_snapshot,
+                            lockout: current_lockout,
+                            scene_config,
+                        })
+                    else {
+                        cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
+                        return;
+                    };
+                    let Some(readiness) = prepare_queue_readiness(
+                        recall_queue,
+                        queue_readiness,
+                        readiness_completion_tx.clone(),
+                    ) else {
+                        cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
+                        return;
+                    };
+                    (fade_config, readiness, Some(queue_readiness))
+                } else {
+                    (
+                        fade_config,
+                        RecallReadinessRequest::detached(
+                            tokio::time::Instant::now() + Duration::from_secs(5),
+                        ),
+                        None,
+                    )
                 };
-                let Some(readiness) = attach_queue_readiness(
-                    recall_queue,
-                    queue_readiness,
-                    readiness_completion_tx.clone(),
-                ) else {
-                    return;
-                };
-                (fade_config, readiness)
-            } else {
-                (
-                    fade_config,
-                    RecallReadinessRequest::detached(
-                        tokio::time::Instant::now() + Duration::from_secs(5),
-                    ),
-                )
-            };
             if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
@@ -1146,6 +1191,9 @@ async fn process_scene_observation(
             let permit = match fade.reserve().await {
                 Ok(permit) => permit,
                 Err(_) => {
+                    if queued_handoff {
+                        cancel_recall_queue(recall_queue, "Fade engine is unavailable", true);
+                    }
                     event_bus.publish_scenes(
                         generation,
                         ScenesEvent::Blocked {
@@ -1159,6 +1207,7 @@ async fn process_scene_observation(
             let result = if !is_generation_current(generation, runtime_generation).await {
                 Err(AppCommandError::StaleGeneration)
             } else if queued_handoff && lockout.current() {
+                cancel_recall_queue(recall_queue, "lockout was enabled", true);
                 return;
             } else {
                 permit.send(FadeCommand::RecallSceneFade {
@@ -1174,8 +1223,21 @@ async fn process_scene_observation(
                 }
             };
             match result {
-                Ok(()) | Err(AppCommandError::StaleGeneration) => (),
+                Ok(()) => {
+                    if let Some(queued_readiness) = queued_readiness
+                        && !accept_queue_readiness(recall_queue, queued_readiness)
+                    {
+                        cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
+                    }
+                }
+                Err(AppCommandError::StaleGeneration) if queued_handoff => {
+                    cancel_recall_queue(recall_queue, "LV1 connection generation changed", true);
+                }
+                Err(AppCommandError::StaleGeneration) => (),
                 Err(err) => {
+                    if queued_handoff {
+                        cancel_recall_queue(recall_queue, "Fade engine is unavailable", true);
+                    }
                     event_bus.publish_scenes(
                         generation,
                         ScenesEvent::Blocked {
@@ -1199,20 +1261,27 @@ async fn process_scene_observation(
             );
             if let Some(queue_readiness) = queue_readiness {
                 if lockout.current() {
+                    cancel_recall_queue(recall_queue, "lockout was enabled", true);
                     return;
                 }
-                let Some(readiness) = attach_queue_readiness(
+                let Some(readiness) = prepare_queue_readiness(
                     recall_queue,
                     queue_readiness,
                     readiness_completion_tx.clone(),
                 ) else {
+                    cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
                     return;
                 };
                 let Ok(permit) = fade.reserve().await else {
+                    cancel_recall_queue(recall_queue, "Fade engine is unavailable", true);
                     return;
                 };
-                if !is_generation_current(generation, runtime_generation).await || lockout.current()
-                {
+                if !is_generation_current(generation, runtime_generation).await {
+                    cancel_recall_queue(recall_queue, "LV1 connection generation changed", true);
+                    return;
+                }
+                if lockout.current() {
+                    cancel_recall_queue(recall_queue, "lockout was enabled", true);
                     return;
                 }
                 let (reply, rx) = oneshot::channel();
@@ -1225,7 +1294,15 @@ async fn process_scene_observation(
                     readiness,
                     reply: Some(reply),
                 });
-                let _ = rx.await;
+                match rx.await {
+                    Ok(Ok(())) if accept_queue_readiness(recall_queue, queue_readiness) => {}
+                    Ok(Ok(())) => {
+                        cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        cancel_recall_queue(recall_queue, "Fade engine is unavailable", true);
+                    }
+                }
             }
         }
         RecallPolicyDecision::Blocked { reason } => {
@@ -1248,20 +1325,27 @@ async fn process_scene_observation(
             );
             if let Some(queue_readiness) = queue_readiness {
                 if lockout.current() {
+                    cancel_recall_queue(recall_queue, "lockout was enabled", true);
                     return;
                 }
-                let Some(readiness) = attach_queue_readiness(
+                let Some(readiness) = prepare_queue_readiness(
                     recall_queue,
                     queue_readiness,
                     readiness_completion_tx.clone(),
                 ) else {
+                    cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
                     return;
                 };
                 let Ok(permit) = fade.reserve().await else {
+                    cancel_recall_queue(recall_queue, "Fade engine is unavailable", true);
                     return;
                 };
-                if !is_generation_current(generation, runtime_generation).await || lockout.current()
-                {
+                if !is_generation_current(generation, runtime_generation).await {
+                    cancel_recall_queue(recall_queue, "LV1 connection generation changed", true);
+                    return;
+                }
+                if lockout.current() {
+                    cancel_recall_queue(recall_queue, "lockout was enabled", true);
                     return;
                 }
                 let (reply, rx) = oneshot::channel();
@@ -1274,7 +1358,15 @@ async fn process_scene_observation(
                     readiness,
                     reply: Some(reply),
                 });
-                let _ = rx.await;
+                match rx.await {
+                    Ok(Ok(())) if accept_queue_readiness(recall_queue, queue_readiness) => {}
+                    Ok(Ok(())) => {
+                        cancel_recall_queue(recall_queue, "LV1 recall readiness was lost", true);
+                    }
+                    Ok(Err(_)) | Err(_) => {
+                        cancel_recall_queue(recall_queue, "Fade engine is unavailable", true);
+                    }
+                }
             }
         }
     }
@@ -1672,6 +1764,15 @@ mod tests {
             self.snapshot.send_replace(snapshot);
         }
 
+        fn set_snapshot(&self, snapshot: Lv1StateSnapshot) {
+            self.snapshot.send_replace(snapshot);
+        }
+
+        fn close_fade_peer(&mut self) {
+            let (_sender, replacement) = tokio::sync::mpsc::channel(1);
+            drop(std::mem::replace(&mut self.fade_commands, replacement));
+        }
+
         fn publish_scene_observation(&self, sequence: u64, scene: SceneState) {
             self.event_bus.publish(AppEvent::Lv1 {
                 generation: 1,
@@ -2043,6 +2144,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recall_queue_cancellation_clears_waiting_when_wait_readiness_reservation_fails() {
+        let mut fixture = FadeReservationLockoutFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        fixture.close_fade_peer();
+
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let waiting = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_current_scene(scene.clone());
+        fixture.publish_scene_observation(11, scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "Fade engine is unavailable"
+        ));
+    }
+
+    #[tokio::test]
+    async fn recall_queue_cancellation_clears_waiting_when_recall_fade_reply_closes() {
+        let mut fixture = FadeReservationLockoutFixture::connected_with_scenes(vec![
+            queue_scene_with_fader(1, "Intro", 1_000),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        let baseline = SceneState {
+            index: 2,
+            name: "Verse".to_string(),
+        };
+        fixture.set_current_scene(baseline.clone());
+        fixture.publish_scene_observation(1, baseline);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        tokio::time::sleep(Duration::from_millis(2_050)).await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let waiting = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_snapshot(Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: Some(scene.clone()),
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            channels: vec![crate::lv1::ChannelInfo {
+                group: 0,
+                channel: 0,
+                name: "Channel 0".to_string(),
+                gain_db: 0.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }],
+            ping_sequence: 10,
+        });
+        fixture.publish_scene_observation(11, scene);
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let command = fixture
+            .fade_commands
+            .recv()
+            .await
+            .expect("Fade recall command should be sent");
+        assert!(matches!(command, FadeCommand::RecallSceneFade { .. }));
+        drop(command);
+
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "Fade engine is unavailable"
+        ));
+    }
+
+    #[tokio::test]
     async fn recall_queue_first_recall_dispatches_and_second_reply_stays_pending() {
         let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
             queue_scene(1, "Intro"),
@@ -2143,6 +2335,7 @@ mod tests {
             scene_observation_sequence: 10,
         }));
         assert!(first.await.unwrap().is_ok());
+        let waiting = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
         let scene = SceneState {
             index: 1,
             name: "Intro".to_string(),
@@ -2182,6 +2375,10 @@ mod tests {
 
         yield_to_actor().await;
         assert!(fixture.fade_commands.try_recv().is_err());
+        assert!(matches!(
+            waiting.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "lockout was enabled"
+        ));
     }
 
     #[tokio::test(start_paused = true)]
