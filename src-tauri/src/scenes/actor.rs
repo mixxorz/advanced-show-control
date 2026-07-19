@@ -2702,7 +2702,7 @@ mod tests {
         fixture.send_recall(uuid::Uuid::from_u128(2)).await
     }
 
-    async fn confirm_runtime_signal_queue_admission(handle: &ScenesHandle) {
+    async fn confirm_queue_admission(handle: &ScenesHandle) {
         let (reply, received) = oneshot::channel();
         handle
             .send(ScenesCommand::GetSceneDocument { reply })
@@ -2855,6 +2855,7 @@ mod tests {
         ])
         .await;
         let waiting = enqueue_in_flight_and_waiting(&mut fixture).await;
+        confirm_queue_admission(&fixture.handle).await;
         let (reply, result) = oneshot::channel();
         fixture
             .show
@@ -2959,7 +2960,7 @@ mod tests {
         )
         .await;
         let waiting = enqueue_runtime_signal_in_flight_and_waiting(&mut fixture).await;
-        confirm_runtime_signal_queue_admission(&fixture.handle).await;
+        confirm_queue_admission(&fixture.handle).await;
 
         drop(temporary_event_bus);
 
@@ -2985,7 +2986,7 @@ mod tests {
         )
         .await;
         let waiting = enqueue_runtime_signal_in_flight_and_waiting(&mut fixture).await;
-        confirm_runtime_signal_queue_admission(&fixture.handle).await;
+        confirm_queue_admission(&fixture.handle).await;
 
         drop(show);
         drop(show_peers);
@@ -4515,7 +4516,7 @@ mod tests {
             }));
             assert!(first.await.unwrap().is_ok());
             let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
-            confirm_runtime_signal_queue_admission(&fixture.handle).await;
+            confirm_queue_admission(&fixture.handle).await;
 
             drop(fixture);
             second
