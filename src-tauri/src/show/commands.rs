@@ -39,6 +39,12 @@ pub enum ShowCommand {
         mode: super::ConnectionCompletionMode,
         reply: Option<oneshot::Sender<super::CompleteConnectionOutcome>>,
     },
+    AuthorizeLv1ConnectionIfCurrent {
+        mode: super::ConnectionCompletionMode,
+        runtime_generation: crate::runtime::generation::RuntimeGeneration,
+        expected_generation: u64,
+        reply: oneshot::Sender<bool>,
+    },
     CompleteLv1ConnectionIfCurrent {
         identity: Lv1SystemIdentity,
         mode: super::ConnectionCompletionMode,

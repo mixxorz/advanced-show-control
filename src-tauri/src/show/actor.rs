@@ -384,6 +384,18 @@ async fn handle_command(
                 let _ = reply.send(outcome);
             }
         }
+        ShowCommand::AuthorizeLv1ConnectionIfCurrent {
+            mode,
+            runtime_generation,
+            expected_generation,
+            reply,
+        } => {
+            let authorized = runtime_generation
+                .if_current(expected_generation, || state.authorize_lv1_connection(mode))
+                .await
+                .unwrap_or(false);
+            let _ = reply.send(authorized);
+        }
         ShowCommand::CompleteLv1ConnectionIfCurrent {
             identity,
             mode,
@@ -402,11 +414,14 @@ async fn handle_command(
                     );
                     outcome
                 })
-                .await
-                .unwrap_or(super::CompleteConnectionOutcome {
+                .await;
+            let outcome = outcome.unwrap_or_else(|| {
+                state.cancel_lv1_connection_authorization(mode);
+                super::CompleteConnectionOutcome {
                     accepted: false,
                     changed: false,
-                });
+                }
+            });
             let _ = reply.send(outcome);
         }
         ShowCommand::FailLv1Connection { reply } => {

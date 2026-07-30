@@ -29,6 +29,7 @@ pub struct ShowState {
     pending_lv1_identity: Option<Lv1SystemIdentity>,
     reconnect: ReconnectState,
     timed_out_reconnect_attempt: Option<u64>,
+    authorized_reconnect_attempt: Option<u64>,
     last_event_at: Option<String>,
 }
 
@@ -59,6 +60,30 @@ impl ShowState {
         }
     }
 
+    pub(crate) fn authorize_lv1_connection(&mut self, mode: ConnectionCompletionMode) -> bool {
+        match mode {
+            ConnectionCompletionMode::Unconditional => true,
+            ConnectionCompletionMode::Reconnect { attempt } => {
+                let accepted = self.reconnect.active
+                    && self.reconnect.attempt == attempt
+                    && self.timed_out_reconnect_attempt != Some(attempt)
+                    && self.authorized_reconnect_attempt.is_none();
+                if accepted {
+                    self.authorized_reconnect_attempt = Some(attempt);
+                }
+                accepted
+            }
+        }
+    }
+
+    pub(crate) fn cancel_lv1_connection_authorization(&mut self, mode: ConnectionCompletionMode) {
+        if let ConnectionCompletionMode::Reconnect { attempt } = mode
+            && self.authorized_reconnect_attempt == Some(attempt)
+        {
+            self.authorized_reconnect_attempt = None;
+        }
+    }
+
     pub(crate) fn complete_lv1_connection(
         &mut self,
         identity: Lv1SystemIdentity,
@@ -70,8 +95,14 @@ impl ShowState {
                 self.reconnect.active
                     && self.reconnect.attempt == attempt
                     && self.timed_out_reconnect_attempt != Some(attempt)
+                    && self.authorized_reconnect_attempt == Some(attempt)
             }
         };
+        if let ConnectionCompletionMode::Reconnect { attempt } = mode
+            && self.authorized_reconnect_attempt == Some(attempt)
+        {
+            self.authorized_reconnect_attempt = None;
+        }
         if !accepted {
             return CompleteConnectionOutcome {
                 accepted: false,
@@ -88,6 +119,7 @@ impl ShowState {
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
         self.timed_out_reconnect_attempt = None;
+        self.authorized_reconnect_attempt = None;
         CompleteConnectionOutcome {
             accepted: true,
             changed,
@@ -129,6 +161,7 @@ impl ShowState {
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
         self.timed_out_reconnect_attempt = None;
+        self.authorized_reconnect_attempt = None;
         changed
     }
 
@@ -138,11 +171,15 @@ impl ShowState {
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
         self.timed_out_reconnect_attempt = None;
+        self.authorized_reconnect_attempt = None;
         changed
     }
 
     pub(crate) fn claim_reconnect_timeout(&mut self, attempt: u64) -> bool {
-        if !self.reconnect.active || self.reconnect.attempt != attempt {
+        if !self.reconnect.active
+            || self.reconnect.attempt != attempt
+            || self.authorized_reconnect_attempt == Some(attempt)
+        {
             return false;
         }
         self.reconnect.active = false;
@@ -183,6 +220,9 @@ impl ShowState {
             changed = true;
         }
         if self.timed_out_reconnect_attempt.take().is_some() {
+            changed = true;
+        }
+        if self.authorized_reconnect_attempt.take().is_some() {
             changed = true;
         }
         let timestamp = crate::time::current_timestamp_millis();
@@ -227,6 +267,7 @@ impl ShowState {
     pub fn clear(&mut self) {
         self.lockout = false;
         self.timed_out_reconnect_attempt = None;
+        self.authorized_reconnect_attempt = None;
     }
 
     pub fn set_lockout(&mut self, enabled: bool) -> bool {
@@ -265,6 +306,24 @@ mod tests {
     }
 
     #[test]
+    fn timeout_first_rejects_reconnect_authorization() {
+        let mut state = reconnecting_state(4);
+        assert!(state.claim_reconnect_timeout(4));
+
+        assert!(
+            !state.authorize_lv1_connection(ConnectionCompletionMode::Reconnect { attempt: 4 })
+        );
+    }
+
+    #[test]
+    fn authorization_first_rejects_timeout_for_the_same_attempt() {
+        let mut state = reconnecting_state(4);
+
+        assert!(state.authorize_lv1_connection(ConnectionCompletionMode::Reconnect { attempt: 4 }));
+        assert!(!state.claim_reconnect_timeout(4));
+    }
+
+    #[test]
     fn timeout_first_rejects_completion_for_the_same_attempt() {
         let mut state = reconnecting_state(4);
         assert!(state.claim_reconnect_timeout(4));
@@ -286,10 +345,9 @@ mod tests {
     #[test]
     fn completion_first_rejects_timeout_for_the_same_attempt() {
         let mut state = reconnecting_state(4);
-        let outcome = state.complete_lv1_connection(
-            identity("new"),
-            ConnectionCompletionMode::Reconnect { attempt: 4 },
-        );
+        let mode = ConnectionCompletionMode::Reconnect { attempt: 4 };
+        assert!(state.authorize_lv1_connection(mode));
+        let outcome = state.complete_lv1_connection(identity("new"), mode);
 
         assert!(outcome.accepted);
         assert!(!state.claim_reconnect_timeout(4));
@@ -305,10 +363,9 @@ mod tests {
             attempt: 4,
         };
 
-        let outcome = state.complete_lv1_connection(
-            identity("new"),
-            ConnectionCompletionMode::Reconnect { attempt: 4 },
-        );
+        let mode = ConnectionCompletionMode::Reconnect { attempt: 4 };
+        assert!(state.authorize_lv1_connection(mode));
+        let outcome = state.complete_lv1_connection(identity("new"), mode);
 
         assert!(outcome.accepted);
     }
