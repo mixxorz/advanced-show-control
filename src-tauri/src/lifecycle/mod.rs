@@ -2190,8 +2190,9 @@ mod tests {
         let newer_generation = lifecycle.begin_connecting().await.unwrap();
         while events.try_recv().is_ok() {}
 
-        let newer_lv1 = fake_lv1_handle(connected_snapshot());
-        let (newer_fade_tx, _newer_fade_rx) = mpsc::channel(1);
+        let (newer_lv1_tx, mut newer_lv1_rx) = mpsc::channel(8);
+        let newer_lv1 = test_actor_handle(newer_lv1_tx);
+        let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
                 .install_runtime_transaction(
@@ -2205,6 +2206,16 @@ mod tests {
                 .is_ok(),
             "newer runtime should install"
         );
+        let (newer_scenes_tx, mut newer_scenes_rx) = mpsc::channel(8);
+        assert!(
+            lifecycle
+                .install_accepted_scene_recall_fader(
+                    newer_generation,
+                    crate::scenes::ScenesHandle::new(newer_scenes_tx),
+                )
+                .await,
+            "newer scenes peer should install"
+        );
 
         let result = lifecycle
             .disconnect_runtime_generation(stale_generation)
@@ -2213,11 +2224,152 @@ mod tests {
 
         assert!(!result.changed);
         assert_eq!(lifecycle.active_generation().await, newer_generation);
-        assert!(lifecycle.current_lv1().await.is_some());
-        assert!(lifecycle.current_fade().await.is_some());
         assert!(matches!(
             events.try_recv(),
             Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+
+        let current_lv1 = lifecycle
+            .current_lv1()
+            .await
+            .expect("newer LV1 handle should survive stale cleanup");
+        let (state_reply, state_rx) = oneshot::channel();
+        current_lv1
+            .send(Lv1Command::GetState { reply: state_reply })
+            .await
+            .expect("newer LV1 mailbox should accept commands");
+        let Lv1Command::GetState { reply } = newer_lv1_rx
+            .recv()
+            .await
+            .expect("newer LV1 actor should receive GetState")
+        else {
+            panic!("expected GetState through newer LV1 mailbox");
+        };
+        reply
+            .send(connected_snapshot())
+            .expect("newer LV1 actor should reply");
+        assert_eq!(
+            state_rx
+                .await
+                .expect("newer LV1 reply should arrive")
+                .connection,
+            ConnectionStatus::Connected
+        );
+
+        lifecycle
+            .current_fade()
+            .await
+            .expect("newer fade handle should survive stale cleanup")
+            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .await
+            .expect("newer fade mailbox should accept commands");
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::AbortAll { reply: None })
+        ));
+
+        let (show_reply, show_rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::NewShowFileFromCurrentLv1 {
+                reply: Some(show_reply),
+            })
+            .await
+            .expect("Show mailbox should accept new-show command");
+        let Lv1Command::GetState { reply } = newer_lv1_rx
+            .recv()
+            .await
+            .expect("Show should use the newer LV1 peer")
+        else {
+            panic!("expected Show to request newer LV1 state");
+        };
+        reply
+            .send(connected_snapshot())
+            .expect("Show LV1 state reply should send");
+        let ScenesCommand::ReplaceSceneDocument { reply, .. } = newer_scenes_rx
+            .recv()
+            .await
+            .expect("Show should use the newer scenes peer")
+        else {
+            panic!("expected Show to replace the newer scenes document");
+        };
+        reply
+            .expect("Show should request a scenes reply")
+            .send(crate::scenes::ScenesCommandResult { changed: true })
+            .expect("scenes replacement reply should send");
+        show_rx
+            .await
+            .expect("Show reply should arrive")
+            .expect("Show should create a session through newer peers");
+
+        let cue_lists = lifecycle.cue_lists_handle();
+        let (create_reply, create_rx) = oneshot::channel();
+        cue_lists
+            .send(crate::cue_lists::CueListsCommand::CreateCueList {
+                name: "Generation Safety".to_string(),
+                reply: Some(create_reply),
+            })
+            .await
+            .expect("Cue Lists mailbox should accept create command");
+        create_rx
+            .await
+            .expect("create reply should arrive")
+            .expect("cue list should be created");
+        let scene_internal_id = uuid::Uuid::new_v4();
+        let (add_reply, add_rx) = oneshot::channel();
+        cue_lists
+            .send(crate::cue_lists::CueListsCommand::AddSceneToActiveCueList {
+                scene_internal_id,
+                insert_index: 0,
+                reply: Some(add_reply),
+            })
+            .await
+            .expect("Cue Lists mailbox should accept add command");
+        let entry = add_rx
+            .await
+            .expect("add reply should arrive")
+            .expect("scene should be added to active cue list")
+            .entry
+            .expect("added cue entry should be returned");
+        let (cue_reply, cue_rx) = oneshot::channel();
+        cue_lists
+            .send(crate::cue_lists::CueListsCommand::CueEntry {
+                cue_entry_id: Some(entry.id),
+                reply: Some(cue_reply),
+            })
+            .await
+            .expect("Cue Lists mailbox should accept cue command");
+        cue_rx
+            .await
+            .expect("cue reply should arrive")
+            .expect("entry should be cued");
+        let (recall_reply, recall_rx) = oneshot::channel();
+        cue_lists
+            .send(crate::cue_lists::CueListsCommand::RecallCuedCue {
+                reply: recall_reply,
+            })
+            .await
+            .expect("Cue Lists mailbox should accept recall command");
+        let ScenesCommand::RecallScene {
+            internal_scene_id: recalled_scene_id,
+            reply,
+        } = newer_scenes_rx
+            .recv()
+            .await
+            .expect("Cue Lists should use the newer scenes peer")
+        else {
+            panic!("expected Cue Lists to route recall to newer scenes");
+        };
+        assert_eq!(recalled_scene_id, scene_internal_id);
+        reply
+            .send(Err(crate::runtime::errors::AppCommandError::CommandFailed(
+                "mailbox evidence complete".to_string(),
+            )))
+            .expect("scene recall error reply should send");
+        assert!(matches!(
+            recall_rx.await.expect("recall reply should arrive"),
+            Err(crate::runtime::errors::AppCommandError::CommandFailed(message))
+                if message == "mailbox evidence complete"
         ));
         assert!(
             capture
