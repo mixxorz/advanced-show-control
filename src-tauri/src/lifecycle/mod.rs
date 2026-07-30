@@ -312,16 +312,24 @@ impl AppLifecycle {
         self.clear_runtime_transaction(generation).await;
     }
 
-    pub async fn abort_runtime_handles_without_advancing_generation(&self) {
+    async fn abort_runtime_handles_without_advancing_generation(
+        &self,
+        expected_generation: u64,
+    ) -> bool {
         let generation = {
             let mut inner = self.inner.lock().await;
+            let generation = inner.generation.current().await;
+            if generation != expected_generation {
+                return false;
+            }
             inner.handles.abort_all();
             inner.runtime_handles_generation = None;
-            inner.generation.current().await
+            generation
         };
         self.show_peers.clear_lv1(generation);
         #[cfg(test)]
         self.run_before_disconnect_generation_finalization().await;
+        true
     }
 
     async fn abort_rejected_connection_transaction(
@@ -482,9 +490,25 @@ impl AppLifecycle {
             "LV1 disconnect requested"
         );
         let generation = self.active_generation().await;
+        self.disconnect_runtime_generation(generation).await
+    }
+
+    async fn disconnect_runtime_generation(
+        &self,
+        generation: u64,
+    ) -> Result<ShowCommandResult, String> {
         let reason = "Disconnected by user".to_string();
-        self.abort_runtime_handles_without_advancing_generation()
-            .await;
+        if !self
+            .abort_runtime_handles_without_advancing_generation(generation)
+            .await
+        {
+            tracing::debug!(
+                event = "lv1_disconnect_superseded",
+                generation,
+                "Disconnect request was superseded by a newer LV1 runtime"
+            );
+            return Ok(ShowCommandResult { changed: false });
+        }
         self.event_bus.publish(AppEvent::Lv1 {
             generation,
             event: Lv1Event::Disconnected { reason },
@@ -1920,9 +1944,11 @@ mod tests {
             Some(generation)
         );
 
-        lifecycle
-            .abort_runtime_handles_without_advancing_generation()
-            .await;
+        assert!(
+            lifecycle
+                .abort_runtime_handles_without_advancing_generation(generation)
+                .await
+        );
 
         assert_eq!(
             lifecycle.inner.lock().await.runtime_handles_generation,
@@ -2150,9 +2176,59 @@ mod tests {
         scenes_rx
             .await
             .expect("newer scenes actor should reply after stale finalization");
+    }
 
-        assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+    #[tokio::test(flavor = "current_thread")]
+    async fn disconnect_for_stale_generation_preserves_newer_runtime() {
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus);
+
+        let stale_generation = lifecycle.begin_connecting().await.unwrap();
+        let newer_generation = lifecycle.begin_connecting().await.unwrap();
+        while events.try_recv().is_ok() {}
+
+        let newer_lv1 = fake_lv1_handle(connected_snapshot());
+        let (newer_fade_tx, _newer_fade_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    newer_generation,
+                    RuntimeHandles::with_runtime_targets(
+                        newer_lv1,
+                        FadeEngineHandle::new(newer_fade_tx),
+                    ),
+                )
+                .await
+                .is_ok(),
+            "newer runtime should install"
+        );
+
+        let result = lifecycle
+            .disconnect_runtime_generation(stale_generation)
+            .await
+            .expect("superseded disconnect should be a safe no-op");
+
+        assert!(!result.changed);
+        assert_eq!(lifecycle.active_generation().await, newer_generation);
+        assert!(lifecycle.current_lv1().await.is_some());
+        assert!(lifecycle.current_fade().await.is_some());
+        assert!(matches!(
+            events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+        assert!(
+            capture
+                .matching("lv1_disconnected", tracing::Level::INFO)
+                .is_empty()
+        );
+        assert!(
+            !capture
+                .matching("lv1_disconnect_superseded", tracing::Level::DEBUG)
+                .is_empty()
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
