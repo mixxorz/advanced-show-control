@@ -39,11 +39,24 @@ pub enum ShowCommand {
         mode: super::ConnectionCompletionMode,
         reply: Option<oneshot::Sender<super::CompleteConnectionOutcome>>,
     },
+    CompleteLv1ConnectionIfCurrent {
+        identity: Lv1SystemIdentity,
+        mode: super::ConnectionCompletionMode,
+        runtime_generation: crate::runtime::generation::RuntimeGeneration,
+        expected_generation: u64,
+        reply: oneshot::Sender<super::CompleteConnectionOutcome>,
+    },
     FailLv1Connection {
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
     FailLv1Reconnect {
         reply: Option<oneshot::Sender<ShowCommandResult>>,
+    },
+    FailLv1ConnectionIfCurrent {
+        mode: super::ConnectionFailureMode,
+        runtime_generation: crate::runtime::generation::RuntimeGeneration,
+        expected_generation: u64,
+        reply: oneshot::Sender<super::CompleteConnectionOutcome>,
     },
     ClaimReconnectTimeout {
         attempt: u64,

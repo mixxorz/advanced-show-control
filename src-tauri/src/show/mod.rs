@@ -21,4 +21,6 @@ pub use show_file::{
     ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
 pub use state::ShowState;
-pub(crate) use state::{CompleteConnectionOutcome, ConnectionCompletionMode};
+pub(crate) use state::{
+    CompleteConnectionOutcome, ConnectionCompletionMode, ConnectionFailureMode,
+};

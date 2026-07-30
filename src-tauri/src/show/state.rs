@@ -7,6 +7,12 @@ pub enum ConnectionCompletionMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionFailureMode {
+    Unconditional,
+    Reconnect { attempt: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompleteConnectionOutcome {
     pub accepted: bool,
     pub changed: bool,
@@ -82,6 +88,32 @@ impl ShowState {
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
         self.timed_out_reconnect_attempt = None;
+        CompleteConnectionOutcome {
+            accepted: true,
+            changed,
+        }
+    }
+
+    pub(crate) fn fail_lv1_connection_with_mode(
+        &mut self,
+        mode: ConnectionFailureMode,
+    ) -> CompleteConnectionOutcome {
+        let accepted = match mode {
+            ConnectionFailureMode::Unconditional => true,
+            ConnectionFailureMode::Reconnect { attempt } => {
+                self.reconnect.active && self.reconnect.attempt == attempt
+            }
+        };
+        if !accepted {
+            return CompleteConnectionOutcome {
+                accepted: false,
+                changed: false,
+            };
+        }
+        let changed = match mode {
+            ConnectionFailureMode::Unconditional => self.fail_lv1_connection(),
+            ConnectionFailureMode::Reconnect { .. } => self.fail_lv1_reconnect(),
+        };
         CompleteConnectionOutcome {
             accepted: true,
             changed,
@@ -194,6 +226,7 @@ impl ShowState {
 
     pub fn clear(&mut self) {
         self.lockout = false;
+        self.timed_out_reconnect_attempt = None;
     }
 
     pub fn set_lockout(&mut self, enabled: bool) -> bool {
@@ -260,6 +293,24 @@ mod tests {
 
         assert!(outcome.accepted);
         assert!(!state.claim_reconnect_timeout(4));
+    }
+
+    #[test]
+    fn full_reset_allows_reuse_of_a_timed_out_reconnect_attempt() {
+        let mut state = reconnecting_state(4);
+        assert!(state.claim_reconnect_timeout(4));
+        state.reset_for_new_show();
+        state.reconnect = ReconnectState {
+            active: true,
+            attempt: 4,
+        };
+
+        let outcome = state.complete_lv1_connection(
+            identity("new"),
+            ConnectionCompletionMode::Reconnect { attempt: 4 },
+        );
+
+        assert!(outcome.accepted);
     }
 
     #[test]
@@ -340,6 +391,24 @@ mod tests {
         assert!(!state.claim_reconnect_timeout(3));
         assert!(state.claim_reconnect_timeout(4));
         assert!(!state.claim_reconnect_timeout(4));
+    }
+
+    #[test]
+    fn reconnect_failure_rejects_a_different_attempt() {
+        let mut state = reconnecting_state(5);
+
+        let outcome =
+            state.fail_lv1_connection_with_mode(ConnectionFailureMode::Reconnect { attempt: 4 });
+
+        assert_eq!(
+            outcome,
+            CompleteConnectionOutcome {
+                accepted: false,
+                changed: false,
+            }
+        );
+        assert_eq!(state.projection_state().reconnect.attempt, 5);
+        assert!(state.projection_state().reconnect.active);
     }
 
     #[test]

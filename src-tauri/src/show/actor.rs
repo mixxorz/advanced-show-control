@@ -35,6 +35,10 @@ impl ShowActorPeers {
         *self.scenes.lock().expect("show peer lock poisoned") = Some(scenes);
     }
 
+    pub fn clear_scenes(&self) {
+        *self.scenes.lock().expect("show peer lock poisoned") = None;
+    }
+
     pub fn set_cue_lists(&self, cue_lists: CueListsHandle) {
         *self.cue_lists.lock().expect("show peer lock poisoned") = Some(cue_lists);
     }
@@ -380,6 +384,31 @@ async fn handle_command(
                 let _ = reply.send(outcome);
             }
         }
+        ShowCommand::CompleteLv1ConnectionIfCurrent {
+            identity,
+            mode,
+            runtime_generation,
+            expected_generation,
+            reply,
+        } => {
+            let outcome = runtime_generation
+                .if_current(expected_generation, || {
+                    let outcome = state.complete_lv1_connection(identity, mode);
+                    publish_if_changed(
+                        event_bus,
+                        ShowProjectionReason::ConnectionMetadata,
+                        state,
+                        outcome.changed,
+                    );
+                    outcome
+                })
+                .await
+                .unwrap_or(super::CompleteConnectionOutcome {
+                    accepted: false,
+                    changed: false,
+                });
+            let _ = reply.send(outcome);
+        }
         ShowCommand::FailLv1Connection { reply } => {
             let changed = state.fail_lv1_connection();
             publish_if_changed(
@@ -403,6 +432,30 @@ async fn handle_command(
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
+        }
+        ShowCommand::FailLv1ConnectionIfCurrent {
+            mode,
+            runtime_generation,
+            expected_generation,
+            reply,
+        } => {
+            let outcome = runtime_generation
+                .if_current(expected_generation, || {
+                    let outcome = state.fail_lv1_connection_with_mode(mode);
+                    publish_if_changed(
+                        event_bus,
+                        ShowProjectionReason::ConnectionMetadata,
+                        state,
+                        outcome.changed,
+                    );
+                    outcome
+                })
+                .await
+                .unwrap_or(super::CompleteConnectionOutcome {
+                    accepted: false,
+                    changed: false,
+                });
+            let _ = reply.send(outcome);
         }
         ShowCommand::ClaimReconnectTimeout { attempt, reply } => {
             let _ = reply.send(state.claim_reconnect_timeout(attempt));
