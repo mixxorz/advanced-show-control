@@ -1,141 +1,173 @@
-# Monotonic Runtime Generation During Disconnect Design
+# Atomic Monotonic Runtime Disconnect Design
 
 **Issue:** GitHub #52 — prevent runtime generation rollback during disconnect
 
 ## Context
 
-`AppLifecycle` owns connected-runtime setup and teardown. Its shared `RuntimeGeneration` is cloned into generation-sensitive actors so stale tasks can reject fader writes and other runtime activity after disconnect or reconnect.
+`AppLifecycle` owns connected-runtime setup and teardown. Its shared `RuntimeGeneration` is cloned into generation-sensitive actors so stale tasks reject fader writes and other runtime activity after disconnect or reconnect.
 
-The current disconnect path captures generation `N`, releases the lifecycle lock, aborts runtime handles, clears peers, and writes the captured value back through `RuntimeGeneration::set`. A concurrent connection can advance the shared generation before that final write. The stale disconnect can then restore `N`, making generation non-monotonic and allowing later cleanup to treat stale state as current.
+The original disconnect path could capture generation `N`, release the lifecycle lock, and later write `N` back after another operation advanced generation. The first implementation removed that write and added a manual `disconnecting_generation` claim. Final review showed that a claim held across awaits introduced new failure modes: cancellation could leak the claim, an old claim could block a newer generation, and reconnect timeout arbitration remained split across lifecycle and Show state.
 
-Removing the write alone is insufficient. The unscoped abort operation can also resume after a newer runtime is installed and abort that newer runtime's handles. The disconnect cleanup itself must remain bound to the generation that the request originally targeted.
+The revised design removes long-lived claims. Advancing the current generation is the atomic, cancellation-safe ownership operation for runtime cleanup.
 
 ## Goals
 
 - Make production runtime generation mutation monotonic.
-- Ensure a disconnect request can affect only the generation that was current when the request began.
-- Prevent stale disconnect work from aborting or clearing newer runtime handles and peers.
-- Preserve normal disconnect event ordering, peer cleanup, handle cleanup, and generation advancement.
-- Keep concurrency policy inside `AppLifecycle` rather than exposing it to callers.
-- Cover the previously unsafe interleaving deterministically without timing sleeps.
+- Ensure cleanup affects only the generation targeted by its request.
+- Make same-generation disconnect requests idempotent.
+- Prevent stale work from blocking or aborting newer generations.
+- Avoid ownership state that can leak when an async caller is cancelled.
+- Resolve reconnect timeout versus connection completion by exact reconnect attempt identity.
+- Preserve normal disconnect fact ordering and complete user-facing logs.
+- Keep policy in `AppLifecycle`, `RuntimeGeneration`, and the Show actor rather than Tauri or React adapters.
+- Cover unsafe interleavings deterministically without timing sleeps.
 
 ## Non-Goals
 
-- Redesign connected-runtime construction or actor ownership.
-- Change generation filtering in fade, scene recall, projection, or settings code.
+- Redesign the full connected-runtime actor graph.
+- Change fade, scene recall, lockout, exact identity, or LV1 write policy.
 - Address settings file I/O under the generation guard; that remains GitHub #54.
 - Address cue-list scene identity across reconnect; that remains GitHub #66.
-- Change lockout, exact scene identity, fade abort, manual override, or LV1 write policy.
+- Add frontend reconnect behavior or new projected fields.
 
 ## Design
 
 ### Runtime generation interface
 
-`RuntimeGeneration` will expose only monotonic production mutation:
+`RuntimeGeneration` exposes these production operations:
 
 - `current` reads the active generation.
-- `advance` increments the active generation and returns it.
-- `if_current` retains its existing guarded-operation behavior until #54 changes that interface.
-- Arbitrary assignment through `set` will be unavailable to production code. Existing test fixtures may retain a test-only assignment helper under `#[cfg(test)]`.
+- `advance` allocates the next generation for an unconditional lifecycle transition.
+- `advance_if_current(expected)` atomically compares the current generation with `expected`, advances only on equality, and returns the new generation.
+- `if_current` retains its existing guarded-operation behavior until #54 narrows that interface.
 
-This makes rollback unrepresentable through the production `RuntimeGeneration` interface.
+Arbitrary assignment remains test-only. `advance_if_current` acquires the generation mutex once; cancellation before acquisition makes no mutation, and successful return means the generation has already advanced monotonically.
 
-### Generation-scoped disconnect cleanup
+### Atomic runtime clear transaction
 
-The public lifecycle interface remains `disconnect_current_runtime()`. Callers do not receive or manage generation tokens for cleanup.
+`AppLifecycle` owns a private generation-scoped clear transaction. While holding the lifecycle mutex, it:
 
-`disconnect_current_runtime()` will:
+1. Calls `RuntimeGeneration::advance_if_current(expected_generation)`.
+2. Returns a stale/no-change result if the comparison fails.
+3. After successful advancement, performs only synchronous work before releasing the lifecycle mutex:
+   - abort runtime handles,
+   - clear the runtime ownership marker,
+   - clear connection-in-progress state,
+   - clear the generation-matched Show LV1 peer, and
+   - clear the Cue Lists scenes peer.
+4. Returns the old and newly active generations as a private transaction result.
 
-1. Capture the generation that the request targets.
-2. Attempt private generation-scoped handle cleanup.
-3. Continue only if the captured generation is still current.
-4. Abort handles owned by that lifecycle state and clear its ownership marker.
-5. Clear the generation-matched Show LV1 peer.
-6. Publish the existing LV1 disconnected fact for the captured generation.
-7. Run the existing generation-scoped runtime clear transaction, which clears remaining peers, advances generation, and publishes the active-generation change.
-8. Return `changed: true` and retain the existing user-facing disconnect log.
+Generation advancement happens before handle mutation because it is the transaction's only remaining await. Once it succeeds, Rust cannot cancel the future between the state mutations because there is no later await in the critical section.
 
-The private cleanup operation replaces or narrows `abort_runtime_handles_without_advancing_generation`. It accepts the expected generation internally and performs the current-generation check while holding the lifecycle lock. It does not write runtime generation.
+No `disconnecting_generation` field or release protocol remains.
 
-If a newer connection advances generation before cleanup acquires the lifecycle lock, the cleanup returns a stale/no-change outcome. The public disconnect command then:
+### Event publication
 
-- does not abort handles,
-- does not clear peers,
-- does not publish a misleading disconnected fact,
-- does not emit the successful user-facing disconnect log, and
-- returns `changed: false`.
+The transaction mutates safety state before publishing facts. Callers publish facts synchronously after the transaction returns:
 
-This stale outcome is an idempotent no-op rather than an error. A superseded disconnect does not require recovery by its caller.
+- A normal runtime clear publishes `ActiveGenerationChanged(new_generation)`.
+- A user-visible disconnect publishes `Lv1Event::Disconnected` for the old generation, then `ActiveGenerationChanged(new_generation)`, then logs `lv1_disconnected` at `INFO` and returns `changed: true`.
+- A stale or duplicate disconnect publishes no disconnected fact, no active-generation fact, and no success log; it returns `changed: false` with an optional `DEBUG` diagnostic.
+
+The shared guard may already contain the new generation when consumers receive the old-generation disconnected fact. This is intentional: safety guards become stale before any task can run again, while broadcast ordering remains compatible with the projector and Show actor.
+
+### Same-generation and cross-generation behavior
+
+Two requests that captured generation `N` race through `advance_if_current(N)`. Exactly one can advance to `N+1`; the other observes a mismatch and becomes a no-op.
+
+A request for stale generation `N` never blocks a request for current generation `N+1`. There is no persistent ownership record shared between generations.
+
+### Reconnect timeout identity
+
+The frontend already supplies `ReconnectState.attempt` to the Tauri timeout command. The adapter accepts `attempt` and forwards it unchanged to `AppLifecycle`.
+
+The Show actor remains authoritative for reconnect attempt state. Its timeout command atomically claims only an active, exact attempt and records that the attempt timed out. Connection completion for a reconnect carries the same attempt identity and is accepted only while that attempt remains active and unclaimed. Manual and startup connections use an unconditional completion mode rather than inventing reconnect attempts.
+
+`AppLifecycle::attempt_reconnect_lv1` obtains the connected identity and active reconnect attempt from one Show projection snapshot. The attempt travels with the connection transaction to Show completion.
+
+The Show actor returns an explicit accepted/rejected completion outcome; `changed: false` is not overloaded to mean rejection. A rejected completion cannot log a successful connection, remember the identity, or install the scene peer.
+
+### Timeout cleanup and cancellation
+
+`AppLifecycle::reconnect_timed_out(attempt)`:
+
+1. Captures the current generation.
+2. Asks Show to claim the exact timeout attempt.
+3. Returns unchanged if Show reports inactive, mismatched, completed, or previously claimed.
+4. After a successful Show claim, immediately spawns generation-scoped atomic cleanup as an owned Tokio task and awaits its result.
+
+There is no await between receiving a successful Show claim and spawning cleanup. Dropping the outer Tauri command future therefore does not cancel cleanup; dropping a Tokio `JoinHandle` detaches the spawned task.
+
+Race outcomes are defined by Show mailbox ordering:
+
+- Completion first: Show completes and clears the attempt; timeout claim is rejected and does not disconnect.
+- Timeout first: Show records the timeout; later completion for that attempt is rejected, while detached generation-scoped cleanup invalidates that runtime.
+- Generation changes before cleanup: cleanup is stale and does not touch the newer runtime. The timed-out reconnect completion remains rejected by attempt identity.
 
 ### Information hiding
 
-Generation comparison, runtime-handle ownership, and stale cleanup behavior remain private to `AppLifecycle`. No new public helper asks command adapters or other actors to coordinate generation checks. This keeps the lifecycle module's interface small and prevents callers from accidentally separating validation from cleanup.
+Callers use `disconnect_current_runtime()`, `reconnect_timed_out(attempt)`, and connection commands. They do not coordinate generation checks, transaction ownership, or reconnect completion policy.
 
-The deterministic test coordination seam will be test-only and private. It will pause the disconnect after generation capture and before cleanup so the unsafe interleaving can be reproduced without exposing synchronization controls in production.
-
-## Concurrency Behavior
-
-The regression test will force this ordering:
-
-1. Runtime generation `N` is active.
-2. A disconnect captures `N` and pauses at a test-only gate.
-3. Connection work advances to a newer generation and installs newer runtime handles.
-4. The disconnect resumes with expected generation `N`.
-5. Generation-scoped cleanup detects that `N` is stale and performs no mutation.
-
-The active generation remains newer than `N`, and the newer runtime handles and peers remain usable. No production path writes a previously captured generation back into shared state.
-
-Normal, uncontended disconnect behavior remains unchanged: handles are aborted before the disconnected fact is published, peers are cleared, generation advances once, and the active-generation fact follows the LV1 disconnected fact.
+Tauri adapters deserialize and forward values only. React continues to pass the projected reconnect attempt without duplicating backend policy.
 
 ## Error Handling and Logging
 
-A superseded disconnect is a safe no-op, not a command failure. It returns `changed: false`. Any diagnostic for this branch should be `DEBUG`, because the newer lifecycle operation is already authoritative and no engineer action is required.
+Stale, duplicate, inactive, and mismatched disconnect/timeout requests are safe no-ops, not command failures. They return `changed: false` and may emit `DEBUG` diagnostics.
 
-A successful disconnect retains the existing complete `INFO` message. The implementation must not emit that message for stale cleanup because doing so would misrepresent the newer runtime's state.
+Mailbox closure and task join failures remain command errors with frontend-safe messages. A successful timeout claim whose detached cleanup continues after caller cancellation does not require a caller to recover safety state.
 
-No new frontend error strings or projected state fields are required.
+Successful normal disconnect retains the existing complete `INFO` message. Rejected connection completion must not emit `lv1_connected` or remembered-identity persistence errors.
 
 ## Testing
 
-### Lifecycle/actor-style regression test
+### Pure unit tests
 
-Use lifecycle operations, fake actor handles, `AppEventBus`, and explicit test gates. Do not use timing sleeps or directly mutate actor internals.
+Test `RuntimeGeneration::advance_if_current` directly:
 
-The test will prove that a disconnect paused after capturing generation `N` cannot, after a newer generation is installed:
+- matching expected generation advances once,
+- stale expected generation returns no change,
+- repeated matching attempts cannot both succeed.
 
-- reduce the active generation,
-- abort the newer LV1 or fade targets,
-- clear newer generation-matched peers,
-- publish a stale successful disconnect sequence, or
-- report that it changed the active runtime.
+Test Show state policy directly:
 
-The newer handle will be exercised through its mailbox or an existing lifecycle-access path so survival is verified behaviorally rather than only by inspecting private fields.
+- only the active exact timeout attempt can be claimed,
+- duplicate or mismatched timeout claims fail,
+- completion first rejects timeout,
+- timeout first rejects completion for the same attempt,
+- unconditional manual completion remains valid.
 
-### Existing lifecycle behavior
+### Lifecycle/actor tests
 
-Retain or extend lifecycle tests proving:
+Use lifecycle commands, Show/Cue Lists/Scenes/LV1/Fade mailboxes, `AppEventBus`, tracing capture, and explicit gates.
 
-- sequential generation allocation is monotonic,
-- a normal disconnect publishes the LV1 disconnected fact followed by the advanced generation fact,
-- normal cleanup clears runtime ownership and peers, and
-- stale runtime installation and finalization cannot replace newer peers.
+Cover:
 
-### Pure unit coverage
+- the original generation rollback interleaving,
+- a newer runtime installed after public disconnect capture but before atomic cleanup,
+- two same-generation disconnects producing exactly one changed result and one success fact/log sequence,
+- a stale generation never suppressing a newer generation's disconnect,
+- cancellation of the outer timeout future after Show claim while detached cleanup still completes,
+- completion-first timeout ordering,
+- timeout-first completion rejection,
+- mismatched and inactive timeout attempts,
+- newer runtime handles and actor peer routing remaining usable after stale cleanup, and
+- normal disconnected-then-active-generation event order.
 
-Use pure unit coverage for `RuntimeGeneration` only where it adds behavioral value, such as proving repeated `advance` calls never decrease the value. Production compilation and the absence of a production setter enforce the stronger API invariant.
+Tests must not use sleeps or directly mutate side-effecting actor internals.
 
 ## Verification
 
-Use the repository's required Rust workflow:
-
 ```bash
-cargo nextest run -p advanced-show-control lifecycle
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+cargo nextest run -p advanced-show-control lifecycle
+cargo nextest run -p advanced-show-control show
+cargo nextest run --workspace
+cargo build --workspace
 ```
 
-Run broader Rust or repository verification if implementation changes affect code outside lifecycle and runtime generation.
+Hardware smoke is not required because this change does not alter LV1 protocol behavior and the smoke target requires an LV1-compatible environment.
 
 ## Documentation Impact
 
-`docs/architecture.md` already requires generation guards and stale-runtime rejection. Update it only if implementation changes the documented lifecycle sequence or public architecture. No frontend or user-manual documentation change is expected.
+`docs/architecture.md` already requires monotonic generation safety and stale-runtime rejection. Update it only if implementation changes the documented lifecycle sequence or public architecture. No frontend or user-manual change is expected.
