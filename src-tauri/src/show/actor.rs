@@ -363,8 +363,13 @@ async fn handle_command(
                 let _ = reply.send(result);
             }
         }
-        ShowCommand::CompleteLv1Connection { identity, reply } => {
-            let changed = state.complete_lv1_connection(identity);
+        ShowCommand::CompleteLv1Connection {
+            identity,
+            mode,
+            reply,
+        } => {
+            let outcome = state.complete_lv1_connection(identity, mode);
+            let changed = outcome.changed;
             publish_if_changed(
                 event_bus,
                 ShowProjectionReason::ConnectionMetadata,
@@ -372,7 +377,7 @@ async fn handle_command(
                 changed,
             );
             if let Some(reply) = reply {
-                let _ = reply.send(crate::show::ConnectCommandResult { changed });
+                let _ = reply.send(outcome);
             }
         }
         ShowCommand::FailLv1Connection { reply } => {

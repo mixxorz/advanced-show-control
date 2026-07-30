@@ -39,9 +39,7 @@ mod tests {
     use crate::scenes::build_scenes_actor;
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::events::{ShowEvent, ShowProjectionReason};
-    use crate::show::{
-        ConnectCommandResult, ShowCommand, ShowCommandResult, ShowFile, ShowFileSafety,
-    };
+    use crate::show::{ShowCommand, ShowCommandResult, ShowFile, ShowFileSafety};
 
     async fn recv_show_event(
         events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
@@ -238,11 +236,18 @@ mod tests {
         let (reply, rx) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::CompleteLv1Connection {
             identity: identity.clone(),
+            mode: crate::show::ConnectionCompletionMode::Unconditional,
             reply: Some(reply),
         })
         .await
         .unwrap();
-        assert_eq!(rx.await.unwrap(), ConnectCommandResult { changed: true });
+        assert_eq!(
+            rx.await.unwrap(),
+            crate::show::CompleteConnectionOutcome {
+                accepted: true,
+                changed: true,
+            }
+        );
 
         let AppEvent::Show(ShowEvent::StateChanged { reason, state }) =
             events.recv().await.unwrap()
@@ -258,11 +263,18 @@ mod tests {
         let (reply, rx) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::CompleteLv1Connection {
             identity,
+            mode: crate::show::ConnectionCompletionMode::Unconditional,
             reply: Some(reply),
         })
         .await
         .unwrap();
-        assert_eq!(rx.await.unwrap(), ConnectCommandResult { changed: false });
+        assert_eq!(
+            rx.await.unwrap(),
+            crate::show::CompleteConnectionOutcome {
+                accepted: true,
+                changed: false,
+            }
+        );
         assert!(events.try_recv().is_err());
     }
 
@@ -279,6 +291,7 @@ mod tests {
         };
         show.send(ShowCommand::CompleteLv1Connection {
             identity,
+            mode: crate::show::ConnectionCompletionMode::Unconditional,
             reply: None,
         })
         .await
@@ -363,6 +376,7 @@ mod tests {
         };
         show.send(ShowCommand::CompleteLv1Connection {
             identity,
+            mode: crate::show::ConnectionCompletionMode::Unconditional,
             reply: None,
         })
         .await
@@ -403,6 +417,7 @@ mod tests {
         };
         show.send(ShowCommand::CompleteLv1Connection {
             identity,
+            mode: crate::show::ConnectionCompletionMode::Unconditional,
             reply: None,
         })
         .await

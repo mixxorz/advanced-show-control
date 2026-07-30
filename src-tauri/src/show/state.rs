@@ -1,5 +1,17 @@
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionCompletionMode {
+    Unconditional,
+    Reconnect { attempt: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompleteConnectionOutcome {
+    pub accepted: bool,
+    pub changed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     lockout: bool,
@@ -10,6 +22,7 @@ pub struct ShowState {
     connected_lv1_identity: Option<Lv1SystemIdentity>,
     pending_lv1_identity: Option<Lv1SystemIdentity>,
     reconnect: ReconnectState,
+    timed_out_reconnect_attempt: Option<u64>,
     last_event_at: Option<String>,
 }
 
@@ -40,15 +53,39 @@ impl ShowState {
         }
     }
 
-    pub(crate) fn complete_lv1_connection(&mut self, identity: Lv1SystemIdentity) -> bool {
+    pub(crate) fn complete_lv1_connection(
+        &mut self,
+        identity: Lv1SystemIdentity,
+        mode: ConnectionCompletionMode,
+    ) -> CompleteConnectionOutcome {
+        let accepted = match mode {
+            ConnectionCompletionMode::Unconditional => true,
+            ConnectionCompletionMode::Reconnect { attempt } => {
+                self.reconnect.active
+                    && self.reconnect.attempt == attempt
+                    && self.timed_out_reconnect_attempt != Some(attempt)
+            }
+        };
+        if !accepted {
+            return CompleteConnectionOutcome {
+                accepted: false,
+                changed: false,
+            };
+        }
+
         let reconnect = ReconnectState::default();
         let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
             || self.pending_lv1_identity.is_some()
-            || self.reconnect != reconnect;
+            || self.reconnect != reconnect
+            || self.timed_out_reconnect_attempt.is_some();
         self.connected_lv1_identity = Some(identity);
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
-        changed
+        self.timed_out_reconnect_attempt = None;
+        CompleteConnectionOutcome {
+            accepted: true,
+            changed,
+        }
     }
 
     pub(crate) fn fail_lv1_connection(&mut self) -> bool {
@@ -59,6 +96,7 @@ impl ShowState {
         self.connected_lv1_identity = None;
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
+        self.timed_out_reconnect_attempt = None;
         changed
     }
 
@@ -67,6 +105,7 @@ impl ShowState {
         let changed = self.pending_lv1_identity.is_some() || self.reconnect != reconnect;
         self.pending_lv1_identity = None;
         self.reconnect = reconnect;
+        self.timed_out_reconnect_attempt = None;
         changed
     }
 
@@ -75,6 +114,7 @@ impl ShowState {
             return false;
         }
         self.reconnect.active = false;
+        self.timed_out_reconnect_attempt = Some(attempt);
         true
     }
 
@@ -108,6 +148,9 @@ impl ShowState {
         };
         if self.reconnect != next {
             self.reconnect = next;
+            changed = true;
+        }
+        if self.timed_out_reconnect_attempt.take().is_some() {
             changed = true;
         }
         let timestamp = crate::time::current_timestamp_millis();
@@ -176,6 +219,58 @@ mod tests {
         }
     }
 
+    fn reconnecting_state(attempt: u64) -> ShowState {
+        ShowState {
+            connected_lv1_identity: Some(identity("old")),
+            pending_lv1_identity: Some(identity("new")),
+            reconnect: ReconnectState {
+                active: true,
+                attempt,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn timeout_first_rejects_completion_for_the_same_attempt() {
+        let mut state = reconnecting_state(4);
+        assert!(state.claim_reconnect_timeout(4));
+
+        let outcome = state.complete_lv1_connection(
+            identity("new"),
+            ConnectionCompletionMode::Reconnect { attempt: 4 },
+        );
+
+        assert_eq!(
+            outcome,
+            CompleteConnectionOutcome {
+                accepted: false,
+                changed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn completion_first_rejects_timeout_for_the_same_attempt() {
+        let mut state = reconnecting_state(4);
+        let outcome = state.complete_lv1_connection(
+            identity("new"),
+            ConnectionCompletionMode::Reconnect { attempt: 4 },
+        );
+
+        assert!(outcome.accepted);
+        assert!(!state.claim_reconnect_timeout(4));
+    }
+
+    #[test]
+    fn unconditional_completion_does_not_require_a_reconnect_attempt() {
+        let mut state = ShowState::default();
+        let outcome =
+            state.complete_lv1_connection(identity("new"), ConnectionCompletionMode::Unconditional);
+
+        assert!(outcome.accepted);
+    }
+
     #[test]
     fn complete_connection_sets_identity_and_clears_transient_metadata_atomically() {
         let next = identity("new");
@@ -189,12 +284,27 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(state.complete_lv1_connection(next.clone()));
+        let outcome =
+            state.complete_lv1_connection(next.clone(), ConnectionCompletionMode::Unconditional);
+        assert_eq!(
+            outcome,
+            CompleteConnectionOutcome {
+                accepted: true,
+                changed: true
+            }
+        );
         let projection = state.projection_state();
         assert_eq!(projection.connected_lv1_identity, Some(next.clone()));
         assert_eq!(projection.pending_lv1_identity, None);
         assert_eq!(projection.reconnect, ReconnectState::default());
-        assert!(!state.complete_lv1_connection(next));
+        let outcome = state.complete_lv1_connection(next, ConnectionCompletionMode::Unconditional);
+        assert_eq!(
+            outcome,
+            CompleteConnectionOutcome {
+                accepted: true,
+                changed: false
+            }
+        );
     }
 
     #[test]

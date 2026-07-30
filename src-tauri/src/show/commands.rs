@@ -36,7 +36,8 @@ pub enum ShowCommand {
     },
     CompleteLv1Connection {
         identity: Lv1SystemIdentity,
-        reply: Option<oneshot::Sender<ConnectCommandResult>>,
+        mode: super::ConnectionCompletionMode,
+        reply: Option<oneshot::Sender<super::CompleteConnectionOutcome>>,
     },
     FailLv1Connection {
         reply: Option<oneshot::Sender<ShowCommandResult>>,

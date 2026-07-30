@@ -139,7 +139,13 @@ fn build_connected_runtime(
 #[derive(Clone, Copy)]
 pub enum ConnectFailureMode {
     ClearConnectedIdentity,
-    PreserveConnectedIdentity,
+    PreserveConnectedIdentity { attempt: u64 },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RuntimeClearTransaction {
+    cleared_generation: u64,
+    active_generation: u64,
 }
 
 impl RuntimeInstallRejection {
@@ -156,7 +162,6 @@ struct LifecycleInner {
     frontend_ready: bool,
     handles: RuntimeHandles,
     runtime_handles_generation: Option<u64>,
-    disconnecting_generation: Option<u64>,
     projector: Option<JoinHandle<()>>,
 }
 
@@ -172,8 +177,6 @@ pub struct AppLifecycle {
     settings: SettingsHandle,
     #[cfg(test)]
     before_disconnect_cleanup: Arc<Mutex<Option<DisconnectTestHook>>>,
-    #[cfg(test)]
-    before_disconnect_generation_finalization: Arc<Mutex<Option<DisconnectTestHook>>>,
 }
 
 impl AppLifecycle {
@@ -195,7 +198,6 @@ impl AppLifecycle {
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
                 runtime_handles_generation: None,
-                disconnecting_generation: None,
                 projector: None,
             })),
             event_bus,
@@ -207,8 +209,6 @@ impl AppLifecycle {
             settings,
             #[cfg(test)]
             before_disconnect_cleanup: Arc::new(Mutex::new(None)),
-            #[cfg(test)]
-            before_disconnect_generation_finalization: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -220,23 +220,6 @@ impl AppLifecycle {
     #[cfg(test)]
     async fn run_before_disconnect_cleanup(&self) {
         let hook = self.before_disconnect_cleanup.lock().await.take();
-        if let Some(hook) = hook {
-            hook().await;
-        }
-    }
-
-    #[cfg(test)]
-    async fn set_before_disconnect_generation_finalization(&self, hook: DisconnectTestHook) {
-        *self.before_disconnect_generation_finalization.lock().await = Some(hook);
-    }
-
-    #[cfg(test)]
-    async fn run_before_disconnect_generation_finalization(&self) {
-        let hook = self
-            .before_disconnect_generation_finalization
-            .lock()
-            .await
-            .take();
         if let Some(hook) = hook {
             hook().await;
         }
@@ -306,64 +289,38 @@ impl AppLifecycle {
         true
     }
 
-    pub async fn clear_runtime_transaction(&self, generation: u64) {
+    async fn clear_runtime_if_current(
+        &self,
+        expected_generation: u64,
+    ) -> Option<RuntimeClearTransaction> {
         let mut inner = self.inner.lock().await;
-        if inner.generation.current().await != generation {
-            return;
-        }
+        let active_generation = inner
+            .generation
+            .advance_if_current(expected_generation)
+            .await?;
+
         inner.handles.abort_all();
         inner.runtime_handles_generation = None;
-        self.show_peers.clear_lv1(generation);
+        inner.connecting = false;
+        self.show_peers.clear_lv1(expected_generation);
         self.cue_lists_peers.clear_scenes();
-        let generation = inner.generation.advance().await;
-        drop(inner);
-        self.event_bus
-            .publish_runtime_generation_changed(generation);
+
+        Some(RuntimeClearTransaction {
+            cleared_generation: expected_generation,
+            active_generation,
+        })
+    }
+
+    pub async fn clear_runtime_transaction(&self, generation: u64) {
+        if let Some(transaction) = self.clear_runtime_if_current(generation).await {
+            self.event_bus
+                .publish_runtime_generation_changed(transaction.active_generation);
+        }
     }
 
     pub async fn abort_current_runtime(&self) {
         let generation = self.active_generation().await;
         self.clear_runtime_transaction(generation).await;
-    }
-
-    async fn claim_disconnect_generation(&self, expected_generation: u64) -> bool {
-        let mut inner = self.inner.lock().await;
-        if inner.generation.current().await != expected_generation
-            || inner.disconnecting_generation.is_some()
-        {
-            return false;
-        }
-        inner.disconnecting_generation = Some(expected_generation);
-        true
-    }
-
-    async fn release_disconnect_generation(&self, generation: u64) {
-        let mut inner = self.inner.lock().await;
-        if inner.disconnecting_generation == Some(generation) {
-            inner.disconnecting_generation = None;
-        }
-    }
-
-    async fn abort_runtime_handles_without_advancing_generation(
-        &self,
-        expected_generation: u64,
-    ) -> bool {
-        let generation = {
-            let mut inner = self.inner.lock().await;
-            let generation = inner.generation.current().await;
-            if generation != expected_generation
-                || inner.disconnecting_generation != Some(expected_generation)
-            {
-                return false;
-            }
-            inner.handles.abort_all();
-            inner.runtime_handles_generation = None;
-            generation
-        };
-        self.show_peers.clear_lv1(generation);
-        #[cfg(test)]
-        self.run_before_disconnect_generation_finalization().await;
-        true
     }
 
     async fn abort_rejected_connection_transaction(
@@ -448,10 +405,33 @@ impl AppLifecycle {
             return Err("LV1 did not connect".to_string());
         }
 
-        let connect_result = self
-            .complete_lv1_connection_metadata(identity.clone())
+        let completion_mode = match failure_mode {
+            ConnectFailureMode::ClearConnectedIdentity => {
+                crate::show::ConnectionCompletionMode::Unconditional
+            }
+            ConnectFailureMode::PreserveConnectedIdentity { attempt } => {
+                crate::show::ConnectionCompletionMode::Reconnect { attempt }
+            }
+        };
+        let completion = self
+            .complete_lv1_connection_metadata(identity.clone(), completion_mode)
             .await
             .map_err(|error| error.to_string())?;
+        if !completion.accepted {
+            self.abort_rejected_connection_transaction(
+                generation,
+                RuntimeHandles {
+                    lv1: Some(lv1),
+                    fade: Some(fade),
+                    scene_recall_fader: Some(scene_recall_fader),
+                },
+            )
+            .await;
+            return Err("LV1 connection was superseded by a reconnect timeout".to_string());
+        }
+        let connect_result = ConnectCommandResult {
+            changed: completion.changed,
+        };
 
         #[cfg(test)]
         if let Some(before_scene_recall_start) = before_scene_recall_start {
@@ -485,11 +465,13 @@ impl AppLifecycle {
     async fn complete_lv1_connection_metadata(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
-    ) -> Result<ConnectCommandResult, AppCommandError> {
+        mode: crate::show::ConnectionCompletionMode,
+    ) -> Result<crate::show::CompleteConnectionOutcome, AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.show
             .send(ShowCommand::CompleteLv1Connection {
                 identity,
+                mode,
                 reply: Some(reply),
             })
             .await
@@ -506,7 +488,7 @@ impl AppLifecycle {
             ConnectFailureMode::ClearConnectedIdentity => {
                 ShowCommand::FailLv1Connection { reply: Some(reply) }
             }
-            ConnectFailureMode::PreserveConnectedIdentity => {
+            ConnectFailureMode::PreserveConnectedIdentity { .. } => {
                 ShowCommand::FailLv1Reconnect { reply: Some(reply) }
             }
         };
@@ -533,18 +515,11 @@ impl AppLifecycle {
     ) -> Result<ShowCommandResult, String> {
         #[cfg(test)]
         self.run_before_disconnect_cleanup().await;
-        if !self.claim_disconnect_generation(generation).await {
-            return Ok(self.superseded_disconnect(generation));
-        }
-        self.finish_claimed_disconnect(generation).await
+        self.finish_disconnect(generation).await
     }
 
     pub async fn reconnect_timed_out(&self, attempt: u64) -> Result<ShowCommandResult, String> {
         let generation = self.active_generation().await;
-        if !self.claim_disconnect_generation(generation).await {
-            return Ok(self.superseded_disconnect(generation));
-        }
-
         let (reply, rx) = oneshot::channel();
         if self
             .show
@@ -552,22 +527,23 @@ impl AppLifecycle {
             .await
             .is_err()
         {
-            self.release_disconnect_generation(generation).await;
             return Err("Show state is unavailable".to_string());
         }
         let claimed = match rx.await {
             Ok(claimed) => claimed,
-            Err(_) => {
-                self.release_disconnect_generation(generation).await;
-                return Err("Show state reply channel is closed".to_string());
-            }
+            Err(_) => return Err("Show state reply channel is closed".to_string()),
         };
         if !claimed {
-            self.release_disconnect_generation(generation).await;
             return Ok(ShowCommandResult { changed: false });
         }
 
-        self.finish_claimed_disconnect(generation).await
+        let lifecycle = self.clone();
+        let cleanup = tauri::async_runtime::spawn(async move {
+            lifecycle.disconnect_runtime_generation(generation).await
+        });
+        cleanup
+            .await
+            .map_err(|error| format!("Reconnect timeout cleanup task failed: {error}"))?
     }
 
     fn superseded_disconnect(&self, generation: u64) -> ShowCommandResult {
@@ -579,25 +555,18 @@ impl AppLifecycle {
         ShowCommandResult { changed: false }
     }
 
-    async fn finish_claimed_disconnect(
-        &self,
-        generation: u64,
-    ) -> Result<ShowCommandResult, String> {
-        if !self
-            .abort_runtime_handles_without_advancing_generation(generation)
-            .await
-        {
-            self.release_disconnect_generation(generation).await;
+    async fn finish_disconnect(&self, generation: u64) -> Result<ShowCommandResult, String> {
+        let Some(transaction) = self.clear_runtime_if_current(generation).await else {
             return Ok(self.superseded_disconnect(generation));
-        }
+        };
         self.event_bus.publish(AppEvent::Lv1 {
-            generation,
+            generation: transaction.cleared_generation,
             event: Lv1Event::Disconnected {
                 reason: "Disconnected by user".to_string(),
             },
         });
-        self.clear_runtime_transaction(generation).await;
-        self.release_disconnect_generation(generation).await;
+        self.event_bus
+            .publish_runtime_generation_changed(transaction.active_generation);
         tracing::info!(event = "lv1_disconnected", "Disconnected from LV1");
         Ok(ShowCommandResult { changed: true })
     }
@@ -621,18 +590,6 @@ impl AppLifecycle {
 
     pub fn cue_lists_handle(&self) -> CueListsHandle {
         self.cue_lists.clone()
-    }
-
-    pub(crate) async fn connected_lv1_identity(
-        &self,
-    ) -> Option<crate::connection_state::Lv1SystemIdentity> {
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| ())
-            .ok()?;
-        rx.await.ok()?.connected_lv1_identity
     }
 
     async fn last_connected_lv1_identity(
@@ -703,10 +660,21 @@ impl AppLifecycle {
         &self,
         app: AppHandle<R>,
     ) -> Result<ConnectCommandResult, String> {
-        let identity = self
-            .connected_lv1_identity()
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::InitialProjectionState { reply })
             .await
+            .map_err(|_| "Show state is unavailable".to_string())?;
+        let projection = rx
+            .await
+            .map_err(|_| "Show state reply channel is closed".to_string())?;
+        let identity = projection
+            .connected_lv1_identity
             .ok_or_else(|| "Reconnect unavailable: no previous LV1 identity".to_string())?;
+        if !projection.reconnect.active {
+            return Err("Reconnect unavailable: no active reconnect attempt".to_string());
+        }
+        let attempt = projection.reconnect.attempt;
         self.abort_current_runtime().await;
         let generation = self
             .begin_connecting()
@@ -716,7 +684,7 @@ impl AppLifecycle {
             app,
             generation,
             identity,
-            ConnectFailureMode::PreserveConnectedIdentity,
+            ConnectFailureMode::PreserveConnectedIdentity { attempt },
         )
         .await
     }
@@ -903,7 +871,7 @@ fn log_lv1_connect_failed(
             error = "LV1 did not connect",
             "LV1 did not connect"
         ),
-        ConnectFailureMode::PreserveConnectedIdentity => tracing::warn!(
+        ConnectFailureMode::PreserveConnectedIdentity { .. } => tracing::warn!(
             event = "lv1_reconnect_failed",
             host = %identity.address,
             port = identity.port,
@@ -1210,7 +1178,7 @@ mod tests {
         let connect_result = lifecycle
             .finish_connect_transaction(
                 identity,
-                ConnectFailureMode::PreserveConnectedIdentity,
+                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -1348,7 +1316,10 @@ mod tests {
         };
 
         lifecycle
-            .complete_lv1_connection_metadata(identity.clone())
+            .complete_lv1_connection_metadata(
+                identity.clone(),
+                crate::show::ConnectionCompletionMode::Unconditional,
+            )
             .await
             .expect("connected metadata should apply");
 
@@ -1389,6 +1360,7 @@ mod tests {
             .show
             .send(ShowCommand::CompleteLv1Connection {
                 identity: identity.clone(),
+                mode: crate::show::ConnectionCompletionMode::Unconditional,
                 reply: Some(reply),
             })
             .await
@@ -1402,7 +1374,9 @@ mod tests {
             })
         ));
         lifecycle
-            .fail_lv1_connection_metadata(ConnectFailureMode::PreserveConnectedIdentity)
+            .fail_lv1_connection_metadata(ConnectFailureMode::PreserveConnectedIdentity {
+                attempt: 1,
+            })
             .await
             .expect("failed reconnect metadata should apply");
 
@@ -1707,22 +1681,27 @@ mod tests {
         let _tracing_guard = capture.install();
         let app = mock_app();
         let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus);
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::CompleteLv1Connection {
-                identity: Lv1SystemIdentity {
-                    uuid: None,
-                    host: Some("Unreachable".to_string()),
-                    address: "127.0.0.1".to_string(),
-                    port: 1,
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let identity = Lv1SystemIdentity {
+            uuid: None,
+            host: Some("Unreachable".to_string()),
+            address: "127.0.0.1".to_string(),
+            port: 1,
+        };
+        let (show, show_task, show_peers, lockout) =
+            crate::show::build_show_actor_with_connection_metadata_for_test(
+                event_bus.clone(),
+                identity,
+                None,
+                ReconnectState {
+                    active: true,
+                    attempt: 7,
                 },
-                reply: Some(reply),
-            })
-            .await
-            .expect("stored identity should be sent");
-        rx.await.expect("stored identity should be set");
+                None,
+            );
+        show_task.spawn();
+        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
 
         let result = lifecycle.attempt_reconnect_lv1(app.handle().clone()).await;
 
@@ -2028,13 +2007,12 @@ mod tests {
             Some(generation)
         );
 
-        assert!(lifecycle.claim_disconnect_generation(generation).await);
-        assert!(
-            lifecycle
-                .abort_runtime_handles_without_advancing_generation(generation)
-                .await
-        );
-
+        let transaction = lifecycle
+            .clear_runtime_if_current(generation)
+            .await
+            .expect("current runtime should clear atomically");
+        assert_eq!(transaction.cleared_generation, generation);
+        assert_eq!(transaction.active_generation, generation + 1);
         assert_eq!(
             lifecycle.inner.lock().await.runtime_handles_generation,
             None
@@ -2143,7 +2121,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn disconnect_current_runtime_does_not_touch_runtime_installed_before_cleanup() {
+    async fn disconnect_public_path_installed_newer_runtime_is_unchanged() {
         let capture = crate::test_support::TracingCapture::new();
         let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
@@ -2239,7 +2217,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn overlapping_disconnects_for_one_generation_have_one_owner() {
+    async fn two_same_generation_disconnects_have_one_success_sequence() {
         let capture = crate::test_support::TracingCapture::new();
         let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();
@@ -2265,7 +2243,7 @@ mod tests {
         let (cleanup_reached_tx, cleanup_reached_rx) = oneshot::channel();
         let (resume_cleanup_tx, resume_cleanup_rx) = oneshot::channel();
         lifecycle
-            .set_before_disconnect_generation_finalization(Box::new(move || {
+            .set_before_disconnect_cleanup(Box::new(move || {
                 Box::pin(async move {
                     cleanup_reached_tx.send(()).unwrap();
                     resume_cleanup_rx.await.unwrap();
@@ -2283,18 +2261,30 @@ mod tests {
         let first = first.await.unwrap();
 
         assert_eq!(usize::from(first.changed) + usize::from(second.changed), 1);
-        let disconnected = std::iter::from_fn(|| events.try_recv().ok())
-            .filter(|event| {
-                matches!(
+        let published = std::iter::from_fn(|| events.try_recv().ok()).collect::<Vec<_>>();
+        assert_eq!(
+            published
+                .iter()
+                .filter(|event| matches!(
                     event,
                     AppEvent::Lv1 {
                         event: Lv1Event::Disconnected { .. },
                         ..
                     }
-                )
-            })
-            .count();
-        assert_eq!(disconnected, 1);
+                ))
+                .count(),
+            1
+        );
+        assert_eq!(
+            published
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { .. })
+                ))
+                .count(),
+            1
+        );
         assert_eq!(
             capture
                 .matching("lv1_disconnected", tracing::Level::INFO)
@@ -2402,7 +2392,10 @@ mod tests {
                 .is_ok()
         );
         lifecycle
-            .complete_lv1_connection_metadata(identity)
+            .complete_lv1_connection_metadata(
+                identity,
+                crate::show::ConnectionCompletionMode::Reconnect { attempt: 4 },
+            )
             .await
             .unwrap();
         while events.try_recv().is_ok() {}
@@ -2420,128 +2413,123 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn stale_disconnect_finalization_preserves_newer_runtime() {
+    async fn timeout_cleanup_survives_outer_task_cancellation() {
         let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-
-        let original_generation = lifecycle.begin_connecting().await.unwrap();
-        let old_lv1 = fake_lv1_handle(connected_snapshot());
-        let (old_fade_tx, _old_fade_rx) = mpsc::channel(1);
+        let mut events = event_bus.subscribe();
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let connected_identity = identity(Some("reconnect-target"), Some("LV1-FOH"), "192.0.2.10");
+        let (show, show_task, show_peers, lockout) =
+            crate::show::build_show_actor_with_connection_metadata_for_test(
+                event_bus.clone(),
+                connected_identity,
+                None,
+                ReconnectState {
+                    active: true,
+                    attempt: 4,
+                },
+                None,
+            );
+        show_task.spawn();
+        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let (lv1_tx, mut lv1_rx) = mpsc::channel(1);
+        let (fade_tx, _fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
                 .install_runtime_transaction(
-                    original_generation,
+                    generation,
                     RuntimeHandles::with_runtime_targets(
-                        old_lv1,
-                        FadeEngineHandle::new(old_fade_tx),
+                        test_actor_handle(lv1_tx),
+                        FadeEngineHandle::new(fade_tx),
                     ),
                 )
                 .await
-                .is_ok(),
-            "original runtime should install"
+                .is_ok()
         );
+        while events.try_recv().is_ok() {}
 
         let (cleanup_reached_tx, cleanup_reached_rx) = oneshot::channel();
         let (resume_cleanup_tx, resume_cleanup_rx) = oneshot::channel();
         lifecycle
-            .set_before_disconnect_generation_finalization(Box::new(move || {
+            .set_before_disconnect_cleanup(Box::new(move || {
                 Box::pin(async move {
-                    cleanup_reached_tx
-                        .send(())
-                        .expect("disconnect should announce the finalization gate");
-                    resume_cleanup_rx
-                        .await
-                        .expect("disconnect finalization should be released");
+                    cleanup_reached_tx.send(()).unwrap();
+                    resume_cleanup_rx.await.unwrap();
                 })
             }))
             .await;
+        let timeout_lifecycle = lifecycle.clone();
+        let timeout_task =
+            tokio::spawn(async move { timeout_lifecycle.reconnect_timed_out(4).await });
+        cleanup_reached_rx.await.unwrap();
+        timeout_task.abort();
+        resume_cleanup_tx.send(()).unwrap();
 
-        let lifecycle_for_disconnect = lifecycle.clone();
-        let disconnect = tokio::spawn(async move {
-            lifecycle_for_disconnect
-                .disconnect_current_runtime()
-                .await
-                .expect("disconnect command should complete")
-        });
-
-        cleanup_reached_rx
-            .await
-            .expect("disconnect should pause before generation finalization");
-
-        let newer_generation = lifecycle.begin_connecting().await.unwrap();
-        let newer_lv1 = fake_lv1_handle(connected_snapshot());
-        let (newer_fade_tx, _newer_fade_rx) = mpsc::channel(1);
-        assert!(
-            lifecycle
-                .install_runtime_transaction(
-                    newer_generation,
-                    RuntimeHandles::with_runtime_targets(
-                        newer_lv1,
-                        FadeEngineHandle::new(newer_fade_tx),
-                    ),
-                )
-                .await
-                .is_ok(),
-            "newer runtime should install"
-        );
-
-        let (newer_scenes, newer_scenes_task, _newer_scenes_peers) = build_scenes_actor(
-            newer_generation,
-            lifecycle.current_runtime_generation().await,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            lifecycle.settings.clone(),
-            lifecycle.settings_snapshot().await.unwrap(),
-            lifecycle.lockout.clone(),
-        );
-        newer_scenes_task.spawn();
-        assert!(
-            lifecycle
-                .install_accepted_scene_recall_fader(newer_generation, newer_scenes)
-                .await
-        );
-
-        resume_cleanup_tx
-            .send(())
-            .expect("disconnect finalization should resume");
-        let result = disconnect.await.expect("disconnect task should join");
-
-        assert!(result.changed, "the original runtime was disconnected");
-        assert_eq!(lifecycle.active_generation().await, newer_generation);
-
-        let current_lv1 = lifecycle
-            .current_lv1()
-            .await
-            .expect("newer LV1 handle should survive stale finalization");
-        let (state_reply, state_rx) = oneshot::channel();
-        current_lv1
-            .send(Lv1Command::GetState { reply: state_reply })
-            .await
-            .expect("newer LV1 mailbox should remain open");
-        assert_eq!(
-            state_rx.await.expect("newer LV1 should reply").connection,
-            ConnectionStatus::Connected
-        );
-        assert!(lifecycle.current_fade().await.is_some());
-
-        let current_scenes = lifecycle
-            .current_scene_recall_fader()
-            .await
-            .expect("newer scenes handle should survive stale finalization");
-        let (scenes_reply, scenes_rx) = oneshot::channel();
-        current_scenes
-            .send(ScenesCommand::InitialProjectionState {
-                reply: scenes_reply,
-            })
-            .await
-            .expect("newer scenes mailbox should remain open");
-        scenes_rx
-            .await
-            .expect("newer scenes actor should reply after stale finalization");
+        assert!(matches!(events.recv().await.unwrap(), AppEvent::Lv1 {
+            generation: event_generation, event: Lv1Event::Disconnected { .. },
+        } if event_generation == generation));
+        assert!(matches!(events.recv().await.unwrap(), AppEvent::Runtime(
+            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation }
+        ) if event_generation == generation + 1));
+        assert!(lv1_rx.recv().await.is_none());
+        assert!(lifecycle.current_lv1().await.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn disconnect_for_stale_generation_preserves_newer_runtime() {
+    async fn timeout_first_rejects_later_reconnect_completion() {
+        let event_bus = AppEventBus::default();
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let connected_identity = identity(Some("reconnect-target"), Some("LV1-FOH"), "192.0.2.10");
+        let (show, show_task, show_peers, lockout) =
+            crate::show::build_show_actor_with_connection_metadata_for_test(
+                event_bus.clone(),
+                connected_identity.clone(),
+                None,
+                ReconnectState {
+                    active: true,
+                    attempt: 4,
+                },
+                None,
+            );
+        show_task.spawn();
+        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let (lv1_tx, _lv1_rx) = mpsc::channel(1);
+        let (fade_tx, _fade_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    generation,
+                    RuntimeHandles::with_runtime_targets(
+                        test_actor_handle(lv1_tx),
+                        FadeEngineHandle::new(fade_tx),
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+
+        assert!(lifecycle.reconnect_timed_out(4).await.unwrap().changed);
+        let completion = lifecycle
+            .complete_lv1_connection_metadata(
+                connected_identity,
+                crate::show::ConnectionCompletionMode::Reconnect { attempt: 4 },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            completion,
+            crate::show::CompleteConnectionOutcome {
+                accepted: false,
+                changed: false,
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_generation_does_not_block_newer_disconnect() {
         let capture = crate::test_support::TracingCapture::new();
         let _tracing_guard = capture.install();
         let event_bus = AppEventBus::default();

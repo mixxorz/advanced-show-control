@@ -27,6 +27,15 @@ impl RuntimeGeneration {
         *current
     }
 
+    pub(crate) async fn advance_if_current(&self, expected: u64) -> Option<u64> {
+        let mut current = self.current.lock().await;
+        if *current != expected {
+            return None;
+        }
+        *current = current.saturating_add(1);
+        Some(*current)
+    }
+
     pub(crate) async fn if_current<T>(
         &self,
         expected: u64,
@@ -34,5 +43,20 @@ impl RuntimeGeneration {
     ) -> Option<T> {
         let current = self.current.lock().await;
         (*current == expected).then(operation)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeGeneration;
+
+    #[tokio::test]
+    async fn advance_if_current_advances_only_the_matching_generation() {
+        let generation = RuntimeGeneration::new();
+        let first = generation.advance().await;
+
+        assert_eq!(generation.advance_if_current(first).await, Some(first + 1));
+        assert_eq!(generation.advance_if_current(first).await, None);
+        assert_eq!(generation.current().await, first + 1);
     }
 }
