@@ -70,6 +70,14 @@ impl ShowState {
         changed
     }
 
+    pub(crate) fn claim_reconnect_timeout(&mut self, attempt: u64) -> bool {
+        if !self.reconnect.active || self.reconnect.attempt != attempt {
+            return false;
+        }
+        self.reconnect.active = false;
+        true
+    }
+
     #[cfg(test)]
     pub(crate) fn with_connection_metadata_for_test(
         connected_lv1_identity: Lv1SystemIdentity,
@@ -207,6 +215,21 @@ mod tests {
         assert_eq!(projection.pending_lv1_identity, None);
         assert_eq!(projection.reconnect, ReconnectState::default());
         assert!(!state.fail_lv1_connection());
+    }
+
+    #[test]
+    fn reconnect_timeout_claim_requires_the_active_attempt() {
+        let mut state = ShowState {
+            reconnect: ReconnectState {
+                active: true,
+                attempt: 4,
+            },
+            ..Default::default()
+        };
+
+        assert!(!state.claim_reconnect_timeout(3));
+        assert!(state.claim_reconnect_timeout(4));
+        assert!(!state.claim_reconnect_timeout(4));
     }
 
     #[test]

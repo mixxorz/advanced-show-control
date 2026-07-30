@@ -399,6 +399,9 @@ async fn handle_command(
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
+        ShowCommand::ClaimReconnectTimeout { attempt, reply } => {
+            let _ = reply.send(state.claim_reconnect_timeout(attempt));
+        }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
             let result = async {
                 let lv1 = current_lv1_snapshot(peers).await?;

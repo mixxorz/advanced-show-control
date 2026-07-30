@@ -44,6 +44,10 @@ pub enum ShowCommand {
     FailLv1Reconnect {
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
+    ClaimReconnectTimeout {
+        attempt: u64,
+        reply: oneshot::Sender<bool>,
+    },
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,

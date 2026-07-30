@@ -56,6 +56,7 @@ pub async fn disconnect_lv1(
 #[tauri::command]
 pub async fn reconnect_timed_out(
     lifecycle: State<'_, AppLifecycle>,
+    attempt: u64,
 ) -> Result<ShowCommandResult, String> {
-    lifecycle.disconnect_current_runtime().await
+    lifecycle.reconnect_timed_out(attempt).await
 }
