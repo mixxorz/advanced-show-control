@@ -56,6 +56,10 @@ pub enum RuntimeInstallRejection {
 type BeforeSceneRecallStartHook =
     Box<dyn FnOnce(RuntimeGeneration) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
+#[cfg(test)]
+type BeforeDisconnectGenerationFinalizationHook =
+    Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
+
 struct BuiltConnectedRuntime {
     lv1: Lv1ActorHandle,
     lv1_task: crate::lv1::Lv1ActorTask,
@@ -166,6 +170,9 @@ pub struct AppLifecycle {
     cue_lists: CueListsHandle,
     cue_lists_peers: CueListsPeers,
     settings: SettingsHandle,
+    #[cfg(test)]
+    before_disconnect_generation_finalization:
+        Arc<Mutex<Option<BeforeDisconnectGenerationFinalizationHook>>>,
 }
 
 impl AppLifecycle {
@@ -196,6 +203,28 @@ impl AppLifecycle {
             cue_lists,
             cue_lists_peers,
             settings,
+            #[cfg(test)]
+            before_disconnect_generation_finalization: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    #[cfg(test)]
+    async fn set_before_disconnect_generation_finalization(
+        &self,
+        hook: BeforeDisconnectGenerationFinalizationHook,
+    ) {
+        *self.before_disconnect_generation_finalization.lock().await = Some(hook);
+    }
+
+    #[cfg(test)]
+    async fn run_before_disconnect_generation_finalization(&self) {
+        let hook = self
+            .before_disconnect_generation_finalization
+            .lock()
+            .await
+            .take();
+        if let Some(hook) = hook {
+            hook().await;
         }
     }
 
@@ -284,14 +313,15 @@ impl AppLifecycle {
     }
 
     pub async fn abort_runtime_handles_without_advancing_generation(&self) {
-        let (generation, runtime_generation) = {
+        let generation = {
             let mut inner = self.inner.lock().await;
             inner.handles.abort_all();
             inner.runtime_handles_generation = None;
-            (inner.generation.current().await, inner.generation.clone())
+            inner.generation.current().await
         };
         self.show_peers.clear_lv1(generation);
-        runtime_generation.set(generation).await;
+        #[cfg(test)]
+        self.run_before_disconnect_generation_finalization().await;
     }
 
     async fn abort_rejected_connection_transaction(
@@ -1999,6 +2029,130 @@ mod tests {
             .send(connected_snapshot())
             .expect("Show LV1 state reply should send");
         assert!(result.await.unwrap().is_err());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_disconnect_finalization_preserves_newer_runtime() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+
+        let original_generation = lifecycle.begin_connecting().await.unwrap();
+        let old_lv1 = fake_lv1_handle(connected_snapshot());
+        let (old_fade_tx, _old_fade_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    original_generation,
+                    RuntimeHandles::with_runtime_targets(
+                        old_lv1,
+                        FadeEngineHandle::new(old_fade_tx),
+                    ),
+                )
+                .await
+                .is_ok(),
+            "original runtime should install"
+        );
+
+        let (cleanup_reached_tx, cleanup_reached_rx) = oneshot::channel();
+        let (resume_cleanup_tx, resume_cleanup_rx) = oneshot::channel();
+        lifecycle
+            .set_before_disconnect_generation_finalization(Box::new(move || {
+                Box::pin(async move {
+                    cleanup_reached_tx
+                        .send(())
+                        .expect("disconnect should announce the finalization gate");
+                    resume_cleanup_rx
+                        .await
+                        .expect("disconnect finalization should be released");
+                })
+            }))
+            .await;
+
+        let lifecycle_for_disconnect = lifecycle.clone();
+        let disconnect = tokio::spawn(async move {
+            lifecycle_for_disconnect
+                .disconnect_current_runtime()
+                .await
+                .expect("disconnect command should complete")
+        });
+
+        cleanup_reached_rx
+            .await
+            .expect("disconnect should pause before generation finalization");
+
+        let newer_generation = lifecycle.begin_connecting().await.unwrap();
+        let newer_lv1 = fake_lv1_handle(connected_snapshot());
+        let (newer_fade_tx, _newer_fade_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    newer_generation,
+                    RuntimeHandles::with_runtime_targets(
+                        newer_lv1,
+                        FadeEngineHandle::new(newer_fade_tx),
+                    ),
+                )
+                .await
+                .is_ok(),
+            "newer runtime should install"
+        );
+
+        let (newer_scenes, newer_scenes_task, _newer_scenes_peers) = build_scenes_actor(
+            newer_generation,
+            lifecycle.current_runtime_generation().await,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            lifecycle.settings.clone(),
+            lifecycle.settings_snapshot().await.unwrap(),
+            lifecycle.lockout.clone(),
+        );
+        newer_scenes_task.spawn();
+        assert!(
+            lifecycle
+                .install_accepted_scene_recall_fader(newer_generation, newer_scenes)
+                .await
+        );
+
+        resume_cleanup_tx
+            .send(())
+            .expect("disconnect finalization should resume");
+        let result = disconnect.await.expect("disconnect task should join");
+
+        assert!(result.changed, "the original runtime was disconnected");
+        assert_eq!(lifecycle.active_generation().await, newer_generation);
+
+        let current_lv1 = lifecycle
+            .current_lv1()
+            .await
+            .expect("newer LV1 handle should survive stale finalization");
+        let (state_reply, state_rx) = oneshot::channel();
+        current_lv1
+            .send(Lv1Command::GetState { reply: state_reply })
+            .await
+            .expect("newer LV1 mailbox should remain open");
+        assert_eq!(
+            state_rx.await.expect("newer LV1 should reply").connection,
+            ConnectionStatus::Connected
+        );
+        assert!(lifecycle.current_fade().await.is_some());
+
+        let current_scenes = lifecycle
+            .current_scene_recall_fader()
+            .await
+            .expect("newer scenes handle should survive stale finalization");
+        let (scenes_reply, scenes_rx) = oneshot::channel();
+        current_scenes
+            .send(ScenesCommand::InitialProjectionState {
+                reply: scenes_reply,
+            })
+            .await
+            .expect("newer scenes mailbox should remain open");
+        scenes_rx
+            .await
+            .expect("newer scenes actor should reply after stale finalization");
+
+        assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_some());
     }
 
     #[tokio::test(flavor = "current_thread")]

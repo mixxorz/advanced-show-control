@@ -16,6 +16,7 @@ impl RuntimeGeneration {
         *self.current.lock().await
     }
 
+    #[cfg(test)]
     pub(crate) async fn set(&self, generation: u64) {
         *self.current.lock().await = generation;
     }
