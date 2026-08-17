@@ -1,3 +1,4 @@
+mod atomic_file;
 pub mod connection_state;
 pub mod cue_lists;
 pub mod diagnostics;

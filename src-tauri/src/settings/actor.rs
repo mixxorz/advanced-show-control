@@ -128,17 +128,26 @@ async fn handle_command(
             expected_generation,
             reply,
         } => {
-            #[cfg(test)]
-            if let Some(gate) = set_last_connected_lv1_gate.take() {
-                let _ = gate.received.send(());
-                let _ = gate.release.await;
+            if runtime_generation.current().await != expected_generation {
+                let _ = reply.send(Ok(()));
+                return;
             }
-            let result = runtime_generation
-                .if_current(expected_generation, || {
-                    state.set_last_connected_lv1(identity).map(|_changed| ())
-                })
-                .await
-                .unwrap_or(Ok(()));
+
+            let result = match state.stage_last_connected_lv1(identity) {
+                Ok(Some(staged)) => {
+                    #[cfg(test)]
+                    if let Some(gate) = set_last_connected_lv1_gate.take() {
+                        let _ = gate.received.send(());
+                        let _ = gate.release.await;
+                    }
+                    runtime_generation
+                        .if_current(expected_generation, || state.publish_staged(staged))
+                        .await
+                        .unwrap_or(Ok(()))
+                }
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            };
             let _ = reply.send(result);
         }
     }
@@ -223,6 +232,16 @@ mod tests {
             .await
             .unwrap();
         rx.await.unwrap()
+    }
+
+    fn staged_settings_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().is_some_and(|name| name != "settings.json"))
+            .collect()
     }
 
     #[tokio::test]
@@ -338,23 +357,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_stores_and_returns_last_connected_lv1() {
+    async fn actor_publishes_staged_last_connected_lv1_for_current_generation() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("connected-identity");
         let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
-        task.spawn();
+        let (staged_tx, staged_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        task.pause_set_last_connected_lv1(staged_tx, release_rx)
+            .spawn();
         let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
+        let runtime_generation = runtime_generation();
 
         let (reply, rx) = oneshot::channel();
         handle
             .send(SettingsCommand::SetLastConnectedLv1 {
                 identity: identity.clone(),
-                runtime_generation: runtime_generation(),
+                runtime_generation: runtime_generation.clone(),
                 expected_generation: 0,
                 reply,
             })
             .await
             .unwrap();
+        staged_rx.await.expect("settings update should be staged");
+        assert_eq!(staged_settings_files(&dir).len(), 1);
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                runtime_generation.current()
+            )
+            .await,
+            Ok(0)
+        );
+        release_tx.send(()).unwrap();
         assert_eq!(rx.await.unwrap(), Ok(()));
 
         let (reply, rx) = oneshot::channel();
@@ -363,7 +397,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(identity));
-        assert!(dir.join("settings.json").exists());
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(document["lastConnectedLv1"]["uuid"], "uuid-1");
+        assert!(document.get("settings").is_none());
+        assert!(staged_settings_files(&dir).is_empty());
     }
 
     #[tokio::test]
@@ -421,23 +460,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_treats_stale_remembered_identity_update_as_successful_noop() {
+    async fn actor_discards_staged_identity_when_generation_advances() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("stale-remembered-identity");
-        let (handle, task, _) = build_settings_actor(dir, event_bus);
-        task.spawn();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original_contents = r#"{
+  "autoSaveSessions": true,
+  "lastConnectedLv1": {
+    "uuid": "uuid-old",
+    "host": "LV1-FOH",
+    "address": "192.168.1.35",
+    "port": 50000
+  }
+}"#;
+        std::fs::write(dir.join("settings.json"), original_contents).unwrap();
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        let (staged_tx, staged_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        task.pause_set_last_connected_lv1(staged_tx, release_rx)
+            .spawn();
         let runtime_generation = crate::runtime::generation::RuntimeGeneration::default();
-        runtime_generation.advance().await;
+
         let (reply, rx) = oneshot::channel();
         handle
             .send(SettingsCommand::SetLastConnectedLv1 {
                 identity: identity("uuid-new", "LV1-FOH", "192.168.1.36"),
-                runtime_generation,
+                runtime_generation: runtime_generation.clone(),
                 expected_generation: 0,
                 reply,
             })
             .await
-            .expect("stale identity command should send");
+            .expect("identity command should send");
+        staged_rx.await.expect("settings update should be staged");
+        assert_eq!(staged_settings_files(&dir).len(), 1);
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                runtime_generation.advance()
+            )
+            .await,
+            Ok(1)
+        );
+        release_tx.send(()).unwrap();
         assert_eq!(
             rx.await.expect("stale identity reply should arrive"),
             Ok(())
@@ -448,11 +512,19 @@ mod tests {
             .send(SettingsCommand::GetLastConnectedLv1 { reply })
             .await
             .unwrap();
-        assert_eq!(rx.await.unwrap(), None);
+        assert_eq!(
+            rx.await.unwrap(),
+            Some(identity("uuid-old", "LV1-FOH", "192.168.1.35"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+            original_contents
+        );
+        assert!(staged_settings_files(&dir).is_empty());
     }
 
     #[tokio::test]
-    async fn actor_preserves_remembered_identity_when_replacement_write_fails() {
+    async fn actor_preserves_remembered_identity_when_staged_publication_fails() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("failed-remembered-identity-write");
         let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
@@ -473,8 +545,7 @@ mod tests {
         assert_eq!(rx.await.unwrap(), Ok(()));
 
         std::fs::remove_file(dir.join("settings.json")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
-        std::fs::write(&dir, "not a directory").unwrap();
+        std::fs::create_dir(dir.join("settings.json")).unwrap();
 
         let (reply, rx) = oneshot::channel();
         handle
@@ -494,6 +565,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(original));
+        assert!(staged_settings_files(&dir).is_empty());
     }
 
     #[tokio::test]

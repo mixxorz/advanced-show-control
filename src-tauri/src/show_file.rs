@@ -54,7 +54,7 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
                 )
             })?;
         drop(temp_file);
-        replace_file_atomically(&temp_path, path).map_err(|err| {
+        crate::atomic_file::replace(&temp_path, path).map_err(|err| {
             format!(
                 "Failed to replace session {} from {}: {err}",
                 path.display(),
@@ -148,39 +148,6 @@ fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
     }
 
     backup_result
-}
-
-#[cfg(not(windows))]
-fn replace_file_atomically(source: &Path, destination: &Path) -> io::Result<()> {
-    fs::rename(source, destination)
-}
-
-#[cfg(windows)]
-fn replace_file_atomically(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-
-    let result = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
 }
 
 fn prune_old_backups(
