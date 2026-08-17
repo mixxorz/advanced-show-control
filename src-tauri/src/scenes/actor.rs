@@ -343,131 +343,13 @@ async fn run_scenes_actor(task: ScenesTask) {
                 None => std::future::pending::<()>().await,
             }
         };
-        if let Some(deadline) = pending_scene.as_ref().map(|pending| pending.settle_after) {
-            tokio::select! {
-                command = command_rx.recv() => {
-                    let Some(command) = command else {
-                        break;
-                    };
-                    if dispatch_scenes_command(
-                        command,
-                        &mut recall_state,
-                        &mut recall_queue,
-                        &peers,
-                        &event_bus,
-                        generation,
-                        &runtime_generation,
-                        &lockout,
-                        &mut late_canceled_observations,
-                    )
-                    .await
-                        == ScenesCommandDispatch::Shutdown
-                    {
-                        break;
-                    }
-                }
-                event = events.recv() => {
-                    match event {
-                        Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneListChanged(scene_list) }) => {
-                            let before = recall_state.scene_configs().to_vec();
-                            if recall_state.observe_and_align_scene_list(event_generation == generation, scene_list.clone(), tokio::time::Instant::now()) {
-                                log_scene_alignment(&before, &recall_state, &scene_list);
-                                publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
-                            }
-                        }
-                        Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) => {
-                            pending_scene = Some(PendingSceneObservation::new(event_generation, sequence, scene, tokio::time::Instant::now()));
-                            #[cfg(test)]
-                            if let Some(observer) = pending_scene_observer.take() {
-                                let _ = observer.send(());
-                            }
-                        }
-                        Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
-                            settings = updated_settings;
-                        }
-                        Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == generation => {
-                            cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "LV1 disconnected", true);
-                            late_canceled_observations.clear();
-                        }
-                        Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != generation => {
-                            cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "LV1 connection generation changed", true);
-                            late_canceled_observations.clear();
-                        }
-                        Ok(_) => {}
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                            log_lagged_subscriber("scene-recall", count);
-                            cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "LV1 recall readiness was lost", true);
-                            let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
-                                break;
-                            };
-                            settings = updated_settings;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "scene recall event stream closed", true);
-                            late_canceled_observations.clear();
-                            break;
-                        }
-                    }
-                }
-                lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
-                    Ok(true) => {
-                        cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "lockout was enabled", true);
-                    }
-                    Ok(false) => {}
-                    Err(_) => {
-                        cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "lockout state is unavailable", true);
-                        lockout_open = false;
-                    }
-                },
-                _ = recall_timeout => {
-                    cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "LV1 recall readiness was lost", true);
-                }
-                _ = tokio::time::sleep_until(deadline) => {
-                    if let Some(observation) = pending_scene.take() {
-                        let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
-                            break;
-                        };
-                        if settings != updated_settings {
-                            settings = updated_settings;
-                        }
-                        let peer_handles = peers.handles();
-                        process_scene_observation(
-                            generation,
-                            &runtime_generation,
-                            &peer_handles.lv1,
-                            &peer_handles.fade,
-                            &event_bus,
-                            &mut recall_state,
-                            &settings,
-                            &lockout,
-                            &mut recall_queue,
-                            &mut late_canceled_observations,
-                            &readiness_completion_tx,
-                            #[cfg(test)]
-                            &mut before_fade_handoff,
-                            observation,
-                        ).await;
-                    }
-                }
-                completion = readiness_completion_rx.recv() => {
-                    let Some(completion) = completion else {
-                        break;
-                    };
-                    handle_readiness_completion(
-                        completion,
-                        &runtime_generation,
-                        &mut recall_queue,
-                        &mut late_canceled_observations,
-                        &peers,
-                        &lockout,
-                        &recall_state,
-                        generation,
-                    ).await;
-                }
+        let pending_scene_deadline = pending_scene.as_ref().map(|pending| pending.settle_after);
+        let pending_scene_settle = async move {
+            match pending_scene_deadline {
+                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                None => std::future::pending::<()>().await,
             }
-            continue;
-        }
-
+        };
         tokio::select! {
             command = command_rx.recv() => {
                 let Some(command) = command else {
@@ -492,26 +374,15 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
             event = events.recv() => {
                 match event {
-                    Ok(AppEvent::Lv1 {
-                        generation: event_generation,
-                        event: Lv1Event::SceneListChanged(scene_list),
-                    }) => {
+                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneListChanged(scene_list) }) => {
                         let before = recall_state.scene_configs().to_vec();
                         if recall_state.observe_and_align_scene_list(event_generation == generation, scene_list.clone(), tokio::time::Instant::now()) {
                             log_scene_alignment(&before, &recall_state, &scene_list);
                             publish_scene_state_changed(&event_bus, generation, ScenesProjectionReason::SceneState, &recall_state, true);
                         }
                     }
-                    Ok(AppEvent::Lv1 {
-                        generation: event_generation,
-                        event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }),
-                    }) => {
-                        pending_scene = Some(PendingSceneObservation::new(
-                            event_generation,
-                            sequence,
-                            scene,
-                            tokio::time::Instant::now(),
-                        ));
+                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) => {
+                        pending_scene = Some(PendingSceneObservation::new(event_generation, sequence, scene, tokio::time::Instant::now()));
                         #[cfg(test)]
                         if let Some(observer) = pending_scene_observer.take() {
                             let _ = observer.send(());
@@ -556,6 +427,33 @@ async fn run_scenes_actor(task: ScenesTask) {
             },
             _ = recall_timeout => {
                 cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "LV1 recall readiness was lost", true);
+            }
+            _ = pending_scene_settle, if pending_scene_deadline.is_some() => {
+                if let Some(observation) = pending_scene.take() {
+                    let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
+                        break;
+                    };
+                    if settings != updated_settings {
+                        settings = updated_settings;
+                    }
+                    let peer_handles = peers.handles();
+                    process_scene_observation(
+                        generation,
+                        &runtime_generation,
+                        &peer_handles.lv1,
+                        &peer_handles.fade,
+                        &event_bus,
+                        &mut recall_state,
+                        &settings,
+                        &lockout,
+                        &mut recall_queue,
+                        &mut late_canceled_observations,
+                        &readiness_completion_tx,
+                        #[cfg(test)]
+                        &mut before_fade_handoff,
+                        observation,
+                    ).await;
+                }
             }
             completion = readiness_completion_rx.recv() => {
                 let Some(completion) = completion else {
