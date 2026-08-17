@@ -69,23 +69,11 @@ pub struct ShowFileChannelRef {
     pub channel: i32,
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LoadValidationReport {
-    pub removed_scenes: Vec<String>,
-}
-
-impl LoadValidationReport {
-    pub fn removed_anything(&self) -> bool {
-        !self.removed_scenes.is_empty()
-    }
-}
-
 pub struct ImportedShowFile {
     pub snapshot: SceneDocument,
     pub cue_list_snapshot: CueListDocument,
     pub lockout: bool,
     pub selected_scene_internal_id: Option<String>,
-    pub report: LoadValidationReport,
     pub generated_internal_scene_ids: bool,
 }
 
@@ -153,7 +141,6 @@ pub fn import_show_file(
         snapshot,
         lockout: file.safety.lockout,
         selected_scene_internal_id,
-        report: LoadValidationReport::default(),
         generated_internal_scene_ids,
         cue_list_snapshot: CueListDocument {
             cue_lists: std::mem::take(&mut file.cue_lists),
@@ -316,7 +303,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!imported.report.removed_anything());
         assert!(imported.cue_list_snapshot.cue_lists.is_empty());
     }
 
@@ -366,7 +352,6 @@ mod tests {
 
         let imported = import_show_file(&mut file, &lv1).unwrap();
 
-        assert!(!imported.report.removed_anything());
         assert_eq!(imported.snapshot.scene_configs.len(), 2);
         assert_eq!(imported.snapshot.scene_configs[0].scene_index, Some(1));
         assert_eq!(imported.snapshot.scene_configs[0].scene_name, "Intro");

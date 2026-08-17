@@ -509,14 +509,12 @@ async fn load_show_file_from_dto(
     let imported = import_show_file(file, lv1)?;
     let saved_at = file.saved_at.clone();
     let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
-    let report = imported.report.clone();
     let imported_scene_configs = imported.snapshot.scene_configs;
     let imported_cue_list_snapshot = imported.cue_list_snapshot.clone();
     let aligned_scene_configs =
         crate::scenes::align_scene_configs(imported_scene_configs.clone(), &lv1.scene_list);
     let alignment_changed = aligned_scene_configs != imported_scene_configs;
-    let mut should_mark_dirty =
-        report.removed_anything() || imported.generated_internal_scene_ids || alignment_changed;
+    let mut should_mark_dirty = imported.generated_internal_scene_ids || alignment_changed;
     let selected_scene_internal_id = selected_scene_internal_id
         .filter(|selected| {
             aligned_scene_configs
@@ -554,9 +552,6 @@ async fn load_show_file_from_dto(
         state.mark_dirty();
     }
     publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
-    for scene in report.removed_scenes.iter() {
-        tracing::warn!(event = "session_scene_pruned", scene = %scene, "Skipped loading \"{scene}\" because it was not found in the current scene list.");
-    }
     if alignment_changed {
         tracing::debug!(
             event = "session_scene_alignment",
@@ -572,7 +567,6 @@ async fn load_show_file_from_dto(
     Ok(LoadShowFileResult {
         selected_scene_internal_id,
         saved_at,
-        report,
     })
 }
 

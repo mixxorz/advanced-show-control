@@ -1,7 +1,6 @@
 //! Show-owned application command handlers.
 
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
-use crate::show::show_file::LoadValidationReport;
 use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
@@ -86,6 +85,4 @@ pub struct NewShowFileResult {
 pub struct LoadShowFileResult {
     pub selected_scene_internal_id: Option<String>,
     pub saved_at: String,
-    #[serde(skip)]
-    pub report: LoadValidationReport,
 }

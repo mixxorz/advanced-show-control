@@ -1,7 +1,7 @@
 pub use crate::show::{
-    ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
-    ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
-    ShowFileSceneScopeToggles, export_show_file, import_show_file,
+    ImportedShowFile, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig,
+    ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig, ShowFileSceneScopeToggles,
+    export_show_file, import_show_file,
 };
 
 use std::fs;
