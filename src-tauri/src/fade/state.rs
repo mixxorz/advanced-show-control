@@ -232,8 +232,6 @@ mod tests {
                 channel,
                 parameter: FadeParameter::FaderDb,
             },
-            group: 0,
-            channel,
             start_value: -20.0,
             target_value,
             curve: FadeCurve::Linear,

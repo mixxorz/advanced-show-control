@@ -23,8 +23,6 @@ pub const PAN_OVERRIDE_CONFIRMATION_COUNT: u8 = 2;
 pub(crate) struct ActiveTarget {
     pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
-    pub(crate) group: i32,
-    pub(crate) channel: i32,
     pub(crate) start_value: f64,
     pub(crate) target_value: f64,
     /// Last value sent — for override detection and min-delta suppression.
@@ -34,14 +32,13 @@ pub(crate) struct ActiveTarget {
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
     paused_since: Option<Instant>,
+    finish_requested: bool,
     pub(crate) expected_generation: Option<u64>,
 }
 
 pub(crate) struct ActiveTargetInit {
     pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
-    pub(crate) group: i32,
-    pub(crate) channel: i32,
     pub(crate) start_value: f64,
     pub(crate) target_value: f64,
     pub(crate) curve: FadeCurve,
@@ -55,8 +52,6 @@ impl ActiveTarget {
         Self {
             scene: init.scene,
             key: init.key,
-            group: init.group,
-            channel: init.channel,
             start_value: init.start_value,
             target_value: init.target_value,
             expected_value: init.start_value,
@@ -65,6 +60,7 @@ impl ActiveTarget {
             duration: init.duration,
             started_at: init.started_at,
             paused_since: None,
+            finish_requested: false,
             expected_generation: init.expected_generation,
         }
     }
@@ -82,7 +78,7 @@ impl ActiveTarget {
     }
 
     pub(crate) fn finish_on_next_tick(&mut self) {
-        self.duration = Duration::ZERO;
+        self.finish_requested = true;
     }
 
     #[cfg(test)]
@@ -104,6 +100,10 @@ impl ActiveTarget {
 
     /// Returns the interpolated value at `now`.
     pub(crate) fn value_at(&self, now: Instant) -> f64 {
+        if self.duration.is_zero() {
+            return self.target_value;
+        }
+
         let elapsed = now.duration_since(self.started_at).as_secs_f64();
         let t = elapsed / self.duration.as_secs_f64();
         if self.is_fader() {
@@ -116,7 +116,7 @@ impl ActiveTarget {
 
     /// Returns true if the fade has completed (t >= 1.0).
     pub(crate) fn is_done(&self, now: Instant) -> bool {
-        now.duration_since(self.started_at) >= self.duration
+        self.finish_requested || now.duration_since(self.started_at) >= self.duration
     }
 
     /// Returns true if the current parameter value indicates a manual override.
@@ -205,8 +205,6 @@ mod tests {
                 channel: 0,
                 parameter: FadeParameter::FaderDb,
             },
-            group: 0,
-            channel: 0,
             start_value: start_db,
             target_value: target_db,
             curve: FadeCurve::Linear,
@@ -214,6 +212,16 @@ mod tests {
             started_at: Instant::now(),
             expected_generation: Some(4),
         })
+    }
+
+    #[test]
+    fn zero_duration_value_at_is_finite_target() {
+        let target = make_channel(-20.0, -10.0, 0);
+
+        let value = target.value_at(target.started_at);
+
+        assert!(value.is_finite());
+        assert_eq!(value, -10.0);
     }
 
     #[test]
@@ -240,8 +248,6 @@ mod tests {
                 channel: 0,
                 parameter: FadeParameter::Pan,
             },
-            group: 0,
-            channel: 0,
             start_value: -45.0,
             target_value: 45.0,
             curve: FadeCurve::Linear,
@@ -374,8 +380,6 @@ mod tests {
                 channel: 0,
                 parameter,
             },
-            group: 0,
-            channel: 0,
             start_value: 0.0,
             target_value: 10.0,
             curve: FadeCurve::Linear,

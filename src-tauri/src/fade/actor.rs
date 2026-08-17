@@ -12,7 +12,7 @@ use crate::fade::events::FadeEvent;
 use crate::fade::handle::FadeEngineHandle;
 use crate::fade::state::{EngineState, PingGateProgress, READINESS_PINGS_REQUIRED};
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
-use crate::fade::types::{FadeParameter, FadeTarget};
+use crate::fade::types::{FadeParameter, FadeTarget, FadeTargetKey};
 use crate::lv1::{Lv1ActorHandle, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1WriteParameter};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
@@ -50,6 +50,28 @@ enum RecallSceneFadeOutcome {
     Started,
     Finishing { target_count: usize },
     Overriding { target_count: usize },
+}
+
+struct PendingWrite {
+    key: FadeTargetKey,
+    value: f64,
+    expected_generation: Option<u64>,
+}
+
+struct PendingCompletion {
+    key: FadeTargetKey,
+    expected_generation: Option<u64>,
+}
+
+impl PendingWrite {
+    fn into_lv1_write(self) -> Lv1ParameterWrite {
+        build_parameter_write(
+            self.key.group,
+            self.key.channel,
+            self.key.parameter,
+            self.value,
+        )
+    }
 }
 
 impl FadeEngineTask {
@@ -187,7 +209,7 @@ async fn run_engine(
                         generation: event_generation,
                         event: Lv1Event::FaderChanged { group, channel, gain_db },
                     }) if event_generation == generation => {
-                        if let Some(pos) = state.channels.iter().position(|ch| ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
+                        if let Some(pos) = state.channels.iter().position(|ch| ch.key.group == group && ch.key.channel == channel && ch.key.parameter == FadeParameter::FaderDb)
                             && state.channels[pos].is_override(gain_db)
                         {
                             state.fan_out(FadeEvent::ChannelOverride {
@@ -312,64 +334,71 @@ async fn run_engine(
                 }
 
                 let now = Instant::now();
-                let mut done_indices = Vec::new();
-                let mut completed_events = Vec::new();
+                let mut completed_targets = Vec::new();
                 let mut writes = Vec::new();
 
-                for (i, ch) in state.channels.iter_mut().enumerate() {
+                for ch in &mut state.channels {
                     if ch.is_done(now) {
                         let target_db = ch.exact_final_send();
-                        writes.push(build_parameter_write(ch.group, ch.channel, ch.key.parameter, target_db));
-                        completed_events.push(FadeEvent::ChannelCompleted {
-                            group: ch.group,
-                            channel: ch.channel,
-                            parameter: ch.key.parameter,
+                        writes.push(PendingWrite {
+                            key: ch.key.clone(),
+                            value: target_db,
+                            expected_generation: ch.expected_generation,
                         });
-                        done_indices.push(i);
+                        completed_targets.push(PendingCompletion {
+                            key: ch.key.clone(),
+                            expected_generation: ch.expected_generation,
+                        });
                         continue;
                     }
 
                     if let Some(new_value) = ch.next_send(now) {
-                        writes.push(build_parameter_write(ch.group, ch.channel, ch.key.parameter, new_value));
+                        writes.push(PendingWrite {
+                            key: ch.key.clone(),
+                            value: new_value,
+                            expected_generation: ch.expected_generation,
+                        });
                     }
                 }
 
-                if !writes.is_empty() {
-                    for (expected_generation, writes) in group_writes_by_generation(&state.channels, writes) {
-                        let sent = match expected_generation {
-                            Some(expected_generation) => {
-                                let lv1 = peers.lv1();
-                                send_batch_if_generation(
-                                    &runtime_generation,
-                                    &lv1,
-                                    &state.event_bus,
-                                    expected_generation,
-                                    writes,
-                                )
-                                .await
-                            }
-                            None => {
-                                let lv1 = peers.lv1();
-                                send_batch(&lv1, &state.event_bus, writes).await;
-                                true
-                            }
-                        };
-
-                        if !sent {
-                            if let Some(expected_generation) = expected_generation {
-                                cancel_generation_owned_targets(&mut state, expected_generation);
-                            }
-                            maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
+                let mut failed_generations = Vec::new();
+                for (expected_generation, writes) in group_writes_by_generation(writes) {
+                    let sent = match expected_generation {
+                        Some(expected_generation) => {
+                            let lv1 = peers.lv1();
+                            send_batch_if_generation(
+                                &runtime_generation,
+                                &lv1,
+                                &state.event_bus,
+                                expected_generation,
+                                writes,
+                            )
+                            .await
                         }
+                        None => {
+                            let lv1 = peers.lv1();
+                            send_batch(&lv1, &state.event_bus, writes).await;
+                            true
+                        }
+                    };
+
+                    if !sent
+                        && let Some(expected_generation) = expected_generation
+                        && !failed_generations.contains(&expected_generation)
+                    {
+                        failed_generations.push(expected_generation);
                     }
                 }
 
-                for i in done_indices.into_iter().rev() {
-                    state.channels.remove(i);
-                }
+                complete_successful_targets(
+                    &mut state,
+                    completed_targets,
+                    &failed_generations,
+                );
 
-                for event in completed_events {
-                    state.fan_out(event);
+                for expected_generation in failed_generations {
+                    cancel_generation_owned_targets(&mut state, expected_generation);
+                    maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
                 }
 
                 maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
@@ -570,8 +599,6 @@ async fn handle_recall_scene_fade(
             state.channels.push(ActiveTarget::new(ActiveTargetInit {
                 scene: config.scene.clone(),
                 key: target.key(),
-                group: target.group,
-                channel: target.channel,
                 start_value,
                 target_value: target.target,
                 curve: config.curve,
@@ -720,37 +747,37 @@ async fn send_batch_if_generation(
     expected_generation: u64,
     writes: Vec<Lv1ParameterWrite>,
 ) -> bool {
-    if runtime_generation.current().await != expected_generation {
-        return false;
-    }
+    let permit = match lv1.reserve().await {
+        Ok(permit) => permit,
+        Err(err) => {
+            let reason = format!("{err:?}");
+            tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
+            event_bus.publish(AppEvent::Fade {
+                generation: 0,
+                event: FadeEvent::WriteFailed { reason },
+            });
+            return false;
+        }
+    };
 
-    if let Err(err) = lv1.send(Lv1Command::WriteBatch(writes)).await {
-        let reason = format!("{err:?}");
-        tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
-        event_bus.publish(AppEvent::Fade {
-            generation: 0,
-            event: FadeEvent::WriteFailed { reason },
-        });
-        return false;
-    }
-
-    true
+    runtime_generation
+        .if_current(expected_generation, || {
+            permit.send(Lv1Command::WriteBatch(writes));
+        })
+        .await
+        .is_some()
 }
 
 fn group_writes_by_generation(
-    channels: &[ActiveTarget],
-    writes: Vec<Lv1ParameterWrite>,
+    writes: Vec<PendingWrite>,
 ) -> Vec<(Option<u64>, Vec<Lv1ParameterWrite>)> {
     let mut grouped: Vec<(Option<u64>, Vec<Lv1ParameterWrite>)> = Vec::new();
 
-    for write in writes {
-        let expected_generation = channels
-            .iter()
-            .find(|ch| ch.group == write.group && ch.channel == write.channel)
-            .and_then(|ch| ch.expected_generation);
-        if let Some((_, batch)) = grouped
-            .iter_mut()
-            .find(|(generation, _)| *generation == expected_generation)
+    for pending_write in writes {
+        let expected_generation = pending_write.expected_generation;
+        let write = pending_write.into_lv1_write();
+        if let Some((generation, batch)) = grouped.last_mut()
+            && *generation == expected_generation
         {
             batch.push(write);
         } else {
@@ -761,12 +788,36 @@ fn group_writes_by_generation(
     grouped
 }
 
+fn complete_successful_targets(
+    state: &mut EngineState,
+    completed_targets: Vec<PendingCompletion>,
+    failed_generations: &[u64],
+) {
+    for completion in completed_targets {
+        if completion
+            .expected_generation
+            .is_some_and(|generation| failed_generations.contains(&generation))
+        {
+            continue;
+        }
+        state.channels.retain(|target| {
+            target.key != completion.key
+                || target.expected_generation != completion.expected_generation
+        });
+        state.fan_out(FadeEvent::ChannelCompleted {
+            group: completion.key.group,
+            channel: completion.key.channel,
+            parameter: completion.key.parameter,
+        });
+    }
+}
+
 fn cancel_generation_owned_targets(state: &mut EngineState, expected_generation: u64) {
     let mut removed = Vec::new();
     state.channels.retain(|ch| {
         let keep = ch.expected_generation != Some(expected_generation);
         if !keep {
-            removed.push((ch.group, ch.channel, ch.key.parameter));
+            removed.push((ch.key.group, ch.key.channel, ch.key.parameter));
         }
         keep
     });
@@ -788,7 +839,7 @@ fn handle_pan_family_pan_report(
     fade_completed_emitted: &mut bool,
 ) {
     let pan_override = if let Some(pan_target) = state.channels.iter_mut().find(|ch| {
-        ch.group == group && ch.channel == channel && ch.key.parameter == FadeParameter::Pan
+        ch.key.group == group && ch.key.channel == channel && ch.key.parameter == FadeParameter::Pan
     }) {
         // A single unexpected pan echo can be stale LV1 feedback during a reversal.
         // Wait for the configured number of consecutive misses before treating it
@@ -819,7 +870,7 @@ fn handle_pan_family_pan_report(
         // pan-family intervention. There is no active pan target to compare
         // against, so cancel those remaining targets immediately.
         state.channels.iter().any(|ch| {
-            ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family()
+            ch.key.group == group && ch.key.channel == channel && ch.key.parameter.is_pan_family()
         })
     };
 
@@ -833,7 +884,7 @@ fn handle_pan_family_pan_report(
     let mut removed = Vec::new();
     state.channels.retain(|ch| {
         let should_remove =
-            ch.group == group && ch.channel == channel && ch.key.parameter.is_pan_family();
+            ch.key.group == group && ch.key.channel == channel && ch.key.parameter.is_pan_family();
         if should_remove {
             removed.push(ch.key.parameter);
         }
@@ -907,8 +958,6 @@ mod tests {
         ActiveTarget::new(ActiveTargetInit {
             scene: scene(17, "Verse"),
             key: target.key(),
-            group: target.group,
-            channel: target.channel,
             start_value: 0.0,
             target_value: target.target,
             curve: FadeCurve::Linear,
@@ -1302,8 +1351,8 @@ mod tests {
         state
             .channels
             .push(active_pan_family_target(FadeParameter::Pan));
-        state.channels.last_mut().unwrap().group = 1;
-        state.channels.last_mut().unwrap().channel = 1;
+        state.channels.last_mut().unwrap().key.group = 1;
+        state.channels.last_mut().unwrap().key.channel = 1;
 
         let mut fade_completed_emitted = false;
         handle_pan_family_pan_report(
@@ -1316,11 +1365,9 @@ mod tests {
         );
 
         assert_eq!(state.channels.len(), 1);
-        assert!(
-            state.channels.iter().any(|ch| ch.group == 1
-                && ch.channel == 1
-                && ch.key.parameter == FadeParameter::Pan)
-        );
+        assert!(state.channels.iter().any(|ch| ch.key.group == 1
+            && ch.key.channel == 1
+            && ch.key.parameter == FadeParameter::Pan));
 
         let mut saw_override = false;
         let mut cancelled = std::collections::HashSet::new();
@@ -1603,8 +1650,8 @@ mod tests {
         state
             .channels
             .push(active_pan_family_target(FadeParameter::Pan));
-        state.channels.last_mut().unwrap().group = 0;
-        state.channels.last_mut().unwrap().channel = 1;
+        state.channels.last_mut().unwrap().key.group = 0;
+        state.channels.last_mut().unwrap().key.channel = 1;
 
         let mut fade_completed_emitted = false;
         handle_pan_family_pan_report(
@@ -1628,11 +1675,9 @@ mod tests {
         );
 
         assert_eq!(state.channels.len(), 1);
-        assert!(
-            state.channels.iter().any(|ch| ch.group == 0
-                && ch.channel == 1
-                && ch.key.parameter == FadeParameter::Pan)
-        );
+        assert!(state.channels.iter().any(|ch| ch.key.group == 0
+            && ch.key.channel == 1
+            && ch.key.parameter == FadeParameter::Pan));
 
         let mut saw_override = false;
         let mut cancelled = std::collections::HashSet::new();
@@ -1973,8 +2018,6 @@ mod tests {
                 target: -12.5,
             }
             .key(),
-            group: 0,
-            channel: 0,
             start_value: -20.0,
             target_value: -12.5,
             curve: FadeCurve::Linear,
@@ -2059,8 +2102,6 @@ mod tests {
                 target: -12.5,
             }
             .key(),
-            group: 0,
-            channel: 0,
             start_value: -20.0,
             target_value: -12.5,
             curve: FadeCurve::Linear,
@@ -2081,57 +2122,99 @@ mod tests {
         );
     }
 
+    #[test]
+    fn same_channel_different_parameter_generations_keep_ordered_batches() {
+        let grouped = group_writes_by_generation(vec![
+            PendingWrite {
+                key: FadeTargetKey {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::FaderDb,
+                },
+                value: -12.5,
+                expected_generation: Some(3),
+            },
+            PendingWrite {
+                key: FadeTargetKey {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Pan,
+                },
+                value: 25.0,
+                expected_generation: None,
+            },
+            PendingWrite {
+                key: FadeTargetKey {
+                    group: 0,
+                    channel: 0,
+                    parameter: FadeParameter::Balance,
+                },
+                value: -10.0,
+                expected_generation: Some(4),
+            },
+        ]);
+
+        assert_eq!(
+            grouped,
+            vec![
+                (
+                    Some(3),
+                    vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
+                ),
+                (
+                    None,
+                    vec![build_parameter_write(0, 0, FadeParameter::Pan, 25.0)],
+                ),
+                (
+                    Some(4),
+                    vec![build_parameter_write(0, 0, FadeParameter::Balance, -10.0)],
+                ),
+            ]
+        );
+    }
+
     #[tokio::test]
-    async fn mixed_generation_writes_on_same_tick_route_separately() {
-        let _event_bus = AppEventBus::default();
+    async fn generation_flip_while_write_reservation_is_pending_does_not_send_stale_write() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(3).await;
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        let lv1 = test_actor_handle(lv1_tx);
 
-        let mut state = EngineState::new(AppEventBus::default(), 0);
-        state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(17, "Verse"),
-            key: FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -12.5,
+        lv1.send(Lv1Command::WriteBatch(vec![build_parameter_write(
+            0,
+            1,
+            FadeParameter::FaderDb,
+            -8.0,
+        )]))
+        .await
+        .unwrap();
+
+        let write_task = tokio::spawn({
+            let runtime_generation = runtime_generation.clone();
+            let lv1 = lv1.clone();
+            let event_bus = event_bus.clone();
+            async move {
+                send_batch_if_generation(
+                    &runtime_generation,
+                    &lv1,
+                    &event_bus,
+                    3,
+                    vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
+                )
+                .await
             }
-            .key(),
-            group: 0,
-            channel: 0,
-            start_value: -20.0,
-            target_value: -12.5,
-            curve: FadeCurve::Linear,
-            duration: std::time::Duration::from_millis(120),
-            started_at: Instant::now(),
-            expected_generation: Some(3),
-        }));
-        state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(17, "Verse"),
-            key: FadeTarget {
-                group: 0,
-                channel: 1,
-                parameter: FadeParameter::FaderDb,
-                target: -10.0,
-            }
-            .key(),
-            group: 0,
-            channel: 1,
-            start_value: -15.0,
-            target_value: -10.0,
-            curve: FadeCurve::Linear,
-            duration: std::time::Duration::from_millis(120),
-            started_at: Instant::now(),
-            expected_generation: None,
-        }));
+        });
+        tokio::task::yield_now().await;
 
-        let writes = vec![
-            build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5),
-            build_parameter_write(0, 1, FadeParameter::FaderDb, -10.0),
-        ];
+        runtime_generation.set(4).await;
+        assert!(matches!(
+            lv1_rx.recv().await,
+            Some(Lv1Command::WriteBatch(_))
+        ));
 
-        let grouped = group_writes_by_generation(&state.channels, writes);
-        assert_eq!(grouped.len(), 2);
-        assert!(grouped.iter().any(|(generation, _)| *generation == Some(3)));
-        assert!(grouped.iter().any(|(generation, _)| generation.is_none()));
+        assert!(!write_task.await.unwrap());
+        assert!(lv1_rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -2151,8 +2234,6 @@ mod tests {
                 target: -12.5,
             }
             .key(),
-            group: 0,
-            channel: 0,
             start_value: -20.0,
             target_value: -12.5,
             curve: FadeCurve::Linear,
@@ -2170,6 +2251,95 @@ mod tests {
 
         assert!(state.channels.is_empty());
         assert!(lv1_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_generation_cancellation_keeps_done_indices_and_events_consistent() {
+        fn target(
+            channel: i32,
+            duration: Duration,
+            expected_generation: Option<u64>,
+        ) -> ActiveTarget {
+            ActiveTarget::new(ActiveTargetInit {
+                scene: scene(17, "Verse"),
+                key: FadeTarget {
+                    group: 0,
+                    channel,
+                    parameter: FadeParameter::FaderDb,
+                    target: -12.5,
+                }
+                .key(),
+                start_value: -20.0,
+                target_value: -12.5,
+                curve: FadeCurve::Linear,
+                duration,
+                started_at: Instant::now(),
+                expected_generation,
+            })
+        }
+
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = EngineState::new(event_bus, 0);
+        state.channels = vec![
+            target(0, Duration::ZERO, Some(3)),
+            target(1, Duration::from_secs(1), Some(3)),
+            target(2, Duration::ZERO, None),
+            target(3, Duration::from_secs(1), None),
+        ];
+        let completed_targets = vec![
+            PendingCompletion {
+                key: state.channels[0].key.clone(),
+                expected_generation: Some(3),
+            },
+            PendingCompletion {
+                key: state.channels[2].key.clone(),
+                expected_generation: None,
+            },
+        ];
+
+        complete_successful_targets(&mut state, completed_targets, &[3]);
+        cancel_generation_owned_targets(&mut state, 3);
+
+        assert_eq!(state.channels.len(), 1);
+        assert_eq!(state.channels[0].key.channel, 3);
+        let events: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::Fade {
+                    event: FadeEvent::ChannelCompleted { channel: 2, .. },
+                    ..
+                }
+            )
+        }));
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::Fade {
+                    event: FadeEvent::ChannelCompleted { channel: 0, .. },
+                    ..
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::Fade {
+                    event: FadeEvent::ChannelCancelled { channel: 0, .. },
+                    ..
+                }
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                AppEvent::Fade {
+                    event: FadeEvent::ChannelCancelled { channel: 1, .. },
+                    ..
+                }
+            )
+        }));
     }
 
     #[tokio::test(start_paused = true)]
