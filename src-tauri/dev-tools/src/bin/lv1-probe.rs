@@ -3,12 +3,12 @@ use advanced_show_control::fade::{
     FadeSceneIdentity, FadeTarget, RecallReadinessRequest, SameSceneRecallBehavior, build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
-use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
     ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1TcpClient, build_actor,
     decode_frame_payload, discover, pong_for_ping, resolve_target,
 };
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use advanced_show_control_dev_tools::probe::{JsonlLogger, MessageKind, entry_for_message};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
