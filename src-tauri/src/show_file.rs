@@ -54,7 +54,7 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
                 )
             })?;
         drop(temp_file);
-        fs::rename(&temp_path, path).map_err(|err| {
+        replace_file_atomically(&temp_path, path).map_err(|err| {
             format!(
                 "Failed to replace session {} from {}: {err}",
                 path.display(),
@@ -108,29 +108,79 @@ fn app_data_folder_name() -> &'static str {
 
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
     let timestamp = crate::time::current_timestamp_millis();
-    let (candidate, mut dest) = reserve_unique_backup_file(backup_dir, path, &timestamp)?;
-    let mut source = fs::File::open(path)
-        .map_err(|err| format!("Failed to open source session {}: {err}", path.display()))?;
+    let (candidate, staged_path, mut dest) =
+        reserve_unique_backup_file(backup_dir, path, &timestamp)?;
 
-    io::copy(&mut source, &mut dest).map_err(|err| {
-        format!(
-            "Failed to create backup {} from {}: {err}",
-            candidate.display(),
-            path.display()
+    let backup_result = (|| -> Result<(), String> {
+        let mut source = fs::File::open(path)
+            .map_err(|err| format!("Failed to open source session {}: {err}", path.display()))?;
+
+        io::copy(&mut source, &mut dest).map_err(|err| {
+            format!(
+                "Failed to create backup {} from {}: {err}",
+                candidate.display(),
+                path.display()
+            )
+        })?;
+
+        dest.sync_all().map_err(|err| {
+            format!(
+                "Failed to flush backup {} from {}: {err}",
+                candidate.display(),
+                path.display()
+            )
+        })?;
+        drop(dest);
+
+        fs::rename(&staged_path, &candidate).map_err(|err| {
+            format!(
+                "Failed to publish backup {} from {}: {err}",
+                candidate.display(),
+                staged_path.display()
+            )
+        })?;
+
+        prune_old_backups(backup_dir, path, MAX_BACKUPS_PER_SHOW_FILE)
+    })();
+
+    if backup_result.is_err() {
+        let _ = fs::remove_file(&staged_path);
+    }
+
+    backup_result
+}
+
+#[cfg(not(windows))]
+fn replace_file_atomically(source: &Path, destination: &Path) -> io::Result<()> {
+    fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn replace_file_atomically(source: &Path, destination: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
+    };
+
+    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect();
+
+    let result = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
         )
-    })?;
-
-    dest.sync_all().map_err(|err| {
-        format!(
-            "Failed to flush backup {} from {}: {err}",
-            candidate.display(),
-            path.display()
-        )
-    })?;
-
-    prune_old_backups(backup_dir, path, MAX_BACKUPS_PER_SHOW_FILE)?;
-
-    Ok(())
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 fn prune_old_backups(
@@ -186,7 +236,7 @@ fn reserve_unique_backup_file(
     backup_dir: &Path,
     source_path: &Path,
     timestamp: &str,
-) -> Result<(PathBuf, fs::File), String> {
+) -> Result<(PathBuf, PathBuf, fs::File), String> {
     fs::create_dir_all(backup_dir).map_err(|err| {
         format!(
             "Failed to create backup directory {}: {err}",
@@ -199,13 +249,35 @@ fn reserve_unique_backup_file(
         .and_then(|value| value.to_str())
         .unwrap_or("show");
 
-    reserve_unique_file(backup_dir, |suffix| {
-        if suffix == 0 {
+    for suffix in 0.. {
+        let file_name = if suffix == 0 {
             format!("{timestamp}-{stem}.ascs")
         } else {
             format!("{timestamp}-{stem}__backup{suffix}.ascs")
+        };
+        let candidate = backup_dir.join(&file_name);
+        if candidate.exists() {
+            continue;
         }
-    })
+
+        let staged_path = backup_dir.join(format!(".{file_name}.tmp"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)
+        {
+            Ok(file) => return Ok((candidate, staged_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(format!(
+                    "Failed to reserve file {}: {err}",
+                    staged_path.display()
+                ));
+            }
+        }
+    }
+
+    unreachable!("suffix loop is unbounded")
 }
 
 fn prune_backup_entries(
@@ -371,8 +443,12 @@ mod tests {
         let json = fs::read_to_string(&show_path).unwrap();
         assert!(json.contains("\"sceneConfigs\""));
 
-        let backups = fs::read_dir(&backup_dir).unwrap().count();
-        assert_eq!(backups, 1);
+        let backups: Vec<_> = fs::read_dir(&backup_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert!(backups.iter().all(|name| !name.ends_with(".tmp")));
 
         let _ = fs::remove_dir_all(&temp_dir);
     }
@@ -383,12 +459,16 @@ mod tests {
         let candidate = backup_dir.join("123-test.ascs");
         fs::write(&candidate, "taken").unwrap();
 
-        let (path, _file) =
+        let (path, staged_path, _file) =
             reserve_unique_backup_file(&backup_dir, Path::new("test.ascs"), "123").unwrap();
 
         assert_eq!(
             path.file_name().and_then(|value| value.to_str()),
             Some("123-test__backup1.ascs")
+        );
+        assert_eq!(
+            staged_path.file_name().and_then(|value| value.to_str()),
+            Some(".123-test__backup1.ascs.tmp")
         );
 
         let _ = fs::remove_dir_all(&backup_dir);
@@ -495,6 +575,34 @@ mod tests {
             disabled_json["sceneConfigs"][0]["scopeToggles"]["pan"],
             false
         );
+    }
+
+    #[test]
+    fn create_backup_cleans_staged_file_when_copy_fails_after_reservation() {
+        let temp_dir = temp_test_dir("backup-copy-failure");
+        let source = temp_dir.join("show.ascs");
+        let backup_dir = temp_dir.join("backups");
+        fs::create_dir(&source).unwrap();
+
+        assert!(create_backup(&source, &backup_dir).is_err());
+        assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 0);
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn prune_old_backups_ignores_staged_backup_artifacts() {
+        let backup_dir = temp_test_dir("backup-prune-staged");
+        let source = backup_dir.join("show.ascs");
+        let staged = backup_dir.join(".100-show.ascs.tmp");
+        fs::write(&source, "current").unwrap();
+        fs::write(&staged, "staged").unwrap();
+
+        prune_old_backups(&backup_dir, &source, 0).unwrap();
+
+        assert!(staged.exists());
+
+        let _ = fs::remove_dir_all(&backup_dir);
     }
 
     #[test]
