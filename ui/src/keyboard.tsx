@@ -39,16 +39,28 @@ export type ShortcutCaptureApi = {
   isCapturing: (id: string) => boolean;
 };
 
+type ActiveShortcutCaptureRequest = ShortcutCaptureRequest & {
+  ownerId?: string;
+};
+
+type ShortcutCaptureContextApi = ShortcutCaptureApi & {
+  startCaptureForOwner: (
+    ownerId: string,
+    request: ShortcutCaptureRequest,
+  ) => void;
+  cancelCaptureForOwner: (ownerId: string) => void;
+};
+
 type KeyboardContextValue = {
   registerHandler: (handler: KeyboardHandler) => () => void;
-  shortcutCapture: ShortcutCaptureApi;
+  shortcutCapture: ShortcutCaptureContextApi;
 };
 
 const KeyboardContext = createContext<KeyboardContextValue | null>(null);
 
 export function KeyboardProvider(props: { children: ReactNode }) {
   const handlers = useRef(new Map<string, KeyboardHandler>());
-  const activeCapture = useRef<ShortcutCaptureRequest | null>(null);
+  const activeCapture = useRef<ActiveShortcutCaptureRequest | null>(null);
   const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
 
   const registerHandler = useCallback((handler: KeyboardHandler) => {
@@ -75,10 +87,26 @@ export function KeyboardProvider(props: { children: ReactNode }) {
     [clearCapture],
   );
 
-  const startCapture = useCallback((request: ShortcutCaptureRequest) => {
+  const startCapture = useCallback((request: ActiveShortcutCaptureRequest) => {
     activeCapture.current = request;
     setActiveCaptureId(request.id);
   }, []);
+
+  const startCaptureForOwner = useCallback(
+    (ownerId: string, request: ShortcutCaptureRequest) => {
+      startCapture({ ...request, ownerId });
+    },
+    [startCapture],
+  );
+
+  const cancelCaptureForOwner = useCallback(
+    (ownerId: string) => {
+      if (activeCapture.current?.ownerId === ownerId) {
+        cancelCapture();
+      }
+    },
+    [cancelCapture],
+  );
 
   useEffect(() => {
     return registerHandler({
@@ -125,14 +153,22 @@ export function KeyboardProvider(props: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  const shortcutCapture = useMemo<ShortcutCaptureApi>(
+  const shortcutCapture = useMemo<ShortcutCaptureContextApi>(
     () => ({
       activeCaptureId,
       startCapture,
+      startCaptureForOwner,
       cancelCapture,
+      cancelCaptureForOwner,
       isCapturing: (id) => activeCaptureId === id,
     }),
-    [activeCaptureId, cancelCapture, startCapture],
+    [
+      activeCaptureId,
+      cancelCapture,
+      cancelCaptureForOwner,
+      startCapture,
+      startCaptureForOwner,
+    ],
   );
 
   const value = useMemo(
@@ -152,8 +188,23 @@ export function useKeyboardHandler(handler: KeyboardHandler) {
   useEffect(() => context.registerHandler(handler), [context, handler]);
 }
 
-export function useShortcutCapture() {
-  return useKeyboardContext().shortcutCapture;
+export function useShortcutCapture(ownerId?: string) {
+  const shortcutCapture = useKeyboardContext().shortcutCapture;
+  const { cancelCaptureForOwner } = shortcutCapture;
+
+  useEffect(() => {
+    if (!ownerId) return;
+    return () => cancelCaptureForOwner(ownerId);
+  }, [cancelCaptureForOwner, ownerId]);
+
+  return useMemo<ShortcutCaptureApi>(() => {
+    if (!ownerId) return shortcutCapture;
+    return {
+      ...shortcutCapture,
+      startCapture: (request) =>
+        shortcutCapture.startCaptureForOwner(ownerId, request),
+    };
+  }, [ownerId, shortcutCapture]);
 }
 
 function useKeyboardContext() {

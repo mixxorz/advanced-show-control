@@ -376,6 +376,27 @@ describe("SettingsTab", () => {
     expect(screen.queryByText("...")).not.toBeInTheDocument();
   });
 
+  it("releases shortcut capture when navigating away from Settings", () => {
+    const { rerender } = renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    rerender(<div>Navigated away</div>);
+
+    const keydown = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(keydown);
+
+    expect(keydown.defaultPrevented).toBe(false);
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+  });
+
   it("captures Tab as a shortcut", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,

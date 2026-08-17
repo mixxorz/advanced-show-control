@@ -219,6 +219,68 @@ describe("KeyboardProvider", () => {
     expect(screen.getByText("idle")).toBeInTheDocument();
   });
 
+  it("does not cancel another owner's capture when an owner unmounts", () => {
+    const onSecondCapture = vi.fn();
+
+    function CaptureButton(props: {
+      ownerId: string;
+      id: string;
+      onCapture: (shortcut: { key: string }) => void;
+    }) {
+      const capture = useShortcutCapture(props.ownerId);
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            capture.startCapture({ id: props.id, onCapture: props.onCapture })
+          }
+        >
+          {props.id}
+        </button>
+      );
+    }
+
+    function Harness(props: { showFirst: boolean }) {
+      return (
+        <>
+          {props.showFirst ? (
+            <CaptureButton
+              ownerId="first-owner"
+              id="first"
+              onCapture={vi.fn()}
+            />
+          ) : null}
+          <CaptureButton
+            ownerId="second-owner"
+            id="second"
+            onCapture={onSecondCapture}
+          />
+        </>
+      );
+    }
+
+    const { rerender } = render(
+      <KeyboardProvider>
+        <Harness showFirst />
+      </KeyboardProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "first" }));
+    fireEvent.click(screen.getByRole("button", { name: "second" }));
+    rerender(
+      <KeyboardProvider>
+        <Harness showFirst={false} />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("Enter");
+
+    expect(onSecondCapture).toHaveBeenCalledWith({
+      key: "Enter",
+      modifiers: { shift: false, control: false, alt: false, meta: false },
+    });
+  });
+
   it("captures Tab while capture mode is active", () => {
     const onCapture = vi.fn();
 

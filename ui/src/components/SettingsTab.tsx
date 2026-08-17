@@ -13,7 +13,7 @@ export function SettingsTab(props: {
   onReplaceSettings?: (settings: AppSettings) => void | Promise<void>;
 }) {
   const { appState } = useAppState();
-  const shortcutCapture = useShortcutCapture();
+  const shortcutCapture = useShortcutCapture(SETTINGS_SHORTCUT_CAPTURE_OWNER);
   const [activeHelp, setActiveHelp] = useState<string | null>(null);
   const [settingsError, setSettingsError] = useState<string | null>(null);
   const [shortcutConflict, setShortcutConflict] = useState<{
@@ -266,6 +266,8 @@ export function SettingsTab(props: {
     </div>
   );
 }
+
+const SETTINGS_SHORTCUT_CAPTURE_OWNER = "settings-tab";
 
 function settingsEqual(left: AppSettings, right: AppSettings) {
   return JSON.stringify(left) === JSON.stringify(right);
