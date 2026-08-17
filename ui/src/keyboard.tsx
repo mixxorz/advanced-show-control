@@ -255,6 +255,10 @@ export function shortcutMatchesEvent(
 }
 
 export function isActionShortcutBlocked(event: AppKeyboardEvent) {
+  if (document.querySelector('[aria-modal="true"]') !== null) {
+    return true;
+  }
+
   const target = event.originalEvent.target;
   return (
     target instanceof Element &&

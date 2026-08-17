@@ -37,6 +37,7 @@ export function ConnectionModal(props: { onResume: () => void }) {
             )}
             <button
               aria-label="Close connection modal"
+              autoFocus
               className="relative h-7 w-7 text-console-secondary hover:text-console-primary"
               onClick={props.onResume}
             >

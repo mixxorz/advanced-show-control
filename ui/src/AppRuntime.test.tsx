@@ -108,6 +108,23 @@ describe("AppRuntime connection lifecycle", () => {
     });
   });
 
+  it("does not recall GO while a modal is open outside the event target", async () => {
+    const user = userEvent.setup();
+    const services = makeServices();
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: "FOH LV1" }));
+
+    pressGoShortcut();
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
+  });
+
   it("keeps the modal open and displays startup auto-connect errors", async () => {
     render(
       <AppRuntime

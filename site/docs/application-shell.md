@@ -10,7 +10,7 @@ Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings
 
 The connection indicator shows **Connected**, **Connecting**, or **Offline**. Select the console name to open **Connect to LV1** or change consoles.
 
-If the full-screen **Reconnecting...** message appears, wait until it clears and the top bar shows **Connected** before recalling a scene.
+If LV1 disconnects, the status changes to **Offline**. Open **Connect to LV1**, select the intended available console, and wait for **Connected** before recalling a scene.
 
 ## SAFE
 

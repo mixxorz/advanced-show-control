@@ -53,6 +53,18 @@ jobs:
       - name: Build workspace
         run: cargo build --workspace
 
+      - name: Format LV1 probe library and CLI
+        run: cargo fmt --manifest-path src-tauri/dev-tools/Cargo.toml -- --check
+
+      - name: Build LV1 probe library and CLI
+        run: cargo build --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe
+
+      - name: Lint LV1 probe library and CLI
+        run: cargo clippy --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe -- -D warnings
+
+      - name: Test LV1 probe library and CLI
+        run: cargo nextest run --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

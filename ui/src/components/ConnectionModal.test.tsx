@@ -49,6 +49,12 @@ describe("ConnectionModal", () => {
     expect(screen.getByText("Unavailable")).toBeInTheDocument();
   });
 
+  it("moves initial focus into the dialog", () => {
+    renderModal();
+
+    expect(screen.getByLabelText("Close connection modal")).toHaveFocus();
+  });
+
   it("shows command errors", () => {
     renderModal({ commandError: "LV1 did not connect" });
 

@@ -63,8 +63,7 @@ async function start() {
       state = nextState;
     },
     runSuite: run,
-    releaseLockout: () =>
-      invoke("set_lockout", { enabled: false }).catch(() => undefined),
+    releaseLockout: () => invoke("set_lockout", { enabled: false }),
     restoreSettings: (settings) => invoke("replace_app_settings", { settings }),
     report: async (ok, error) => {
       suiteStatus = ok ? "PASS" : "FAIL";

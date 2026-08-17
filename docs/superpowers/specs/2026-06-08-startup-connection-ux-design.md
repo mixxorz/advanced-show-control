@@ -1,5 +1,7 @@
 # Startup And Connection UX Design
 
+> **Superseded historical design.** This June 8 planning record describes a reconnect overlay and coordinator model that is no longer current. Refer to `docs/architecture.md` and the user documentation under `site/docs/` for implemented behavior.
+
 ## Goal
 
 Improve startup and LV1 connection UX so the app starts from a clear system chooser, can auto-connect to the last known LV1 system when it is available, and handles unexpected disconnects without leaving the user in an unclear state.

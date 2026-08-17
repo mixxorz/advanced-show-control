@@ -48,6 +48,37 @@ describe("KeyboardProvider", () => {
     },
   );
 
+  it("blocks action shortcuts when an aria-modal dialog is open outside the event target", () => {
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("role", "dialog");
+    const button = document.createElement("button");
+    document.body.append(modal, button);
+    let blocked = false;
+    const listener = (originalEvent: KeyboardEvent) => {
+      blocked = isActionShortcutBlocked({
+        code: originalEvent.code,
+        key: originalEvent.key,
+        modifiers: {
+          shift: originalEvent.shiftKey,
+          control: originalEvent.ctrlKey,
+          alt: originalEvent.altKey,
+          meta: originalEvent.metaKey,
+        },
+        repeat: originalEvent.repeat,
+        originalEvent,
+      });
+    };
+    window.addEventListener("keydown", listener);
+
+    fireEvent.keyDown(button, { key: "c", code: "KeyC" });
+
+    window.removeEventListener("keydown", listener);
+    modal.remove();
+    button.remove();
+    expect(blocked).toBe(true);
+  });
+
   it("dispatches enabled handlers by priority and stops after handled", () => {
     const low = vi.fn(() => "handled" as const);
     const high = vi.fn(() => "handled" as const);

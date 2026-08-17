@@ -99,6 +99,28 @@ describe("CueListsTab", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
+  it("does not cue the selected entry while an aria-modal dialog is open outside the event target", async () => {
+    const user = userEvent.setup();
+    const cueEntry = vi.fn();
+    renderWithAppProviders(<CueListsTab />, {
+      appState: cueListStateFixture,
+      commands: { cueEntry },
+    });
+
+    await user.click(screen.getByRole("button", { name: /Main.*002/i }));
+    await user.click(screen.getByRole("button", { name: "Manage Cue Lists" }));
+    const event = new KeyboardEvent("keydown", {
+      key: "c",
+      code: "KeyC",
+      bubbles: true,
+      cancelable: true,
+    });
+
+    act(() => window.dispatchEvent(event));
+
+    expect(cueEntry).not.toHaveBeenCalled();
+  });
+
   it("consumes repeated Cue keydowns without cueing the selected entry", async () => {
     const user = userEvent.setup();
     const cueEntry = vi.fn();
