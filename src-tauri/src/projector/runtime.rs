@@ -110,7 +110,7 @@ fn emit_app_status<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
 fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool {
     match event {
         AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
-            cache.set_active_generation(*generation);
+            cache.reset_for_generation(*generation);
             true
         }
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),

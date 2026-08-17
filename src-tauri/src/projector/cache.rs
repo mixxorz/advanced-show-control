@@ -5,9 +5,7 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
 use crate::logging::UiLogEvent;
-use crate::lv1::{
-    ChannelInfo, ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState,
-};
+use crate::lv1::Lv1Event;
 use crate::projector::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, SceneSummary,
 };
@@ -18,10 +16,18 @@ use crate::show::ShowProjectionState;
 pub const MAX_PROJECTOR_LOGS: usize = 200;
 
 #[derive(Debug)]
+struct Lv1Projection {
+    connection: AppConnectionState,
+    current_scene: Option<SceneSummary>,
+    scenes: Vec<SceneSummary>,
+    channels: Vec<ChannelSummary>,
+}
+
+#[derive(Debug)]
 pub struct ProjectionCache {
     active_generation: u64,
     state_version: u64,
-    lv1_snapshot: Option<Lv1StateSnapshot>,
+    lv1_projection: Option<Lv1Projection>,
     discovered_lv1_systems: Vec<DiscoveredLv1System>,
     connected_lv1_identity: Option<Lv1SystemIdentity>,
     fade_state: AppFadeState,
@@ -42,6 +48,17 @@ pub struct ProjectionCache {
     last_event_at: Option<String>,
 }
 
+impl Default for Lv1Projection {
+    fn default() -> Self {
+        Self {
+            connection: AppConnectionState::Disconnected,
+            current_scene: None,
+            scenes: Vec::new(),
+            channels: Vec::new(),
+        }
+    }
+}
+
 impl Default for ProjectionCache {
     fn default() -> Self {
         Self::new()
@@ -53,7 +70,7 @@ impl ProjectionCache {
         Self {
             active_generation: 0,
             state_version: 0,
-            lv1_snapshot: None,
+            lv1_projection: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: None,
             fade_state: AppFadeState::Idle,
@@ -81,6 +98,12 @@ impl ProjectionCache {
 
     pub fn set_active_generation(&mut self, generation: u64) {
         self.active_generation = generation;
+    }
+
+    pub fn reset_for_generation(&mut self, generation: u64) {
+        self.active_generation = generation;
+        self.lv1_projection = None;
+        self.fade_state = AppFadeState::Idle;
     }
 
     pub fn is_active_generation(&self, generation: u64) -> bool {
@@ -116,63 +139,39 @@ impl ProjectionCache {
         }
         match event {
             Lv1Event::Connected => {
-                self.ensure_lv1_snapshot().connection = ConnectionStatus::Connected;
+                self.ensure_lv1_projection().connection = AppConnectionState::Connected
             }
-            Lv1Event::Disconnected { .. } => {
-                self.lv1_snapshot = None;
-            }
-            Lv1Event::PingReceived { .. } => return false,
+            Lv1Event::Disconnected { .. } => self.lv1_projection = None,
+            Lv1Event::PingReceived { .. }
+            | Lv1Event::FaderChanged { .. }
+            | Lv1Event::MuteChanged { .. }
+            | Lv1Event::PanChanged { .. }
+            | Lv1Event::BalanceChanged { .. }
+            | Lv1Event::WidthChanged { .. } => return false,
             Lv1Event::SceneChanged(crate::lv1::SceneObservation { scene, .. }) => {
-                self.ensure_lv1_snapshot().scene = Some(scene.clone());
+                self.ensure_lv1_projection().current_scene = Some(SceneSummary {
+                    index: scene.index,
+                    name: scene.name.clone(),
+                });
             }
             Lv1Event::SceneListChanged(scene_list) => {
-                self.ensure_lv1_snapshot().scene_list = scene_list.clone();
-            }
-            Lv1Event::FaderChanged {
-                group,
-                channel,
-                gain_db,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.gain_db = *gain_db
-                });
-            }
-            Lv1Event::MuteChanged {
-                group,
-                channel,
-                muted,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| channel_info.muted = *muted);
-            }
-            Lv1Event::PanChanged {
-                group,
-                channel,
-                pan,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.pan = Some(*pan)
-                });
-            }
-            Lv1Event::BalanceChanged {
-                group,
-                channel,
-                balance,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.balance = Some(*balance)
-                });
-            }
-            Lv1Event::WidthChanged {
-                group,
-                channel,
-                width,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.width = Some(*width)
-                });
+                self.ensure_lv1_projection().scenes = scene_list
+                    .iter()
+                    .map(|scene| SceneSummary {
+                        index: scene.index,
+                        name: scene.name.clone(),
+                    })
+                    .collect();
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
-                self.ensure_lv1_snapshot().channels = channels.clone();
+                self.ensure_lv1_projection().channels = channels
+                    .iter()
+                    .map(|channel| ChannelSummary {
+                        group: channel.group,
+                        channel: channel.channel,
+                        name: channel.name.clone(),
+                    })
+                    .collect();
             }
         }
         true
@@ -208,104 +207,20 @@ impl ProjectionCache {
         }
     }
 
-    pub fn seed_from_view_state(&mut self, snapshot: &AppViewState) {
-        self.active_generation = snapshot.state_version;
-        self.state_version = snapshot.state_version;
-        self.lv1_snapshot = match snapshot.connection {
-            AppConnectionState::Disconnected => None,
-            AppConnectionState::Connecting | AppConnectionState::Connected => {
-                Some(Lv1StateSnapshot {
-                    connection: match snapshot.connection {
-                        AppConnectionState::Disconnected => ConnectionStatus::Disconnected,
-                        AppConnectionState::Connecting => ConnectionStatus::Connecting,
-                        AppConnectionState::Connected => ConnectionStatus::Connected,
-                    },
-                    scene: snapshot.current_scene.as_ref().map(|scene| SceneState {
-                        index: scene.index,
-                        name: scene.name.clone(),
-                    }),
-                    scene_list: snapshot
-                        .scenes
-                        .iter()
-                        .map(|scene| SceneListEntry {
-                            index: scene.index,
-                            name: scene.name.clone(),
-                        })
-                        .collect(),
-                    channels: snapshot
-                        .channels
-                        .iter()
-                        .map(|channel| ChannelInfo {
-                            group: channel.group,
-                            channel: channel.channel,
-                            name: channel.name.clone(),
-                            gain_db: 0.0,
-                            muted: false,
-                            pan: None,
-                            balance: None,
-                            width: None,
-                            pan_mode: None,
-                        })
-                        .collect(),
-                    ping_sequence: 0,
-                })
-            }
-        };
-        self.discovered_lv1_systems = snapshot.discovered_lv1_systems.clone();
-        self.connected_lv1_identity = snapshot.connected_lv1_identity.clone();
-        self.fade_state = snapshot.fade_state.clone();
-        self.selected_scene_internal_id = snapshot.selected_scene_internal_id.clone();
-        self.scene_settings_clipboard_available = snapshot.scene_settings_clipboard_available;
-        self.show_file_path = snapshot.show_file_path.as_ref().map(PathBuf::from);
-        self.show_file_dirty = snapshot.show_file_dirty;
-        self.show_file_last_saved_at = snapshot.show_file_last_saved_at.clone();
-        self.settings = snapshot.settings.clone();
-        self.logs = snapshot.logs.iter().cloned().collect();
-        self.next_log_id = snapshot
-            .logs
-            .iter()
-            .map(|entry| entry.id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.last_event_at = snapshot.last_event_at.clone();
-    }
-
     pub fn build_snapshot(&mut self) -> AppViewState {
         self.state_version = self.state_version.saturating_add(1);
         let state_version = self.state_version;
 
         let (connection, current_scene, scenes, channels) = self
-            .lv1_snapshot
+            .lv1_projection
             .as_ref()
-            .map(|snapshot| {
-                let connection = match snapshot.connection {
-                    ConnectionStatus::Connecting => AppConnectionState::Connecting,
-                    ConnectionStatus::Connected => AppConnectionState::Connected,
-                    ConnectionStatus::Disconnected => AppConnectionState::Disconnected,
-                };
-                let current_scene = snapshot.scene.as_ref().map(|scene| SceneSummary {
-                    index: scene.index,
-                    name: scene.name.clone(),
-                });
-                let scenes = snapshot
-                    .scene_list
-                    .iter()
-                    .map(|scene| SceneSummary {
-                        index: scene.index,
-                        name: scene.name.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                let channels = snapshot
-                    .channels
-                    .iter()
-                    .map(|channel| ChannelSummary {
-                        group: channel.group,
-                        channel: channel.channel,
-                        name: channel.name.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                (connection, current_scene, scenes, channels)
+            .map(|projection| {
+                (
+                    projection.connection.clone(),
+                    projection.current_scene.clone(),
+                    projection.scenes.clone(),
+                    projection.channels.clone(),
+                )
             })
             .unwrap_or((
                 AppConnectionState::Disconnected,
@@ -352,25 +267,9 @@ impl ProjectionCache {
         }
     }
 
-    fn ensure_lv1_snapshot(&mut self) -> &mut Lv1StateSnapshot {
-        self.lv1_snapshot.get_or_insert_with(|| Lv1StateSnapshot {
-            connection: ConnectionStatus::Disconnected,
-            scene: None,
-            scene_list: Vec::new(),
-            channels: Vec::new(),
-            ping_sequence: 0,
-        })
-    }
-
-    fn update_channel(&mut self, group: i32, channel: i32, apply: impl FnOnce(&mut ChannelInfo)) {
-        if let Some(existing) = self
-            .ensure_lv1_snapshot()
-            .channels
-            .iter_mut()
-            .find(|existing| existing.group == group && existing.channel == channel)
-        {
-            apply(existing);
-        }
+    fn ensure_lv1_projection(&mut self) -> &mut Lv1Projection {
+        self.lv1_projection
+            .get_or_insert_with(Lv1Projection::default)
     }
 }
 
@@ -433,58 +332,147 @@ mod tests {
     }
 
     #[test]
-    fn cache_seeds_from_connected_view_state() {
+    fn cache_resets_generation_scoped_state_but_preserves_app_lifetime_state() {
         let mut cache = ProjectionCache::new();
-        cache.seed_from_view_state(&AppViewState {
-            connection: AppConnectionState::Connected,
+        cache.apply_show_state(ShowProjectionState {
+            lockout: true,
+            show_file_path: Some(PathBuf::from("show.asc")),
+            show_file_name: "show.asc".to_string(),
+            show_file_dirty: true,
+            show_file_last_saved_at: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: None,
-            current_scene: Some(SceneSummary {
-                index: 1,
-                name: "Intro".to_string(),
-            }),
-            scenes: vec![SceneSummary {
-                index: 1,
-                name: "Intro".to_string(),
-            }],
-            scene_count: 1,
-            channel_count: 0,
-            channels: Vec::new(),
-            fade_state: AppFadeState::Idle,
-            lockout: false,
-            scene_configs: Vec::new(),
-            scene_settings_clipboard_available: false,
-            cue_lists: Vec::new(),
-            active_cue_list_id: None,
-            cued_cue_entry_id: None,
-            last_cue_recall_status: None,
-            settings: AppSettings::default(),
-            selected_scene_internal_id: None,
-            show_file_name: "Untitled Session".to_string(),
-            show_file_path: None,
-            show_file_dirty: false,
-            show_file_last_saved_at: None,
-            logs: vec![AppLogEntry {
-                id: 7,
-                timestamp: "2026-01-01T00:00:00.000Z".to_string(),
-                severity: LogSeverity::Info,
-                message: "seed log".to_string(),
-            }],
             last_event_at: None,
-            state_version: 11,
         });
-
+        cache.apply_settings(AppSettings {
+            auto_save_sessions: true,
+            ..Default::default()
+        });
+        cache.apply_scenes_state(ScenesProjectionState {
+            scene_configs: vec![crate::scenes::SceneConfig {
+                internal_scene_id: uuid::Uuid::from_u128(1),
+                scene_index: Some(1),
+                scene_name: "A".to_string(),
+                duration_ms: 1_000,
+                channel_configs: vec![],
+                scoped_channels: vec![],
+                scope_toggles: Default::default(),
+            }],
+            selected_scene_internal_id: Some("scene-config".to_string()),
+            scene_settings_clipboard_available: true,
+        });
+        let cue_list_id = uuid::Uuid::from_u128(2);
+        cache.apply_cue_lists_state(CueListsProjectionState {
+            document: crate::cue_lists::CueListDocument {
+                cue_lists: vec![crate::cue_lists::CueList {
+                    id: cue_list_id,
+                    name: "Main".to_string(),
+                    entries: vec![],
+                }],
+                active_cue_list_id: Some(cue_list_id),
+                cued_cue_entry_id: None,
+            },
+            last_recall_status: Some("recalled".to_string()),
+        });
         cache.append_log(UiLogEvent {
-            severity: LogSeverity::Warning,
-            message: "projected log".to_string(),
+            severity: LogSeverity::Info,
+            message: "kept".to_string(),
         });
+        cache.apply_lv1_event(0, &Lv1Event::Connected);
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::SceneChanged(crate::lv1::SceneObservation {
+                sequence: 1,
+                scene: SceneState {
+                    index: 1,
+                    name: "A".to_string(),
+                },
+            }),
+        );
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::SceneListChanged(vec![crate::lv1::SceneListEntry {
+                index: 1,
+                name: "A".to_string(),
+            }]),
+        );
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
+                group: 1,
+                channel: 1,
+                name: "Vox".to_string(),
+                gain_db: -5.0,
+                muted: true,
+                pan: Some(0.5),
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }]),
+        );
+        cache.apply_fade_event(0, &FadeEvent::FadeStarted);
+        let version_a = cache.build_snapshot().state_version;
+
+        cache.reset_for_generation(1);
+        cache.apply_lv1_event(1, &Lv1Event::Connected);
         let snapshot = cache.build_snapshot();
 
-        assert_eq!(snapshot.connection, AppConnectionState::Connected);
-        assert_eq!(snapshot.current_scene.unwrap().name, "Intro");
-        assert_eq!(snapshot.scenes.len(), 1);
-        assert_eq!(snapshot.logs[0].id, 7);
-        assert_eq!(snapshot.logs[1].id, 8);
+        assert!(snapshot.current_scene.is_none());
+        assert!(snapshot.scenes.is_empty());
+        assert!(snapshot.channels.is_empty());
+        assert_eq!(snapshot.fade_state, AppFadeState::Idle);
+        assert!(snapshot.lockout);
+        assert_eq!(snapshot.show_file_name, "show.asc");
+        assert!(snapshot.settings.auto_save_sessions);
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.cue_lists[0].name, "Main");
+        assert_eq!(
+            snapshot.selected_scene_internal_id.as_deref(),
+            Some("scene-config")
+        );
+        assert_eq!(snapshot.last_cue_recall_status.as_deref(), Some("recalled"));
+        assert_eq!(snapshot.logs[0].message, "kept");
+        assert!(snapshot.state_version > version_a);
+    }
+
+    #[test]
+    fn parameter_only_events_do_not_change_projection() {
+        let mut cache = ProjectionCache::new();
+        cache.apply_lv1_event(0, &Lv1Event::Connected);
+        let before = cache.build_snapshot();
+        for event in [
+            Lv1Event::FaderChanged {
+                group: 1,
+                channel: 1,
+                gain_db: -1.0,
+            },
+            Lv1Event::MuteChanged {
+                group: 1,
+                channel: 1,
+                muted: true,
+            },
+            Lv1Event::PanChanged {
+                group: 1,
+                channel: 1,
+                pan: 0.5,
+            },
+            Lv1Event::BalanceChanged {
+                group: 1,
+                channel: 1,
+                balance: 0.5,
+            },
+            Lv1Event::WidthChanged {
+                group: 1,
+                channel: 1,
+                width: 0.5,
+            },
+            Lv1Event::PingReceived { sequence: 1 },
+        ] {
+            assert!(!cache.apply_lv1_event(0, &event));
+        }
+        let after = cache.build_snapshot();
+        assert_eq!(before.connection, after.connection);
+        assert!(after.channels.is_empty());
     }
 
     #[test]
