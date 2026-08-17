@@ -6,8 +6,8 @@ This project is a Tauri/Rust/React desktop app that adds timed fader fades to Wa
 
 Project layout:
 
-- `src-tauri/` contains the single Rust/Tauri crate, `advanced-show-control`. Core Rust modules such as `lv1/`, `fade/`, `scene_recall/`, `show/`, and `runtime/` live under `src-tauri/src/` alongside Tauri adapter modules.
-- `src-tauri/src/bin/lv1-probe.rs` contains the preserved LV1 probe/developer CLI binary.
+- `src-tauri/` contains the production Rust/Tauri crate, `advanced-show-control`. Core Rust modules such as `lv1/`, `fade/`, `scenes/`, `cue_lists/`, `show/`, and `runtime/` live under `src-tauri/src/` alongside Tauri adapter modules.
+- `src-tauri/dev-tools/` is a separate development-only crate containing the debug app and preserved `src/bin/lv1-probe.rs` CLI.
 - `ui/` contains the React/TypeScript frontend.
 
 Do not assume `src/` is the frontend; this project does not use the default Tauri template layout.
@@ -30,14 +30,15 @@ LV1 owns:
 
 Current architecture is actor-oriented:
 
-- `Lv1Actor` owns the LV1 TCP connection and mirrored LV1 state.
-- `FadeEngine` owns active fade timing and fader writes.
-- `ShowState` owns show data and show-file state.
-- `SceneRecallFader` owns scene recall policy and starts validated scene fades.
+- `Lv1Actor` owns a generation-scoped LV1 TCP transport, reconnect loop, and mirrored LV1 state.
+- `FadeEngine` owns generation-scoped active fade timing and writes directly through its `Lv1ActorHandle` peer.
+- `Scenes` is one app-lifetime actor/document that owns scene configs, selection, clipboard, scene reconciliation, and recall policy/queue; it receives generation-scoped LV1/Fade peers from lifecycle.
+- `CueLists` is an app-lifetime actor that owns cue documents and reconciles UUID references through its `Scenes` peer.
+- `Show` owns app-lifetime show-file metadata, dirty state, lockout, connection/discovery metadata, and persistence orchestration; it does not own scene configs or cue documents.
+- `Settings` is app-lifetime and persists app settings plus private remembered LV1 identity.
 - The projector owns the Tauri-side `AppViewState` projection and emits `app-status-changed`.
-- `AppLifecycle` is the Tauri-side runtime lifecycle seam and app-lifetime command-bus holder.
-- `AppEventBus` broadcasts facts/events.
-- `AppCommandBus` routes acknowledged commands to the current LV1 and fade targets.
+- `AppLifecycle` owns explicit connection generations and direct peer wiring.
+- `AppEventBus` broadcasts facts/events; mailbox commands go directly to their owning actor.
 
 Read these files before substantial work:
 
