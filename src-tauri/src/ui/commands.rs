@@ -13,8 +13,8 @@ pub use cue_lists::{
 };
 pub use fade::abort_all_fades;
 pub use lifecycle::{
-    attempt_reconnect_lv1, connect_lv1_system, disconnect_lv1, frontend_ready,
-    probe_lv1_tcp_connect_latency, reconnect_timed_out, startup_auto_connect_lv1,
+    connect_lv1_system, disconnect_lv1, frontend_ready, probe_lv1_tcp_connect_latency,
+    startup_auto_connect_lv1,
 };
 pub use scenes::{
     copy_scene_settings, delete_scene_config, link_scene_config, paste_scene_settings,

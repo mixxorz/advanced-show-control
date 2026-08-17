@@ -195,8 +195,6 @@ function makeBaseDisconnectedAppState(
     connection: "disconnected",
     discoveredLv1Systems: [],
     connectedLv1Identity: null,
-    pendingLv1Identity: null,
-    reconnect: { active: false, attempt: 0 },
     currentScene: null,
     scenes: [],
     sceneCount: 0,

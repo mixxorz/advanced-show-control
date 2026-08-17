@@ -23,14 +23,6 @@ pub async fn connect_lv1_system(
 }
 
 #[tauri::command]
-pub async fn attempt_reconnect_lv1(
-    app: AppHandle<impl Runtime>,
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<ConnectCommandResult, String> {
-    lifecycle.attempt_reconnect_lv1(app).await
-}
-
-#[tauri::command]
 pub async fn startup_auto_connect_lv1(
     app: AppHandle<impl Runtime>,
     lifecycle: State<'_, AppLifecycle>,
@@ -51,12 +43,4 @@ pub async fn disconnect_lv1(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
     lifecycle.disconnect_current_runtime().await
-}
-
-#[tauri::command]
-pub async fn reconnect_timed_out(
-    lifecycle: State<'_, AppLifecycle>,
-    attempt: u64,
-) -> Result<ShowCommandResult, String> {
-    lifecycle.reconnect_timed_out(attempt).await
 }

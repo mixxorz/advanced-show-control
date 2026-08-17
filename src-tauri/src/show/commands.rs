@@ -36,18 +36,15 @@ pub enum ShowCommand {
     },
     CompleteLv1Connection {
         identity: Lv1SystemIdentity,
-        mode: super::ConnectionCompletionMode,
         reply: Option<oneshot::Sender<super::CompleteConnectionOutcome>>,
-    },
-    AuthorizeLv1ConnectionIfCurrent {
-        mode: super::ConnectionCompletionMode,
-        runtime_generation: crate::runtime::generation::RuntimeGeneration,
-        expected_generation: u64,
-        reply: oneshot::Sender<bool>,
     },
     CompleteLv1ConnectionIfCurrent {
         identity: Lv1SystemIdentity,
-        mode: super::ConnectionCompletionMode,
+        runtime_generation: crate::runtime::generation::RuntimeGeneration,
+        expected_generation: u64,
+        reply: oneshot::Sender<super::CompleteConnectionOutcome>,
+    },
+    ClearLv1ConnectionIfCurrent {
         runtime_generation: crate::runtime::generation::RuntimeGeneration,
         expected_generation: u64,
         reply: oneshot::Sender<super::CompleteConnectionOutcome>,
@@ -55,18 +52,10 @@ pub enum ShowCommand {
     FailLv1Connection {
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
-    FailLv1Reconnect {
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
     FailLv1ConnectionIfCurrent {
-        mode: super::ConnectionFailureMode,
         runtime_generation: crate::runtime::generation::RuntimeGeneration,
         expected_generation: u64,
         reply: oneshot::Sender<super::CompleteConnectionOutcome>,
-    },
-    ClaimReconnectTimeout {
-        attempt: u64,
-        reply: oneshot::Sender<bool>,
     },
     LoadShowFileFromPath {
         path: std::path::PathBuf,

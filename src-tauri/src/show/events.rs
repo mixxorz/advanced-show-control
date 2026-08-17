@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShowEvent {
@@ -25,7 +25,5 @@ pub struct ShowProjectionState {
     pub show_file_last_saved_at: Option<String>,
     pub discovered_lv1_systems: Vec<DiscoveredLv1System>,
     pub connected_lv1_identity: Option<Lv1SystemIdentity>,
-    pub pending_lv1_identity: Option<Lv1SystemIdentity>,
-    pub reconnect: ReconnectState,
     pub last_event_at: Option<String>,
 }

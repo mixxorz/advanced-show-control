@@ -55,11 +55,6 @@ export type DiscoveredLv1System = {
   status: DiscoveredLv1Status;
 };
 
-export type ReconnectState = {
-  active: boolean;
-  attempt: number;
-};
-
 export type SceneSummary = {
   index: number;
   name: string;
@@ -124,8 +119,6 @@ export type AppViewState = {
   connection: ConnectionState;
   discoveredLv1Systems: DiscoveredLv1System[];
   connectedLv1Identity: Lv1SystemIdentity | null;
-  pendingLv1Identity: Lv1SystemIdentity | null;
-  reconnect: ReconnectState;
   currentScene: SceneSummary | null;
   scenes: SceneSummary[];
   sceneCount: number;
@@ -172,8 +165,6 @@ export const disconnectedAppViewState: AppViewState = {
   connection: "disconnected",
   discoveredLv1Systems: [],
   connectedLv1Identity: null,
-  pendingLv1Identity: null,
-  reconnect: { active: false, attempt: 0 },
   currentScene: null,
   scenes: [],
   sceneCount: 0,

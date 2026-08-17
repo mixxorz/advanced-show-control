@@ -6,8 +6,6 @@ mod lockout;
 mod show_file;
 mod state;
 
-#[cfg(test)]
-pub(crate) use actor::build_show_actor_with_connection_metadata_for_test;
 pub use actor::{ShowActorPeers, ShowActorTask, build_show_actor};
 pub use commands::{
     ConnectCommandResult, LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult,
@@ -20,7 +18,5 @@ pub use show_file::{
     ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
     ShowFileSceneScopeToggles, export_show_file, import_show_file,
 };
+pub(crate) use state::CompleteConnectionOutcome;
 pub use state::ShowState;
-pub(crate) use state::{
-    CompleteConnectionOutcome, ConnectionCompletionMode, ConnectionFailureMode,
-};

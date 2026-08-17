@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::path::PathBuf;
 
-use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
 use crate::logging::UiLogEvent;
@@ -24,8 +24,6 @@ pub struct ProjectionCache {
     lv1_snapshot: Option<Lv1StateSnapshot>,
     discovered_lv1_systems: Vec<DiscoveredLv1System>,
     connected_lv1_identity: Option<Lv1SystemIdentity>,
-    pending_lv1_identity: Option<Lv1SystemIdentity>,
-    reconnect_state: ReconnectState,
     fade_state: AppFadeState,
     selected_scene_internal_id: Option<String>,
     lockout: bool,
@@ -58,8 +56,6 @@ impl ProjectionCache {
             lv1_snapshot: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: None,
-            pending_lv1_identity: None,
-            reconnect_state: ReconnectState::default(),
             fade_state: AppFadeState::Idle,
             selected_scene_internal_id: None,
             lockout: false,
@@ -98,8 +94,6 @@ impl ProjectionCache {
         self.show_file_last_saved_at = state.show_file_last_saved_at;
         self.discovered_lv1_systems = state.discovered_lv1_systems;
         self.connected_lv1_identity = state.connected_lv1_identity;
-        self.pending_lv1_identity = state.pending_lv1_identity;
-        self.reconnect_state = state.reconnect;
         self.last_event_at = state.last_event_at;
     }
 
@@ -259,8 +253,6 @@ impl ProjectionCache {
         };
         self.discovered_lv1_systems = snapshot.discovered_lv1_systems.clone();
         self.connected_lv1_identity = snapshot.connected_lv1_identity.clone();
-        self.pending_lv1_identity = snapshot.pending_lv1_identity.clone();
-        self.reconnect_state = snapshot.reconnect.clone();
         self.fade_state = snapshot.fade_state.clone();
         self.selected_scene_internal_id = snapshot.selected_scene_internal_id.clone();
         self.scene_settings_clipboard_available = snapshot.scene_settings_clipboard_available;
@@ -326,8 +318,6 @@ impl ProjectionCache {
             connection,
             discovered_lv1_systems: self.discovered_lv1_systems.clone(),
             connected_lv1_identity: self.connected_lv1_identity.clone(),
-            pending_lv1_identity: self.pending_lv1_identity.clone(),
-            reconnect: self.reconnect_state.clone(),
             current_scene,
             scenes: scenes.clone(),
             scene_count: scenes.len(),
@@ -449,8 +439,6 @@ mod tests {
             connection: AppConnectionState::Connected,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: None,
-            pending_lv1_identity: None,
-            reconnect: ReconnectState::default(),
             current_scene: Some(SceneSummary {
                 index: 1,
                 name: "Intro".to_string(),
@@ -509,16 +497,6 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 7788,
         });
-        cache.pending_lv1_identity = Some(Lv1SystemIdentity {
-            uuid: Some("pending-uuid".to_string()),
-            host: Some("pending.local".to_string()),
-            address: "192.0.2.11".to_string(),
-            port: 7788,
-        });
-        cache.reconnect_state = ReconnectState {
-            active: true,
-            attempt: 42,
-        };
 
         cache.apply_lv1_event(
             0,
@@ -544,16 +522,6 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 7788,
         };
-        let pending_identity = Lv1SystemIdentity {
-            uuid: Some("pending-uuid".to_string()),
-            host: Some("pending.local".to_string()),
-            address: "192.0.2.11".to_string(),
-            port: 7788,
-        };
-        let reconnect = ReconnectState {
-            active: true,
-            attempt: 42,
-        };
 
         cache.apply_show_state(ShowProjectionState {
             lockout: false,
@@ -563,8 +531,6 @@ mod tests {
             show_file_last_saved_at: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: Some(connected_identity.clone()),
-            pending_lv1_identity: Some(pending_identity.clone()),
-            reconnect: reconnect.clone(),
             last_event_at: None,
         });
 
@@ -580,8 +546,6 @@ mod tests {
         assert!(changed);
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert_eq!(snapshot.connected_lv1_identity, Some(connected_identity));
-        assert_eq!(snapshot.pending_lv1_identity, Some(pending_identity));
-        assert_eq!(snapshot.reconnect, reconnect);
     }
 
     #[test]
@@ -596,8 +560,6 @@ mod tests {
             show_file_last_saved_at: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: None,
-            pending_lv1_identity: None,
-            reconnect: ReconnectState::default(),
             last_event_at: None,
         });
         cache.apply_scenes_state(crate::scenes::ScenesProjectionState {

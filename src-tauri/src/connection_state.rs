@@ -26,13 +26,6 @@ pub struct DiscoveredLv1System {
     pub status: DiscoveredLv1Status,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ReconnectState {
-    pub active: bool,
-    pub attempt: u64,
-}
-
 pub fn identity_from_discovery(entry: &DiscoveryEntry) -> Option<Lv1SystemIdentity> {
     let address = entry.addresses.first()?.clone();
     let port = entry.port?;

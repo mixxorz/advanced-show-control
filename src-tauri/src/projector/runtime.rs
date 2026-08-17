@@ -168,8 +168,6 @@ mod tests {
                 show_file_last_saved_at: None,
                 discovered_lv1_systems: Vec::new(),
                 connected_lv1_identity: None,
-                pending_lv1_identity: None,
-                reconnect: Default::default(),
                 last_event_at: None,
             },
             initial_scenes_state: ScenesProjectionState {
@@ -276,8 +274,6 @@ mod tests {
                 show_file_last_saved_at: None,
                 discovered_lv1_systems: vec![],
                 connected_lv1_identity: None,
-                pending_lv1_identity: None,
-                reconnect: Default::default(),
                 last_event_at: None,
             },
         }));
@@ -405,8 +401,6 @@ mod tests {
                 show_file_last_saved_at: None,
                 discovered_lv1_systems: Vec::new(),
                 connected_lv1_identity: None,
-                pending_lv1_identity: None,
-                reconnect: Default::default(),
                 last_event_at: None,
             },
             initial_scenes_state: ScenesProjectionState {
@@ -456,8 +450,6 @@ mod tests {
                 show_file_last_saved_at: None,
                 discovered_lv1_systems: vec![],
                 connected_lv1_identity: None,
-                pending_lv1_identity: None,
-                reconnect: Default::default(),
                 last_event_at: None,
             },
         });

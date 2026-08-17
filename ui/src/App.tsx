@@ -5,7 +5,6 @@ import { AppRuntime, type AppRuntimeServices } from "./AppRuntime";
 import type { AppViewState } from "./types";
 import {
   addSceneToActiveCueList,
-  attemptReconnectLv1,
   copySceneSettings,
   createCueList,
   cueEntry,
@@ -16,7 +15,6 @@ import {
   linkSceneConfig,
   pasteSceneSettings,
   probeLv1TcpConnectLatency,
-  reconnectTimedOut,
   refreshLv1Discovery,
   removeCueEntry,
   renameCueList,
@@ -30,7 +28,6 @@ const services: AppRuntimeServices = {
   frontendReady: () => invoke<void>("frontend_ready"),
   abortAll: () => invoke<void>("abort_all_fades"),
   addSceneToActiveCueList,
-  attemptReconnectLv1,
   connectLv1System,
   copySceneSettings,
   createCueList,
@@ -50,7 +47,6 @@ const services: AppRuntimeServices = {
     invoke<void>("recall_scene", { internalSceneId }),
   renameCueList,
   probeLv1TcpConnectLatency,
-  reconnectTimedOut,
   reorderCueEntries,
   reorderCueLists,
   refreshLv1Discovery,

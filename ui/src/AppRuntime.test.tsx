@@ -25,7 +25,6 @@ function makeServices(
   return {
     frontendReady: vi.fn(async () => undefined),
     abortAll: vi.fn(async () => undefined),
-    attemptReconnectLv1: vi.fn(async () => undefined),
     connectLv1System: vi.fn(async () => undefined),
     copySceneSettings: vi.fn(async () => undefined),
     disconnectLv1: vi.fn(async () => undefined),
@@ -47,7 +46,6 @@ function makeServices(
     reorderCueEntries: vi.fn(async () => undefined),
     reorderCueLists: vi.fn(async () => undefined),
     probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
-    reconnectTimedOut: vi.fn(async () => undefined),
     refreshLv1Discovery: vi.fn(async () => undefined),
     saveShowFile: vi.fn(async () => undefined),
     saveShowFileAs: vi.fn(async () => undefined),
@@ -223,54 +221,6 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
-
-    expect(
-      screen.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
-  });
-
-  it("keeps a manually opened modal open when reconnect succeeds", async () => {
-    const user = userEvent.setup();
-    const reconnect = createDeferred<AppViewState>();
-    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
-    const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => undefined),
-      listenForAppStatus: vi.fn(async (listener) => {
-        appStatusListener = listener;
-        return () => {};
-      }),
-      attemptReconnectLv1: vi.fn(() => reconnect.promise),
-    });
-    render(<AppRuntime services={services} />);
-
-    await act(async () => {
-      appStatusListener?.(connectedAppState);
-    });
-
-    await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Connect to LV1" }),
-      ).not.toBeInTheDocument();
-    });
-
-    await act(async () => {
-      appStatusListener?.({
-        ...connectedAppState,
-        reconnect: { active: true, attempt: 1 },
-        stateVersion: connectedAppState.stateVersion + 1,
-      });
-    });
-
-    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
-
-    await act(async () => {
-      reconnect.resolve({
-        ...connectedAppState,
-        reconnect: { active: false, attempt: 1 },
-        stateVersion: connectedAppState.stateVersion + 2,
-      });
-      await reconnect.promise;
-    });
 
     expect(
       screen.getByRole("heading", { name: "Connect to LV1" }),

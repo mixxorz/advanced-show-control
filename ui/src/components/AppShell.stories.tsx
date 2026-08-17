@@ -463,15 +463,6 @@ export const CommandError: Story = {
   },
 };
 
-export const ReconnectOverlay: Story = {
-  args: {
-    appState: {
-      ...connectedAppState,
-      reconnect: { active: true, attempt: 2 },
-    },
-  },
-};
-
 export const EmptyMainShell: Story = {
   args: {
     appState: disconnectedAppViewState,

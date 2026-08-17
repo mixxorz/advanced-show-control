@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::{mpsc, watch};
 
 use crate::cue_lists::{CueListDocument, CueListsCommand, CueListsEvent, CueListsHandle};
-use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot};
+use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent, log_lagged_subscriber};
 use crate::scenes::{
@@ -109,30 +109,6 @@ pub fn build_show_actor(
     build_show_actor_with_state(event_bus, ShowState::default())
 }
 
-#[cfg(test)]
-pub(crate) fn build_show_actor_with_connection_metadata_for_test(
-    event_bus: AppEventBus,
-    connected_lv1_identity: crate::connection_state::Lv1SystemIdentity,
-    pending_lv1_identity: Option<crate::connection_state::Lv1SystemIdentity>,
-    reconnect: crate::connection_state::ReconnectState,
-    last_event_at: Option<String>,
-) -> (
-    ShowStateHandle,
-    ShowActorTask,
-    ShowActorPeers,
-    ShowLockoutReader,
-) {
-    build_show_actor_with_state(
-        event_bus,
-        ShowState::with_connection_metadata_for_test(
-            connected_lv1_identity,
-            pending_lv1_identity,
-            reconnect,
-            last_event_at,
-        ),
-    )
-}
-
 fn build_show_actor_with_state(
     event_bus: AppEventBus,
     state: ShowState,
@@ -207,18 +183,6 @@ fn handle_app_event(
     match event {
         AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
             *active_generation = generation;
-        }
-        AppEvent::Lv1 {
-            generation,
-            event: Lv1Event::Disconnected { reason },
-        } if generation == *active_generation => {
-            let changed = state.handle_runtime_disconnected(reason);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
         }
         AppEvent::Scenes {
             generation,
@@ -367,12 +331,8 @@ async fn handle_command(
                 let _ = reply.send(result);
             }
         }
-        ShowCommand::CompleteLv1Connection {
-            identity,
-            mode,
-            reply,
-        } => {
-            let outcome = state.complete_lv1_connection(identity, mode);
+        ShowCommand::CompleteLv1Connection { identity, reply } => {
+            let outcome = state.complete_lv1_connection(identity);
             let changed = outcome.changed;
             publish_if_changed(
                 event_bus,
@@ -384,79 +344,15 @@ async fn handle_command(
                 let _ = reply.send(outcome);
             }
         }
-        ShowCommand::AuthorizeLv1ConnectionIfCurrent {
-            mode,
-            runtime_generation,
-            expected_generation,
-            reply,
-        } => {
-            let authorized = runtime_generation
-                .if_current(expected_generation, || state.authorize_lv1_connection(mode))
-                .await
-                .unwrap_or(false);
-            let _ = reply.send(authorized);
-        }
         ShowCommand::CompleteLv1ConnectionIfCurrent {
             identity,
-            mode,
             runtime_generation,
             expected_generation,
             reply,
         } => {
             let outcome = runtime_generation
                 .if_current(expected_generation, || {
-                    let outcome = state.complete_lv1_connection(identity, mode);
-                    publish_if_changed(
-                        event_bus,
-                        ShowProjectionReason::ConnectionMetadata,
-                        state,
-                        outcome.changed,
-                    );
-                    outcome
-                })
-                .await;
-            let outcome = outcome.unwrap_or_else(|| {
-                state.cancel_lv1_connection_authorization(mode);
-                super::CompleteConnectionOutcome {
-                    accepted: false,
-                    changed: false,
-                }
-            });
-            let _ = reply.send(outcome);
-        }
-        ShowCommand::FailLv1Connection { reply } => {
-            let changed = state.fail_lv1_connection();
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::FailLv1Reconnect { reply } => {
-            let changed = state.fail_lv1_reconnect();
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ShowCommandResult { changed });
-            }
-        }
-        ShowCommand::FailLv1ConnectionIfCurrent {
-            mode,
-            runtime_generation,
-            expected_generation,
-            reply,
-        } => {
-            let outcome = runtime_generation
-                .if_current(expected_generation, || {
-                    let outcome = state.fail_lv1_connection_with_mode(mode);
+                    let outcome = state.complete_lv1_connection(identity);
                     publish_if_changed(
                         event_bus,
                         ShowProjectionReason::ConnectionMetadata,
@@ -472,8 +368,60 @@ async fn handle_command(
                 });
             let _ = reply.send(outcome);
         }
-        ShowCommand::ClaimReconnectTimeout { attempt, reply } => {
-            let _ = reply.send(state.claim_reconnect_timeout(attempt));
+        ShowCommand::ClearLv1ConnectionIfCurrent {
+            runtime_generation,
+            expected_generation,
+            reply,
+        } => {
+            let outcome = runtime_generation
+                .if_current(expected_generation, || super::CompleteConnectionOutcome {
+                    accepted: true,
+                    changed: state.clear_lv1_connection(),
+                })
+                .await
+                .unwrap_or(super::CompleteConnectionOutcome {
+                    accepted: false,
+                    changed: false,
+                });
+            let _ = reply.send(outcome);
+        }
+        ShowCommand::FailLv1Connection { reply } => {
+            let changed = state.fail_lv1_connection();
+            publish_if_changed(
+                event_bus,
+                ShowProjectionReason::ConnectionMetadata,
+                state,
+                changed,
+            );
+            if let Some(reply) = reply {
+                let _ = reply.send(ShowCommandResult { changed });
+            }
+        }
+        ShowCommand::FailLv1ConnectionIfCurrent {
+            runtime_generation,
+            expected_generation,
+            reply,
+        } => {
+            let outcome = runtime_generation
+                .if_current(expected_generation, || {
+                    let changed = state.fail_lv1_connection();
+                    publish_if_changed(
+                        event_bus,
+                        ShowProjectionReason::ConnectionMetadata,
+                        state,
+                        changed,
+                    );
+                    super::CompleteConnectionOutcome {
+                        accepted: true,
+                        changed,
+                    }
+                })
+                .await
+                .unwrap_or(super::CompleteConnectionOutcome {
+                    accepted: false,
+                    changed: false,
+                });
+            let _ = reply.send(outcome);
         }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
             let result = async {

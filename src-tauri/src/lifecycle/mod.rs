@@ -137,12 +137,6 @@ fn build_connected_runtime(
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum ConnectFailureMode {
-    ClearConnectedIdentity,
-    PreserveConnectedIdentity { attempt: u64 },
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RuntimeClearTransaction {
     cleared_generation: u64,
@@ -176,6 +170,7 @@ pub struct AppLifecycle {
     cue_lists: CueListsHandle,
     cue_lists_peers: CueListsPeers,
     settings: SettingsHandle,
+    transition_lock: Arc<Mutex<()>>,
     #[cfg(test)]
     before_disconnect_cleanup: Arc<Mutex<Option<DisconnectTestHook>>>,
     #[cfg(test)]
@@ -210,6 +205,7 @@ impl AppLifecycle {
             cue_lists,
             cue_lists_peers,
             settings,
+            transition_lock: Arc::new(Mutex::new(())),
             #[cfg(test)]
             before_disconnect_cleanup: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -254,6 +250,7 @@ impl AppLifecycle {
     }
 
     pub async fn begin_connecting(&self) -> Option<u64> {
+        let _transition = self.transition_lock.lock().await;
         let mut inner = self.inner.lock().await;
         let generation = inner.generation.advance().await;
         inner.connecting = true;
@@ -363,7 +360,6 @@ impl AppLifecycle {
         app: AppHandle<R>,
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
-        failure_mode: ConnectFailureMode,
     ) -> Result<ConnectCommandResult, String> {
         log_lv1_connect_requested(&identity);
         log_lv1_connecting(&identity);
@@ -390,14 +386,36 @@ impl AppLifecycle {
         let started_runtime = built_runtime.spawn_lv1_and_fade();
 
         let _ = app;
-        self.finish_connect_transaction(identity, failure_mode, generation, started_runtime)
+        let result = self.spawn_finish_connect_transaction(identity, generation, started_runtime);
+        result
             .await
+            .map_err(|_| "LV1 connection finalizer task was cancelled".to_string())?
+    }
+
+    fn spawn_finish_connect_transaction(
+        &self,
+        identity: crate::connection_state::Lv1SystemIdentity,
+        generation: u64,
+        started_runtime: StartedConnectedRuntime,
+    ) -> oneshot::Receiver<Result<ConnectCommandResult, String>> {
+        let (reply, result) = oneshot::channel();
+        let lifecycle = self.clone();
+        let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
+        tauri::async_runtime::spawn(
+            async move {
+                let outcome = lifecycle
+                    .finish_connect_transaction(identity, generation, started_runtime)
+                    .await;
+                let _ = reply.send(outcome);
+            }
+            .with_subscriber(subscriber),
+        );
+        result
     }
 
     async fn finish_connect_transaction(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
-        failure_mode: ConnectFailureMode,
         generation: u64,
         started_runtime: StartedConnectedRuntime,
     ) -> Result<ConnectCommandResult, String> {
@@ -411,12 +429,31 @@ impl AppLifecycle {
         } = started_runtime;
 
         let (reply, rx) = oneshot::channel();
-        lv1.send(Lv1Command::GetState { reply })
-            .await
-            .map_err(|error| error.to_string())?;
-        let initial_snapshot = rx
-            .await
-            .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())?;
+        if let Err(error) = lv1.send(Lv1Command::GetState { reply }).await {
+            return self
+                .finalize_failed_connection(
+                    generation,
+                    identity,
+                    format!("Failed to request initial LV1 state: {error}"),
+                    #[cfg(test)]
+                    before_connection_metadata,
+                )
+                .await;
+        }
+        let initial_snapshot = match rx.await {
+            Ok(snapshot) => snapshot,
+            Err(_) => {
+                return self
+                    .finalize_failed_connection(
+                        generation,
+                        identity,
+                        AppCommandError::ReplyChannelClosed.to_string(),
+                        #[cfg(test)]
+                        before_connection_metadata,
+                    )
+                    .await;
+            }
+        };
 
         if initial_snapshot.connection != ConnectionStatus::Connected {
             let lifecycle = self.clone();
@@ -427,7 +464,7 @@ impl AppLifecycle {
                         .finalize_failed_connection(
                             generation,
                             identity,
-                            failure_mode,
+                            "LV1 did not connect".to_string(),
                             #[cfg(test)]
                             before_connection_metadata,
                         )
@@ -440,23 +477,14 @@ impl AppLifecycle {
                 .map_err(|error| format!("LV1 failure finalizer task failed: {error}"))?;
         }
 
-        let completion_mode = match failure_mode {
-            ConnectFailureMode::ClearConnectedIdentity => {
-                crate::show::ConnectionCompletionMode::Unconditional
-            }
-            ConnectFailureMode::PreserveConnectedIdentity { attempt } => {
-                crate::show::ConnectionCompletionMode::Reconnect { attempt }
-            }
-        };
         let lifecycle = self.clone();
         let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
         let finalizer = tauri::async_runtime::spawn(
             async move {
                 lifecycle
-                    .authorize_and_finalize_connection(
+                    .finalize_connection_metadata(
                         generation,
                         identity,
-                        completion_mode,
                         lv1,
                         fade,
                         scene_recall_fader,
@@ -473,73 +501,11 @@ impl AppLifecycle {
             .map_err(|error| format!("LV1 connection finalizer task failed: {error}"))?
     }
 
-    async fn authorize_lv1_connection(
-        &self,
-        expected_generation: u64,
-        mode: crate::show::ConnectionCompletionMode,
-    ) -> Result<bool, AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::AuthorizeLv1ConnectionIfCurrent {
-                mode,
-                runtime_generation: self.current_runtime_generation().await,
-                expected_generation,
-                reply,
-            })
-            .await
-            .map_err(|_| AppCommandError::ShowUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)
-    }
-
     #[allow(clippy::too_many_arguments)]
-    async fn authorize_and_finalize_connection(
+    async fn finalize_connection_metadata(
         &self,
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
-        completion_mode: crate::show::ConnectionCompletionMode,
-        lv1: Lv1ActorHandle,
-        fade: FadeEngineHandle,
-        scene_recall_fader: ScenesHandle,
-        scene_recall_task: crate::scenes::ScenesTask,
-        #[cfg(test)] before_connection_metadata: Option<BeforeConnectionMetadataHook>,
-    ) -> Result<ConnectCommandResult, String> {
-        if !self
-            .authorize_lv1_connection(generation, completion_mode)
-            .await
-            .map_err(|error| error.to_string())?
-        {
-            self.abort_rejected_connection_transaction(
-                generation,
-                RuntimeHandles {
-                    lv1: Some(lv1),
-                    fade: Some(fade),
-                    scene_recall_fader: Some(scene_recall_fader),
-                },
-            )
-            .await;
-            return Err("LV1 connection was superseded".to_string());
-        }
-
-        self.finalize_authorized_connection(
-            generation,
-            identity,
-            completion_mode,
-            lv1,
-            fade,
-            scene_recall_fader,
-            scene_recall_task,
-            #[cfg(test)]
-            before_connection_metadata,
-        )
-        .await
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn finalize_authorized_connection(
-        &self,
-        generation: u64,
-        identity: crate::connection_state::Lv1SystemIdentity,
-        completion_mode: crate::show::ConnectionCompletionMode,
         lv1: Lv1ActorHandle,
         fade: FadeEngineHandle,
         scene_recall_fader: ScenesHandle,
@@ -556,7 +522,7 @@ impl AppLifecycle {
             .await
         {
             let _ = self
-                .complete_lv1_connection_metadata(generation, identity.clone(), completion_mode)
+                .complete_lv1_connection_metadata(generation, identity.clone())
                 .await;
             self.abort_rejected_connection_transaction(
                 generation,
@@ -571,7 +537,7 @@ impl AppLifecycle {
         }
 
         let completion = self
-            .complete_lv1_connection_metadata(generation, identity.clone(), completion_mode)
+            .complete_lv1_connection_metadata(generation, identity.clone())
             .await
             .map_err(|error| error.to_string())?;
         if !completion.accepted {
@@ -615,39 +581,33 @@ impl AppLifecycle {
         &self,
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
-        failure_mode: ConnectFailureMode,
+        error: String,
         #[cfg(test)] before_connection_metadata: Option<BeforeConnectionMetadataHook>,
     ) -> Result<ConnectCommandResult, String> {
         #[cfg(test)]
         if let Some(before_connection_metadata) = before_connection_metadata {
             before_connection_metadata(self.current_runtime_generation().await).await;
         }
-        let failure = self
-            .fail_lv1_connection_metadata(generation, failure_mode)
-            .await;
+        let failure = self.fail_lv1_connection_metadata(generation).await;
         if failure.as_ref().is_ok_and(|outcome| outcome.accepted) {
             let generation_guard = self.current_runtime_generation().await;
             let _ = generation_guard
-                .if_current(generation, || {
-                    log_lv1_connect_failed(&identity, failure_mode)
-                })
+                .if_current(generation, || log_lv1_connect_failed(&identity))
                 .await;
         }
         self.clear_runtime_transaction(generation).await;
-        Err("LV1 did not connect".to_string())
+        Err(error)
     }
 
     async fn complete_lv1_connection_metadata(
         &self,
         expected_generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
-        mode: crate::show::ConnectionCompletionMode,
     ) -> Result<crate::show::CompleteConnectionOutcome, AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.show
             .send(ShowCommand::CompleteLv1ConnectionIfCurrent {
                 identity,
-                mode,
                 runtime_generation: self.current_runtime_generation().await,
                 expected_generation,
                 reply,
@@ -660,19 +620,9 @@ impl AppLifecycle {
     async fn fail_lv1_connection_metadata(
         &self,
         expected_generation: u64,
-        failure_mode: ConnectFailureMode,
     ) -> Result<crate::show::CompleteConnectionOutcome, AppCommandError> {
         let (reply, rx) = oneshot::channel();
-        let mode = match failure_mode {
-            ConnectFailureMode::ClearConnectedIdentity => {
-                crate::show::ConnectionFailureMode::Unconditional
-            }
-            ConnectFailureMode::PreserveConnectedIdentity { attempt } => {
-                crate::show::ConnectionFailureMode::Reconnect { attempt }
-            }
-        };
         let command = ShowCommand::FailLv1ConnectionIfCurrent {
-            mode,
             runtime_generation: self.current_runtime_generation().await,
             expected_generation,
             reply,
@@ -699,35 +649,8 @@ impl AppLifecycle {
     ) -> Result<ShowCommandResult, String> {
         #[cfg(test)]
         self.run_before_disconnect_cleanup().await;
+        let _transition = self.transition_lock.lock().await;
         self.finish_disconnect(generation).await
-    }
-
-    pub async fn reconnect_timed_out(&self, attempt: u64) -> Result<ShowCommandResult, String> {
-        let generation = self.active_generation().await;
-        let (reply, rx) = oneshot::channel();
-        if self
-            .show
-            .send(ShowCommand::ClaimReconnectTimeout { attempt, reply })
-            .await
-            .is_err()
-        {
-            return Err("Show state is unavailable".to_string());
-        }
-        let claimed = match rx.await {
-            Ok(claimed) => claimed,
-            Err(_) => return Err("Show state reply channel is closed".to_string()),
-        };
-        if !claimed {
-            return Ok(ShowCommandResult { changed: false });
-        }
-
-        let lifecycle = self.clone();
-        let cleanup = tauri::async_runtime::spawn(async move {
-            lifecycle.disconnect_runtime_generation(generation).await
-        });
-        cleanup
-            .await
-            .map_err(|error| format!("Reconnect timeout cleanup task failed: {error}"))?
     }
 
     fn superseded_disconnect(&self, generation: u64) -> ShowCommandResult {
@@ -739,7 +662,28 @@ impl AppLifecycle {
         ShowCommandResult { changed: false }
     }
 
+    async fn clear_lv1_connection_metadata(
+        &self,
+        expected_generation: u64,
+    ) -> Result<crate::show::CompleteConnectionOutcome, String> {
+        let (reply, rx) = oneshot::channel();
+        self.show
+            .send(ShowCommand::ClearLv1ConnectionIfCurrent {
+                runtime_generation: self.current_runtime_generation().await,
+                expected_generation,
+                reply,
+            })
+            .await
+            .map_err(|_| "Show state is unavailable".to_string())?;
+        rx.await
+            .map_err(|_| "Show state reply channel is closed".to_string())
+    }
+
     async fn finish_disconnect(&self, generation: u64) -> Result<ShowCommandResult, String> {
+        let cleared = self.clear_lv1_connection_metadata(generation).await?;
+        if !cleared.accepted {
+            return Ok(self.superseded_disconnect(generation));
+        }
         let Some(transaction) = self.clear_runtime_if_current(generation).await else {
             return Ok(self.superseded_disconnect(generation));
         };
@@ -831,46 +775,7 @@ impl AppLifecycle {
             .begin_connecting()
             .await
             .ok_or_else(|| "Failed to begin LV1 connection".to_string())?;
-        self.connect_to_identity(
-            app,
-            generation,
-            identity,
-            ConnectFailureMode::ClearConnectedIdentity,
-        )
-        .await
-    }
-
-    pub async fn attempt_reconnect_lv1<R: Runtime>(
-        &self,
-        app: AppHandle<R>,
-    ) -> Result<ConnectCommandResult, String> {
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| "Show state is unavailable".to_string())?;
-        let projection = rx
-            .await
-            .map_err(|_| "Show state reply channel is closed".to_string())?;
-        let identity = projection
-            .connected_lv1_identity
-            .ok_or_else(|| "Reconnect unavailable: no previous LV1 identity".to_string())?;
-        if !projection.reconnect.active {
-            return Err("Reconnect unavailable: no active reconnect attempt".to_string());
-        }
-        let attempt = projection.reconnect.attempt;
-        self.abort_current_runtime().await;
-        let generation = self
-            .begin_connecting()
-            .await
-            .ok_or_else(|| "Failed to begin LV1 reconnect".to_string())?;
-        self.connect_to_identity(
-            app,
-            generation,
-            identity,
-            ConnectFailureMode::PreserveConnectedIdentity { attempt },
-        )
-        .await
+        self.connect_to_identity(app, generation, identity).await
     }
 
     pub async fn startup_auto_connect_lv1<R: Runtime>(
@@ -925,13 +830,7 @@ impl AppLifecycle {
             .begin_connecting()
             .await
             .ok_or_else(|| "Failed to begin LV1 startup auto-connect".to_string())?;
-        self.connect_to_identity(
-            app,
-            generation,
-            identity,
-            ConnectFailureMode::ClearConnectedIdentity,
-        )
-        .await
+        self.connect_to_identity(app, generation, identity).await
     }
 
     pub async fn frontend_ready<R: Runtime>(
@@ -1043,32 +942,19 @@ fn log_lv1_connecting(identity: &crate::connection_state::Lv1SystemIdentity) {
     );
 }
 
-fn log_lv1_connect_failed(
-    identity: &crate::connection_state::Lv1SystemIdentity,
-    failure_mode: ConnectFailureMode,
-) {
-    match failure_mode {
-        ConnectFailureMode::ClearConnectedIdentity => tracing::warn!(
-            event = "lv1_connect_failed",
-            host = %identity.address,
-            port = identity.port,
-            error = "LV1 did not connect",
-            "LV1 did not connect"
-        ),
-        ConnectFailureMode::PreserveConnectedIdentity { .. } => tracing::warn!(
-            event = "lv1_reconnect_failed",
-            host = %identity.address,
-            port = identity.port,
-            error = "LV1 did not connect",
-            "LV1 did not connect"
-        ),
-    }
+fn log_lv1_connect_failed(identity: &crate::connection_state::Lv1SystemIdentity) {
+    tracing::warn!(
+        event = "lv1_connect_failed",
+        host = %identity.address,
+        port = identity.port,
+        error = "LV1 did not connect",
+        "LV1 did not connect"
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::connection_state::ReconnectState;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::cue_lists::CueListsEvent;
     use crate::fade::FadeEngineHandle;
@@ -1198,6 +1084,37 @@ mod tests {
             scene_recall_task,
             before_connection_metadata,
         }
+    }
+
+    async fn install_newer_runtime_with_identity(
+        lifecycle: &AppLifecycle,
+        identity: Lv1SystemIdentity,
+    ) -> u64 {
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let (lv1_tx, _lv1_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    generation,
+                    RuntimeHandles::with_runtime_targets(
+                        test_actor_handle(lv1_tx),
+                        FadeEngineHandle::new(mpsc::channel(1).0),
+                    ),
+                )
+                .await
+                .is_ok()
+        );
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::CompleteLv1Connection {
+                identity,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert!(rx.await.unwrap().accepted);
+        generation
     }
 
     async fn set_last_connected_lv1(settings: &SettingsHandle, identity: Lv1SystemIdentity) {
@@ -1360,12 +1277,7 @@ mod tests {
         .await;
 
         let connect_result = lifecycle
-            .finish_connect_transaction(
-                identity,
-                ConnectFailureMode::ClearConnectedIdentity,
-                generation,
-                started_runtime,
-            )
+            .finish_connect_transaction(identity, generation, started_runtime)
             .await;
 
         assert!(connect_result.is_ok());
@@ -1437,7 +1349,6 @@ mod tests {
                                 Some("LV1-FOH"),
                                 "192.168.1.37",
                             ),
-                            mode: crate::show::ConnectionCompletionMode::Unconditional,
                             reply: Some(reply),
                         })
                         .await
@@ -1460,7 +1371,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -1552,7 +1462,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-stale"), Some("LV1-FOH"), "192.168.1.36"),
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -1597,11 +1506,7 @@ mod tests {
         let generation = lifecycle.begin_connecting().await.unwrap();
         while events.try_recv().is_ok() {}
         lifecycle
-            .complete_lv1_connection_metadata(
-                generation,
-                identity.clone(),
-                crate::show::ConnectionCompletionMode::Unconditional,
-            )
+            .complete_lv1_connection_metadata(generation, identity.clone())
             .await
             .expect("connected metadata should apply");
 
@@ -1621,61 +1526,6 @@ mod tests {
             .expect("connection metadata state should be requested");
         let state = rx.await.expect("connection metadata state should arrive");
         assert_eq!(state.connected_lv1_identity, Some(identity));
-        assert_eq!(state.pending_lv1_identity, None);
-        assert_eq!(state.reconnect, ReconnectState::default());
-    }
-
-    #[tokio::test]
-    async fn failed_reconnect_metadata_preserves_connected_identity() {
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus);
-        let mut events = lifecycle.event_bus.subscribe();
-        let identity = Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            host: Some("LV1-FOH".to_string()),
-            address: "192.168.1.35".to_string(),
-            port: 50000,
-        };
-
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::CompleteLv1Connection {
-                identity: identity.clone(),
-                mode: crate::show::ConnectionCompletionMode::Unconditional,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        let _ = rx.await.unwrap();
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            AppEvent::Show(ShowEvent::StateChanged {
-                reason: ShowProjectionReason::ConnectionMetadata,
-                ..
-            })
-        ));
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        while events.try_recv().is_ok() {}
-        lifecycle
-            .fail_lv1_connection_metadata(
-                generation,
-                ConnectFailureMode::PreserveConnectedIdentity { attempt: 1 },
-            )
-            .await
-            .expect("failed reconnect metadata should apply");
-
-        assert!(events.try_recv().is_err());
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .expect("connection metadata state should be requested");
-        let state = rx.await.expect("connection metadata state should arrive");
-        assert_eq!(state.connected_lv1_identity, Some(identity));
-        assert_eq!(state.pending_lv1_identity, None);
-        assert_eq!(state.reconnect, ReconnectState::default());
     }
 
     #[tokio::test]
@@ -1705,12 +1555,7 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .finish_connect_transaction(
-                identity,
-                ConnectFailureMode::ClearConnectedIdentity,
-                generation,
-                started_runtime,
-            )
+            .finish_connect_transaction(identity, generation, started_runtime)
             .await;
 
         assert!(matches!(result, Err(message) if message == "LV1 did not connect"));
@@ -1746,7 +1591,6 @@ mod tests {
                         .show
                         .send(ShowCommand::CompleteLv1Connection {
                             identity: current_identity,
-                            mode: crate::show::ConnectionCompletionMode::Unconditional,
                             reply: Some(reply),
                         })
                         .await
@@ -1760,7 +1604,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-stale"), Some("LV1-FOH"), "192.168.1.36"),
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -1782,86 +1625,6 @@ mod tests {
                 .as_deref(),
             Some("uuid-current")
         );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn authorized_reconnect_finalizer_survives_outer_cancellation() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let settings_dir = TestSettingsDir::new();
-        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
-        let reconnect_identity = identity(Some("uuid-reconnect"), Some("LV1-FOH"), "192.168.1.35");
-        let (show, show_task, show_peers, lockout) =
-            crate::show::build_show_actor_with_connection_metadata_for_test(
-                event_bus.clone(),
-                reconnect_identity.clone(),
-                None,
-                ReconnectState {
-                    active: true,
-                    attempt: 8,
-                },
-                None,
-            );
-        show_task.spawn();
-        let lifecycle = AppLifecycle::new(event_bus.clone(), show, show_peers, lockout, settings);
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
-        let (reached_tx, reached_rx) = oneshot::channel();
-        let (release_tx, release_rx) = oneshot::channel();
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            fake_lv1_handle(connected_snapshot()),
-            FadeEngineHandle::new(mpsc::channel(1).0),
-            Some(Box::new(move |_| {
-                Box::pin(async move {
-                    reached_tx.send(()).unwrap();
-                    release_rx.await.unwrap();
-                })
-            })),
-        )
-        .await;
-        let lifecycle_for_task = lifecycle.clone();
-        let outer = tokio::spawn(async move {
-            lifecycle_for_task
-                .finish_connect_transaction(
-                    reconnect_identity,
-                    ConnectFailureMode::PreserveConnectedIdentity { attempt: 8 },
-                    generation,
-                    started_runtime,
-                )
-                .await
-        });
-
-        reached_rx.await.unwrap();
-        outer.abort();
-        release_tx.send(()).unwrap();
-        loop {
-            if matches!(
-                events.recv().await.unwrap(),
-                AppEvent::Show(ShowEvent::StateChanged {
-                    reason: ShowProjectionReason::ConnectionMetadata,
-                    ..
-                })
-            ) {
-                break;
-            }
-        }
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .unwrap();
-        let state = rx.await.unwrap();
-        assert_eq!(state.reconnect, ReconnectState::default());
-        assert_eq!(
-            state.connected_lv1_identity.unwrap().uuid.as_deref(),
-            Some("uuid-reconnect")
-        );
-        assert!(lifecycle.current_scene_recall_fader().await.is_some());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1894,7 +1657,6 @@ mod tests {
             lifecycle_for_task
                 .finish_connect_transaction(
                     identity(Some("uuid-failed"), Some("LV1-FOH"), "192.168.1.35"),
-                    ConnectFailureMode::ClearConnectedIdentity,
                     generation,
                     started_runtime,
                 )
@@ -1914,6 +1676,200 @@ mod tests {
         }
         assert!(lifecycle.current_lv1().await.is_none());
         assert!(lifecycle.current_scene_recall_fader().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn initial_get_state_send_failure_cleans_up_without_clearing_newer_runtime() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let (old_lv1_tx, old_lv1_rx) = mpsc::channel(1);
+        drop(old_lv1_rx);
+        let lifecycle_for_hook = lifecycle.clone();
+        let newer_identity = identity(Some("new"), Some("LV1-FOH"), "192.0.2.21");
+        let newer_identity_for_hook = newer_identity.clone();
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            test_actor_handle(old_lv1_tx),
+            FadeEngineHandle::new(mpsc::channel(1).0),
+            Some(Box::new(move |_| {
+                let lifecycle = lifecycle_for_hook.clone();
+                let identity = newer_identity_for_hook.clone();
+                Box::pin(async move {
+                    install_newer_runtime_with_identity(&lifecycle, identity).await;
+                })
+            })),
+        )
+        .await;
+
+        let result = lifecycle
+            .spawn_finish_connect_transaction(
+                identity(Some("old"), Some("LV1-FOH"), "192.0.2.20"),
+                generation,
+                started_runtime,
+            )
+            .await
+            .expect("detached finalizer should return a result");
+
+        assert!(matches!(
+            result,
+            Err(error) if error.contains("Failed to request initial LV1 state")
+        ));
+        assert_eq!(lifecycle.active_generation().await, generation + 1);
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.await.unwrap().connected_lv1_identity,
+            Some(newer_identity)
+        );
+    }
+
+    #[tokio::test]
+    async fn initial_get_state_reply_closure_cleans_up_without_clearing_newer_runtime() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let (old_lv1_tx, mut old_lv1_rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(Lv1Command::GetState { reply }) = old_lv1_rx.recv().await {
+                drop(reply);
+            }
+        });
+        let lifecycle_for_hook = lifecycle.clone();
+        let newer_identity = identity(Some("new"), Some("LV1-FOH"), "192.0.2.22");
+        let newer_identity_for_hook = newer_identity.clone();
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            test_actor_handle(old_lv1_tx),
+            FadeEngineHandle::new(mpsc::channel(1).0),
+            Some(Box::new(move |_| {
+                let lifecycle = lifecycle_for_hook.clone();
+                let identity = newer_identity_for_hook.clone();
+                Box::pin(async move {
+                    install_newer_runtime_with_identity(&lifecycle, identity).await;
+                })
+            })),
+        )
+        .await;
+
+        let result = lifecycle
+            .spawn_finish_connect_transaction(
+                identity(Some("old"), Some("LV1-FOH"), "192.0.2.20"),
+                generation,
+                started_runtime,
+            )
+            .await
+            .expect("detached finalizer should return a result");
+
+        assert!(matches!(
+            result,
+            Err(error) if error == AppCommandError::ReplyChannelClosed.to_string()
+        ));
+        assert_eq!(lifecycle.active_generation().await, generation + 1);
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            rx.await.unwrap().connected_lv1_identity,
+            Some(newer_identity)
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_connect_future_finalizes_after_pending_get_state() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let (old_lv1_tx, mut old_lv1_rx) = mpsc::channel(1);
+        let old_lv1 = test_actor_handle(old_lv1_tx);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            old_lv1,
+            FadeEngineHandle::new(mpsc::channel(1).0),
+            None,
+        )
+        .await;
+
+        let result_rx = lifecycle.spawn_finish_connect_transaction(
+            identity(Some("old"), Some("LV1-FOH"), "192.0.2.10"),
+            generation,
+            started_runtime,
+        );
+        let outer = tokio::spawn(result_rx);
+        let Lv1Command::GetState {
+            reply: old_state_reply,
+        } = old_lv1_rx.recv().await.unwrap()
+        else {
+            panic!("expected pending GetState");
+        };
+        outer.abort();
+
+        let newer_generation = lifecycle.begin_connecting().await.unwrap();
+        let newer_identity = identity(Some("new"), Some("LV1-FOH"), "192.0.2.11");
+        let (newer_lv1_tx, _newer_lv1_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    newer_generation,
+                    RuntimeHandles::with_runtime_targets(
+                        test_actor_handle(newer_lv1_tx),
+                        FadeEngineHandle::new(mpsc::channel(1).0),
+                    ),
+                )
+                .await
+                .is_ok(),
+            "newer runtime should install"
+        );
+        let (metadata_reply, metadata_rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::CompleteLv1Connection {
+                identity: newer_identity.clone(),
+                reply: Some(metadata_reply),
+            })
+            .await
+            .unwrap();
+        assert!(metadata_rx.await.unwrap().accepted);
+
+        old_state_reply
+            .send(disconnected_snapshot())
+            .expect("pending GetState should be released");
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let (reply, rx) = oneshot::channel();
+                lifecycle
+                    .show
+                    .send(ShowCommand::InitialProjectionState { reply })
+                    .await
+                    .unwrap();
+                if rx.await.unwrap().connected_lv1_identity == Some(newer_identity.clone()) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("cancelled connect finalizer should finish without clearing newer identity");
+        assert_eq!(lifecycle.active_generation().await, newer_generation);
     }
 
     #[tokio::test]
@@ -1955,12 +1911,7 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .finish_connect_transaction(
-                identity,
-                ConnectFailureMode::ClearConnectedIdentity,
-                generation,
-                started_runtime,
-            )
+            .finish_connect_transaction(identity, generation, started_runtime)
             .await;
 
         assert!(result.is_ok());
@@ -1997,7 +1948,6 @@ mod tests {
                     address: "192.168.1.35".to_string(),
                     port: 50000,
                 },
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -2043,7 +1993,6 @@ mod tests {
                     address: "192.168.1.35".to_string(),
                     port: 50000,
                 },
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -2155,47 +2104,6 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn attempt_reconnect_uses_stored_connected_identity() {
-        let capture = crate::test_support::TracingCapture::new();
-        let _tracing_guard = capture.install();
-        let app = mock_app();
-        let event_bus = AppEventBus::default();
-        let settings_dir = TestSettingsDir::new();
-        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
-        let identity = Lv1SystemIdentity {
-            uuid: None,
-            host: Some("Unreachable".to_string()),
-            address: "127.0.0.1".to_string(),
-            port: 1,
-        };
-        let (show, show_task, show_peers, lockout) =
-            crate::show::build_show_actor_with_connection_metadata_for_test(
-                event_bus.clone(),
-                identity,
-                None,
-                ReconnectState {
-                    active: true,
-                    attempt: 7,
-                },
-                None,
-            );
-        show_task.spawn();
-        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
-
-        let result = lifecycle.attempt_reconnect_lv1(app.handle().clone()).await;
-
-        assert!(
-            result.is_err(),
-            "unreachable stored identity should fail instead of returning a false success"
-        );
-        assert!(
-            !capture
-                .matching("lv1_reconnect_failed", tracing::Level::WARN)
-                .is_empty()
-        );
-    }
-
     #[tokio::test]
     async fn startup_without_remembered_identity_does_not_advance_generation() {
         let app = mock_app();
@@ -2275,12 +2183,7 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .finish_connect_transaction(
-                identity.clone(),
-                ConnectFailureMode::ClearConnectedIdentity,
-                generation,
-                started_runtime,
-            )
+            .finish_connect_transaction(identity.clone(), generation, started_runtime)
             .await;
 
         assert!(result.is_ok());
@@ -2318,7 +2221,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -2368,7 +2270,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
-                ConnectFailureMode::ClearConnectedIdentity,
                 generation,
                 started_runtime,
             )
@@ -2418,12 +2319,7 @@ mod tests {
 
         let connect = tokio::spawn(async move {
             lifecycle_for_connect
-                .finish_connect_transaction(
-                    identity,
-                    ConnectFailureMode::ClearConnectedIdentity,
-                    generation,
-                    started_runtime,
-                )
+                .finish_connect_transaction(identity, generation, started_runtime)
                 .await
         });
 
@@ -2784,256 +2680,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn reconnect_timeout_for_mismatched_attempt_is_unchanged() {
-        let capture = crate::test_support::TracingCapture::new();
-        let _tracing_guard = capture.install();
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let settings_dir = TestSettingsDir::new();
-        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
-        let connected_identity = Lv1SystemIdentity {
-            uuid: Some("reconnect-target".to_string()),
-            host: Some("LV1-FOH".to_string()),
-            address: "192.0.2.10".to_string(),
-            port: 50_000,
-        };
-        let (show, show_task, show_peers, lockout) =
-            crate::show::build_show_actor_with_connection_metadata_for_test(
-                event_bus.clone(),
-                connected_identity,
-                None,
-                ReconnectState {
-                    active: true,
-                    attempt: 4,
-                },
-                None,
-            );
-        show_task.spawn();
-        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let (lv1_tx, _lv1_rx) = mpsc::channel(1);
-        let (fade_tx, _fade_rx) = mpsc::channel(1);
-        assert!(
-            lifecycle
-                .install_runtime_transaction(
-                    generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(lv1_tx),
-                        FadeEngineHandle::new(fade_tx),
-                    ),
-                )
-                .await
-                .is_ok()
-        );
-        while events.try_recv().is_ok() {}
-
-        let result = lifecycle.reconnect_timed_out(3).await.unwrap();
-
-        assert!(!result.changed);
-        assert!(lifecycle.current_lv1().await.is_some());
-        assert!(events.try_recv().is_err());
-        assert!(
-            capture
-                .matching("lv1_disconnected", tracing::Level::INFO)
-                .is_empty()
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn reconnect_completion_wins_before_timeout_claim() {
-        let capture = crate::test_support::TracingCapture::new();
-        let _tracing_guard = capture.install();
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let settings_dir = TestSettingsDir::new();
-        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
-        let identity = Lv1SystemIdentity {
-            uuid: Some("reconnect-target".to_string()),
-            host: Some("LV1-FOH".to_string()),
-            address: "192.0.2.10".to_string(),
-            port: 50_000,
-        };
-        let (show, show_task, show_peers, lockout) =
-            crate::show::build_show_actor_with_connection_metadata_for_test(
-                event_bus.clone(),
-                identity.clone(),
-                None,
-                ReconnectState {
-                    active: true,
-                    attempt: 4,
-                },
-                None,
-            );
-        show_task.spawn();
-        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let (lv1_tx, _lv1_rx) = mpsc::channel(1);
-        let (fade_tx, _fade_rx) = mpsc::channel(1);
-        assert!(
-            lifecycle
-                .install_runtime_transaction(
-                    generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(lv1_tx),
-                        FadeEngineHandle::new(fade_tx),
-                    ),
-                )
-                .await
-                .is_ok()
-        );
-        let mode = crate::show::ConnectionCompletionMode::Reconnect { attempt: 4 };
-        assert!(
-            lifecycle
-                .authorize_lv1_connection(generation, mode)
-                .await
-                .unwrap()
-        );
-        lifecycle
-            .complete_lv1_connection_metadata(generation, identity, mode)
-            .await
-            .unwrap();
-        while events.try_recv().is_ok() {}
-
-        let result = lifecycle.reconnect_timed_out(4).await.unwrap();
-
-        assert!(!result.changed);
-        assert!(lifecycle.current_lv1().await.is_some());
-        assert!(events.try_recv().is_err());
-        assert!(
-            capture
-                .matching("lv1_disconnected", tracing::Level::INFO)
-                .is_empty()
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn timeout_cleanup_survives_outer_task_cancellation() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let settings_dir = TestSettingsDir::new();
-        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
-        let connected_identity = identity(Some("reconnect-target"), Some("LV1-FOH"), "192.0.2.10");
-        let (show, show_task, show_peers, lockout) =
-            crate::show::build_show_actor_with_connection_metadata_for_test(
-                event_bus.clone(),
-                connected_identity,
-                None,
-                ReconnectState {
-                    active: true,
-                    attempt: 4,
-                },
-                None,
-            );
-        show_task.spawn();
-        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let (lv1_tx, mut lv1_rx) = mpsc::channel(1);
-        let (fade_tx, _fade_rx) = mpsc::channel(1);
-        assert!(
-            lifecycle
-                .install_runtime_transaction(
-                    generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(lv1_tx),
-                        FadeEngineHandle::new(fade_tx),
-                    ),
-                )
-                .await
-                .is_ok()
-        );
-        while events.try_recv().is_ok() {}
-
-        let (cleanup_reached_tx, cleanup_reached_rx) = oneshot::channel();
-        let (resume_cleanup_tx, resume_cleanup_rx) = oneshot::channel();
-        lifecycle
-            .set_before_disconnect_cleanup(Box::new(move || {
-                Box::pin(async move {
-                    cleanup_reached_tx.send(()).unwrap();
-                    resume_cleanup_rx.await.unwrap();
-                })
-            }))
-            .await;
-        let timeout_lifecycle = lifecycle.clone();
-        let timeout_task =
-            tokio::spawn(async move { timeout_lifecycle.reconnect_timed_out(4).await });
-        cleanup_reached_rx.await.unwrap();
-        timeout_task.abort();
-        resume_cleanup_tx.send(()).unwrap();
-
-        assert!(matches!(events.recv().await.unwrap(), AppEvent::Lv1 {
-            generation: event_generation, event: Lv1Event::Disconnected { .. },
-        } if event_generation == generation));
-        assert!(matches!(events.recv().await.unwrap(), AppEvent::Runtime(
-            RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation }
-        ) if event_generation == generation + 1));
-        assert!(lv1_rx.recv().await.is_none());
-        assert!(lifecycle.current_lv1().await.is_none());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn timeout_first_rejects_later_reconnect_completion() {
-        let capture = crate::test_support::TracingCapture::new();
-        let _tracing_guard = capture.install();
-        let event_bus = AppEventBus::default();
-        let settings_dir = TestSettingsDir::new();
-        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
-        let connected_identity = identity(Some("reconnect-target"), Some("LV1-FOH"), "192.0.2.10");
-        let (show, show_task, show_peers, lockout) =
-            crate::show::build_show_actor_with_connection_metadata_for_test(
-                event_bus.clone(),
-                connected_identity.clone(),
-                None,
-                ReconnectState {
-                    active: true,
-                    attempt: 4,
-                },
-                None,
-            );
-        show_task.spawn();
-        let lifecycle = AppLifecycle::new(event_bus, show, show_peers, lockout, settings);
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let (lv1_tx, _lv1_rx) = mpsc::channel(1);
-        let (fade_tx, _fade_rx) = mpsc::channel(1);
-        assert!(
-            lifecycle
-                .install_runtime_transaction(
-                    generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(lv1_tx),
-                        FadeEngineHandle::new(fade_tx),
-                    ),
-                )
-                .await
-                .is_ok()
-        );
-
-        assert!(lifecycle.reconnect_timed_out(4).await.unwrap().changed);
-        let completion = lifecycle
-            .complete_lv1_connection_metadata(
-                generation,
-                connected_identity,
-                crate::show::ConnectionCompletionMode::Reconnect { attempt: 4 },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            completion,
-            crate::show::CompleteConnectionOutcome {
-                accepted: false,
-                changed: false,
-            }
-        );
-        assert!(lifecycle.current_scene_recall_fader().await.is_none());
-        assert!(lifecycle.show_peers.scenes().is_none());
-        assert!(lifecycle.cue_lists_peers.scenes().is_none());
-        assert!(
-            capture
-                .matching("lv1_connected", tracing::Level::INFO)
-                .is_empty()
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn stale_generation_does_not_block_newer_disconnect() {
         let capture = crate::test_support::TracingCapture::new();
         let _tracing_guard = capture.install();
@@ -3072,6 +2718,17 @@ mod tests {
             "newer scenes peer should install"
         );
 
+        let newer_identity = identity(Some("newer"), Some("LV1-FOH"), "192.0.2.20");
+        lifecycle
+            .show
+            .send(ShowCommand::CompleteLv1Connection {
+                identity: newer_identity.clone(),
+                reply: None,
+            })
+            .await
+            .expect("newer identity should be accepted");
+        while matches!(events.try_recv(), Ok(AppEvent::Show(_))) {}
+
         let result = lifecycle
             .disconnect_runtime_generation(stale_generation)
             .await
@@ -3079,11 +2736,18 @@ mod tests {
 
         assert!(!result.changed);
         assert_eq!(lifecycle.active_generation().await, newer_generation);
-        assert!(matches!(
-            events.try_recv(),
-            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
-        ));
-
+        let (identity_reply, identity_rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::InitialProjectionState {
+                reply: identity_reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            identity_rx.await.unwrap().connected_lv1_identity,
+            Some(newer_identity)
+        );
         let current_lv1 = lifecycle
             .current_lv1()
             .await
@@ -3252,6 +2916,19 @@ mod tests {
             AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })
                 if event_generation == generation
         ));
+        let connected_identity = identity(Some("disconnect-target"), Some("LV1-FOH"), "192.0.2.30");
+        lifecycle
+            .show
+            .send(ShowCommand::CompleteLv1Connection {
+                identity: connected_identity,
+                reply: None,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            rx.recv().await.unwrap(),
+            AppEvent::Show(ShowEvent::StateChanged { .. })
+        ));
         let result = lifecycle.disconnect_current_runtime().await.unwrap();
 
         assert!(result.changed);
@@ -3275,5 +2952,12 @@ mod tests {
                 .matching("lv1_disconnected", tracing::Level::INFO)
                 .is_empty()
         );
+        let (reply, state_rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(state_rx.await.unwrap().connected_lv1_identity, None);
     }
 }

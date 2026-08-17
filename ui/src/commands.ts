@@ -17,14 +17,6 @@ export async function connectLv1System(identity: Lv1SystemIdentity) {
   return invoke<void>("connect_lv1_system", { identity });
 }
 
-export async function reconnectTimedOut(attempt: number) {
-  return invoke<void>("reconnect_timed_out", { attempt });
-}
-
-export async function attemptReconnectLv1() {
-  return invoke<void>("attempt_reconnect_lv1");
-}
-
 export async function probeLv1TcpConnectLatency(
   identity: Lv1SystemIdentity,
   timeoutMs?: number,

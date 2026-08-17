@@ -24,7 +24,6 @@ export type AppStatusListener = (appState: AppViewState) => void;
 export type AppRuntimeServices = {
   frontendReady: () => Promise<void>;
   abortAll: () => Promise<void> | void;
-  attemptReconnectLv1: () => Promise<unknown>;
   connectLv1System: (identity: Lv1SystemIdentity) => Promise<unknown>;
   copySceneSettings: (internalSceneId: string) => Promise<unknown>;
   disconnectLv1: () => Promise<unknown>;
@@ -41,7 +40,6 @@ export type AppRuntimeServices = {
   pasteSceneSettings: (internalSceneId: string) => Promise<unknown>;
   removeCueEntry: (cueEntryId: string) => Promise<unknown>;
   recallCuedCue: () => Promise<unknown>;
-  reconnectTimedOut: (attempt: number) => Promise<unknown>;
   renameCueList: (cueListId: string, name: string) => Promise<unknown>;
   reorderCueEntries: (orderedEntryIds: string[]) => Promise<unknown>;
   reorderCueLists: (orderedIds: string[]) => Promise<unknown>;
@@ -249,52 +247,6 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       window.clearInterval(interval);
     };
   }, [showConnection, services]);
-
-  // During backend-managed reconnect, keep retrying briefly before handing the
-  // engineer back to the connection modal.
-  useEffect(() => {
-    if (!appState.reconnect.active) return;
-    const attempt = appState.reconnect.attempt;
-    let cancelled = false;
-    let reconnectInFlight = false;
-
-    async function attemptReconnect() {
-      if (reconnectInFlight) return;
-      reconnectInFlight = true;
-      try {
-        await services.attemptReconnectLv1();
-        if (cancelled) return;
-        setCommandError(null);
-      } catch (error) {
-        if (!cancelled) setCommandError(String(error));
-      } finally {
-        reconnectInFlight = false;
-      }
-    }
-
-    void attemptReconnect();
-    const interval = window.setInterval(() => {
-      void attemptReconnect();
-    }, 2000);
-
-    const timer = window.setTimeout(async () => {
-      try {
-        await services.reconnectTimedOut(attempt);
-        if (cancelled) return;
-      } catch (error) {
-        if (!cancelled) {
-          setCommandError(String(error));
-          setConnectionModalMode("startup");
-        }
-      }
-    }, 15000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.clearTimeout(timer);
-    };
-  }, [appState.reconnect.active, appState.reconnect.attempt, services]);
 
   const commands: AppCommands = {
     abortAll: () => {
