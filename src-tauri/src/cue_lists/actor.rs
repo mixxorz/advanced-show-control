@@ -29,10 +29,6 @@ impl CueListsPeers {
         *self.scenes.lock().expect("cue lists peers lock poisoned") = Some(scenes);
     }
 
-    pub fn clear_scenes(&self) {
-        *self.scenes.lock().expect("cue lists peers lock poisoned") = None;
-    }
-
     pub(crate) fn scenes(&self) -> Option<ScenesHandle> {
         self.scenes
             .lock()
@@ -199,7 +195,7 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                         &event_bus,
                         &mut state,
                         CueListsProjectionReason::CueListState,
-                        false,
+                        true,
                         true,
                         |state: &mut CueListsState| {
                             state
@@ -774,6 +770,46 @@ mod tests {
                 break;
             }
         }
+
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn set_active_cue_list_publishes_persisted_cue_list_edit() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (scenes, _rx) = fake_scenes_handle();
+        let (handle, task, _peers) = build_cue_lists_actor_with_scenes(event_bus, scenes);
+        task.spawn();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::CreateCueList {
+                name: "Main".to_string(),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        rx.await.unwrap().unwrap();
+        while events.try_recv().is_ok() {}
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(CueListsCommand::SetActiveCueList {
+                cue_list_id: None,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert!(rx.await.unwrap().unwrap().changed);
+
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            AppEvent::CueLists(CueListsEvent::StateChanged {
+                persisted_cue_list_edit: true,
+                ..
+            })
+        ));
 
         handle.send(CueListsCommand::Shutdown).await.unwrap();
     }

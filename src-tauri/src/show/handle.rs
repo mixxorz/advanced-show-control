@@ -16,6 +16,16 @@ impl ShowStateHandle {
         handle
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_stalled() -> Self {
+        let (tx, rx) = mpsc::channel(1);
+        tokio::spawn(async move {
+            let _receiver = rx;
+            std::future::pending::<()>().await;
+        });
+        Self { tx }
+    }
+
     pub(super) fn new(tx: mpsc::Sender<ShowCommand>) -> Self {
         Self { tx }
     }

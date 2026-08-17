@@ -139,6 +139,7 @@ struct LifecycleInner {
 #[derive(Clone)]
 pub struct RuntimeSnapshotSource {
     inner: Arc<Mutex<LifecycleInner>>,
+    generation: RuntimeGeneration,
 }
 
 impl RuntimeSnapshotSource {
@@ -152,7 +153,7 @@ impl RuntimeSnapshotSource {
     }
 
     pub async fn current_generation(&self) -> u64 {
-        self.inner.lock().await.generation.current().await
+        self.generation.current().await
     }
 }
 
@@ -189,7 +190,7 @@ impl AppLifecycle {
         let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
         show_peers.set_cue_lists(cue_lists.clone());
         cue_lists_task.spawn();
-        let runtime_generation = RuntimeGeneration::new();
+        let runtime_generation = show_peers.runtime_generation();
         let (scenes, scenes_task, scenes_peers) = build_scenes_actor(
             0,
             runtime_generation.clone(),
@@ -736,6 +737,7 @@ impl AppLifecycle {
     pub fn runtime_snapshot_source(&self) -> RuntimeSnapshotSource {
         RuntimeSnapshotSource {
             inner: self.inner.clone(),
+            generation: self.show_peers.runtime_generation(),
         }
     }
 
@@ -2541,6 +2543,17 @@ mod tests {
         reply
             .send(connected_snapshot())
             .expect("Show LV1 state reply should send");
+        let Lv1Command::GetState { reply } =
+            tokio::time::timeout(std::time::Duration::from_millis(100), newer_rx.recv())
+                .await
+                .expect("Show should revalidate newer LV1 state")
+                .expect("newer LV1 receiver should remain connected")
+        else {
+            panic!("Show should revalidate with GetState");
+        };
+        reply
+            .send(connected_snapshot())
+            .expect("Show LV1 revalidation reply should send");
         assert!(result.await.unwrap().is_ok());
     }
 
@@ -2834,6 +2847,17 @@ mod tests {
         reply
             .send(connected_snapshot())
             .expect("Show LV1 state reply should send");
+        let Lv1Command::GetState { reply } =
+            tokio::time::timeout(std::time::Duration::from_millis(100), newer_lv1_rx.recv())
+                .await
+                .expect("Show should revalidate newer LV1 state")
+                .expect("newer LV1 receiver should remain connected")
+        else {
+            panic!("Show should revalidate with GetState");
+        };
+        reply
+            .send(connected_snapshot())
+            .expect("Show LV1 revalidation reply should send");
         show_rx
             .await
             .expect("Show reply should arrive")

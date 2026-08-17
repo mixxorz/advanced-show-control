@@ -916,7 +916,7 @@ async fn dispatch_scenes_command(
                             generation,
                             ScenesProjectionReason::SceneState,
                             recall_state,
-                            true,
+                            false,
                         );
                     }
                     SelectedSceneResult {
@@ -5490,7 +5490,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn select_scene_config_publish_persisted_scene_edits() {
+    async fn select_scene_config_does_not_publish_persisted_scene_edits() {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         let scene_id = uuid::Uuid::from_u128(0x11111111111141118111111111111111);
@@ -5557,7 +5557,7 @@ mod tests {
         })
         .await
         .expect("timed out waiting for select scene state change");
-        assert!(select_event);
+        assert!(!select_event);
     }
 
     #[tokio::test(start_paused = true)]

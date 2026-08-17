@@ -49,8 +49,8 @@ impl SettingsState {
         }
         let mut updated = self.document.clone();
         updated.settings = normalized;
-        write_settings_file(&self.file_path, &updated)?;
-        self.document = updated;
+        let staged = StagedSettingsUpdate::prepare(self.file_path.clone(), updated)?;
+        self.publish_staged(staged)?;
         Ok(true)
     }
 
@@ -202,16 +202,6 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
     }
 }
 
-fn write_settings_file(file_path: &Path, settings: &PersistedSettings) -> Result<(), String> {
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("Failed to create settings directory: {err}"))?;
-    }
-    let contents = serde_json::to_string_pretty(settings)
-        .map_err(|err| format!("Failed to serialize settings: {err}"))?;
-    std::fs::write(file_path, contents).map_err(|err| format!("Failed to write settings: {err}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,6 +257,33 @@ mod tests {
         let reloaded = SettingsState::load(dir);
         assert!(reloaded.settings().auto_save_sessions);
         assert_eq!(reloaded.last_connected_lv1(), Some(identity));
+    }
+
+    #[test]
+    fn public_replacement_failure_keeps_memory_and_cleans_staged_file() {
+        let dir = temp_settings_dir("replacement-failure");
+        std::fs::create_dir_all(dir.join("settings.json")).unwrap();
+        let mut state = SettingsState::load(dir.clone());
+        let original = state.settings();
+
+        let result = state.replace_settings(AppSettings {
+            auto_save_sessions: true,
+            ..Default::default()
+        });
+
+        assert!(result.is_err());
+        assert_eq!(state.settings(), original);
+        assert!(staged_settings_files(&dir).is_empty());
+    }
+
+    fn staged_settings_files(dir: &Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().is_some_and(|name| name != "settings.json"))
+            .collect()
     }
 
     #[test]

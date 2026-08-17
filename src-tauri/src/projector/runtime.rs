@@ -88,42 +88,21 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
                         Err(broadcast::error::RecvError::Lagged(count)) => {
                             log_lagged_subscriber("projector", count);
                             drain_retained_events(&mut events);
-                            let runtime_snapshot = runtime_source.connected_lv1().await;
-                            let authoritative_snapshot = if let Some((snapshot_generation, lv1)) = runtime_snapshot {
-                                let (reply, response) = tokio::sync::oneshot::channel();
-                                if lv1.send(Lv1Command::GetState { reply }).await.is_ok() {
-                                    let snapshot = response.await.ok();
-                                    if snapshot_generation == runtime_source.current_generation().await {
-                                        snapshot
-                                            .filter(|snapshot| snapshot.connection == ConnectionStatus::Connected)
-                                            .map(|snapshot| (snapshot_generation, snapshot))
-                                    } else {
-                                        None
-                                    }
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            };
-                            let current_generation = runtime_source.current_generation().await;
-                            cache.reset_for_generation(current_generation);
-                            if let Some((snapshot_generation, snapshot)) = authoritative_snapshot
-                                && snapshot_generation == current_generation
-                            {
-                                cache.apply_lv1_snapshot(current_generation, snapshot);
-                            }
-                            let _ = tokio::time::timeout(
-                                Duration::from_millis(500),
-                                resync_projector_sources(
-                                    &mut cache,
-                                    &show,
-                                    &scenes,
-                                    &cue_lists,
-                                    &settings,
-                                ),
+                            if !recover_projector_after_lag(
+                                &mut cache,
+                                &runtime_source,
+                                &show,
+                                &scenes,
+                                &cue_lists,
+                                &settings,
                             )
-                            .await;
+                            .await
+                            {
+                                tracing::warn!(
+                                    event = "projector_resync_timeout",
+                                    "Projector resynchronization timed out; showing disconnected state"
+                                );
+                            }
                             dirty = true;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
@@ -155,6 +134,71 @@ fn drain_retained_events(events: &mut broadcast::Receiver<AppEvent>) {
             Err(broadcast::error::TryRecvError::Closed) => break,
         }
     }
+}
+
+async fn recover_projector_after_lag(
+    cache: &mut ProjectionCache,
+    runtime_source: &RuntimeSnapshotSource,
+    show: &ShowStateHandle,
+    scenes: &ScenesHandle,
+    cue_lists: &CueListsHandle,
+    settings: &SettingsHandle,
+) -> bool {
+    let recovery = tokio::time::timeout(
+        Duration::from_millis(500),
+        recover_projector_after_lag_inner(cache, runtime_source, show, scenes, cue_lists, settings),
+    )
+    .await;
+    if recovery.is_err() {
+        let Ok(generation) = tokio::time::timeout(
+            Duration::from_millis(50),
+            runtime_source.current_generation(),
+        )
+        .await
+        else {
+            cache.reset_generation_scoped_state();
+            return false;
+        };
+        cache.reset_for_generation(generation);
+        return false;
+    }
+    true
+}
+
+async fn recover_projector_after_lag_inner(
+    cache: &mut ProjectionCache,
+    runtime_source: &RuntimeSnapshotSource,
+    show: &ShowStateHandle,
+    scenes: &ScenesHandle,
+    cue_lists: &CueListsHandle,
+    settings: &SettingsHandle,
+) {
+    let runtime_snapshot = runtime_source.connected_lv1().await;
+    let authoritative_snapshot = if let Some((snapshot_generation, lv1)) = runtime_snapshot {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        if lv1.send(Lv1Command::GetState { reply }).await.is_ok() {
+            let snapshot = response.await.ok();
+            if snapshot_generation == runtime_source.current_generation().await {
+                snapshot
+                    .filter(|snapshot| snapshot.connection == ConnectionStatus::Connected)
+                    .map(|snapshot| (snapshot_generation, snapshot))
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let current_generation = runtime_source.current_generation().await;
+    cache.reset_for_generation(current_generation);
+    if let Some((snapshot_generation, snapshot)) = authoritative_snapshot
+        && snapshot_generation == current_generation
+    {
+        cache.apply_lv1_snapshot(current_generation, snapshot);
+    }
+    resync_projector_sources(cache, show, scenes, cue_lists, settings).await;
 }
 
 async fn resync_projector_sources(
@@ -682,6 +726,63 @@ mod tests {
         projector.abort();
         let snapshots = received.lock().unwrap();
         assert_eq!(snapshots.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn lag_resync_timeout_resets_lv1_projection_to_disconnected() {
+        let source_events = AppEventBus::default();
+        let show = crate::show::ShowStateHandle::new_stalled();
+        let (settings, settings_task, initial_settings) =
+            crate::settings::build_settings_actor(std::env::temp_dir(), source_events.clone());
+        let (_show_for_lockout, show_task, _show_peers, lockout) =
+            crate::show::build_show_actor(source_events.clone());
+        show_task.spawn();
+        let runtime_generation = RuntimeGeneration::new();
+        let (scenes, scenes_task, _) = crate::scenes::build_scenes_actor(
+            0,
+            runtime_generation,
+            source_events.clone(),
+            source_events.subscribe(),
+            settings.clone(),
+            initial_settings,
+            lockout,
+        );
+        let (cue_lists, cue_task, _) =
+            crate::cue_lists::build_cue_lists_actor_with_scenes(source_events, scenes.clone());
+        settings_task.spawn();
+        scenes_task.spawn();
+        cue_task.spawn();
+
+        let mut cache = ProjectionCache::new();
+        cache.set_active_generation(7);
+        cache.apply_lv1_snapshot(
+            7,
+            crate::lv1::Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: Vec::new(),
+                channels: Vec::new(),
+                ping_sequence: 0,
+            },
+        );
+        let runtime_source = crate::lifecycle::AppLifecycle::default().runtime_snapshot_source();
+
+        let completed = recover_projector_after_lag(
+            &mut cache,
+            &runtime_source,
+            &show,
+            &scenes,
+            &cue_lists,
+            &settings,
+        )
+        .await;
+
+        assert!(!completed);
+        assert_eq!(cache.active_generation(), 0);
+        assert_eq!(
+            cache.build_snapshot().connection,
+            crate::projector::AppConnectionState::Disconnected
+        );
     }
 
     #[tokio::test]

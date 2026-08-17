@@ -102,12 +102,20 @@ impl ProjectionCache {
 
     pub fn reset_for_generation(&mut self, generation: u64) {
         self.active_generation = generation;
+        self.reset_generation_scoped_state();
+    }
+
+    pub fn reset_generation_scoped_state(&mut self) {
         self.lv1_projection = None;
         self.fade_state = AppFadeState::Idle;
     }
 
     pub fn is_active_generation(&self, generation: u64) -> bool {
         self.active_generation == generation
+    }
+
+    pub fn active_generation(&self) -> u64 {
+        self.active_generation
     }
 
     pub fn apply_show_state(&mut self, state: ShowProjectionState) {
