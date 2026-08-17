@@ -78,6 +78,7 @@ pub struct ScenesState {
     scene_configs: Vec<SceneConfig>,
     selected_scene_internal_id: Option<String>,
     scene_settings_clipboard: Option<SceneSettingsClipboard>,
+    ready_generation: Option<u64>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
@@ -89,6 +90,7 @@ impl ScenesState {
             scene_configs: self.scene_configs.clone(),
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             scene_settings_clipboard_available: self.scene_settings_clipboard.is_some(),
+            ready_generation: self.ready_generation,
         }
     }
 
@@ -320,6 +322,7 @@ impl ScenesState {
     pub(crate) fn observe_and_align_scene_list(
         &mut self,
         align_configs: bool,
+        generation: u64,
         scene_list: Vec<SceneListEntry>,
         now: Instant,
     ) -> bool {
@@ -328,8 +331,15 @@ impl ScenesState {
         if align_configs {
             self.scene_configs =
                 align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
+            self.ready_generation = Some(generation);
         }
         previous != self.scene_configs
+    }
+
+    pub(crate) fn mark_scene_library_unavailable(&mut self) {
+        self.ready_generation = None;
+        self.last_scene_list = None;
+        self.reset_recall_tracking();
     }
 
     pub(crate) fn is_scene_list_edit_suppressed(&self, now: Instant) -> bool {
@@ -1009,6 +1019,33 @@ mod tests {
         state.replace_snapshot_for_session(SceneDocument::empty());
 
         assert!(!state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn generation_unavailability_preserves_document_selection_and_clipboard() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+        state.select_scene_config(source_id).unwrap();
+        state.copy_scene_settings(source_id).unwrap();
+        state.observe_and_align_scene_list(
+            true,
+            0,
+            vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            tokio::time::Instant::now(),
+        );
+        state.mark_scene_library_unavailable();
+        let projection = state.projection_state();
+        assert_eq!(projection.scene_configs[0].internal_scene_id, source_id);
+        assert_eq!(
+            projection.selected_scene_internal_id,
+            Some(source_id.to_string())
+        );
+        assert!(projection.scene_settings_clipboard_available);
+        assert_eq!(projection.ready_generation, None);
     }
 
     #[test]

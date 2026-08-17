@@ -35,6 +35,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
                 show_peers,
                 lockout,
                 settings.clone(),
+                initial_settings,
             );
             show_task.spawn();
             settings_task.spawn();

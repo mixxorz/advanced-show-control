@@ -3,14 +3,16 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::broadcast;
 
-use crate::cue_lists::{CueListsEvent, CueListsProjectionState};
+use crate::cue_lists::{CueListsCommand, CueListsEvent, CueListsHandle, CueListsProjectionState};
+use crate::lifecycle::RuntimeSnapshotSource;
 use crate::logging::UiLogEvent;
+use crate::lv1::{ConnectionStatus, Lv1Command};
 use crate::projector::AppViewState;
 use crate::runtime::events::log_lagged_subscriber;
 use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent};
-use crate::scenes::{ScenesEvent, ScenesProjectionState};
-use crate::settings::{AppSettings, SettingsEvent};
-use crate::show::{ShowEvent, ShowProjectionState};
+use crate::scenes::{ScenesCommand, ScenesEvent, ScenesHandle, ScenesProjectionState};
+use crate::settings::{AppSettings, SettingsCommand, SettingsEvent, SettingsHandle};
+use crate::show::{ShowCommand, ShowEvent, ShowProjectionState, ShowStateHandle};
 
 use super::ProjectionCache;
 
@@ -23,6 +25,11 @@ pub struct ProjectorInputs<R: Runtime> {
     pub initial_scenes_state: ScenesProjectionState,
     pub initial_cue_lists_state: CueListsProjectionState,
     pub initial_settings: AppSettings,
+    pub runtime_source: RuntimeSnapshotSource,
+    pub show: ShowStateHandle,
+    pub scenes: ScenesHandle,
+    pub cue_lists: CueListsHandle,
+    pub settings: SettingsHandle,
     pub events: broadcast::Receiver<AppEvent>,
     pub logs: broadcast::Receiver<UiLogEvent>,
 }
@@ -36,6 +43,11 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
             initial_scenes_state,
             initial_cue_lists_state,
             initial_settings,
+            runtime_source,
+            show,
+            scenes,
+            cue_lists,
+            settings,
             mut events,
             mut logs,
         } = inputs;
@@ -74,8 +86,45 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
                             }
                         }
                         Err(broadcast::error::RecvError::Lagged(count)) => {
-                            dirty = true;
                             log_lagged_subscriber("projector", count);
+                            drain_retained_events(&mut events);
+                            let runtime_snapshot = runtime_source.connected_lv1().await;
+                            let authoritative_snapshot = if let Some((snapshot_generation, lv1)) = runtime_snapshot {
+                                let (reply, response) = tokio::sync::oneshot::channel();
+                                if lv1.send(Lv1Command::GetState { reply }).await.is_ok() {
+                                    let snapshot = response.await.ok();
+                                    if snapshot_generation == runtime_source.current_generation().await {
+                                        snapshot
+                                            .filter(|snapshot| snapshot.connection == ConnectionStatus::Connected)
+                                            .map(|snapshot| (snapshot_generation, snapshot))
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            };
+                            let current_generation = runtime_source.current_generation().await;
+                            cache.reset_for_generation(current_generation);
+                            if let Some((snapshot_generation, snapshot)) = authoritative_snapshot
+                                && snapshot_generation == current_generation
+                            {
+                                cache.apply_lv1_snapshot(current_generation, snapshot);
+                            }
+                            let _ = tokio::time::timeout(
+                                Duration::from_millis(500),
+                                resync_projector_sources(
+                                    &mut cache,
+                                    &show,
+                                    &scenes,
+                                    &cue_lists,
+                                    &settings,
+                                ),
+                            )
+                            .await;
+                            dirty = true;
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
@@ -97,6 +146,80 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
     })
 }
 
+fn drain_retained_events(events: &mut broadcast::Receiver<AppEvent>) {
+    loop {
+        match events.try_recv() {
+            Ok(_) => {}
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
+}
+
+async fn resync_projector_sources(
+    cache: &mut ProjectionCache,
+    show: &ShowStateHandle,
+    scenes: &ScenesHandle,
+    cue_lists: &CueListsHandle,
+    settings: &SettingsHandle,
+) {
+    let (show_state, scenes_state, cue_state, settings_state) = tokio::join!(
+        query_show_projection(show),
+        query_scenes_projection(scenes),
+        query_cue_projection(cue_lists),
+        query_settings(settings),
+    );
+    if let Some(state) = show_state {
+        cache.apply_show_state(state);
+    }
+    if let Some(state) = scenes_state {
+        cache.apply_scenes_state(state);
+    }
+    if let Some(state) = cue_state {
+        cache.apply_cue_lists_state(state);
+    }
+    if let Some(state) = settings_state {
+        cache.apply_settings(state);
+    }
+}
+
+async fn query_show_projection(handle: &ShowStateHandle) -> Option<ShowProjectionState> {
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle
+        .send(ShowCommand::InitialProjectionState { reply })
+        .await
+        .ok()?;
+    response.await.ok()
+}
+
+async fn query_scenes_projection(handle: &ScenesHandle) -> Option<ScenesProjectionState> {
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle
+        .send(ScenesCommand::InitialProjectionState { reply })
+        .await
+        .ok()?;
+    response.await.ok()
+}
+
+async fn query_cue_projection(handle: &CueListsHandle) -> Option<CueListsProjectionState> {
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle
+        .send(CueListsCommand::InitialProjectionState { reply })
+        .await
+        .ok()?;
+    response.await.ok()
+}
+
+async fn query_settings(handle: &SettingsHandle) -> Option<AppSettings> {
+    let (reply, response) = tokio::sync::oneshot::channel();
+    handle
+        .send(SettingsCommand::GetSettings { reply })
+        .await
+        .ok()?;
+    response.await.ok()
+}
+
 fn emit_app_status<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
     if let Err(err) = app.emit("app-status-changed", snapshot) {
         tracing::debug!(
@@ -115,11 +238,12 @@ fn apply_projector_event(cache: &mut ProjectionCache, event: &AppEvent) -> bool 
         }
         AppEvent::Lv1 { generation, event } => cache.apply_lv1_event(*generation, event),
         AppEvent::Fade { generation, event } => cache.apply_fade_event(*generation, event),
-        AppEvent::Scenes { generation, event } => match event {
+        AppEvent::Scenes {
+            generation: _,
+            event,
+        } => match event {
             ScenesEvent::StateChanged { state, .. } => {
-                if !cache.is_active_generation(*generation) {
-                    return false;
-                }
+                // Scene document state is app-lifetime; only LV1 facts are generation-bound.
                 cache.apply_scenes_state(state.clone());
                 true
             }
@@ -146,6 +270,7 @@ mod tests {
     use crate::lv1::Lv1Event;
     use crate::projector::LogSeverity;
     use crate::runtime::events::AppEventBus;
+    use crate::runtime::generation::RuntimeGeneration;
     use crate::show::{ShowEvent, ShowProjectionReason, ShowProjectionState};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -157,6 +282,30 @@ mod tests {
         events: broadcast::Receiver<AppEvent>,
         logs: broadcast::Receiver<UiLogEvent>,
     ) -> tokio::task::JoinHandle<()> {
+        let source_events = AppEventBus::default();
+        let (show, show_task, _show_peers, lockout) =
+            crate::show::build_show_actor(source_events.clone());
+        let (settings, settings_task, initial_settings) =
+            crate::settings::build_settings_actor(std::env::temp_dir(), source_events.clone());
+        let runtime_generation = crate::runtime::generation::RuntimeGeneration::new();
+        let runtime_source = crate::lifecycle::AppLifecycle::default().runtime_snapshot_source();
+        let (scenes, scenes_task, _scene_peers) = crate::scenes::build_scenes_actor(
+            generation,
+            runtime_generation.clone(),
+            source_events.clone(),
+            source_events.subscribe(),
+            settings.clone(),
+            initial_settings.clone(),
+            lockout,
+        );
+        let (cue_lists, cue_task, _cue_peers) = crate::cue_lists::build_cue_lists_actor_with_scenes(
+            source_events.clone(),
+            scenes.clone(),
+        );
+        show_task.spawn();
+        settings_task.spawn();
+        scenes_task.spawn();
+        cue_task.spawn();
         spawn_projector(ProjectorInputs {
             app: handle,
             generation,
@@ -174,12 +323,18 @@ mod tests {
                 scene_configs: Vec::new(),
                 selected_scene_internal_id: None,
                 scene_settings_clipboard_available: false,
+                ready_generation: None,
             },
             initial_cue_lists_state: CueListsProjectionState {
                 document: crate::cue_lists::CueListDocument::default(),
                 last_recall_status: None,
             },
-            initial_settings: AppSettings::default(),
+            initial_settings,
+            runtime_source,
+            show,
+            scenes,
+            cue_lists,
+            settings,
             events,
             logs,
         })
@@ -318,6 +473,7 @@ mod tests {
                     }],
                     selected_scene_internal_id: Some("selected-id".to_string()),
                     scene_settings_clipboard_available: false,
+                    ready_generation: Some(0),
                 },
                 persisted_scene_edit: false,
             },
@@ -407,12 +563,76 @@ mod tests {
                 scene_configs: Vec::new(),
                 selected_scene_internal_id: None,
                 scene_settings_clipboard_available: false,
+                ready_generation: None,
             },
             initial_cue_lists_state: CueListsProjectionState {
                 document: crate::cue_lists::CueListDocument::default(),
                 last_recall_status: None,
             },
             initial_settings: AppSettings::default(),
+            runtime_source: crate::lifecycle::AppLifecycle::default().runtime_snapshot_source(),
+            show: crate::show::ShowStateHandle::new_empty(AppEventBus::default()),
+            scenes: {
+                let source_events = AppEventBus::default();
+                let (_settings, settings_task, initial_settings) =
+                    crate::settings::build_settings_actor(
+                        std::env::temp_dir(),
+                        source_events.clone(),
+                    );
+                let (_show, show_task, _show_peers, lockout) =
+                    crate::show::build_show_actor(source_events.clone());
+                let (settings, _, _) = crate::settings::build_settings_actor(
+                    std::env::temp_dir(),
+                    source_events.clone(),
+                );
+                settings_task.spawn();
+                show_task.spawn();
+                let (scenes, scenes_task, _) = crate::scenes::build_scenes_actor(
+                    0,
+                    RuntimeGeneration::new(),
+                    source_events.clone(),
+                    source_events.subscribe(),
+                    settings,
+                    initial_settings,
+                    lockout,
+                );
+                scenes_task.spawn();
+                scenes
+            },
+            cue_lists: {
+                let source_events = AppEventBus::default();
+                let (settings, settings_task, initial_settings) =
+                    crate::settings::build_settings_actor(
+                        std::env::temp_dir(),
+                        source_events.clone(),
+                    );
+                let (_show, show_task, _show_peers, lockout) =
+                    crate::show::build_show_actor(source_events.clone());
+                settings_task.spawn();
+                show_task.spawn();
+                let (scenes, scenes_task, _) = crate::scenes::build_scenes_actor(
+                    0,
+                    RuntimeGeneration::new(),
+                    source_events.clone(),
+                    source_events.subscribe(),
+                    settings,
+                    initial_settings,
+                    lockout,
+                );
+                scenes_task.spawn();
+                let (cue, cue_task, _) =
+                    crate::cue_lists::build_cue_lists_actor_with_scenes(source_events, scenes);
+                cue_task.spawn();
+                cue
+            },
+            settings: {
+                let (settings, task, _) = crate::settings::build_settings_actor(
+                    std::env::temp_dir(),
+                    AppEventBus::default(),
+                );
+                task.spawn();
+                settings
+            },
             events: event_bus.subscribe(),
             logs: log_rx,
         });

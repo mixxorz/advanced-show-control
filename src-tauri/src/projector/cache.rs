@@ -133,6 +133,39 @@ impl ProjectionCache {
         self.last_cue_recall_status = state.last_recall_status;
     }
 
+    pub fn apply_lv1_snapshot(&mut self, generation: u64, snapshot: crate::lv1::Lv1StateSnapshot) {
+        if generation != self.active_generation {
+            return;
+        }
+        let projection = self.ensure_lv1_projection();
+        projection.connection = match snapshot.connection {
+            crate::lv1::ConnectionStatus::Connected => AppConnectionState::Connected,
+            crate::lv1::ConnectionStatus::Connecting => AppConnectionState::Connecting,
+            crate::lv1::ConnectionStatus::Disconnected => AppConnectionState::Disconnected,
+        };
+        projection.current_scene = snapshot.scene.map(|scene| SceneSummary {
+            index: scene.index,
+            name: scene.name,
+        });
+        projection.scenes = snapshot
+            .scene_list
+            .into_iter()
+            .map(|scene| SceneSummary {
+                index: scene.index,
+                name: scene.name,
+            })
+            .collect();
+        projection.channels = snapshot
+            .channels
+            .into_iter()
+            .map(|channel| ChannelSummary {
+                group: channel.group,
+                channel: channel.channel,
+                name: channel.name,
+            })
+            .collect();
+    }
+
     pub fn apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool {
         if generation != self.active_generation {
             return false;
@@ -360,6 +393,7 @@ mod tests {
             }],
             selected_scene_internal_id: Some("scene-config".to_string()),
             scene_settings_clipboard_available: true,
+            ready_generation: Some(0),
         });
         let cue_list_id = uuid::Uuid::from_u128(2);
         cache.apply_cue_lists_state(CueListsProjectionState {
@@ -562,6 +596,7 @@ mod tests {
             }],
             selected_scene_internal_id: Some("selected-id".to_string()),
             scene_settings_clipboard_available: true,
+            ready_generation: Some(0),
         });
 
         let snapshot = cache.build_snapshot();

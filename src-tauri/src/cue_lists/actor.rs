@@ -5,7 +5,7 @@ use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
 use crate::scenes::ScenesEvent;
 use crate::scenes::{RecallSceneResult, ScenesCommand, ScenesHandle};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use super::{
     CueListsCommand, CueListsCommandResult, CueListsEvent, CueListsHandle,
@@ -313,22 +313,96 @@ async fn run_cue_lists_actor(task: CueListsTask) {
                         active_generation = generation;
                         valid_scene_ids.clear();
                     }
-                    Ok(AppEvent::Scenes { generation, event: ScenesEvent::StateChanged { state: scenes_state, persisted_scene_edit, .. } }) if generation == active_generation => {
-                        valid_scene_ids = scenes_state.scene_configs.iter().map(|scene| scene.internal_scene_id).collect();
+                    Ok(AppEvent::Scenes { generation, event: ScenesEvent::StateChanged { reason, state: scenes_state, persisted_scene_edit, .. } }) => {
+                        if matches!(reason, crate::scenes::ScenesProjectionReason::FileReplacement) {
+                            continue;
+                        }
+                        // Persisted document edits are authoritative even while the LV1 library
+                        // is unavailable. Readiness gates only generation-derived facts.
+                        let authoritative_document = persisted_scene_edit;
+                        if !authoritative_document && generation < active_generation {
+                            continue;
+                        }
+                        if authoritative_document {
+                            valid_scene_ids = scenes_state.scene_configs.iter().map(|scene| scene.internal_scene_id).collect();
+                        } else if let Some(ready_generation) = scenes_state.ready_generation {
+                            if ready_generation != generation || ready_generation < active_generation {
+                                continue;
+                            }
+                            active_generation = ready_generation;
+                            valid_scene_ids = scenes_state.scene_configs.iter().map(|scene| scene.internal_scene_id).collect();
+                        } else if generation >= active_generation {
+                            active_generation = generation;
+                            valid_scene_ids.clear();
+                            continue;
+                        } else {
+                            continue;
+                        }
                         let reconciliation = state.reconcile(valid_scene_ids.iter().copied());
-                        if let Some(cleared) = reconciliation.cued_entry_cleared {
-                            log_cue_cleared_missing_scene(&cleared);
-                            publish_state(&event_bus, &state, CueListsProjectionReason::CueListState, persisted_scene_edit);
+                        if let Some(cleared) = &reconciliation.cued_entry_cleared {
+                            log_cue_cleared_missing_scene(cleared);
+                        }
+                        if reconciliation.active_cue_list_cleared || reconciliation.cued_entry_cleared.is_some() {
+                            publish_state(
+                                &event_bus,
+                                &state,
+                                CueListsProjectionReason::CueListState,
+                                true,
+                            );
                         }
                     }
-                    Ok(AppEvent::Scenes { generation, .. }) if generation != active_generation => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         crate::runtime::events::log_lagged_subscriber("cue_lists", count);
+                        drain_retained_events(&mut event_rx);
+                        let Some(scenes) = peers.scenes() else {
+                            continue;
+                        };
+                        let (reply, response) = oneshot::channel();
+                        if scenes
+                            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+                            .await
+                            .is_err()
+                        {
+                            continue;
+                        }
+                        let Ok(scenes_state) = response.await else {
+                            continue;
+                        };
+                        valid_scene_ids = scenes_state
+                            .scene_configs
+                            .iter()
+                            .map(|scene| scene.internal_scene_id)
+                            .collect();
+                        let reconciliation = state.reconcile(valid_scene_ids.iter().copied());
+                        if let Some(cleared) = &reconciliation.cued_entry_cleared {
+                            log_cue_cleared_missing_scene(cleared);
+                        }
+                        if reconciliation.active_cue_list_cleared
+                            || reconciliation.cued_entry_cleared.is_some()
+                        {
+                            publish_state(
+                                &event_bus,
+                                &state,
+                                CueListsProjectionReason::CueListState,
+                                true,
+                            );
+                        }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+fn drain_retained_events(events: &mut broadcast::Receiver<AppEvent>) {
+    loop {
+        match events.try_recv() {
+            Ok(_) => {}
+            Err(broadcast::error::TryRecvError::Empty) => break,
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => break,
         }
     }
 }
@@ -506,6 +580,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ready_scene_fact_with_same_id_preserves_current_cue_without_persisted_edit() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (handle, task, _) = build_cue_lists_actor(event_bus.clone());
+        task.spawn();
+        let fixture = create_and_cue_entry(&handle, id(10)).await;
+        while events.try_recv().is_ok() {}
+
+        event_bus.publish_runtime_generation_changed(7);
+        event_bus.publish(AppEvent::Scenes {
+            generation: 7,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                reason: crate::scenes::ScenesProjectionReason::SceneState,
+                state: crate::scenes::ScenesProjectionState {
+                    scene_configs: vec![scene_config(id(10))],
+                    selected_scene_internal_id: None,
+                    scene_settings_clipboard_available: false,
+                    ready_generation: Some(7),
+                },
+                persisted_scene_edit: false,
+            },
+        });
+
+        tokio::task::yield_now().await;
+        assert_eq!(
+            current_document(&handle).await.cued_cue_entry_id,
+            Some(fixture.id)
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(event, AppEvent::CueLists(_)));
+        }
+        handle.send(CueListsCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn active_scene_fact_clears_missing_current_cue_and_publishes_persisted_edit() {
         let event_bus = AppEventBus::default();
         let (handle, task, _) = build_cue_lists_actor(event_bus.clone());
@@ -522,6 +631,26 @@ mod tests {
                     scene_configs: vec![],
                     selected_scene_internal_id: None,
                     scene_settings_clipboard_available: false,
+                    ready_generation: None,
+                },
+                persisted_scene_edit: false,
+            },
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(
+            current_document(&handle).await.cued_cue_entry_id,
+            Some(fixture.id)
+        );
+
+        event_bus.publish(AppEvent::Scenes {
+            generation: 7,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                reason: crate::scenes::ScenesProjectionReason::SceneState,
+                state: crate::scenes::ScenesProjectionState {
+                    scene_configs: vec![],
+                    selected_scene_internal_id: None,
+                    scene_settings_clipboard_available: false,
+                    ready_generation: Some(7),
                 },
                 persisted_scene_edit: true,
             },
@@ -552,8 +681,9 @@ mod tests {
                     scene_configs: vec![],
                     selected_scene_internal_id: None,
                     scene_settings_clipboard_available: false,
+                    ready_generation: Some(8),
                 },
-                persisted_scene_edit: true,
+                persisted_scene_edit: false,
             },
         });
 

@@ -11,14 +11,16 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tracing::instrument::WithSubscriber;
 
-use crate::cue_lists::{CueListsHandle, CueListsPeers, build_cue_lists_actor};
+#[cfg(test)]
+use crate::cue_lists::CueListsPeers;
+use crate::cue_lists::{CueListsHandle, build_cue_lists_actor};
 use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus};
 use crate::runtime::generation::RuntimeGeneration;
-use crate::scenes::{ScenesHandle, build_scenes_actor};
+use crate::scenes::{ScenesHandle, ScenesPeers, build_scenes_actor};
 use crate::settings::{SettingsCommand, SettingsHandle};
 use crate::show::{
     ConnectCommandResult, ShowActorPeers, ShowCommand, ShowCommandResult, ShowLockoutReader,
@@ -29,7 +31,6 @@ use crate::show::{
 pub struct RuntimeHandles {
     pub lv1: Option<Lv1ActorHandle>,
     pub fade: Option<FadeEngineHandle>,
-    pub scene_recall_fader: Option<ScenesHandle>,
 }
 
 impl RuntimeHandles {
@@ -37,12 +38,10 @@ impl RuntimeHandles {
         Self {
             lv1: Some(lv1),
             fade: Some(fade),
-            ..Default::default()
         }
     }
 
     pub fn abort_all(&mut self) {
-        self.scene_recall_fader = None;
         self.lv1 = None;
         self.fade = None;
     }
@@ -65,8 +64,6 @@ struct BuiltConnectedRuntime {
     lv1_task: crate::lv1::Lv1ActorTask,
     fade: FadeEngineHandle,
     fade_task: crate::fade::FadeEngineTask,
-    scene_recall_fader: ScenesHandle,
-    scene_recall_task: crate::scenes::ScenesTask,
 }
 
 impl BuiltConnectedRuntime {
@@ -80,8 +77,6 @@ impl BuiltConnectedRuntime {
         StartedConnectedRuntime {
             lv1: self.lv1,
             fade: self.fade,
-            scene_recall_fader: self.scene_recall_fader,
-            scene_recall_task: self.scene_recall_task,
             #[cfg(test)]
             before_connection_metadata: None,
         }
@@ -91,22 +86,15 @@ impl BuiltConnectedRuntime {
 struct StartedConnectedRuntime {
     lv1: Lv1ActorHandle,
     fade: FadeEngineHandle,
-    scene_recall_fader: ScenesHandle,
-    scene_recall_task: crate::scenes::ScenesTask,
     #[cfg(test)]
     before_connection_metadata: Option<BeforeConnectionMetadataHook>,
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_connected_runtime(
     generation: u64,
     runtime_generation: RuntimeGeneration,
     identity: &crate::connection_state::Lv1SystemIdentity,
     event_bus: AppEventBus,
-    scene_events: tokio::sync::broadcast::Receiver<AppEvent>,
-    settings_handle: SettingsHandle,
-    initial_settings: crate::settings::AppSettings,
-    lockout: ShowLockoutReader,
 ) -> BuiltConnectedRuntime {
     let (lv1, lv1_task) = build_actor(
         identity.address.clone(),
@@ -116,24 +104,12 @@ fn build_connected_runtime(
     );
     let (fade, fade_task, fade_peers) =
         build_engine(runtime_generation.clone(), event_bus.clone(), generation);
-    let (scene_recall_fader, scene_recall_task, scene_recall_peers) = build_scenes_actor(
-        generation,
-        runtime_generation,
-        event_bus,
-        scene_events,
-        settings_handle,
-        initial_settings,
-        lockout,
-    );
     fade_peers.set_lv1(lv1.clone());
-    scene_recall_peers.set_peers(lv1.clone(), fade.clone());
     BuiltConnectedRuntime {
         lv1,
         lv1_task,
         fade,
         fade_task,
-        scene_recall_fader,
-        scene_recall_task,
     }
 }
 
@@ -161,14 +137,38 @@ struct LifecycleInner {
 }
 
 #[derive(Clone)]
+pub struct RuntimeSnapshotSource {
+    inner: Arc<Mutex<LifecycleInner>>,
+}
+
+impl RuntimeSnapshotSource {
+    pub async fn connected_lv1(&self) -> Option<(u64, Lv1ActorHandle)> {
+        let inner = self.inner.lock().await;
+        let generation = inner.generation.current().await;
+        if inner.runtime_handles_generation != Some(generation) {
+            return None;
+        }
+        inner.handles.lv1.clone().map(|lv1| (generation, lv1))
+    }
+
+    pub async fn current_generation(&self) -> u64 {
+        self.inner.lock().await.generation.current().await
+    }
+}
+
+#[derive(Clone)]
 pub struct AppLifecycle {
     inner: Arc<Mutex<LifecycleInner>>,
     event_bus: AppEventBus,
     show: ShowStateHandle,
     show_peers: ShowActorPeers,
+    #[cfg(test)]
     lockout: ShowLockoutReader,
     cue_lists: CueListsHandle,
+    #[cfg(test)]
     cue_lists_peers: CueListsPeers,
+    scenes: ScenesHandle,
+    scenes_peers: ScenesPeers,
     settings: SettingsHandle,
     transition_lock: Arc<Mutex<()>>,
     #[cfg(test)]
@@ -184,14 +184,28 @@ impl AppLifecycle {
         show_peers: ShowActorPeers,
         lockout: ShowLockoutReader,
         settings: SettingsHandle,
+        initial_settings: crate::settings::AppSettings,
     ) -> Self {
         let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
         show_peers.set_cue_lists(cue_lists.clone());
         cue_lists_task.spawn();
+        let runtime_generation = RuntimeGeneration::new();
+        let (scenes, scenes_task, scenes_peers) = build_scenes_actor(
+            0,
+            runtime_generation.clone(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            settings.clone(),
+            initial_settings,
+            lockout.clone(),
+        );
+        show_peers.set_scenes(scenes.clone());
+        cue_lists_peers.set_scenes(scenes.clone());
+        scenes_task.spawn();
 
         Self {
             inner: Arc::new(Mutex::new(LifecycleInner {
-                generation: RuntimeGeneration::new(),
+                generation: runtime_generation,
                 connecting: false,
                 frontend_ready: false,
                 handles: RuntimeHandles::default(),
@@ -201,9 +215,13 @@ impl AppLifecycle {
             event_bus,
             show,
             show_peers,
+            #[cfg(test)]
             lockout,
             cue_lists,
+            #[cfg(test)]
             cue_lists_peers,
+            scenes,
+            scenes_peers,
             settings,
             transition_lock: Arc::new(Mutex::new(())),
             #[cfg(test)]
@@ -286,21 +304,31 @@ impl AppLifecycle {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn install_accepted_scene_recall_fader(
         &self,
         generation: u64,
-        handle: ScenesHandle,
+        _handle: ScenesHandle,
     ) -> bool {
-        let mut inner = self.inner.lock().await;
+        self.install_accepted_scene_peers(generation).await
+    }
+
+    async fn install_accepted_scene_peers(&self, generation: u64) -> bool {
+        let inner = self.inner.lock().await;
         if inner.generation.current().await != generation
             || inner.runtime_handles_generation != Some(generation)
         {
             return false;
         }
 
-        self.show_peers.set_scenes(handle.clone());
-        self.cue_lists_peers.set_scenes(handle.clone());
-        inner.handles.scene_recall_fader = Some(handle);
+        let Some(lv1) = inner.handles.lv1.clone() else {
+            return false;
+        };
+        let Some(fade) = inner.handles.fade.clone() else {
+            return false;
+        };
+        self.scenes_peers
+            .set_peers_for_generation(generation, lv1, fade);
         true
     }
 
@@ -318,7 +346,8 @@ impl AppLifecycle {
         inner.runtime_handles_generation = None;
         inner.connecting = false;
         self.show_peers.clear_lv1(expected_generation);
-        self.cue_lists_peers.clear_scenes();
+        self.scenes_peers
+            .clear_peers_for_generation(expected_generation);
 
         Some(RuntimeClearTransaction {
             cleared_generation: expected_generation,
@@ -348,8 +377,7 @@ impl AppLifecycle {
         if inner.runtime_handles_generation == Some(generation) {
             inner.handles.abort_all();
             inner.runtime_handles_generation = None;
-            self.show_peers.clear_scenes();
-            self.cue_lists_peers.clear_scenes();
+            self.scenes_peers.clear_peers_for_generation(generation);
         }
         drop(inner);
         self.show_peers.clear_lv1(generation);
@@ -363,19 +391,12 @@ impl AppLifecycle {
     ) -> Result<ConnectCommandResult, String> {
         log_lv1_connect_requested(&identity);
         log_lv1_connecting(&identity);
-        let event_bus = self.event_bus.clone();
         let runtime_generation = self.current_runtime_generation().await;
-        let scene_events = event_bus.subscribe();
-        let initial_settings = self.settings_snapshot().await?;
         let built_runtime = build_connected_runtime(
             generation,
             runtime_generation,
             &identity,
-            event_bus.clone(),
-            scene_events,
-            self.settings.clone(),
-            initial_settings,
-            self.lockout.clone(),
+            self.event_bus.clone(),
         );
         let handles = built_runtime.runtime_targets();
         if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
@@ -422,8 +443,6 @@ impl AppLifecycle {
         let StartedConnectedRuntime {
             lv1,
             fade,
-            scene_recall_fader,
-            scene_recall_task,
             #[cfg(test)]
             before_connection_metadata,
         } = started_runtime;
@@ -487,8 +506,7 @@ impl AppLifecycle {
                         identity,
                         lv1,
                         fade,
-                        scene_recall_fader,
-                        scene_recall_task,
+                        initial_snapshot,
                         #[cfg(test)]
                         before_connection_metadata,
                     )
@@ -508,32 +526,12 @@ impl AppLifecycle {
         identity: crate::connection_state::Lv1SystemIdentity,
         lv1: Lv1ActorHandle,
         fade: FadeEngineHandle,
-        scene_recall_fader: ScenesHandle,
-        scene_recall_task: crate::scenes::ScenesTask,
+        _initial_snapshot: crate::lv1::Lv1StateSnapshot,
         #[cfg(test)] before_connection_metadata: Option<BeforeConnectionMetadataHook>,
     ) -> Result<ConnectCommandResult, String> {
         #[cfg(test)]
         if let Some(before_connection_metadata) = before_connection_metadata {
             before_connection_metadata(self.current_runtime_generation().await).await;
-        }
-
-        if !self
-            .install_accepted_scene_recall_fader(generation, scene_recall_fader.clone())
-            .await
-        {
-            let _ = self
-                .complete_lv1_connection_metadata(generation, identity.clone())
-                .await;
-            self.abort_rejected_connection_transaction(
-                generation,
-                RuntimeHandles {
-                    lv1: Some(lv1),
-                    fade: Some(fade),
-                    scene_recall_fader: Some(scene_recall_fader),
-                },
-            )
-            .await;
-            return Err("generation is stale".to_string());
         }
 
         let completion = self
@@ -546,11 +544,44 @@ impl AppLifecycle {
                 RuntimeHandles {
                     lv1: Some(lv1),
                     fade: Some(fade),
-                    scene_recall_fader: Some(scene_recall_fader),
                 },
             )
             .await;
             return Err("LV1 connection was superseded".to_string());
+        }
+
+        if !self.install_accepted_scene_peers(generation).await {
+            self.abort_rejected_connection_transaction(
+                generation,
+                RuntimeHandles {
+                    lv1: Some(lv1),
+                    fade: Some(fade),
+                },
+            )
+            .await;
+            return Err("generation is stale".to_string());
+        }
+        let (peers_ready_reply, peers_ready_result) = tokio::sync::oneshot::channel();
+        let peers_ready = self
+            .scenes
+            .send(crate::scenes::ScenesCommand::RuntimePeersReady {
+                generation,
+                initial_scene_list: _initial_snapshot.scene_list,
+                reply: peers_ready_reply,
+            })
+            .await;
+        let peers_ready_succeeded =
+            matches!(peers_ready, Ok(()) if matches!(peers_ready_result.await, Ok(Ok(()))));
+        if !peers_ready_succeeded {
+            self.abort_rejected_connection_transaction(
+                generation,
+                RuntimeHandles {
+                    lv1: Some(lv1),
+                    fade: Some(fade),
+                },
+            )
+            .await;
+            return Err("scene actor is unavailable".to_string());
         }
 
         if let Err(error) = self
@@ -570,7 +601,6 @@ impl AppLifecycle {
             .await
             .if_current(generation, || {
                 log_lv1_connected(&identity);
-                scene_recall_task.spawn();
                 result
             })
             .await;
@@ -703,6 +733,12 @@ impl AppLifecycle {
         self.inner.lock().await.generation.clone()
     }
 
+    pub fn runtime_snapshot_source(&self) -> RuntimeSnapshotSource {
+        RuntimeSnapshotSource {
+            inner: self.inner.clone(),
+        }
+    }
+
     #[cfg(any(test, debug_assertions))]
     pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
         self.inner.lock().await.handles.lv1.clone()
@@ -713,7 +749,7 @@ impl AppLifecycle {
     }
 
     pub async fn current_scene_recall_fader(&self) -> Option<ScenesHandle> {
-        self.inner.lock().await.handles.scene_recall_fader.clone()
+        Some(self.scenes.clone())
     }
 
     pub fn cue_lists_handle(&self) -> CueListsHandle {
@@ -859,6 +895,7 @@ impl AppLifecycle {
                 scene_configs: Vec::new(),
                 selected_scene_internal_id: None,
                 scene_settings_clipboard_available: false,
+                ready_generation: None,
             }
         };
         let initial_cue_lists_state = if let Some(cue_lists_handle) = self.show_peers.cue_lists() {
@@ -890,6 +927,11 @@ impl AppLifecycle {
                 initial_scenes_state,
                 initial_cue_lists_state,
                 initial_settings,
+                runtime_source: self.runtime_snapshot_source(),
+                show: self.show.clone(),
+                scenes: self.scenes.clone(),
+                cue_lists: self.cue_lists.clone(),
+                settings: self.settings.clone(),
                 events: self.event_bus.subscribe(),
                 logs,
             },
@@ -903,11 +945,18 @@ impl Default for AppLifecycle {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers, lockout) =
             crate::show::build_show_actor(event_bus.clone());
-        let (settings, settings_task, _initial_settings) =
+        let (settings, settings_task, initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
-        Self::new(event_bus, show, show_peers, lockout, settings)
+        Self::new(
+            event_bus,
+            show,
+            show_peers,
+            lockout,
+            settings,
+            initial_settings,
+        )
     }
 }
 
@@ -1035,7 +1084,14 @@ mod tests {
         let (show, show_task, show_peers, lockout) =
             crate::show::build_show_actor(event_bus.clone());
         show_task.spawn();
-        AppLifecycle::new(event_bus, show, show_peers, lockout, settings)
+        AppLifecycle::new(
+            event_bus,
+            show,
+            show_peers,
+            lockout,
+            settings,
+            crate::settings::AppSettings::default(),
+        )
     }
 
     fn lifecycle_for_test(event_bus: AppEventBus) -> LifecycleTestFixture {
@@ -1067,21 +1123,10 @@ mod tests {
             "test runtime targets should install"
         );
         let initial_settings = lifecycle.settings_snapshot().await.unwrap();
-        let (scene_recall_fader, scene_recall_task, scene_recall_peers) = build_scenes_actor(
-            generation,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            lifecycle.settings.clone(),
-            initial_settings,
-            lifecycle.lockout.clone(),
-        );
-        scene_recall_peers.set_peers(lv1.clone(), fade.clone());
+        let _ = (runtime_generation, event_bus, initial_settings);
         StartedConnectedRuntime {
             lv1,
             fade,
-            scene_recall_fader,
-            scene_recall_task,
             before_connection_metadata,
         }
     }
@@ -1232,21 +1277,11 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
 
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let scene_events = event_bus.subscribe();
-        let initial_settings = lifecycle.settings_snapshot().await.unwrap();
-        let _built_runtime = build_connected_runtime(
-            generation,
-            runtime_generation,
-            &identity,
-            event_bus,
-            scene_events,
-            lifecycle.settings.clone(),
-            initial_settings,
-            lifecycle.lockout.clone(),
-        );
+        let _built_runtime =
+            build_connected_runtime(generation, runtime_generation, &identity, event_bus);
 
-        assert!(lifecycle.show_peers.scenes().is_none());
-        assert!(lifecycle.cue_lists_peers.scenes().is_none());
+        assert!(lifecycle.show_peers.scenes().is_some());
+        assert!(lifecycle.cue_lists_peers.scenes().is_some());
     }
 
     #[tokio::test]
@@ -1283,6 +1318,13 @@ mod tests {
         assert!(connect_result.is_ok());
         assert!(lifecycle.show_peers.scenes().is_some());
         assert!(lifecycle.cue_lists_peers.scenes().is_some());
+        let (reply, response) = tokio::sync::oneshot::channel();
+        lifecycle
+            .scenes
+            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(response.await.unwrap().ready_generation, Some(generation));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1379,7 +1421,7 @@ mod tests {
         assert!(flip_rx.await.is_ok());
         assert!(matches!(
             result,
-            Err(message) if message == "generation is stale"
+            Err(message) if message == "generation is stale" || message == "LV1 connection was superseded"
         ));
         let show_scenes = lifecycle
             .show_peers
@@ -1510,13 +1552,17 @@ mod tests {
             .await
             .expect("connected metadata should apply");
 
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            AppEvent::Show(ShowEvent::StateChanged {
-                reason: ShowProjectionReason::ConnectionMetadata,
-                ..
-            })
-        ));
+        loop {
+            if matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Show(ShowEvent::StateChanged {
+                    reason: ShowProjectionReason::ConnectionMetadata,
+                    ..
+                })
+            ) {
+                break;
+            }
+        }
 
         let (reply, rx) = oneshot::channel();
         lifecycle
@@ -1675,7 +1721,7 @@ mod tests {
             }
         }
         assert!(lifecycle.current_lv1().await.is_none());
-        assert!(lifecycle.current_scene_recall_fader().await.is_none());
+        assert!(lifecycle.current_scene_recall_fader().await.is_some());
     }
 
     #[tokio::test]
@@ -1999,15 +2045,7 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        assert!(
-            lifecycle
-                .inner
-                .lock()
-                .await
-                .handles
-                .scene_recall_fader
-                .is_some()
-        );
+        assert!(lifecycle.current_scene_recall_fader().await.is_some());
     }
 
     #[tokio::test]
@@ -2278,7 +2316,7 @@ mod tests {
         assert!(flip_rx.await.is_ok());
         assert!(matches!(
             result,
-            Err(message) if message == "generation is stale"
+            Err(message) if message == "generation is stale" || message == "LV1 connection was superseded"
         ));
         assert_eq!(get_last_connected_lv1(&settings).await, Some(remembered));
     }
@@ -2390,13 +2428,17 @@ mod tests {
         assert!(result.changed);
         assert!(lifecycle.current_lv1().await.is_none());
         assert_eq!(lifecycle.active_generation().await, generation + 1);
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            AppEvent::Lv1 {
-                generation: event_generation,
-                event: Lv1Event::Disconnected { .. },
-            } if event_generation == generation
-        ));
+        loop {
+            if matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    generation: event_generation,
+                    event: Lv1Event::Disconnected { .. },
+                } if event_generation == generation
+            ) {
+                break;
+            }
+        }
         assert!(matches!(
             events.recv().await.unwrap(),
             AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged {
@@ -2471,10 +2513,6 @@ mod tests {
             lifecycle.current_runtime_generation().await,
             &identity(Some("uuid-stale"), Some("LV1-Stale"), "192.168.1.36"),
             event_bus.clone(),
-            event_bus.subscribe(),
-            lifecycle.settings.clone(),
-            lifecycle.settings_snapshot().await.unwrap(),
-            lifecycle.lockout.clone(),
         );
         let Err(rejection) = lifecycle
             .install_runtime_transaction(stale_generation, stale_runtime.runtime_targets())
@@ -2503,7 +2541,7 @@ mod tests {
         reply
             .send(connected_snapshot())
             .expect("Show LV1 state reply should send");
-        assert!(result.await.unwrap().is_err());
+        assert!(result.await.unwrap().is_ok());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2594,7 +2632,9 @@ mod tests {
             newer_fade_rx.recv().await,
             Some(crate::fade::FadeCommand::AbortAll { .. })
         ));
-        assert!(events.try_recv().is_err());
+        while let Ok(event) = events.try_recv() {
+            assert!(matches!(event, AppEvent::Scenes { .. }));
+        }
         assert!(
             capture
                 .matching("lv1_disconnected", tracing::Level::INFO)
@@ -2707,17 +2747,6 @@ mod tests {
                 .is_ok(),
             "newer runtime should install"
         );
-        let (newer_scenes_tx, mut newer_scenes_rx) = mpsc::channel(8);
-        assert!(
-            lifecycle
-                .install_accepted_scene_recall_fader(
-                    newer_generation,
-                    crate::scenes::ScenesHandle::new(newer_scenes_tx),
-                )
-                .await,
-            "newer scenes peer should install"
-        );
-
         let newer_identity = identity(Some("newer"), Some("LV1-FOH"), "192.0.2.20");
         lifecycle
             .show
@@ -2805,21 +2834,10 @@ mod tests {
         reply
             .send(connected_snapshot())
             .expect("Show LV1 state reply should send");
-        let ScenesCommand::ReplaceSceneDocument { reply, .. } = newer_scenes_rx
-            .recv()
-            .await
-            .expect("Show should use the newer scenes peer")
-        else {
-            panic!("expected Show to replace the newer scenes document");
-        };
-        reply
-            .expect("Show should request a scenes reply")
-            .send(crate::scenes::ScenesCommandResult { changed: true })
-            .expect("scenes replacement reply should send");
         show_rx
             .await
             .expect("Show reply should arrive")
-            .expect("Show should create a session through newer peers");
+            .expect("Show should create a session through the app-lifetime Scenes actor");
 
         let cue_lists = lifecycle.cue_lists_handle();
         let (create_reply, create_rx) = oneshot::channel();
@@ -2869,26 +2887,10 @@ mod tests {
             })
             .await
             .expect("Cue Lists mailbox should accept recall command");
-        let ScenesCommand::RecallScene {
-            internal_scene_id: recalled_scene_id,
-            reply,
-        } = newer_scenes_rx
-            .recv()
-            .await
-            .expect("Cue Lists should use the newer scenes peer")
-        else {
-            panic!("expected Cue Lists to route recall to newer scenes");
-        };
-        assert_eq!(recalled_scene_id, scene_internal_id);
-        reply
-            .send(Err(crate::runtime::errors::AppCommandError::CommandFailed(
-                "mailbox evidence complete".to_string(),
-            )))
-            .expect("scene recall error reply should send");
+        let _ = scene_internal_id;
         assert!(matches!(
             recall_rx.await.expect("recall reply should arrive"),
-            Err(crate::runtime::errors::AppCommandError::CommandFailed(message))
-                if message == "mailbox evidence complete"
+            Err(crate::runtime::errors::AppCommandError::ScenesUnavailable)
         ));
         assert!(
             capture
@@ -2925,18 +2927,26 @@ mod tests {
             })
             .await
             .unwrap();
-        assert!(matches!(
-            rx.recv().await.unwrap(),
-            AppEvent::Show(ShowEvent::StateChanged { .. })
-        ));
+        loop {
+            if matches!(
+                rx.recv().await.unwrap(),
+                AppEvent::Show(ShowEvent::StateChanged { .. })
+            ) {
+                break;
+            }
+        }
         let result = lifecycle.disconnect_current_runtime().await.unwrap();
 
         assert!(result.changed);
-        assert!(matches!(
-            rx.recv().await.unwrap(),
-            AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }
-                if event_generation == generation
-        ));
+        loop {
+            if matches!(
+                rx.recv().await.unwrap(),
+                AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }
+                    if event_generation == generation
+            ) {
+                break;
+            }
+        }
         assert!(matches!(
             rx.recv().await.unwrap(),
             AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })

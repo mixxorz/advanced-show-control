@@ -157,6 +157,8 @@ async fn run_show_actor(
                     Ok(event) => handle_app_event(event, &mut active_generation, &mut state, &event_bus),
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("show-actor", count);
+                        state.mark_dirty();
+                        publish_state_changed(&event_bus, ShowProjectionReason::FileMetadata, &state);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -185,13 +187,13 @@ fn handle_app_event(
             *active_generation = generation;
         }
         AppEvent::Scenes {
-            generation,
+            generation: _,
             event:
                 crate::scenes::ScenesEvent::StateChanged {
                     persisted_scene_edit: true,
                     ..
                 },
-        } if generation == *active_generation => {
+        } => {
             state.mark_dirty();
             publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
         }
@@ -254,8 +256,8 @@ async fn handle_command(
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
             let result = async {
-                let lv1 = current_lv1_snapshot(peers).await.ok();
-                let scene_document = if let Some(lv1) = lv1.as_ref() {
+                let lv1 = current_lv1_snapshot(peers).await?;
+                let scene_document = {
                     SceneDocument {
                         scene_configs: crate::scenes::align_scene_configs(
                             Vec::new(),
@@ -263,8 +265,6 @@ async fn handle_command(
                         ),
                         selected_scene_internal_id: None,
                     }
-                } else {
-                    SceneDocument::empty()
                 };
                 let selected_scene_internal_id = scene_document
                     .scene_configs
@@ -481,9 +481,14 @@ async fn current_lv1_snapshot(peers: &ShowActorPeers) -> Result<Lv1StateSnapshot
             other => AppCommandError::CommandFailed(other.to_string()),
         })
         .map_err(map_app_command_error)?;
-    rx.await
+    let snapshot = rx
+        .await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)
+        .map_err(map_app_command_error)?;
+    if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
+        return Err(AppCommandError::Lv1Unavailable.to_string());
+    }
+    Ok(snapshot)
 }
 
 fn map_app_command_error(error: AppCommandError) -> String {
@@ -1285,6 +1290,7 @@ mod tests {
                         scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
                         selected_scene_internal_id: None,
                         scene_settings_clipboard_available: false,
+                        ready_generation: Some(0),
                     },
                     persisted_scene_edit: true,
                 },
@@ -1318,6 +1324,7 @@ mod tests {
                         scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
                         selected_scene_internal_id: None,
                         scene_settings_clipboard_available: false,
+                        ready_generation: Some(0),
                     },
                     persisted_scene_edit: false,
                 },
@@ -1341,10 +1348,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            rx.await.unwrap().unwrap_err(),
-            "Show blocked: scenes state is unavailable"
-        );
+        assert_eq!(rx.await.unwrap().unwrap_err(), "LV1 actor is unavailable");
         assert!(events.try_recv().is_err());
     }
 

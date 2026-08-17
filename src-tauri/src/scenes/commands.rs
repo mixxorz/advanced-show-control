@@ -19,6 +19,13 @@ pub enum ScenesCommand {
     InitialProjectionState {
         reply: oneshot::Sender<crate::scenes::ScenesProjectionState>,
     },
+    /// Marks the exact generation's LV1/Fade peers usable and applies any
+    /// scene-list fact received before those peers were accepted.
+    RuntimePeersReady {
+        generation: u64,
+        initial_scene_list: Vec<crate::lv1::SceneListEntry>,
+        reply: oneshot::Sender<Result<(), AppCommandError>>,
+    },
     SetSceneDuration {
         internal_scene_id: Uuid,
         duration_ms: u64,
