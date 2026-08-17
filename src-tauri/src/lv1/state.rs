@@ -2,7 +2,6 @@
 
 use std::time::Instant;
 
-use crate::lv1::osc::OscArg;
 use crate::runtime::events::AppEventBus;
 
 use super::events::Lv1Event;
@@ -72,6 +71,15 @@ pub(super) fn apply_mute_update(
     }
 }
 
+fn mute_arg_to_bool(arg: &crate::lv1::osc::OscArg) -> Option<bool> {
+    match arg {
+        crate::lv1::osc::OscArg::Bool(value) => Some(*value),
+        crate::lv1::osc::OscArg::Int(0) => Some(false),
+        crate::lv1::osc::OscArg::Int(1) => Some(true),
+        _ => None,
+    }
+}
+
 pub(super) fn apply_pan_update(
     channels: &mut [ChannelInfo],
     group: i32,
@@ -119,17 +127,6 @@ pub(super) fn apply_width_update(
         return true;
     }
     false
-}
-
-pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
-    match arg {
-        OscArg::Bool(value) => Some(*value),
-        OscArg::True => Some(true),
-        OscArg::False => Some(false),
-        OscArg::Int(0) => Some(false),
-        OscArg::Int(1) => Some(true),
-        _ => None,
-    }
 }
 
 pub(super) struct ActorState {
@@ -253,7 +250,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
                 Some(crate::lv1::osc::OscArg::Int(channel)),
                 Some(mute_arg),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                && let Some(muted) = osc_arg_to_bool(mute_arg)
+                && let Some(muted) = mute_arg_to_bool(mute_arg)
             {
                 apply_mute_update(&mut state.channels, *group, *channel, muted);
                 state.fan_out(Lv1Event::MuteChanged {
@@ -325,6 +322,7 @@ fn is_diagnostic_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lv1::osc::OscArg;
 
     #[tokio::test]
     async fn channels_parse_failure_logs_diagnostic_without_event_bus_fact() {
@@ -660,11 +658,65 @@ mod tests {
     }
 
     #[test]
-    fn osc_bool_values_map_to_mute_state() {
-        assert_eq!(osc_arg_to_bool(&OscArg::Bool(true)), Some(true));
-        assert_eq!(osc_arg_to_bool(&OscArg::Bool(false)), Some(false));
-        assert_eq!(osc_arg_to_bool(&OscArg::Int(1)), Some(true));
-        assert_eq!(osc_arg_to_bool(&OscArg::Int(0)), Some(false));
-        assert_eq!(osc_arg_to_bool(&OscArg::Int(2)), None);
+    fn track_mute_message_accepts_integer_and_bool_values() {
+        let bus = AppEventBus::new(16);
+        let mut state = ActorState::new(bus, 0);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Ch 1".to_string(),
+            gain_db: -9.0,
+            muted: false,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }];
+
+        for (arg, expected) in [
+            (OscArg::Int(1), true),
+            (OscArg::Int(0), false),
+            (OscArg::Bool(true), true),
+            (OscArg::Bool(false), false),
+        ] {
+            handle_message(
+                &mut state,
+                &crate::lv1::osc::OscMessage {
+                    address: "/Notify/Track/Out/Mute".to_string(),
+                    args: vec![OscArg::Int(0), OscArg::Int(0), arg],
+                },
+            );
+
+            assert_eq!(state.channels[0].muted, expected);
+        }
+    }
+
+    #[test]
+    fn track_mute_message_rejects_other_integer_values() {
+        let bus = AppEventBus::new(16);
+        let mut events = bus.subscribe();
+        let mut state = ActorState::new(bus, 0);
+        state.channels = vec![ChannelInfo {
+            group: 0,
+            channel: 0,
+            name: "Ch 1".to_string(),
+            gain_db: -9.0,
+            muted: true,
+            pan: None,
+            balance: None,
+            width: None,
+            pan_mode: None,
+        }];
+
+        handle_message(
+            &mut state,
+            &crate::lv1::osc::OscMessage {
+                address: "/Notify/Track/Out/Mute".to_string(),
+                args: vec![OscArg::Int(0), OscArg::Int(0), OscArg::Int(2)],
+            },
+        );
+
+        assert!(state.channels[0].muted);
+        assert!(events.try_recv().is_err());
     }
 }

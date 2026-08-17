@@ -9,8 +9,6 @@ pub enum OscArg {
     String(String),
     Blob(Vec<u8>),
     Bool(bool),
-    True,
-    False,
     Nil,
     Impulse,
 }
@@ -120,8 +118,6 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
                     'F'
                 }
             }
-            OscArg::True => 'T',
-            OscArg::False => 'F',
             OscArg::Nil => 'N',
             OscArg::Impulse => 'I',
         });
@@ -148,7 +144,7 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
                 out.extend_from_slice(value);
                 out.extend(std::iter::repeat_n(0, pad_to_4(value.len())));
             }
-            OscArg::Bool(_) | OscArg::True | OscArg::False | OscArg::Nil | OscArg::Impulse => {}
+            OscArg::Bool(_) | OscArg::Nil | OscArg::Impulse => {}
         }
     }
 
@@ -201,8 +197,8 @@ pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
                 offset += padded_len;
                 OscArg::Blob(value)
             }
-            'T' => OscArg::True,
-            'F' => OscArg::False,
+            'T' => OscArg::Bool(true),
+            'F' => OscArg::Bool(false),
             'N' => OscArg::Nil,
             'I' => OscArg::Impulse,
             other => return Err(OscError::UnsupportedType(other)),
@@ -243,8 +239,8 @@ mod tests {
                 OscArg::Double(-3.25),
                 OscArg::String("lv1".to_string()),
                 OscArg::Blob(vec![1, 2, 3]),
-                OscArg::True,
-                OscArg::False,
+                OscArg::Bool(true),
+                OscArg::Bool(false),
                 OscArg::Nil,
                 OscArg::Impulse,
             ],
@@ -252,6 +248,14 @@ mod tests {
 
         let bytes = encode_message(&msg.address, &msg.args).unwrap();
         assert_eq!(decode_packet(&bytes).unwrap(), msg);
+    }
+
+    #[test]
+    fn encodes_bools_as_payload_free_canonical_type_tags() {
+        assert_eq!(
+            encode_message("/bool", &[OscArg::Bool(true), OscArg::Bool(false)]).unwrap(),
+            b"/bool\0\0\0,TF\0"
+        );
     }
 
     #[test]

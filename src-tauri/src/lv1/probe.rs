@@ -93,8 +93,6 @@ pub fn format_arg(arg: &OscArg) -> String {
         OscArg::String(value) => format!("s:{value}"),
         OscArg::Blob(value) => format!("b:{} bytes", value.len()),
         OscArg::Bool(value) => format!("{}:{}", if *value { 'T' } else { 'F' }, value),
-        OscArg::True => "T:true".to_string(),
-        OscArg::False => "F:false".to_string(),
         OscArg::Nil => "N:null".to_string(),
         OscArg::Impulse => "I:impulse".to_string(),
     }
@@ -200,8 +198,8 @@ mod tests {
         assert_eq!(format_arg(&OscArg::Double(-12.5)), "d:-12.5");
         assert_eq!(format_arg(&OscArg::String("Lead".to_string())), "s:Lead");
         assert_eq!(format_arg(&OscArg::Blob(vec![1, 2, 3])), "b:3 bytes");
-        assert_eq!(format_arg(&OscArg::True), "T:true");
-        assert_eq!(format_arg(&OscArg::False), "F:false");
+        assert_eq!(format_arg(&OscArg::Bool(true)), "T:true");
+        assert_eq!(format_arg(&OscArg::Bool(false)), "F:false");
         assert_eq!(format_arg(&OscArg::Nil), "N:null");
         assert_eq!(format_arg(&OscArg::Impulse), "I:impulse");
     }

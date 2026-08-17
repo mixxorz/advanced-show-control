@@ -634,7 +634,7 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(45.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
@@ -646,7 +646,7 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(45.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
@@ -771,7 +771,7 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
                                         OscArg::Int(0),
                                         OscArg::Int(0),
                                         OscArg::Double(0.0),
-                                        OscArg::True,
+                                        OscArg::Bool(true),
                                     ],
                                 ))
                                 .unwrap();
@@ -1073,7 +1073,7 @@ async fn engine_detects_manual_override() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(0.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
@@ -1590,7 +1590,7 @@ async fn override_of_last_target_emits_terminal_event() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(0.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
