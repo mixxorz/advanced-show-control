@@ -61,15 +61,29 @@ impl TracingCapture {
             .collect()
     }
 
-    pub(crate) async fn wait_for_matching(
+    /// Returns the number of captured events currently present. Capture this before the action
+    /// that the test is about to perform, then pass it to `wait_for_matching_from`.
+    pub(crate) fn event_cursor(&self) -> usize {
+        self.events
+            .lock()
+            .expect("tracing capture lock poisoned")
+            .len()
+    }
+
+    pub(crate) async fn wait_for_matching_from(
         &self,
+        cursor: usize,
         event: &str,
         level: Level,
         predicate: impl Fn(&CapturedTracingEvent) -> bool,
     ) -> CapturedTracingEvent {
         let mut revisions = self.revision.subscribe();
         loop {
-            if let Some(captured) = self.matching(event, level).into_iter().find(&predicate) {
+            if let Some(captured) = self.events().into_iter().skip(cursor).find(|captured| {
+                captured.level == level
+                    && captured.event.as_deref() == Some(event)
+                    && predicate(captured)
+            }) {
                 return captured;
             }
             revisions
@@ -203,10 +217,17 @@ mod tests {
     async fn waits_for_the_next_event_matching_structured_fields() {
         let capture = TracingCapture::new();
         let _guard = capture.install();
+        tracing::debug!(
+            event = "scene_recall_skipped",
+            reason = "baseline",
+            "Stale baseline observed"
+        );
+        let cursor = capture.event_cursor();
 
-        let wait = capture.wait_for_matching("scene_recall_skipped", Level::DEBUG, |event| {
-            event.fields.get("reason").map(String::as_str) == Some("baseline")
-        });
+        let wait =
+            capture.wait_for_matching_from(cursor, "scene_recall_skipped", Level::DEBUG, |event| {
+                event.fields.get("reason").map(String::as_str) == Some("baseline")
+            });
         let emit = async {
             tracing::debug!(
                 event = "scene_recall_skipped",
@@ -223,5 +244,9 @@ mod tests {
 
         let (event, ()) = tokio::join!(wait, emit);
         assert_eq!(event.message.as_deref(), Some("Baseline observed"));
+        assert_eq!(
+            capture.matching("scene_recall_skipped", Level::DEBUG).len(),
+            3
+        );
     }
 }

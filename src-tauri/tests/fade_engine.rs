@@ -136,8 +136,14 @@ async fn no_global_fade_completed_for(
                     ..
                 }) => return true,
                 Ok(_) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    panic!(
+                        "event stream lagged by {count} while checking for an unexpected fade completion"
+                    )
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed while checking for an unexpected fade completion")
+                }
             }
         }
     })

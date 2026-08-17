@@ -53,20 +53,22 @@ impl TestFrameDecoder {
 
 async fn wait_for_connected(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Ok(event) = events.recv().await {
-            if matches!(
-                event,
-                AppEvent::Lv1 {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1 {
                     event: Lv1Event::Connected,
                     ..
+                }) => return,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed before Connected")
                 }
-            ) {
-                return;
             }
         }
     })
     .await
-    .unwrap();
+    .expect("timed out waiting for Connected");
 }
 
 async fn recv_scene_observation(
@@ -855,20 +857,22 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
     wait_for_connected(&mut events).await;
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Ok(event) = events.recv().await {
-            if matches!(
-                event,
-                AppEvent::Lv1 {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1 {
                     event: Lv1Event::Disconnected { .. },
                     ..
+                }) => return,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed before Disconnected")
                 }
-            ) {
-                break;
             }
         }
     })
     .await
-    .unwrap();
+    .expect("timed out waiting for Disconnected");
 
     let (reply, rx) = oneshot::channel();
     let send_result = handle
