@@ -18,8 +18,9 @@ function StatefulTopTabBarStory(props: {
     <MockAppProviders
       appState={appState}
       commands={{
-        toggleLockout: () =>
-          setAppState((state) => ({ ...state, lockout: !state.lockout })),
+        toggleLockout: async () => {
+          setAppState((state) => ({ ...state, lockout: !state.lockout }));
+        },
       }}
     >
       <TopTabBar {...props.args} />

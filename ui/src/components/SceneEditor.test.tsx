@@ -6,35 +6,13 @@ import {
   AppStateProvider,
   type AppCommands,
 } from "../appContext";
+import { mockAppCommands } from "../storybook/mockAppCommands";
 import { connectedAppState } from "../storybook/mockAppState";
 import type { AppViewState } from "../types";
 import { SceneEditor } from "./SceneEditor";
 
 function makeCommands(commands: Partial<AppCommands> = {}): AppCommands {
-  return {
-    abortAll: vi.fn(),
-    copySceneSettings: vi.fn(),
-    disconnect: vi.fn(),
-    newShowFile: vi.fn(),
-    openShowFile: vi.fn(),
-    pasteSceneSettings: vi.fn(),
-    recallCuedCue: vi.fn(),
-    probeLv1TcpConnectLatency: vi.fn(),
-    saveShowFile: vi.fn(),
-    saveShowFileAs: vi.fn(),
-    selectScene: vi.fn(),
-    selectSystem: vi.fn(),
-    setAllChannelsScoped: vi.fn(),
-    setChannelScoped: vi.fn(),
-    setSceneDurationMs: vi.fn(),
-    setSceneScopeFadersEnabled: vi.fn(),
-    setSceneScopePanEnabled: vi.fn(),
-    storeSceneConfig: vi.fn(),
-    linkSceneConfig: vi.fn(),
-    deleteSceneConfig: vi.fn(),
-    toggleLockout: vi.fn(),
-    ...commands,
-  };
+  return { ...mockAppCommands, ...commands };
 }
 
 function editorTree(

@@ -22,47 +22,50 @@ function pressGoShortcut(init: KeyboardEventInit = {}) {
 function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
 ): AppRuntimeServices {
-  return {
-    frontendReady: vi.fn(async () => undefined),
-    abortAll: vi.fn(async () => undefined),
-    connectLv1System: vi.fn(async () => undefined),
-    copySceneSettings: vi.fn(async () => undefined),
-    disconnectLv1: vi.fn(async () => undefined),
-    addSceneToActiveCueList: vi.fn(async () => undefined),
-    createCueList: vi.fn(async () => undefined),
-    cueEntry: vi.fn(async () => undefined),
-    deleteCueList: vi.fn(async () => undefined),
-    listenForAppStatus: vi.fn(async (listener) => {
-      listener(connectedAppState);
-      return () => {};
-    }),
-    newShowFile: vi.fn(async () => undefined),
-    openShowFile: vi.fn(async () => undefined),
-    pasteSceneSettings: vi.fn(async () => undefined),
-    removeCueEntry: vi.fn(async () => undefined),
-    recallCuedCue: vi.fn(async () => undefined),
-    recallScene: vi.fn(async () => undefined),
-    renameCueList: vi.fn(async () => undefined),
-    reorderCueEntries: vi.fn(async () => undefined),
-    reorderCueLists: vi.fn(async () => undefined),
-    probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
-    refreshLv1Discovery: vi.fn(async () => undefined),
-    saveShowFile: vi.fn(async () => undefined),
-    saveShowFileAs: vi.fn(async () => undefined),
-    selectSceneConfig: vi.fn(async () => undefined),
-    setActiveCueList: vi.fn(async () => undefined),
-    setAllChannelsScoped: vi.fn(async () => undefined),
-    setChannelScoped: vi.fn(async () => undefined),
-    setLockout: vi.fn(async () => undefined),
-    setSceneDurationMs: vi.fn(async () => undefined),
-    setSceneScopeFadersEnabled: vi.fn(async () => undefined),
-    setSceneScopePanEnabled: vi.fn(async () => undefined),
-    linkSceneConfig: vi.fn(async () => undefined),
-    deleteSceneConfig: vi.fn(async () => undefined),
-    storeSceneConfig: vi.fn(async () => undefined),
-    startupAutoConnectLv1: vi.fn(async () => undefined),
-    ...overrides,
-  };
+  return Object.assign(
+    {
+      frontendReady: vi.fn(async () => undefined),
+      abortAll: vi.fn(async () => undefined),
+      connectLv1System: vi.fn(async () => undefined),
+      copySceneSettings: vi.fn(async () => undefined),
+      disconnectLv1: vi.fn(async () => undefined),
+      addSceneToActiveCueList: vi.fn(async () => undefined),
+      createCueList: vi.fn(async () => undefined),
+      cueEntry: vi.fn(async () => undefined),
+      deleteCueList: vi.fn(async () => undefined),
+      listenForAppStatus: vi.fn(async (listener) => {
+        listener(connectedAppState);
+        return () => {};
+      }),
+      newShowFile: vi.fn(async () => undefined),
+      openShowFile: vi.fn(async () => undefined),
+      pasteSceneSettings: vi.fn(async () => undefined),
+      removeCueEntry: vi.fn(async () => undefined),
+      recallCuedCue: vi.fn(async () => undefined),
+      recallScene: vi.fn(async () => undefined),
+      renameCueList: vi.fn(async () => undefined),
+      reorderCueEntries: vi.fn(async () => undefined),
+      reorderCueLists: vi.fn(async () => undefined),
+      probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
+      refreshLv1Discovery: vi.fn(async () => undefined),
+      saveShowFile: vi.fn(async () => undefined),
+      saveShowFileAs: vi.fn(async () => undefined),
+      selectSceneConfig: vi.fn(async () => undefined),
+      setActiveCueList: vi.fn(async () => undefined),
+      setAllChannelsScoped: vi.fn(async () => undefined),
+      setChannelScoped: vi.fn(async () => undefined),
+      setLockout: vi.fn(async () => undefined),
+      setSceneDurationMs: vi.fn(async () => undefined),
+      setSceneScopeFadersEnabled: vi.fn(async () => undefined),
+      setSceneScopePanEnabled: vi.fn(async () => undefined),
+      setWindowTitle: vi.fn(async () => undefined),
+      linkSceneConfig: vi.fn(async () => undefined),
+      deleteSceneConfig: vi.fn(async () => undefined),
+      storeSceneConfig: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    },
+    overrides,
+  );
 }
 
 describe("AppRuntime connection lifecycle", () => {
@@ -464,36 +467,6 @@ describe("AppRuntime connection lifecycle", () => {
     );
 
     await waitFor(() => expect(calls).toEqual(["listen", "ready"]));
-  });
-
-  it("does not apply command return values as app state", async () => {
-    let listener: ((snapshot: AppViewState) => void) | null = null;
-    const sentinel: AppViewState = {
-      ...disconnectedAppViewState,
-      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs",
-      stateVersion: disconnectedAppViewState.stateVersion + 1,
-    };
-    const services = makeServices({
-      listenForAppStatus: vi.fn(async (next) => {
-        listener = next;
-        return () => {};
-      }),
-      frontendReady: vi.fn(async () => undefined),
-      newShowFile: vi.fn(async () => sentinel),
-    });
-    render(<AppRuntime services={services} />);
-
-    expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
-    ).not.toBeInTheDocument();
-
-    await act(async () => {
-      listener?.(sentinel);
-    });
-
-    expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
-    ).not.toBeInTheDocument();
   });
 
   it("updates the window title from projected session state", async () => {

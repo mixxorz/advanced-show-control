@@ -84,7 +84,7 @@ export function CueListsTab() {
       if (event.repeat) return "handled";
       if (selectedCueEntry === null) return "ignored";
 
-      void commands.cueEntry?.(selectedCueEntry.id);
+      void commands.cueEntry(selectedCueEntry.id);
       setSelectedCueEntryId(null);
       return "handled";
     },
@@ -161,7 +161,7 @@ export function CueListsTab() {
       const insertIndex = sceneInsertIndex(activeCueList.entries, overId);
       if (insertIndex === null) return;
 
-      void commands.addSceneToActiveCueList?.(
+      void commands.addSceneToActiveCueList(
         dragData.sceneInternalId,
         insertIndex,
       );
@@ -180,7 +180,7 @@ export function CueListsTab() {
       );
       if (oldIndex < 0 || newIndex < 0) return;
 
-      void commands.reorderCueEntries?.(
+      void commands.reorderCueEntries(
         arrayMove(activeCueList.entries, oldIndex, newIndex).map(
           (entry) => entry.id,
         ),
@@ -221,7 +221,7 @@ export function CueListsTab() {
                 <ConsoleButton
                   disabled={selectedCueEntry === null}
                   onClick={() => {
-                    void commands.cueEntry?.(selectedCueEntry?.id ?? null);
+                    void commands.cueEntry(selectedCueEntry?.id ?? null);
                     setSelectedCueEntryId(null);
                   }}
                   size="small"
@@ -262,7 +262,7 @@ export function CueListsTab() {
                 selectedCueEntryId={selectedCueEntryId}
                 onSelectCueEntry={setSelectedCueEntryId}
                 onCueEntry={(cueEntryId) => {
-                  void commands.cueEntry?.(cueEntryId);
+                  void commands.cueEntry(cueEntryId);
                   setSelectedCueEntryId(null);
                 }}
                 onDeleteCueEntry={commands.removeCueEntry}

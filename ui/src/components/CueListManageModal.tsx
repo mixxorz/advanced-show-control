@@ -43,7 +43,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
     );
     if (oldIndex < 0 || newIndex < 0) return;
 
-    void commands.reorderCueLists?.(
+    void commands.reorderCueLists(
       arrayMove(appState.cueLists, oldIndex, newIndex).map(
         (cueList) => cueList.id,
       ),
@@ -100,7 +100,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
                     onRename={() => setPendingRename(cueList.id)}
                     onSelect={() => {
                       if (cueList.id !== appState.activeCueListId) {
-                        void commands.setActiveCueList?.(cueList.id);
+                        void commands.setActiveCueList(cueList.id);
                       }
                       props.onClose();
                     }}
@@ -117,7 +117,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           initialName=""
           onCancel={() => setShowCreateModal(false)}
           onSubmit={async (name) => {
-            await commands.createCueList?.(name);
+            await commands.createCueList(name);
             setShowCreateModal(false);
           }}
           submitLabel="Create"
@@ -132,7 +132,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           }
           onCancel={() => setPendingRename(null)}
           onSubmit={async (name) => {
-            await commands.renameCueList?.(pendingRename, name);
+            await commands.renameCueList(pendingRename, name);
             setPendingRename(null);
           }}
           submitLabel="Rename"
@@ -156,7 +156,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           }
           onCancel={() => setPendingDelete(null)}
           onConfirm={() => {
-            void commands.deleteCueList?.(pendingDelete);
+            void commands.deleteCueList(pendingDelete);
             setPendingDelete(null);
           }}
           title="Delete Cue List"

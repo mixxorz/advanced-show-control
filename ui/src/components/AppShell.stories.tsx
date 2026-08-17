@@ -159,10 +159,14 @@ function StatefulAppShellStory(props: {
     props.initialAppState ?? disconnectedAppViewState,
   );
 
+  const updateAppState = async (update: Parameters<typeof setAppState>[0]) => {
+    setAppState(update);
+  };
+
   const commands: AppCommands = {
     ...mockAppCommands,
     addSceneToActiveCueList: (sceneInternalId, insertIndex) =>
-      setAppState((state) => {
+      updateAppState((state) => {
         const activeCueListId = state.activeCueListId;
         if (!activeCueListId) return state;
 
@@ -181,9 +185,9 @@ function StatefulAppShellStory(props: {
         };
       }),
     cueEntry: (cueEntryId) =>
-      setAppState((state) => ({ ...state, cuedCueEntryId: cueEntryId })),
+      updateAppState((state) => ({ ...state, cuedCueEntryId: cueEntryId })),
     recallScene: (internalSceneId) =>
-      setAppState((state) => {
+      updateAppState((state) => {
         const scene = state.sceneConfigs.find(
           (entry) => entry.internalSceneId === internalSceneId,
         );
@@ -195,12 +199,12 @@ function StatefulAppShellStory(props: {
         };
       }),
     selectScene: (internalSceneId) =>
-      setAppState((state) => ({
+      updateAppState((state) => ({
         ...state,
         selectedSceneInternalId: internalSceneId,
       })),
     setAllChannelsScoped: (_internalSceneId, scoped) =>
-      setAppState((state) => {
+      updateAppState((state) => {
         const selectedSceneInternalId = state.selectedSceneInternalId;
         if (!selectedSceneInternalId) return state;
 
@@ -222,7 +226,7 @@ function StatefulAppShellStory(props: {
         };
       }),
     setChannelScoped: (_internalSceneId, group, channel, scoped) =>
-      setAppState((state) => {
+      updateAppState((state) => {
         const selectedSceneInternalId = state.selectedSceneInternalId;
         if (!selectedSceneInternalId) return state;
 
@@ -248,7 +252,7 @@ function StatefulAppShellStory(props: {
         };
       }),
     setSceneDurationMs: async (_internalSceneId, durationMs) => {
-      setAppState((state) => {
+      updateAppState((state) => {
         const selectedSceneInternalId = state.selectedSceneInternalId;
         if (!selectedSceneInternalId) return state;
 
@@ -264,13 +268,15 @@ function StatefulAppShellStory(props: {
       return true;
     },
     setSceneScopeFadersEnabled: (_internalSceneId, enabled) =>
-      setAppState((state) =>
+      updateAppState((state) =>
         updateSelectedSceneToggle(state, "faders", enabled),
       ),
     setSceneScopePanEnabled: (_internalSceneId, enabled) =>
-      setAppState((state) => updateSelectedSceneToggle(state, "pan", enabled)),
+      updateAppState((state) =>
+        updateSelectedSceneToggle(state, "pan", enabled),
+      ),
     removeCueEntry: (cueEntryId) =>
-      setAppState((state) => ({
+      updateAppState((state) => ({
         ...state,
         cueLists: state.cueLists.map((cueList) => ({
           ...cueList,
@@ -280,7 +286,7 @@ function StatefulAppShellStory(props: {
           state.cuedCueEntryId === cueEntryId ? null : state.cuedCueEntryId,
       })),
     reorderCueEntries: (orderedIds) =>
-      setAppState((state) => {
+      updateAppState((state) => {
         const activeCueListId = state.activeCueListId;
         if (!activeCueListId) return state;
 
@@ -297,18 +303,18 @@ function StatefulAppShellStory(props: {
         };
       }),
     reorderCueLists: (orderedIds) =>
-      setAppState((state) => ({
+      updateAppState((state) => ({
         ...state,
         cueLists: orderCueLists(state.cueLists, orderedIds),
       })),
     setActiveCueList: (cueListId) =>
-      setAppState((state) => ({
+      updateAppState((state) => ({
         ...state,
         activeCueListId: cueListId,
         cuedCueEntryId: null,
       })),
     toggleLockout: () =>
-      setAppState((state) => ({ ...state, lockout: !state.lockout })),
+      updateAppState((state) => ({ ...state, lockout: !state.lockout })),
   };
 
   function replaceSettings(settings: AppSettings) {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -6,14 +6,67 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import { invoke } from "@tauri-apps/api/core";
 import {
+  abortAll,
   copySceneSettings,
   createCueList,
   deleteCueList,
+  disconnectLv1,
+  frontendReady,
+  newShowFile,
   pasteSceneSettings,
   probeLv1TcpConnectLatency,
   recallCuedCue,
+  recallScene,
   reorderCueLists,
+  selectSceneConfig,
+  setChannelScoped,
 } from "./commands";
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
+
+describe("production command bridge", () => {
+  it.each([
+    ["frontend_ready", frontendReady],
+    ["abort_all_fades", abortAll],
+    ["disconnect_lv1", disconnectLv1],
+    ["new_show_file", newShowFile],
+  ])("invokes %s without arguments", async (commandName, command) => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await command();
+
+    expect(invoke).toHaveBeenCalledWith(commandName);
+  });
+
+  it("forwards scene identifiers", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await recallScene("scene-1");
+    await selectSceneConfig("scene-2");
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "recall_scene", {
+      internalSceneId: "scene-1",
+    });
+    expect(invoke).toHaveBeenNthCalledWith(2, "select_scene_config", {
+      internalSceneId: "scene-2",
+    });
+  });
+
+  it("forwards channel scope arguments", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await setChannelScoped("scene-1", 2, 7, true);
+
+    expect(invoke).toHaveBeenCalledWith("set_channel_scoped", {
+      internalSceneId: "scene-1",
+      group: 2,
+      channel: 7,
+      scoped: true,
+    });
+  });
+});
 
 describe("probeLv1TcpConnectLatency", () => {
   it("omits timeoutMs when not provided", async () => {

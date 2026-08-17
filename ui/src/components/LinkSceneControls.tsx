@@ -53,7 +53,7 @@ export function LinkSceneControls(props: {
   }
 
   function linkTarget(targetIndex: number, overwriteExisting: boolean) {
-    void commands.linkSceneConfig?.(
+    void commands.linkSceneConfig(
       props.scene.internalSceneId,
       targetIndex,
       overwriteExisting,
@@ -67,7 +67,7 @@ export function LinkSceneControls(props: {
   }
 
   function deleteUnlinkedScene() {
-    void commands.deleteSceneConfig?.(props.scene.internalSceneId);
+    void commands.deleteSceneConfig(props.scene.internalSceneId);
   }
 
   return (

@@ -39,9 +39,7 @@ export function SelectedSceneHeader(props: {
           <div className="flex flex-wrap items-end gap-3 md:flex-nowrap">
             <ConsoleButton
               disabled={unlinked}
-              onClick={() =>
-                commands.recallScene?.(props.scene.internalSceneId)
-              }
+              onClick={() => commands.recallScene(props.scene.internalSceneId)}
               variant="ghost-primary"
             >
               Recall
