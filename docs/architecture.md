@@ -23,6 +23,8 @@ The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
 
 ## Commands and Facts
 
+Native File menu actions call the same Tauri command functions used by the frontend. Dialog behavior, mailbox dispatch, and error mapping have one implementation in `ui/commands/show.rs`.
+
 Actors receive explicit mailbox command enums; handles are cloneable senders that do not hide domain operations. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
 
 `AppEventBus` is a non-blocking Tokio broadcast bus for facts, never requests. It has no replay or durable storage. Its families are:
