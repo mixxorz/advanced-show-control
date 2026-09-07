@@ -965,7 +965,7 @@ mod tests {
                 }
             }
         });
-        SettingsHandle::new(tx)
+        tx
     }
 
     async fn get_scene_document(
@@ -1122,7 +1122,7 @@ mod tests {
             let _receiver = scenes_rx;
             std::future::pending::<()>().await;
         });
-        peers.set_scenes(crate::scenes::ScenesHandle::new(scenes_tx));
+        peers.set_scenes(scenes_tx);
         let generation = peers.runtime_generation();
         let transaction_peers = peers.clone();
         let transaction = tokio::spawn(async move {
@@ -1165,7 +1165,7 @@ mod tests {
         let original_cue_lists = get_cue_list_document(&peers.cue_lists().unwrap()).await;
         let (cue_tx, cue_rx) = tokio::sync::mpsc::channel(1);
         drop(cue_rx);
-        peers.set_cue_lists(crate::cue_lists::CueListsHandle::new(cue_tx));
+        peers.set_cue_lists(cue_tx);
 
         let error = replace_documents_with_rollback(
             &peers,

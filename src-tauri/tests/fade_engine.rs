@@ -200,8 +200,7 @@ async fn spawn_runtime_for_test(
     event_bus: AppEventBus,
 ) -> (RuntimeGeneration, FadeEngineHandle) {
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, task, peers) = build_engine(runtime_generation.clone(), event_bus.clone(), 0);
-    peers.set_lv1(lv1);
+    let (engine, task) = build_engine(runtime_generation.clone(), event_bus.clone(), 0, lv1);
     task.spawn();
 
     let mut events = event_bus.subscribe();
@@ -472,8 +471,7 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
     let event_bus = AppEventBus::default();
     let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 0);
-    peers.set_lv1(lv1);
+    let (engine, task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1);
     task.spawn();
     let mut app_events = event_bus.subscribe();
 

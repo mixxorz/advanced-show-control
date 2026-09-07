@@ -25,7 +25,7 @@ The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
 
 Native File menu actions call the same Tauri command functions used by the frontend. Dialog behavior, mailbox dispatch, and error mapping have one implementation in `ui/commands/show.rs`.
 
-Actors receive explicit mailbox command enums; handles are cloneable senders that do not hide domain operations. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
+Actors receive explicit mailbox command enums. Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
 
 `AppEventBus` is a non-blocking Tokio broadcast bus for facts, never requests. It has no replay or durable storage. Its families are:
 
@@ -57,7 +57,7 @@ LV1 and Fade facts are generation-bound and consumers ignore stale generations. 
 
 Direct peers are intentional:
 
-- `FadeEngine` holds `Lv1ActorHandle` and sends `Lv1Command::WriteBatch` directly.
+- `FadeEngine` requires its `Lv1ActorHandle` when constructed and sends `Lv1Command::WriteBatch` directly. This immutable, generation-scoped dependency has no optional peer slot, installation step, or peer mutex.
 - `Scenes` receives the active generation's `Lv1ActorHandle` and `FadeEngineHandle` after lifecycle acceptance.
 - `Show` holds app-lifetime Scenes/Cue Lists peers and the current LV1 peer only while connected.
 - `CueLists` holds the app-lifetime Scenes peer.

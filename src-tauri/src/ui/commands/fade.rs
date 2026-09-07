@@ -7,11 +7,7 @@ use tokio::sync::oneshot;
 
 #[tauri::command]
 pub async fn abort_all_fades(lifecycle: State<'_, AppLifecycle>) -> Result<(), String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
+    let scenes = lifecycle.scenes_handle();
     let (reply, rx) = oneshot::channel();
     scenes
         .send(ScenesCommand::AbortAll { reply })

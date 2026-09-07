@@ -75,7 +75,7 @@ mod tests {
                 }
             }
         });
-        SettingsHandle::new(tx)
+        tx
     }
 
     #[tokio::test]

@@ -50,7 +50,7 @@ pub fn build_cue_lists_actor(
     let event_rx = event_bus.subscribe();
     let peers = CueListsPeers::default();
     (
-        CueListsHandle::new(command_tx),
+        command_tx,
         CueListsTask {
             event_bus,
             peers: peers.clone(),
@@ -507,7 +507,7 @@ mod tests {
 
     fn fake_scenes_handle() -> (crate::scenes::ScenesHandle, mpsc::Receiver<ScenesCommand>) {
         let (tx, rx) = mpsc::channel(8);
-        (crate::scenes::ScenesHandle::new(tx), rx)
+        (tx, rx)
     }
 
     fn id(value: u128) -> Uuid {

@@ -709,9 +709,7 @@ async fn run_fade_test(
     let mut lv1_events = event_bus.subscribe();
     let (lv1, lv1_task) = build_actor(host.clone(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, engine_task, engine_peers) =
-        build_engine(runtime_generation, event_bus.clone(), 0);
-    engine_peers.set_lv1(lv1.clone());
+    let (engine, engine_task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1.clone());
     lv1_task.spawn();
     engine_task.spawn();
     let mut fade_events = event_bus.subscribe();
@@ -1004,9 +1002,7 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let mut lv1_events = event_bus.subscribe();
     let (lv1, lv1_task) = build_actor(host.clone(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, engine_task, engine_peers) =
-        build_engine(runtime_generation, event_bus.clone(), 0);
-    engine_peers.set_lv1(lv1.clone());
+    let (engine, engine_task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1.clone());
     lv1_task.spawn();
     engine_task.spawn();
     let mut fade_events = event_bus.subscribe();

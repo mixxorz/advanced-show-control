@@ -16,7 +16,7 @@ use crate::lv1::{
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::runtime::generation::RuntimeGeneration;
-use crate::scenes::handle::ScenesHandle;
+use crate::scenes::ScenesHandle;
 use crate::scenes::policy::{RecallPolicyDecision, RecallPolicyInput, decide_scene_recall};
 use crate::scenes::recall_queue::{
     InFlightPhase, InFlightRecall, QueuedRecall, RECALL_COMPLETION_TIMEOUT, RECALL_QUEUE_CAPACITY,
@@ -248,7 +248,7 @@ pub fn build_scenes_actor(
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
 
-    let handle = ScenesHandle::new(command_tx);
+    let handle = command_tx;
     let peers = ScenesPeers::default();
     let task = ScenesTask {
         initial_generation: generation,
@@ -2177,7 +2177,7 @@ mod tests {
             runtime_generation.set(1).await;
             let lv1 = crate::lv1::test_actor_handle(lv1_tx);
             let (fade_tx, fade_commands) = tokio::sync::mpsc::channel(1);
-            let fade = FadeEngineHandle::new(fade_tx);
+            let fade = fade_tx;
             let (handle, task, peers) = build_scenes_actor(
                 1,
                 runtime_generation,
@@ -4325,12 +4325,15 @@ mod tests {
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
-        let (real_fade, fade_task, fade_peers) =
-            crate::fade::build_engine(runtime_generation.clone(), event_bus.clone(), 1);
-        fade_peers.set_lv1(lv1.clone());
+        let (real_fade, fade_task) = crate::fade::build_engine(
+            runtime_generation.clone(),
+            event_bus.clone(),
+            1,
+            lv1.clone(),
+        );
         fade_task.spawn();
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(8);
-        let fade_proxy = FadeEngineHandle::new(fade_tx);
+        let fade_proxy = fade_tx;
         let real_fade_for_proxy = real_fade.clone();
         let (seen_tx, mut seen) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
@@ -4501,12 +4504,15 @@ mod tests {
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
-        let (real_fade, fade_task, fade_peers) =
-            crate::fade::build_engine(runtime_generation.clone(), event_bus.clone(), 1);
-        fade_peers.set_lv1(lv1.clone());
+        let (real_fade, fade_task) = crate::fade::build_engine(
+            runtime_generation.clone(),
+            event_bus.clone(),
+            1,
+            lv1.clone(),
+        );
         fade_task.spawn();
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(8);
-        let fade_proxy = FadeEngineHandle::new(fade_tx);
+        let fade_proxy = fade_tx;
         let real_fade_for_proxy = real_fade.clone();
         let (seen_tx, mut seen) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
@@ -5162,7 +5168,7 @@ mod tests {
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade_tx, fade_rx) = tokio::sync::mpsc::channel(1);
         drop(fade_rx);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
 
         let handle = build_and_spawn_scene_recall_fader(
             1,
@@ -5196,7 +5202,7 @@ mod tests {
         let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
 
         let handle =
             build_and_spawn_scene_recall_fader(1, runtime_generation, lv1, fade, event_bus).await;
@@ -6384,7 +6390,7 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             events,
-            SettingsHandle::new(settings_tx),
+            settings_tx,
             AppSettings::default(),
             test_lockout_reader(),
         );
@@ -6818,7 +6824,7 @@ mod tests {
         runtime_generation.set(1).await;
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade_tx, mut fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let handle = build_and_spawn_scene_recall_fader_with_document(
             1,
             runtime_generation.clone(),
@@ -7275,7 +7281,7 @@ mod tests {
                 }
             }
         });
-        (FadeEngineHandle::new(command_tx), seen_rx, starts)
+        (command_tx, seen_rx, starts)
     }
 
     fn fake_queue_fade_handle(
@@ -7340,7 +7346,7 @@ mod tests {
                 }
             }
         });
-        (FadeEngineHandle::new(command_tx), seen_rx)
+        (command_tx, seen_rx)
     }
 
     fn intro_scene() -> SceneObservation {
@@ -7446,7 +7452,7 @@ mod tests {
                 }
             }
         });
-        SettingsHandle::new(tx)
+        tx
     }
 
     fn fake_settings_handle_sequence(settings: Vec<AppSettings>) -> SettingsHandle {
@@ -7459,7 +7465,7 @@ mod tests {
                 }
             }
         });
-        SettingsHandle::new(tx)
+        tx
     }
 
     fn fake_settings_handle_then_unavailable(settings: AppSettings) -> SettingsHandle {
@@ -7469,7 +7475,7 @@ mod tests {
                 let _ = reply.send(settings);
             }
         });
-        SettingsHandle::new(tx)
+        tx
     }
 
     async fn install_scene_document(handle: &ScenesHandle, document: SceneDocument) {

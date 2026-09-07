@@ -4,9 +4,9 @@ use tokio::sync::mpsc;
 
 use crate::runtime::events::{AppEvent, AppEventBus};
 
+use super::SettingsHandle;
 use super::commands::{SettingsCommand, SettingsCommandResult};
 use super::events::SettingsEvent;
-use super::handle::SettingsHandle;
 use super::state::SettingsState;
 use super::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
@@ -60,7 +60,7 @@ pub fn build_settings_actor(
         #[cfg(test)]
         set_last_connected_lv1_gate: None,
     };
-    (SettingsHandle::new(tx), task, initial_settings)
+    (tx, task, initial_settings)
 }
 
 async fn run_settings_actor(

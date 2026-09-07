@@ -73,8 +73,7 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
     let mut events = event_bus.subscribe();
     let (lv1, lv1_task) = build_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (fade, fade_task, fade_peers) = build_engine(runtime_generation, event_bus, 0);
-    fade_peers.set_lv1(lv1);
+    let (fade, fade_task) = build_engine(runtime_generation, event_bus, 0, lv1);
     lv1_task.spawn();
     fade_task.spawn();
 

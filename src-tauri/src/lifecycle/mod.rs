@@ -102,9 +102,12 @@ fn build_connected_runtime(
         event_bus.clone(),
         generation,
     );
-    let (fade, fade_task, fade_peers) =
-        build_engine(runtime_generation.clone(), event_bus.clone(), generation);
-    fade_peers.set_lv1(lv1.clone());
+    let (fade, fade_task) = build_engine(
+        runtime_generation.clone(),
+        event_bus.clone(),
+        generation,
+        lv1.clone(),
+    );
     BuiltConnectedRuntime {
         lv1,
         lv1_task,
@@ -752,8 +755,8 @@ impl AppLifecycle {
         self.inner.lock().await.handles.fade.clone()
     }
 
-    pub async fn current_scene_recall_fader(&self) -> Option<ScenesHandle> {
-        Some(self.scenes.clone())
+    pub fn scenes_handle(&self) -> ScenesHandle {
+        self.scenes.clone()
     }
 
     pub fn cue_lists_handle(&self) -> CueListsHandle {
@@ -1181,7 +1184,7 @@ mod tests {
                     generation,
                     RuntimeHandles::with_runtime_targets(
                         test_actor_handle(lv1_tx),
-                        FadeEngineHandle::new(mpsc::channel(1).0),
+                        mpsc::channel(1).0,
                     ),
                 )
                 .await
@@ -1421,7 +1424,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -1474,7 +1477,7 @@ mod tests {
         newer_task.spawn();
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let (flip_tx, flip_rx) = oneshot::channel();
         let lifecycle_for_hook = lifecycle.clone();
         let newer_scenes_for_hook = newer_scenes.clone();
@@ -1490,7 +1493,7 @@ mod tests {
                                 newer_generation,
                                 RuntimeHandles::with_runtime_targets(
                                     test_actor_handle(lv1_tx),
-                                    FadeEngineHandle::new(fade_tx),
+                                    fade_tx,
                                 ),
                             )
                             .await
@@ -1618,7 +1621,7 @@ mod tests {
             runtime_generation,
             event_bus,
             lv1,
-            FadeEngineHandle::new(fade_tx),
+            fade_tx,
             None,
         )
         .await;
@@ -1704,7 +1707,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(disconnected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
             host: Some("LV1-FOH".to_string()),
@@ -1750,7 +1753,7 @@ mod tests {
             runtime_generation,
             lifecycle.event_bus.clone(),
             lv1,
-            FadeEngineHandle::new(fade_tx),
+            fade_tx,
             Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
                 Box::pin(async move {
                     lifecycle_for_hook.begin_connecting().await;
@@ -1811,7 +1814,7 @@ mod tests {
             runtime_generation,
             event_bus,
             fake_lv1_handle(disconnected_snapshot()),
-            FadeEngineHandle::new(mpsc::channel(1).0),
+            mpsc::channel(1).0,
             Some(Box::new(move |_| {
                 Box::pin(async move {
                     reached_tx.send(()).unwrap();
@@ -1843,7 +1846,7 @@ mod tests {
             }
         }
         assert!(lifecycle.current_lv1().await.is_none());
-        assert!(lifecycle.current_scene_recall_fader().await.is_some());
+        assert!(!lifecycle.scenes_handle().is_closed());
     }
 
     #[tokio::test]
@@ -1863,7 +1866,7 @@ mod tests {
             runtime_generation,
             event_bus,
             test_actor_handle(old_lv1_tx),
-            FadeEngineHandle::new(mpsc::channel(1).0),
+            mpsc::channel(1).0,
             Some(Box::new(move |_| {
                 let lifecycle = lifecycle_for_hook.clone();
                 let identity = newer_identity_for_hook.clone();
@@ -1921,7 +1924,7 @@ mod tests {
             runtime_generation,
             event_bus,
             test_actor_handle(old_lv1_tx),
-            FadeEngineHandle::new(mpsc::channel(1).0),
+            mpsc::channel(1).0,
             Some(Box::new(move |_| {
                 let lifecycle = lifecycle_for_hook.clone();
                 let identity = newer_identity_for_hook.clone();
@@ -1972,7 +1975,7 @@ mod tests {
             runtime_generation,
             event_bus,
             old_lv1,
-            FadeEngineHandle::new(mpsc::channel(1).0),
+            mpsc::channel(1).0,
             None,
         )
         .await;
@@ -2000,7 +2003,7 @@ mod tests {
                     newer_generation,
                     RuntimeHandles::with_runtime_targets(
                         test_actor_handle(newer_lv1_tx),
-                        FadeEngineHandle::new(mpsc::channel(1).0),
+                        mpsc::channel(1).0,
                     ),
                 )
                 .await
@@ -2049,7 +2052,7 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let lv1_for_assertion = lv1.clone();
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
             host: Some("LV1-FOH".to_string()),
@@ -2096,7 +2099,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -2141,7 +2144,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -2167,7 +2170,7 @@ mod tests {
             .await;
 
         assert!(result.is_ok());
-        assert!(lifecycle.current_scene_recall_fader().await.is_some());
+        assert!(!lifecycle.scenes_handle().is_closed());
     }
 
     #[tokio::test]
@@ -2330,7 +2333,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -2366,7 +2369,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
@@ -2408,7 +2411,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let lifecycle_for_hook = lifecycle.clone();
         let (flip_tx, flip_rx) = oneshot::channel();
         let started_runtime = started_runtime_for_test(
@@ -2463,7 +2466,7 @@ mod tests {
         let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let identity = identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36");
         let lifecycle_for_connect = lifecycle.clone();
         let started_runtime = started_runtime_for_test(
@@ -2486,7 +2489,7 @@ mod tests {
         write_received_rx
             .await
             .expect("settings write should be reached after scene-peer acceptance");
-        assert!(lifecycle.current_scene_recall_fader().await.is_some());
+        assert!(!lifecycle.scenes_handle().is_closed());
         lifecycle.begin_connecting().await.unwrap();
         std::fs::remove_dir_all(settings_dir.path())
             .expect("settings directory should be removable while the write is paused");
@@ -2511,7 +2514,7 @@ mod tests {
         let lifecycle = lifecycle_for_test(event_bus);
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = FadeEngineHandle::new(fade_tx);
+        let fade = fade_tx;
         let handles = RuntimeHandles::with_runtime_targets(lv1, fade);
 
         let rejection = lifecycle
@@ -2539,7 +2542,7 @@ mod tests {
         let install = lifecycle
             .install_runtime_transaction(
                 generation,
-                RuntimeHandles::with_runtime_targets(lv1, FadeEngineHandle::new(fade_tx)),
+                RuntimeHandles::with_runtime_targets(lv1, fade_tx),
             )
             .await;
         assert!(install.is_ok());
@@ -2581,7 +2584,7 @@ mod tests {
         let install = lifecycle
             .install_runtime_transaction(
                 accepted_generation,
-                RuntimeHandles::with_runtime_targets(lv1, FadeEngineHandle::new(fade_tx)),
+                RuntimeHandles::with_runtime_targets(lv1, fade_tx),
             )
             .await;
         assert!(install.is_ok());
@@ -2625,7 +2628,7 @@ mod tests {
         let install = lifecycle
             .install_runtime_transaction(
                 accepted_generation,
-                RuntimeHandles::with_runtime_targets(newer_lv1, FadeEngineHandle::new(fade_tx)),
+                RuntimeHandles::with_runtime_targets(newer_lv1, fade_tx),
             )
             .await;
         assert!(install.is_ok());
@@ -2694,7 +2697,7 @@ mod tests {
                     original_generation,
                     RuntimeHandles::with_runtime_targets(
                         test_actor_handle(old_lv1_tx),
-                        FadeEngineHandle::new(old_fade_tx),
+                        old_fade_tx,
                     ),
                 )
                 .await
@@ -2731,7 +2734,7 @@ mod tests {
                     newer_generation,
                     RuntimeHandles::with_runtime_targets(
                         test_actor_handle(newer_lv1_tx),
-                        FadeEngineHandle::new(newer_fade_tx),
+                        newer_fade_tx,
                     ),
                 )
                 .await
@@ -2789,10 +2792,7 @@ mod tests {
             lifecycle
                 .install_runtime_transaction(
                     generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(lv1_tx),
-                        FadeEngineHandle::new(fade_tx),
-                    ),
+                    RuntimeHandles::with_runtime_targets(test_actor_handle(lv1_tx), fade_tx,),
                 )
                 .await
                 .is_ok()
@@ -2871,10 +2871,7 @@ mod tests {
             lifecycle
                 .install_runtime_transaction(
                     newer_generation,
-                    RuntimeHandles::with_runtime_targets(
-                        newer_lv1,
-                        FadeEngineHandle::new(newer_fade_tx),
-                    ),
+                    RuntimeHandles::with_runtime_targets(newer_lv1, newer_fade_tx,),
                 )
                 .await
                 .is_ok(),
