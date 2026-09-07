@@ -337,12 +337,6 @@ async fn handle_command(
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
-        ShowCommand::RefreshLv1Discovery { timeout_ms, reply } => {
-            let result = refresh_lv1_discovery(state, event_bus, timeout_ms);
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
-        }
         ShowCommand::CompleteLv1Connection { identity, reply } => {
             let outcome = state.complete_lv1_connection(identity);
             let changed = outcome.changed;
@@ -474,29 +468,6 @@ async fn handle_command(
             }
         }
     }
-}
-
-fn refresh_lv1_discovery(
-    state: &mut ShowState,
-    event_bus: &AppEventBus,
-    timeout_ms: Option<u64>,
-) -> Result<ShowCommandResult, String> {
-    let systems = crate::lv1::discover(crate::lv1::DiscoverOptions {
-        timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
-        ..Default::default()
-    })
-    .map_err(|err| format!("Failed to discover LV1 systems: {err}"))?
-    .iter()
-    .filter_map(crate::connection_state::system_from_discovery)
-    .collect();
-    let changed = state.set_discovered_lv1_systems(systems);
-    publish_if_changed(
-        event_bus,
-        ShowProjectionReason::ConnectionMetadata,
-        state,
-        changed,
-    );
-    Ok(ShowCommandResult { changed })
 }
 
 async fn current_lv1_snapshot(peers: &ShowActorPeers) -> Result<(u64, Lv1StateSnapshot), String> {

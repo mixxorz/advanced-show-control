@@ -11,20 +11,10 @@ use tokio::task::spawn_blocking;
 
 #[tauri::command]
 pub async fn refresh_lv1_discovery(
-    show: State<'_, ShowStateHandle>,
+    lifecycle: State<'_, crate::lifecycle::AppLifecycle>,
     timeout_ms: Option<u64>,
 ) -> Result<ShowCommandResult, String> {
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::RefreshLv1Discovery {
-        timeout_ms,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    lifecycle.refresh_lv1_discovery(timeout_ms).await
 }
 
 #[tauri::command]

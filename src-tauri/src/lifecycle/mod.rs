@@ -172,6 +172,7 @@ pub struct AppLifecycle {
     scenes_peers: ScenesPeers,
     settings: SettingsHandle,
     transition_lock: Arc<Mutex<()>>,
+    discovery_lock: Arc<Mutex<()>>,
     #[cfg(test)]
     before_disconnect_cleanup: Arc<Mutex<Option<DisconnectTestHook>>>,
     #[cfg(test)]
@@ -225,6 +226,7 @@ impl AppLifecycle {
             scenes_peers,
             settings,
             transition_lock: Arc::new(Mutex::new(())),
+            discovery_lock: Arc::new(Mutex::new(())),
             #[cfg(test)]
             before_disconnect_cleanup: Arc::new(Mutex::new(None)),
             #[cfg(test)]
@@ -816,6 +818,49 @@ impl AppLifecycle {
         self.connect_to_identity(app, generation, identity).await
     }
 
+    pub async fn refresh_lv1_discovery(
+        &self,
+        timeout_ms: Option<u64>,
+    ) -> Result<ShowCommandResult, String> {
+        self.refresh_lv1_discovery_with(timeout_ms, crate::lv1::discover)
+            .await
+    }
+
+    async fn refresh_lv1_discovery_with(
+        &self,
+        timeout_ms: Option<u64>,
+        discover: impl FnOnce(
+            crate::lv1::DiscoverOptions,
+        ) -> std::io::Result<Vec<crate::lv1::DiscoveryEntry>>
+        + Send
+        + 'static,
+    ) -> Result<ShowCommandResult, String> {
+        // Serialize discovery results without holding up connection transitions or Show commands.
+        let _discovery = self.discovery_lock.lock().await;
+        let options = crate::lv1::DiscoverOptions {
+            timeout: std::time::Duration::from_millis(timeout_ms.unwrap_or(1000).clamp(100, 6000)),
+            ..Default::default()
+        };
+        let systems = tokio::task::spawn_blocking(move || discover(options))
+            .await
+            .map_err(|error| format!("LV1 discovery worker failed: {error}"))?
+            .map_err(|error| format!("Failed to discover LV1 systems: {error}"))?
+            .iter()
+            .filter_map(crate::connection_state::system_from_discovery)
+            .collect();
+        let (reply, response) = oneshot::channel();
+        self.show
+            .send(ShowCommand::SetDiscoveredLv1Systems {
+                systems,
+                reply: Some(reply),
+            })
+            .await
+            .map_err(|_| "Show state is unavailable".to_string())?;
+        response
+            .await
+            .map_err(|_| "Show state reply channel is closed".to_string())
+    }
+
     pub async fn startup_auto_connect_lv1<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -824,16 +869,7 @@ impl AppLifecycle {
             return Ok(ConnectCommandResult { changed: false });
         };
 
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::RefreshLv1Discovery {
-                timeout_ms: None,
-                reply: Some(reply),
-            })
-            .await
-            .map_err(|_| "Show state is unavailable".to_string())?;
-        rx.await
-            .map_err(|_| "Show state reply channel is closed".to_string())??;
+        self.refresh_lv1_discovery(None).await?;
 
         let (reply, rx) = oneshot::channel();
         self.show
@@ -1228,6 +1264,90 @@ mod tests {
             identity: identity(uuid, host, address),
             status,
         }
+    }
+
+    #[tokio::test]
+    async fn discovery_does_not_block_lockout_or_generation_changes() {
+        let fixture = lifecycle_for_test(AppEventBus::default());
+        let lifecycle = fixture.lifecycle.clone();
+        let (entered, started) = oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let discovery = tokio::spawn(async move {
+            lifecycle
+                .refresh_lv1_discovery_with(Some(100), move |options| {
+                    assert_eq!(options.timeout, std::time::Duration::from_millis(100));
+                    entered.send(()).unwrap();
+                    blocked
+                        .recv_timeout(std::time::Duration::from_secs(1))
+                        .map_err(std::io::Error::other)?;
+                    Ok(Vec::new())
+                })
+                .await
+        });
+        started.await.unwrap();
+        let generation = fixture.begin_connecting().await.unwrap();
+        assert_eq!(generation, 1);
+        let (reply, response) = oneshot::channel();
+        fixture
+            .show
+            .send(ShowCommand::SetLockout {
+                enabled: true,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        assert!(response.await.unwrap().changed);
+        assert!(
+            !discovery.is_finished(),
+            "discovery must still be waiting for external I/O"
+        );
+        release.send(()).unwrap();
+        assert!(!discovery.await.unwrap().unwrap().changed);
+    }
+
+    #[tokio::test]
+    async fn discovery_failure_preserves_last_results_and_allows_retry() {
+        let fixture = lifecycle_for_test(AppEventBus::default());
+        let original = system(
+            Some("console"),
+            Some("FOH"),
+            "192.0.2.10",
+            DiscoveredLv1Status::Available,
+        );
+        let (reply, response) = oneshot::channel();
+        fixture
+            .show
+            .send(ShowCommand::SetDiscoveredLv1Systems {
+                systems: vec![original.clone()],
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        response.await.unwrap();
+
+        let error = fixture
+            .refresh_lv1_discovery_with(None, |_| Err(std::io::Error::other("network unavailable")))
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Failed to discover LV1 systems: network unavailable");
+        let (reply, response) = oneshot::channel();
+        fixture
+            .show
+            .send(ShowCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            response.await.unwrap().discovered_lv1_systems,
+            vec![original]
+        );
+
+        assert!(
+            fixture
+                .refresh_lv1_discovery_with(None, |_| Ok(Vec::new()))
+                .await
+                .unwrap()
+                .changed
+        );
     }
 
     #[test]

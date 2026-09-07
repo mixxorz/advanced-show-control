@@ -62,6 +62,8 @@ Direct peers are intentional:
 - `Show` holds app-lifetime Scenes/Cue Lists peers and the current LV1 peer only while connected.
 - `CueLists` holds the app-lifetime Scenes peer.
 
+Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and frontend discovery share this path.
+
 `Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The frontend requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
 
 ## Scenes Library and Recall
