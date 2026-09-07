@@ -4,7 +4,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::fade::RecallReadinessError;
+use crate::fade::{RecallReadinessCancellation, RecallReadinessError};
 use crate::runtime::errors::AppCommandError;
 
 use super::RecallSceneResult;
@@ -23,7 +23,9 @@ pub(super) enum InFlightPhase {
         dispatch_sequence: u64,
         deadline: Instant,
     },
-    AwaitingReadiness,
+    AwaitingReadiness {
+        completion: Option<oneshot::Receiver<Result<(), RecallReadinessError>>>,
+    },
 }
 
 pub(super) struct InFlightRecall {
@@ -46,6 +48,32 @@ pub(super) struct RecallQueue {
 }
 
 impl RecallQueue {
+    pub async fn readiness_completion(&mut self) -> RecallReadinessCompletion {
+        let Some(InFlightRecall {
+            request_id,
+            generation,
+            phase: InFlightPhase::AwaitingReadiness { completion },
+            ..
+        }) = self.in_flight.as_mut()
+        else {
+            return std::future::pending().await;
+        };
+        let Some(receiver) = completion.as_mut() else {
+            return std::future::pending().await;
+        };
+        let result = receiver
+            .await
+            .unwrap_or(Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::ActorStopped,
+            )));
+        completion.take();
+        RecallReadinessCompletion {
+            request_id: *request_id,
+            generation: *generation,
+            result,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.waiting.len() + usize::from(self.in_flight.is_some())
     }

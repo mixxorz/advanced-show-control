@@ -6,8 +6,8 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 
 use crate::fade::{
-    FadeCommand, FadeEngineHandle, FadeSceneIdentity, RecallReadinessCancellation,
-    RecallReadinessError, RecallReadinessRequest, SameSceneRecallBehavior,
+    FadeCommand, FadeEngineHandle, FadeSceneIdentity, RecallReadinessError, RecallReadinessRequest,
+    SameSceneRecallBehavior,
 };
 use crate::lv1::{
     ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
@@ -344,7 +344,6 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut settings = initial_settings;
     let mut pending_scene: Option<PendingSceneObservation> = None;
     let mut lockout_open = true;
-    let (readiness_completion_tx, mut readiness_completion_rx) = mpsc::channel(8);
 
     // Recall timing windows:
     //
@@ -366,7 +365,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             .as_ref()
             .and_then(|in_flight| match in_flight.phase {
                 InFlightPhase::AwaitingObservation { deadline, .. } => Some(deadline),
-                InFlightPhase::AwaitingReadiness => None,
+                InFlightPhase::AwaitingReadiness { .. } => None,
             });
         let recall_timeout = async move {
             match recall_deadline {
@@ -610,17 +609,13 @@ async fn run_scenes_actor(task: ScenesTask) {
                         &lockout,
                         &mut recall_queue,
                         &mut late_canceled_observations,
-                        &readiness_completion_tx,
                         #[cfg(test)]
                         &mut before_fade_handoff,
                         observation,
                     ).await;
                 }
             }
-            completion = readiness_completion_rx.recv() => {
-                let Some(completion) = completion else {
-                    break;
-                };
+            completion = recall_queue.readiness_completion() => {
                 handle_readiness_completion(
                     completion,
                     &runtime_generation,
@@ -1248,35 +1243,6 @@ struct QueueReadiness {
     deadline: tokio::time::Instant,
 }
 
-impl QueueReadiness {
-    fn attach_completion(
-        self,
-        completion_tx: mpsc::Sender<RecallReadinessCompletion>,
-    ) -> RecallReadinessRequest {
-        let (completion, completed) = oneshot::channel();
-        let request_id = self.request_id;
-        let generation = self.generation;
-        tokio::spawn(async move {
-            let result = completed
-                .await
-                .unwrap_or(Err(RecallReadinessError::Cancelled(
-                    RecallReadinessCancellation::ActorStopped,
-                )));
-            let _ = completion_tx
-                .send(RecallReadinessCompletion {
-                    request_id,
-                    generation,
-                    result,
-                })
-                .await;
-        });
-        RecallReadinessRequest {
-            deadline: self.deadline,
-            completion: Some(completion),
-        }
-    }
-}
-
 fn exact_queue_readiness(
     observation: &PendingSceneObservation,
     recall_queue: &RecallQueue,
@@ -1317,7 +1283,7 @@ async fn handle_readiness_completion(
     let matches_in_flight = recall_queue.in_flight.as_ref().is_some_and(|in_flight| {
         in_flight.request_id == completion.request_id
             && in_flight.generation == completion.generation
-            && matches!(in_flight.phase, InFlightPhase::AwaitingReadiness)
+            && matches!(in_flight.phase, InFlightPhase::AwaitingReadiness { .. })
     });
     if !matches_in_flight {
         return;
@@ -1376,8 +1342,10 @@ async fn handle_readiness_completion(
 fn prepare_queue_readiness(
     recall_queue: &RecallQueue,
     readiness: QueueReadiness,
-    readiness_completion_tx: mpsc::Sender<RecallReadinessCompletion>,
-) -> Option<RecallReadinessRequest> {
+) -> Option<(
+    RecallReadinessRequest,
+    oneshot::Receiver<Result<(), RecallReadinessError>>,
+)> {
     if tokio::time::Instant::now() >= readiness.deadline {
         return None;
     }
@@ -1386,10 +1354,21 @@ fn prepare_queue_readiness(
     {
         return None;
     }
-    Some(readiness.attach_completion(readiness_completion_tx))
+    let (completion, completed) = oneshot::channel();
+    Some((
+        RecallReadinessRequest {
+            deadline: readiness.deadline,
+            completion: Some(completion),
+        },
+        completed,
+    ))
 }
 
-fn accept_queue_readiness(recall_queue: &mut RecallQueue, readiness: QueueReadiness) -> bool {
+fn accept_queue_readiness(
+    recall_queue: &mut RecallQueue,
+    readiness: QueueReadiness,
+    completion: oneshot::Receiver<Result<(), RecallReadinessError>>,
+) -> bool {
     let Some(in_flight) = recall_queue.in_flight.as_mut() else {
         return false;
     };
@@ -1400,7 +1379,9 @@ fn accept_queue_readiness(recall_queue: &mut RecallQueue, readiness: QueueReadin
     if !matches!(in_flight.phase, InFlightPhase::AwaitingObservation { .. }) {
         return false;
     }
-    in_flight.phase = InFlightPhase::AwaitingReadiness;
+    in_flight.phase = InFlightPhase::AwaitingReadiness {
+        completion: Some(completion),
+    };
     true
 }
 
@@ -1416,7 +1397,6 @@ async fn process_scene_observation(
     lockout: &ShowLockoutReader,
     recall_queue: &mut RecallQueue,
     late_canceled_observations: &mut LateCanceledObservations,
-    readiness_completion_tx: &mpsc::Sender<RecallReadinessCompletion>,
     #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
     observation: PendingSceneObservation,
 ) {
@@ -1512,6 +1492,7 @@ async fn process_scene_observation(
             scene_config: scene_config.clone(),
         })
     };
+    let blocked = matches!(&decision, RecallPolicyDecision::Blocked { .. });
     match decision {
         RecallPolicyDecision::Start(fade_config) => {
             let scene_label = scene_label(&observation.scene);
@@ -1551,11 +1532,9 @@ async fn process_scene_observation(
                         );
                         return;
                     };
-                    let Some(readiness) = prepare_queue_readiness(
-                        recall_queue,
-                        queue_readiness,
-                        readiness_completion_tx.clone(),
-                    ) else {
+                    let Some((readiness, completion)) =
+                        prepare_queue_readiness(recall_queue, queue_readiness)
+                    else {
                         cancel_recall_queue(
                             recall_queue,
                             late_canceled_observations,
@@ -1564,7 +1543,7 @@ async fn process_scene_observation(
                         );
                         return;
                     };
-                    (fade_config, readiness, Some(queue_readiness))
+                    (fade_config, readiness, Some((queue_readiness, completion)))
                 } else {
                     (
                         fade_config,
@@ -1644,8 +1623,8 @@ async fn process_scene_observation(
             };
             match result {
                 Ok(()) => {
-                    if let Some(queued_readiness) = queued_readiness
-                        && !accept_queue_readiness(recall_queue, queued_readiness)
+                    if let Some((queued_readiness, completion)) = queued_readiness
+                        && !accept_queue_readiness(recall_queue, queued_readiness, completion)
                     {
                         cancel_recall_queue(
                             recall_queue,
@@ -1683,116 +1662,29 @@ async fn process_scene_observation(
                 }
             }
         }
-        RecallPolicyDecision::Skip { reason } => {
-            if !is_generation_current(generation, runtime_generation).await {
-                return;
-            }
-            event_bus.publish_scenes(
-                generation,
-                ScenesEvent::Skipped {
-                    scene_label: scene_label(&observation.scene),
-                    reason,
-                },
-            );
-            if let Some(queue_readiness) = queue_readiness {
-                if lockout.current() {
-                    cancel_recall_queue(
-                        recall_queue,
-                        late_canceled_observations,
-                        "lockout was enabled",
-                        true,
-                    );
-                    return;
-                }
-                let Some(readiness) = prepare_queue_readiness(
-                    recall_queue,
-                    queue_readiness,
-                    readiness_completion_tx.clone(),
-                ) else {
-                    cancel_recall_queue(
-                        recall_queue,
-                        late_canceled_observations,
-                        "LV1 recall readiness was lost",
-                        true,
-                    );
-                    return;
-                };
-                let Ok(permit) = fade.reserve().await else {
-                    cancel_recall_queue(
-                        recall_queue,
-                        late_canceled_observations,
-                        "Fade engine is unavailable",
-                        true,
-                    );
-                    return;
-                };
-                if !is_generation_current(generation, runtime_generation).await {
-                    cancel_recall_queue(
-                        recall_queue,
-                        late_canceled_observations,
-                        "LV1 connection generation changed",
-                        true,
-                    );
-                    return;
-                }
-                if lockout.current() {
-                    cancel_recall_queue(
-                        recall_queue,
-                        late_canceled_observations,
-                        "lockout was enabled",
-                        true,
-                    );
-                    return;
-                }
-                let (reply, rx) = oneshot::channel();
-                permit.send(FadeCommand::WaitForRecallReadiness {
-                    scene: FadeSceneIdentity {
-                        index: observation.scene.index,
-                        name: observation.scene.name.clone(),
-                    },
-                    expected_generation: generation,
-                    readiness,
-                    reply: Some(reply),
-                });
-                match rx.await {
-                    Ok(Ok(())) if accept_queue_readiness(recall_queue, queue_readiness) => {}
-                    Ok(Ok(())) => {
-                        cancel_recall_queue(
-                            recall_queue,
-                            late_canceled_observations,
-                            "LV1 recall readiness was lost",
-                            true,
-                        );
-                    }
-                    Ok(Err(_)) | Err(_) => {
-                        cancel_recall_queue(
-                            recall_queue,
-                            late_canceled_observations,
-                            "Fade engine is unavailable",
-                            true,
-                        );
-                    }
-                }
-            }
-        }
-        RecallPolicyDecision::Blocked { reason } => {
+        RecallPolicyDecision::Skip { reason } | RecallPolicyDecision::Blocked { reason } => {
             if !is_generation_current(generation, runtime_generation).await {
                 return;
             }
             let scene_label = scene_label(&observation.scene);
-            tracing::warn!(
-                event = "scene_recall_blocked",
-                scene = %scene_label,
-                reason = %reason,
-                "Scene recall blocked for {scene_label}: {reason}"
-            );
-            event_bus.publish_scenes(
-                generation,
+            let event = if blocked {
+                tracing::warn!(
+                    event = "scene_recall_blocked",
+                    scene = %scene_label,
+                    reason = %reason,
+                    "Scene recall blocked for {scene_label}: {reason}"
+                );
                 ScenesEvent::Blocked {
                     scene_label,
                     reason,
-                },
-            );
+                }
+            } else {
+                ScenesEvent::Skipped {
+                    scene_label,
+                    reason,
+                }
+            };
+            event_bus.publish_scenes(generation, event);
             if let Some(queue_readiness) = queue_readiness {
                 if lockout.current() {
                     cancel_recall_queue(
@@ -1803,11 +1695,9 @@ async fn process_scene_observation(
                     );
                     return;
                 }
-                let Some(readiness) = prepare_queue_readiness(
-                    recall_queue,
-                    queue_readiness,
-                    readiness_completion_tx.clone(),
-                ) else {
+                let Some((readiness, completion)) =
+                    prepare_queue_readiness(recall_queue, queue_readiness)
+                else {
                     cancel_recall_queue(
                         recall_queue,
                         late_canceled_observations,
@@ -1853,24 +1743,15 @@ async fn process_scene_observation(
                     readiness,
                     reply: Some(reply),
                 });
-                match rx.await {
-                    Ok(Ok(())) if accept_queue_readiness(recall_queue, queue_readiness) => {}
+                let cancellation = match rx.await {
                     Ok(Ok(())) => {
-                        cancel_recall_queue(
-                            recall_queue,
-                            late_canceled_observations,
-                            "LV1 recall readiness was lost",
-                            true,
-                        );
+                        (!accept_queue_readiness(recall_queue, queue_readiness, completion))
+                            .then_some("LV1 recall readiness was lost")
                     }
-                    Ok(Err(_)) | Err(_) => {
-                        cancel_recall_queue(
-                            recall_queue,
-                            late_canceled_observations,
-                            "Fade engine is unavailable",
-                            true,
-                        );
-                    }
+                    Ok(Err(_)) | Err(_) => Some("Fade engine is unavailable"),
+                };
+                if let Some(reason) = cancellation {
+                    cancel_recall_queue(recall_queue, late_canceled_observations, reason, true);
                 }
             }
         }
@@ -3507,6 +3388,56 @@ mod tests {
         fixture.publish_scene_observation(1, 22, intro);
         tokio::time::advance(Duration::from_millis(30)).await;
         assert_no_queue_fade_command(&mut fixture).await;
+    }
+
+    #[tokio::test]
+    async fn recall_queue_abort_releases_its_readiness_completion_receiver() {
+        let mut fixture =
+            FadeReservationLockoutFixture::connected_with_scenes(vec![queue_scene(1, "Intro")])
+                .await;
+        let recalled = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        fixture
+            .next_lv1_recall()
+            .await
+            .reply(Ok(RecallSceneDispatch {
+                scene_observation_sequence: 10,
+            }));
+        assert!(recalled.await.unwrap().is_ok());
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        fixture.set_current_scene(scene.clone());
+        fixture.publish_scene_observation(11, scene);
+        let command = tokio::time::timeout(Duration::from_secs(1), fixture.fade_commands.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let FadeCommand::WaitForRecallReadiness {
+            readiness, reply, ..
+        } = command
+        else {
+            panic!("expected readiness without fade targets");
+        };
+        let completion = readiness.completion.unwrap();
+        reply.unwrap().send(Ok(())).unwrap();
+
+        let (reply, aborted) = oneshot::channel();
+        fixture
+            .handle
+            .send(ScenesCommand::AbortAll { reply })
+            .await
+            .unwrap();
+        let command = fixture.fade_commands.recv().await.unwrap();
+        let FadeCommand::AbortAll { reply } = command else {
+            panic!("expected fade abort");
+        };
+        reply.unwrap().send(Ok(())).unwrap();
+        assert!(aborted.await.unwrap().is_ok());
+        assert!(
+            completion.is_closed(),
+            "canceled recalls must own no pending completion task"
+        );
     }
 
     #[tokio::test]
