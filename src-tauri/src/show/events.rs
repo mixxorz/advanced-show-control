@@ -3,20 +3,6 @@ use std::path::PathBuf;
 use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ShowEvent {
-    StateChanged {
-        reason: ShowProjectionReason,
-        state: ShowProjectionState,
-    },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ShowProjectionReason {
-    ConnectionMetadata,
-    FileMetadata,
-}
-
-#[derive(Debug, Clone, PartialEq)]
 pub struct ShowProjectionState {
     pub lockout: bool,
     pub show_file_path: Option<PathBuf>,

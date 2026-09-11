@@ -1,7 +1,7 @@
 use crate::cue_lists::CueListsProjectionState;
 use crate::scenes::{ScenesEvent, ScenesProjectionState};
 use crate::settings::{AppSettings, SettingsEvent};
-use crate::show::{ShowEvent, ShowProjectionState, ShowState};
+use crate::show::{ShowProjectionState, ShowState};
 
 use super::events::AppEvent;
 
@@ -27,7 +27,7 @@ impl Default for AppStateSnapshot {
 impl AppStateSnapshot {
     pub(super) fn apply(&mut self, event: &AppEvent) -> bool {
         match event {
-            AppEvent::Show(ShowEvent::StateChanged { state, .. }) => replace(&mut self.show, state),
+            AppEvent::Show(state) => replace(&mut self.show, state),
             AppEvent::Scenes {
                 event: ScenesEvent::StateChanged { state, .. },
                 ..

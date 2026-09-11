@@ -13,7 +13,6 @@ use crate::session::{SessionDocument, SessionReplacement};
 use crate::show_file::{backup_folder, read_show_file, write_show_file};
 
 use super::commands::ShowCommand;
-use super::events::{ShowEvent, ShowProjectionReason};
 use super::handle::ShowStateHandle;
 use super::lockout::ShowLockoutReader;
 use super::show_file::import_show_file;
@@ -71,6 +70,7 @@ impl ShowActorPeers {
 
 pub struct ShowActorTask {
     rx: mpsc::Receiver<ShowCommand>,
+    events: tokio::sync::broadcast::Receiver<AppEvent>,
     event_bus: AppEventBus,
     peers: ShowActorPeers,
     state: ShowState,
@@ -81,6 +81,7 @@ impl ShowActorTask {
     pub fn spawn(self) {
         tauri::async_runtime::spawn(run_show_actor(
             self.rx,
+            self.events,
             self.event_bus,
             self.peers,
             self.state,
@@ -109,36 +110,29 @@ fn build_show_actor_with_state(
     ShowActorPeers,
     ShowLockoutReader,
 ) {
-    event_bus.retain(&AppEvent::Show(ShowEvent::StateChanged {
-        reason: ShowProjectionReason::FileMetadata,
-        state: state.projection_state(),
-    }));
+    event_bus.retain(&AppEvent::Show(state.projection_state()));
     let (tx, rx) = mpsc::channel(32);
     let (lockout_tx, lockout_rx) = watch::channel(state.lockout());
     let peers = ShowActorPeers::default();
     let task = ShowActorTask {
         rx,
+        events: event_bus.subscribe(),
         event_bus,
         peers: peers.clone(),
         state,
         lockout_tx,
     };
-    (
-        ShowStateHandle::new(tx),
-        task,
-        peers,
-        ShowLockoutReader::new(lockout_rx),
-    )
+    (tx, task, peers, ShowLockoutReader::new(lockout_rx))
 }
 
 async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
+    mut events: tokio::sync::broadcast::Receiver<AppEvent>,
     event_bus: AppEventBus,
     peers: ShowActorPeers,
     mut state: ShowState,
     lockout_tx: watch::Sender<bool>,
 ) {
-    let mut events = event_bus.subscribe();
     loop {
         tokio::select! {
             command = rx.recv() => {
@@ -152,7 +146,7 @@ async fn run_show_actor(
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("show-actor", count);
                         state.mark_dirty();
-                        publish_state_changed(&event_bus, ShowProjectionReason::FileMetadata, &state);
+                        publish_state_changed(&event_bus, &state);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
@@ -182,27 +176,19 @@ fn handle_app_event(event: AppEvent, state: &mut ShowState, event_bus: &AppEvent
         }
         | AppEvent::CueLists(_) => {
             state.mark_dirty();
-            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+            publish_state_changed(event_bus, state);
         }
         _ => {}
     }
 }
 
-fn publish_state_changed(event_bus: &AppEventBus, reason: ShowProjectionReason, state: &ShowState) {
-    event_bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-        reason,
-        state: state.projection_state(),
-    }));
+fn publish_state_changed(event_bus: &AppEventBus, state: &ShowState) {
+    event_bus.publish(AppEvent::Show(state.projection_state()));
 }
 
-fn publish_if_changed(
-    event_bus: &AppEventBus,
-    reason: ShowProjectionReason,
-    state: &ShowState,
-    changed: bool,
-) {
+fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool) {
     if changed {
-        publish_state_changed(event_bus, reason, state);
+        publish_state_changed(event_bus, state);
     }
 }
 
@@ -221,12 +207,7 @@ async fn handle_command(
         }
         ShowCommand::SetLockout { enabled, reply } => {
             let changed = state.set_lockout(enabled);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::FileMetadata,
-                state,
-                changed,
-            );
+            publish_if_changed(event_bus, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
@@ -253,7 +234,7 @@ async fn handle_command(
                 )
                 .await?;
                 state.reset_for_new_show();
-                publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+                publish_state_changed(event_bus, state);
                 tracing::info!(event = "session_created", "New session created");
                 Ok(NewShowFileResult {
                     selected_scene_internal_id,
@@ -276,7 +257,7 @@ async fn handle_command(
                 );
                 write_show_file(&path, &file, &backup_folder())?;
                 state.mark_saved(path, saved_at);
-                publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+                publish_state_changed(event_bus, state);
                 tracing::info!(event = "session_saved", "Session saved");
                 Ok(ShowCommandResult { changed: true })
             }
@@ -287,12 +268,7 @@ async fn handle_command(
         }
         ShowCommand::SetDiscoveredLv1Systems { systems, reply } => {
             let changed = state.set_discovered_lv1_systems(systems);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
+            publish_if_changed(event_bus, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
@@ -304,12 +280,7 @@ async fn handle_command(
                 accepted: true,
                 changed,
             };
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
+            publish_if_changed(event_bus, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(outcome);
             }
@@ -323,12 +294,7 @@ async fn handle_command(
                 .runtime_generation
                 .if_current(expected_generation, || {
                     let changed = state.set_lv1_connection(identity);
-                    publish_if_changed(
-                        event_bus,
-                        ShowProjectionReason::ConnectionMetadata,
-                        state,
-                        changed,
-                    );
+                    publish_if_changed(event_bus, state, changed);
                     super::CompleteConnectionOutcome {
                         accepted: true,
                         changed,
@@ -344,12 +310,7 @@ async fn handle_command(
         #[cfg(test)]
         ShowCommand::FailLv1Connection { reply } => {
             let changed = state.set_lv1_connection(None);
-            publish_if_changed(
-                event_bus,
-                ShowProjectionReason::ConnectionMetadata,
-                state,
-                changed,
-            );
+            publish_if_changed(event_bus, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
@@ -378,7 +339,7 @@ async fn handle_command(
         #[cfg(test)]
         ShowCommand::ClearForTest { reply } => {
             state.clear();
-            publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+            publish_state_changed(event_bus, state);
             if let Some(reply) = reply {
                 let _ = reply.send(());
             }
@@ -511,7 +472,7 @@ async fn load_show_file_from_dto_if_current(
     if should_mark_dirty {
         state.mark_dirty();
     }
-    publish_state_changed(event_bus, ShowProjectionReason::FileMetadata, state);
+    publish_state_changed(event_bus, state);
     if alignment_changed {
         tracing::debug!(
             event = "session_scene_alignment",
@@ -591,7 +552,6 @@ mod tests {
     use crate::scenes::{ScenesCommand, build_scenes_actor};
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::commands::ShowCommand;
-    use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::handle::ShowStateHandle;
     use crate::show::{ShowFile, ShowFileSafety, ShowFileSceneConfig, ShowState};
 
@@ -709,10 +669,7 @@ mod tests {
     ) -> crate::show::events::ShowProjectionState {
         loop {
             match events.recv().await.unwrap() {
-                crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
-                    reason: ShowProjectionReason::FileMetadata,
-                    state,
-                }) => {
+                crate::runtime::events::AppEvent::Show(state) => {
                     return state;
                 }
                 _ => continue,
@@ -750,10 +707,7 @@ mod tests {
         assert!(response.await.unwrap().changed);
         assert!(matches!(
             events.recv().await.unwrap(),
-            crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
-                reason: ShowProjectionReason::ConnectionMetadata,
-                state,
-            }) if state.connected_lv1_identity.is_none()
+            crate::runtime::events::AppEvent::Show(state) if state.connected_lv1_identity.is_none()
         ));
     }
 
@@ -1306,58 +1260,34 @@ mod tests {
     async fn persisted_scene_edits_dirty_the_file_but_projection_only_facts_do_not() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = ShowState::default();
-
-        super::handle_app_event(
-            crate::runtime::events::AppEvent::Scenes {
-                generation: 1,
-                event: crate::scenes::ScenesEvent::StateChanged {
-                    state: crate::scenes::ScenesProjectionState {
-                        scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
-                        selected_scene_internal_id: None,
-                        scene_settings_clipboard_available: false,
-                        ready_generation: Some(0),
-                    },
-                    persisted_scene_edit: true,
-                },
+        let (_show, task, _, _) = super::build_show_actor(event_bus.clone());
+        let scene_event = |persisted_scene_edit| crate::runtime::events::AppEvent::Scenes {
+            generation: 1,
+            event: crate::scenes::ScenesEvent::StateChanged {
+                state: crate::scenes::ScenesProjectionState::default(),
+                persisted_scene_edit,
             },
-            &mut state,
-            &event_bus,
-        );
+        };
 
-        let dirty_state = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if let crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
-                    reason: ShowProjectionReason::FileMetadata,
-                    state,
-                }) = events.recv().await.unwrap()
-                {
-                    break state;
-                }
-            }
-        })
+        event_bus.publish(scene_event(true));
+        task.spawn();
+        let dirty_state = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_file_metadata_event(&mut events),
+        )
         .await
         .unwrap();
         assert!(dirty_state.show_file_dirty);
 
-        super::handle_app_event(
-            crate::runtime::events::AppEvent::Scenes {
-                generation: 1,
-                event: crate::scenes::ScenesEvent::StateChanged {
-                    state: crate::scenes::ScenesProjectionState {
-                        scene_configs: vec![scene_config(1, Some(1), "Intro", 1_000)],
-                        selected_scene_internal_id: None,
-                        scene_settings_clipboard_available: false,
-                        ready_generation: Some(0),
-                    },
-                    persisted_scene_edit: false,
-                },
-            },
-            &mut state,
-            &event_bus,
+        event_bus.publish(scene_event(false));
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                recv_file_metadata_event(&mut events),
+            )
+            .await
+            .is_err()
         );
-
-        assert!(events.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -1440,28 +1370,16 @@ mod tests {
     async fn persisted_cue_list_edit_marks_show_file_dirty() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let mut state = ShowState::default();
+        let (_show, task, _, _) = super::build_show_actor(event_bus.clone());
+        event_bus.publish(crate::runtime::events::AppEvent::CueLists(
+            CueListsProjectionState::default(),
+        ));
+        task.spawn();
 
-        super::handle_app_event(
-            crate::runtime::events::AppEvent::CueLists(CueListsProjectionState {
-                document: crate::cue_lists::CueListDocument::default(),
-                last_recall_status: None,
-            }),
-            &mut state,
-            &event_bus,
-        );
-
-        let dirty_state = tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            loop {
-                if let crate::runtime::events::AppEvent::Show(ShowEvent::StateChanged {
-                    reason: ShowProjectionReason::FileMetadata,
-                    state,
-                }) = events.recv().await.unwrap()
-                {
-                    break state;
-                }
-            }
-        })
+        let dirty_state = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            recv_file_metadata_event(&mut events),
+        )
         .await
         .unwrap();
 

@@ -7,7 +7,7 @@ use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scenes::ScenesEvent;
 use crate::settings::SettingsEvent;
-use crate::show::ShowEvent;
+use crate::show::ShowProjectionState;
 
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
@@ -36,7 +36,7 @@ pub enum AppEvent {
         scenes: crate::scenes::ScenesProjectionState,
         cue_lists: crate::cue_lists::CueListsProjectionState,
     },
-    Show(ShowEvent),
+    Show(ShowProjectionState),
     Settings(SettingsEvent),
 }
 
@@ -108,7 +108,6 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
 mod tests {
     use super::*;
     use crate::lv1::{SceneObservation, SceneState};
-    use crate::show::ShowProjectionReason;
 
     #[tokio::test]
     async fn publish_succeeds_without_subscribers() {
@@ -255,46 +254,34 @@ mod tests {
         let bus = AppEventBus::new(16);
         let mut rx = bus.subscribe();
 
-        bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::FileMetadata,
-            state: crate::show::ShowProjectionState {
-                lockout: false,
-                show_file_path: None,
-                show_file_name: "Untitled Session".to_string(),
-                show_file_dirty: false,
-                show_file_last_saved_at: None,
-                discovered_lv1_systems: vec![],
-                connected_lv1_identity: None,
-                last_event_at: None,
-            },
+        bus.publish(AppEvent::Show(crate::show::ShowProjectionState {
+            lockout: false,
+            show_file_path: None,
+            show_file_name: "Untitled Session".to_string(),
+            show_file_dirty: false,
+            show_file_last_saved_at: None,
+            discovered_lv1_systems: vec![],
+            connected_lv1_identity: None,
+            last_event_at: None,
         }));
 
         let event = rx.recv().await.unwrap();
-        assert!(matches!(
-            event,
-            AppEvent::Show(ShowEvent::StateChanged {
-                reason: ShowProjectionReason::FileMetadata,
-                ..
-            })
-        ));
+        assert!(matches!(event, AppEvent::Show(_)));
     }
 
     #[tokio::test]
     async fn show_fact_publish_without_subscribers_is_safe() {
         let bus = AppEventBus::new(1);
 
-        let sent = bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::FileMetadata,
-            state: crate::show::ShowProjectionState {
-                lockout: false,
-                show_file_path: None,
-                show_file_name: "Untitled Session".to_string(),
-                show_file_dirty: false,
-                show_file_last_saved_at: None,
-                discovered_lv1_systems: vec![],
-                connected_lv1_identity: None,
-                last_event_at: None,
-            },
+        let sent = bus.publish(AppEvent::Show(crate::show::ShowProjectionState {
+            lockout: false,
+            show_file_path: None,
+            show_file_name: "Untitled Session".to_string(),
+            show_file_dirty: false,
+            show_file_last_saved_at: None,
+            discovered_lv1_systems: vec![],
+            connected_lv1_identity: None,
+            last_event_at: None,
         }));
 
         assert_eq!(sent, 0);

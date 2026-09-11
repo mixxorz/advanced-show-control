@@ -5,7 +5,7 @@ use crate::projector::LogSeverity;
 use crate::runtime::events::AppEventBus;
 use crate::scenes::{SceneConfig, ScenesEvent, ScenesProjectionState};
 use crate::settings::{AppSettings, SettingsEvent};
-use crate::show::{ShowEvent, ShowProjectionReason, ShowState};
+use crate::show::ShowState;
 use serde_json::Value;
 use tauri::{
     Listener,
@@ -73,10 +73,7 @@ impl Drop for ProjectorTest {
 fn show_event(enabled: bool) -> AppEvent {
     let mut state = ShowState::default();
     state.set_lockout(enabled);
-    AppEvent::Show(ShowEvent::StateChanged {
-        reason: ShowProjectionReason::FileMetadata,
-        state: state.projection_state(),
-    })
+    AppEvent::Show(state.projection_state())
 }
 
 fn cue_state() -> CueListsProjectionState {
@@ -97,11 +94,11 @@ fn cue_state() -> CueListsProjectionState {
 #[tokio::test]
 async fn projector_starts_from_latest_state_even_when_published_before_subscription() {
     let events = AppEventBus::default();
-    let AppEvent::Show(ShowEvent::StateChanged { mut state, reason }) = show_event(true) else {
+    let AppEvent::Show(mut state) = show_event(true) else {
         unreachable!()
     };
     state.show_file_name = "Seeded Show".into();
-    events.publish(AppEvent::Show(ShowEvent::StateChanged { state, reason }));
+    events.publish(AppEvent::Show(state));
     let mut test = ProjectorTest::new(events);
     let snapshot = test.snapshot().await;
     assert_eq!(snapshot["lockout"], true);

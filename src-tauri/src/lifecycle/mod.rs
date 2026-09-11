@@ -958,7 +958,7 @@ mod tests {
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::scenes::ScenesCommand;
-    use crate::show::{ShowEvent, ShowProjectionReason};
+
     use std::path::PathBuf;
     use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};
@@ -1582,13 +1582,7 @@ mod tests {
             .expect("connected metadata should apply");
 
         loop {
-            if matches!(
-                events.recv().await.unwrap(),
-                AppEvent::Show(ShowEvent::StateChanged {
-                    reason: ShowProjectionReason::ConnectionMetadata,
-                    ..
-                })
-            ) {
+            if matches!(events.recv().await.unwrap(), AppEvent::Show(_)) {
                 break;
             }
         }
@@ -2971,10 +2965,7 @@ mod tests {
             .await
             .unwrap();
         loop {
-            if matches!(
-                rx.recv().await.unwrap(),
-                AppEvent::Show(ShowEvent::StateChanged { .. })
-            ) {
+            if matches!(rx.recv().await.unwrap(), AppEvent::Show(_)) {
                 break;
             }
         }

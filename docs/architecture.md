@@ -25,7 +25,7 @@ The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
 
 Native File menu actions call the same Tauri command functions used by the frontend. Dialog behavior, mailbox dispatch, and error mapping have one implementation in `ui/commands/show.rs`.
 
-Actors receive explicit mailbox command enums. Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
+Actors receive explicit mailbox command enums. Show, Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
 
 `AppEventBus` broadcasts ephemeral facts, never requests. Alongside the broadcast channel it retains the latest full Show, Scenes, Cue Lists, and Settings projections in one watch snapshot. Publishing replaces the corresponding projection before broadcasting; unchanged projections do not notify watch subscribers. This is in-memory state, not event replay or durable storage. Its fact families are:
 
@@ -36,7 +36,7 @@ Fade { generation, event }
 Scenes { generation, event }
 CueLists(state)
 SessionReplaced { generation, scenes, cue_lists }
-Show(event)
+Show(state)
 Settings(event)
 ```
 
@@ -91,7 +91,7 @@ Fade feedback remains active during readiness. A manual fader override beyond th
 
 ## Show, Cue Lists, and Persistence
 
-`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show observes these app-lifetime facts without generation filtering, marks dirty, and publishes file metadata. On Show event-bus lag it conservatively marks the file dirty.
+`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show subscribes during construction, so edits cannot fall into a gap before its task starts. It observes these app-lifetime facts without generation filtering, marks dirty, and publishes its full projection without redundant reason tags. On Show event-bus lag it conservatively marks the file dirty.
 
 Persistence shares the scene domain's channel targets, channel references, and scope toggles directly; there is no duplicate file-only model or conversion for those values. The file scene wrapper remains distinct because legacy files may omit the durable scene UUID.
 

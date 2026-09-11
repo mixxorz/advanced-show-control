@@ -10,7 +10,7 @@ pub use actor::{ShowActorPeers, ShowActorTask, build_show_actor};
 pub use commands::{
     ConnectCommandResult, LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult,
 };
-pub use events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
+pub use events::ShowProjectionState;
 pub use handle::ShowStateHandle;
 pub use lockout::ShowLockoutReader;
 pub use show_file::{

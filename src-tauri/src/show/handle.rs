@@ -1,32 +1,4 @@
-use tokio::sync::mpsc;
-
-use crate::runtime::events::AppEventBus;
-
-use super::commands::ShowCommand;
-
-#[derive(Clone)]
-pub struct ShowStateHandle {
-    tx: mpsc::Sender<ShowCommand>,
-}
-
-impl ShowStateHandle {
-    pub fn new_empty(event_bus: AppEventBus) -> Self {
-        let (handle, task, _peers, _lockout) = super::actor::build_show_actor(event_bus);
-        task.spawn();
-        handle
-    }
-
-    pub(super) fn new(tx: mpsc::Sender<ShowCommand>) -> Self {
-        Self { tx }
-    }
-
-    pub async fn send(
-        &self,
-        command: ShowCommand,
-    ) -> Result<(), mpsc::error::SendError<ShowCommand>> {
-        self.tx.send(command).await
-    }
-}
+pub type ShowStateHandle = tokio::sync::mpsc::Sender<super::commands::ShowCommand>;
 
 #[cfg(test)]
 mod tests {
@@ -37,22 +9,21 @@ mod tests {
     use crate::runtime::generation::RuntimeGeneration;
     use crate::scenes::build_scenes_actor;
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
-    use crate::show::events::{ShowEvent, ShowProjectionReason};
     use crate::show::{ShowCommand, ShowCommandResult, ShowFile, ShowFileSafety};
 
-    async fn recv_show_event(
-        events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
-        expected_reason: ShowProjectionReason,
-    ) {
+    async fn recv_show_event(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
         loop {
             let event = events.recv().await.unwrap();
-            if matches!(
-                event,
-                AppEvent::Show(ShowEvent::StateChanged { reason, .. }) if reason == expected_reason
-            ) {
+            if matches!(event, AppEvent::Show(_)) {
                 break;
             }
         }
+    }
+
+    fn show_actor(event_bus: AppEventBus) -> ShowStateHandle {
+        let (show, task, _, _) = super::super::actor::build_show_actor(event_bus);
+        task.spawn();
+        show
     }
 
     fn fake_settings_handle() -> SettingsHandle {
@@ -159,7 +130,7 @@ mod tests {
     async fn show_event_carries_full_projection_state() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus);
+        let show = show_actor(event_bus);
 
         show.send(ShowCommand::SetLockout {
             enabled: true,
@@ -170,8 +141,7 @@ mod tests {
 
         let event = events.recv().await.unwrap();
         match event {
-            AppEvent::Show(ShowEvent::StateChanged { reason, state }) => {
-                assert_eq!(reason, ShowProjectionReason::FileMetadata);
+            AppEvent::Show(state) => {
                 assert!(state.lockout);
                 assert_eq!(state.show_file_name, "Untitled Session");
                 assert!(!state.show_file_dirty);
@@ -184,7 +154,7 @@ mod tests {
     async fn set_lockout_publishes_show_event_when_changed() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus);
+        let show = show_actor(event_bus);
 
         let (reply, rx) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::SetLockout {
@@ -195,14 +165,14 @@ mod tests {
         .unwrap();
         assert!(rx.await.unwrap().changed);
 
-        recv_show_event(&mut events, ShowProjectionReason::FileMetadata).await;
+        recv_show_event(&mut events).await;
     }
 
     #[tokio::test]
     async fn no_op_lockout_change_does_not_publish_show_event() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus);
+        let show = show_actor(event_bus);
 
         let (reply, rx) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::SetLockout {
@@ -220,7 +190,7 @@ mod tests {
     async fn complete_connection_publishes_one_full_projection_and_noop_publishes_none() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus);
+        let show = show_actor(event_bus);
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
             host: Some("LV1-FOH".to_string()),
@@ -243,12 +213,10 @@ mod tests {
             }
         );
 
-        let AppEvent::Show(ShowEvent::StateChanged { reason, state }) =
-            events.recv().await.unwrap()
-        else {
+        let AppEvent::Show(state) = events.recv().await.unwrap() else {
             panic!("expected Show projection");
         };
-        assert_eq!(reason, ShowProjectionReason::ConnectionMetadata);
+
         assert_eq!(state.connected_lv1_identity, Some(identity.clone()));
         assert!(events.try_recv().is_err());
 
@@ -273,7 +241,7 @@ mod tests {
     async fn failed_connection_clears_connected_identity_with_one_projection() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus);
+        let show = show_actor(event_bus);
         let identity = Lv1SystemIdentity {
             uuid: Some("uuid-1".to_string()),
             host: Some("LV1-FOH".to_string()),
@@ -286,15 +254,14 @@ mod tests {
         })
         .await
         .unwrap();
-        recv_show_event(&mut events, ShowProjectionReason::ConnectionMetadata).await;
+        recv_show_event(&mut events).await;
 
         let (reply, rx) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::FailLv1Connection { reply: Some(reply) })
             .await
             .unwrap();
         assert_eq!(rx.await.unwrap(), ShowCommandResult { changed: true });
-        let AppEvent::Show(ShowEvent::StateChanged { state, .. }) = events.recv().await.unwrap()
-        else {
+        let AppEvent::Show(state) = events.recv().await.unwrap() else {
             panic!("expected Show projection");
         };
         assert_eq!(state.connected_lv1_identity, None);
@@ -305,7 +272,7 @@ mod tests {
     async fn show_actor_preserves_identity_across_active_generation_lv1_disconnect() {
         let event_bus = AppEventBus::default();
         let mut show_events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let show = show_actor(event_bus.clone());
 
         let identity = Lv1SystemIdentity {
             uuid: Some("lv1-a".to_string()),
@@ -319,7 +286,7 @@ mod tests {
         })
         .await
         .unwrap();
-        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
+        recv_show_event(&mut show_events).await;
 
         event_bus.publish(AppEvent::Runtime(
             RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 7 },
@@ -348,7 +315,7 @@ mod tests {
     async fn show_actor_ignores_stale_generation_lv1_disconnect() {
         let event_bus = AppEventBus::default();
         let mut show_events = event_bus.subscribe();
-        let show = ShowStateHandle::new_empty(event_bus.clone());
+        let show = show_actor(event_bus.clone());
 
         let identity = Lv1SystemIdentity {
             uuid: Some("lv1-a".to_string()),
@@ -362,7 +329,7 @@ mod tests {
         })
         .await
         .unwrap();
-        recv_show_event(&mut show_events, ShowProjectionReason::ConnectionMetadata).await;
+        recv_show_event(&mut show_events).await;
 
         event_bus.publish(AppEvent::Runtime(
             RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 7 },
