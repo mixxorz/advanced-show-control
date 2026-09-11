@@ -44,6 +44,20 @@ type ActiveDrag =
 
 const CUE_SHORTCUT_PRIORITY = 90;
 
+/**
+ * @cc [owner:mixxorz,label:product;safety] cue-entry-recall-selection
+ * A single click MUST only select an entry; cue dispatch MUST require the Cue action, the configured
+ * Cue shortcut, or a double click and MUST target an entry still present in the active cue list.
+ * Selection MUST clear immediately after dispatch and when the selected entry leaves the active
+ * list, and Cue shortcuts MUST NOT dispatch while blocked by editable or modal interaction.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] cue-entry-mutations
+ * Dropping a scene on a valid active-list position MUST request insertion at that position; dropping
+ * an existing cue entry on a different known entry MUST send every active-list entry ID exactly once
+ * in the resulting order. Invalid or same-entry drops MUST NOT mutate the list, while Remove MUST
+ * dispatch immediately without confirmation.
+ */
 export function CueListsTab() {
   const { appState } = useAppState();
   const commands = useAppCommands();
@@ -404,6 +418,12 @@ function CueListPane(props: {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:accessibility;product] cue-entry-remove-action-isolated
+ * Cue-entry selection MUST use a semantic button that is a sibling of Remove, never an interactive
+ * ancestor of it. Enter, Space, or pointer activation on Remove MUST dispatch only removal without
+ * selecting or cueing the containing entry.
+ */
 function CueEntryRow(props: {
   entry: CueEntry;
   index: number;
@@ -468,17 +488,9 @@ function CueEntryRow(props: {
         ref={sortable.setNodeRef}
         className={
           props.selected
-            ? `grid w-full grid-cols-[1.25rem_1fr_4rem_3rem] items-center border border-accent-orange-active border-l-[3px] ${leftBorderClass} bg-accent-orange-soft py-1.5 pr-2 pl-0 text-left`
-            : `grid w-full grid-cols-[1.25rem_1fr_4rem_3rem] items-center border border-transparent border-b-console-line-soft/60 border-l-[3px] ${leftBorderClass} py-1.5 pr-2 pl-0 text-left hover:bg-console-section`
+            ? `grid w-full grid-cols-[1fr_3rem] items-center border border-accent-orange-active border-l-[3px] ${leftBorderClass} bg-accent-orange-soft py-1.5 pr-2 pl-0 text-left`
+            : `grid w-full grid-cols-[1fr_3rem] items-center border border-transparent border-b-console-line-soft/60 border-l-[3px] ${leftBorderClass} py-1.5 pr-2 pl-0 text-left hover:bg-console-section`
         }
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            props.onSelectCueEntry?.(props.entry.id);
-          }
-        }}
-        onClick={() => props.onSelectCueEntry?.(props.entry.id)}
-        onDoubleClick={() => void props.onCueEntry?.(props.entry.id)}
         style={{
           opacity: sortable.isDragging ? 0.55 : 1,
           transform: CSS.Transform.toString(
@@ -487,35 +499,53 @@ function CueEntryRow(props: {
           transition: sortable.transition,
           zIndex: sortable.isDragging ? 1 : undefined,
         }}
-        {...sortable.attributes}
-        {...sortable.listeners}
       >
-        <span className="flex justify-start overflow-visible">
-          {showIndicator ? (
-            <svg
-              aria-hidden="true"
-              className={`h-4 w-[0.7rem] fill-current ${stateClass}`}
-              viewBox="0 0 7 10"
-            >
-              <polygon points="0,0 7,5 0,10" />
-            </svg>
-          ) : null}
-        </span>
-        <div className={`min-w-0 truncate text-base font-normal ${textClass}`}>
-          {rowLabel}
-        </div>
-        <span className={`text-right font-mono text-base ${textClass}`}>
-          {formatCueEntrySceneNumber(props.entry, props.sceneConfigs)}
-        </span>
+        <button
+          {...sortable.attributes}
+          {...sortable.listeners}
+          className="grid min-w-0 grid-cols-[1.25rem_1fr_4rem] items-center text-left"
+          onClick={() => props.onSelectCueEntry?.(props.entry.id)}
+          onDoubleClick={() => void props.onCueEntry?.(props.entry.id)}
+          onKeyDown={(event) => {
+            if (event.key === " ") {
+              event.preventDefault();
+              props.onSelectCueEntry?.(props.entry.id);
+            }
+          }}
+          type="button"
+        >
+          <span className="flex justify-start overflow-visible">
+            {showIndicator ? (
+              <svg
+                aria-hidden="true"
+                className={`h-4 w-[0.7rem] fill-current ${stateClass}`}
+                viewBox="0 0 7 10"
+              >
+                <polygon points="0,0 7,5 0,10" />
+              </svg>
+            ) : null}
+          </span>
+          <span
+            className={`min-w-0 truncate text-base font-normal ${textClass}`}
+          >
+            {rowLabel}
+          </span>
+          <span className={`text-right font-mono text-base ${textClass}`}>
+            {formatCueEntrySceneNumber(props.entry, props.sceneConfigs)}
+          </span>
+        </button>
         <div className="flex justify-end">
           <ConsoleIconButton
             aria-label={`Remove cue ${props.index + 1}`}
-            onClick={(event) => {
-              event.stopPropagation();
-              void props.onDeleteCueEntry?.(props.entry.id);
+            onClick={() => void props.onDeleteCueEntry?.(props.entry.id)}
+            onKeyDown={(event) => {
+              if (event.key === " ") {
+                event.preventDefault();
+                void props.onDeleteCueEntry?.(props.entry.id);
+              }
             }}
-            onPointerDown={(event) => event.stopPropagation()}
             size="small"
+            type="button"
             variant="ghost-danger"
           >
             <Trash2 aria-hidden="true" className="h-4 w-4" />
@@ -526,6 +556,11 @@ function CueEntryRow(props: {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] missing-scene-name-presentation
+ * An entry whose `sceneInternalId` has no matching scene config MUST be presented as `Missing scene`
+ * rather than inheriting another scene name or disappearing from the cue list.
+ */
 function formatCueEntrySceneName(entry: CueEntry, sceneConfigs: SceneConfig[]) {
   const scene = sceneConfigs.find(
     (sceneConfig) => sceneConfig.internalSceneId === entry.sceneInternalId,
@@ -533,6 +568,11 @@ function formatCueEntrySceneName(entry: CueEntry, sceneConfigs: SceneConfig[]) {
   return scene?.sceneName ?? "Missing scene";
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] missing-scene-number-presentation
+ * Cue-entry scene numbers MUST come from the matching scene config; a missing scene reference or a
+ * matched scene without an LV1 index MUST use the standard unavailable-scene-number presentation.
+ */
 function formatCueEntrySceneNumber(
   entry: CueEntry,
   sceneConfigs: SceneConfig[],
@@ -564,6 +604,11 @@ function SceneInsertPreview(props: { scene: SceneConfig | null }) {
 
 const sceneDropZoneId = "cue-scene-drop-zone";
 
+/**
+ * @cc [owner:mixxorz,label:product] scene-drop-position
+ * The list drop zone MUST resolve to append, a cue-entry drop target MUST resolve to that entry's
+ * current index, and a missing or unknown target MUST resolve to no insertion.
+ */
 function sceneInsertIndex(entries: CueEntry[], overId: string | null) {
   if (!overId) return null;
   if (overId === sceneDropZoneId) return entries.length;

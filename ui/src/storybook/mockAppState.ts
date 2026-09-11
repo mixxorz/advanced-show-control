@@ -220,6 +220,13 @@ function makeBaseDisconnectedAppState(
   };
 }
 
+/**
+ * @cc [owner:mixxorz,label:testing] connected-fixtures-are-self-consistent
+ * For the default input and supported inputs containing at least two scene configs, the selected
+ * scene and every generated cue reference MUST identify one of those supplied configs. Returned
+ * scene and channel counts MUST match their returned arrays, and construction MUST NOT depend on
+ * randomness, clocks, backend calls, or environment values.
+ */
 function makeConnectedAppState(
   sceneConfigs = [makeStoredVerseScene(), makeStoredChorusScene()],
 ): AppViewState {

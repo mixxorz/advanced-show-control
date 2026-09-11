@@ -29,6 +29,31 @@ describe("CueListsTab", () => {
     expect(screen.queryByText(/Cued: Cue 1: Intro/i)).not.toBeInTheDocument();
   });
 
+  it("uses sibling semantic controls for cue selection and removal", () => {
+    renderWithAppProviders(<CueListsTab />, { appState: cueListStateFixture });
+
+    const select = screen.getByRole("button", { name: /Intro.*001/i });
+    const remove = screen.getByRole("button", { name: "Remove cue 1" });
+
+    expect(select).not.toContainElement(remove);
+    expect(select.closest("button")).toBe(select);
+  });
+
+  it.each(["{Enter}", " "])(
+    "selects a cue entry with the keyboard using %j",
+    async (key) => {
+      const user = userEvent.setup();
+      renderWithAppProviders(<CueListsTab />, {
+        appState: cueListStateFixture,
+      });
+
+      screen.getByRole("button", { name: /Main.*002/i }).focus();
+      await user.keyboard(key);
+
+      expect(screen.getByRole("button", { name: "Cue" })).toBeEnabled();
+    },
+  );
+
   it("selects a cue entry before cueing it", async () => {
     const user = userEvent.setup();
     const cueEntry = vi.fn();
@@ -346,6 +371,33 @@ describe("CueListsTab", () => {
       screen.getByRole("button", { name: /Missing scene.*---/i }),
     ).toBeInTheDocument();
   });
+
+  it.each(["{Enter}", " "])(
+    "removes with %j without selecting or cueing the entry",
+    async (key) => {
+      const user = userEvent.setup();
+      const cueEntry = vi.fn();
+      const removeCueEntry = vi.fn();
+
+      renderWithAppProviders(<CueListsTab />, {
+        appState: cueListStateFixture,
+        commands: { cueEntry, removeCueEntry },
+      });
+
+      const removeButton = screen.getByRole("button", {
+        name: /Remove cue 1/i,
+      });
+      removeButton.focus();
+      await user.keyboard(key);
+
+      expect(removeCueEntry).toHaveBeenCalledWith("cue-1");
+      expect(cueEntry).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Cue" })).toBeDisabled();
+      expect(
+        screen.queryByRole("dialog", { name: /Delete Cue/i }),
+      ).not.toBeInTheDocument();
+    },
+  );
 
   it("removes cue entries immediately without opening a confirmation modal", async () => {
     const user = userEvent.setup();

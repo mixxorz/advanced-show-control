@@ -11,7 +11,9 @@ function harness(runSuite: () => Promise<void> = vi.fn(async () => undefined)) {
   const report = vi.fn(async (ok: boolean) => {
     calls.push(ok ? "report-pass" : "report-fail");
   });
-  const complete = vi.fn((ok: boolean) => calls.push(`complete-${ok}`));
+  const complete = vi.fn((ok: boolean) => {
+    calls.push(`complete-${ok}`);
+  });
   const restoreSettings = vi.fn(async () => {
     calls.push("restore");
   });
@@ -71,8 +73,8 @@ describe("executeSmokeLifecycle", () => {
       "unlock",
       "restore",
       "unlisten",
-      "report-pass",
       "complete-true",
+      "report-pass",
     ]);
     expect(smoke.restoreSettings).toHaveBeenCalledWith({
       threshold: 321,
@@ -93,8 +95,8 @@ describe("executeSmokeLifecycle", () => {
       "listen",
       "unlock",
       "unlisten",
-      "report-fail",
       "complete-false",
+      "report-fail",
     ]);
   });
 
@@ -116,8 +118,8 @@ describe("executeSmokeLifecycle", () => {
     expect(smoke.report).toHaveBeenCalledWith(false, failure);
     expect(smoke.calls.slice(-3)).toEqual([
       "unlisten",
-      "report-fail",
       "complete-false",
+      "report-fail",
     ]);
   });
 
@@ -141,8 +143,66 @@ describe("executeSmokeLifecycle", () => {
     expect(smoke.report).toHaveBeenCalledWith(false, failure);
     expect(smoke.calls.slice(-3)).toEqual([
       "unlisten",
-      "report-fail",
       "complete-false",
+      "report-fail",
+    ]);
+  });
+
+  test("returns false when completion throws without masking an earlier failure", async () => {
+    const suiteFailure = new Error("test failed");
+    const completionFailure = new Error("completion failed");
+    const smoke = harness(async () => {
+      throw suiteFailure;
+    });
+    smoke.options.frontendReady.mockImplementation(async () => {
+      smoke.calls.push("ready");
+      smoke.emit({ settings: { threshold: 456, nested: { enabled: true } } });
+    });
+    smoke.options.complete.mockImplementation(() => {
+      smoke.calls.push("complete-false");
+      throw completionFailure;
+    });
+
+    await expect(executeSmokeLifecycle(smoke.options)).resolves.toBe(false);
+
+    expect(smoke.restoreSettings).toHaveBeenCalledWith({
+      threshold: 456,
+      nested: { enabled: true },
+    });
+    expect(smoke.report).toHaveBeenCalledWith(false, suiteFailure);
+    expect(smoke.calls.slice(-4)).toEqual([
+      "restore",
+      "unlisten",
+      "complete-false",
+      "report-fail",
+    ]);
+  });
+
+  test("reports final failure when completion rejects after a successful suite", async () => {
+    const completionFailure = new Error("completion failed");
+    const smoke = harness();
+    smoke.options.frontendReady.mockImplementation(async () => {
+      smoke.calls.push("ready");
+      smoke.emit({ settings: { threshold: 654, nested: { enabled: true } } });
+    });
+    smoke.options.complete.mockImplementation(async () => {
+      smoke.calls.push("complete-true");
+      throw completionFailure;
+    });
+
+    await expect(executeSmokeLifecycle(smoke.options)).resolves.toBe(false);
+
+    expect(smoke.restoreSettings).toHaveBeenCalledWith({
+      threshold: 654,
+      nested: { enabled: true },
+    });
+    expect(smoke.report).toHaveBeenCalledTimes(1);
+    expect(smoke.report).toHaveBeenCalledWith(false, completionFailure);
+    expect(smoke.calls.slice(-4)).toEqual([
+      "restore",
+      "unlisten",
+      "complete-true",
+      "report-fail",
     ]);
   });
 });

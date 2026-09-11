@@ -253,6 +253,40 @@ describe("AppRuntime connection lifecycle", () => {
     ).toBeInTheDocument();
   });
 
+  it("does not let an older command failure overwrite a newer command outcome", async () => {
+    const user = userEvent.setup();
+    const olderStore = createDeferred<void>();
+    const newerStore = createDeferred<void>();
+    const storeSceneConfig = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(() => olderStore.promise)
+      .mockImplementationOnce(() => newerStore.promise);
+    render(<AppRuntime services={makeServices({ storeSceneConfig })} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+
+    const store = screen.getByRole("button", { name: "Store" });
+    await user.click(store);
+    await user.click(store);
+
+    await act(async () => {
+      newerStore.resolve();
+      await newerStore.promise;
+      olderStore.reject(new Error("older store failed"));
+      await olderStore.promise.catch(() => undefined);
+    });
+
+    await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
+
+    expect(
+      screen.queryByText("Error: older store failed"),
+    ).not.toBeInTheDocument();
+  });
+
   it("wires cue recall and go buttons to runtime services", async () => {
     const user = userEvent.setup();
     const services = makeServices({

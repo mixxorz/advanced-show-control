@@ -11,6 +11,23 @@ const tabs: { id: MainTab; label: string }[] = [
   { id: "settings", label: "Settings" },
 ];
 
+/**
+ * @cc [owner:mixxorz,label:product] main-tab-selection
+ * The bar MUST render each supported `MainTab` once in declared order, mark only `activeTab` as
+ * active, and pass the activated tab's exact ID to `onSelectTab`; tab selection MUST remain owned by
+ * the caller rather than being stored locally.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] connection-presentation-open-action
+ * Connection presentation MUST map `connected`, `connecting`, and all other projected states to
+ * `Connected`, `Connecting`, and `Offline`, respectively. The console button MUST show the projected
+ * host or `Console A` when absent and MUST invoke `onOpenConnection` when activated.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety;accessibility] advisory-lockout-control
+ * The SAFE button's pressed state MUST reflect only projected `lockout`, and activation MUST invoke
+ * `toggleLockout` without locally treating the requested state as authoritative.
+ */
 export function TopTabBar(props: {
   activeTab: MainTab;
   onOpenConnection: () => void;

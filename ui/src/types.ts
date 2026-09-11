@@ -1,4 +1,3 @@
-// Keep these types in sync with src-tauri/src/projector/view.rs; Rust owns AppViewState snapshots; TS mirrors serialized Tauri event payloads; update both and run npm run typecheck.
 export type ConnectionState = "disconnected" | "connecting" | "connected";
 export type DiscoveredLv1Status =
   | "available"
@@ -28,6 +27,11 @@ export type KeyboardShortcutSettings = {
   cue: KeyboardShortcut;
 };
 
+/**
+ * @cc [owner:mixxorz,label:architecture] complete-settings-value
+ * `AppSettings` MUST remain a complete replacement value matching backend settings serialization;
+ * frontend edits MUST preserve and submit fields they do not change.
+ */
 export type AppSettings = {
   autoLoadLastShowFile: boolean;
   autoSaveSessions: boolean;
@@ -114,6 +118,12 @@ export type AppLogEntry = {
   message: string;
 };
 
+/**
+ * @cc [owner:mixxorz,label:architecture;api] serialized-view-mirror
+ * `AppViewState` MUST mirror the camel-cased Tauri payload defined by
+ * `src-tauri/src/projector/view.rs`; frontend-only fields MUST NOT be added to create a second owner
+ * for backend state.
+ */
 export type AppViewState = {
   settings: AppSettings;
   connection: ConnectionState;
@@ -142,6 +152,11 @@ export type AppViewState = {
   stateVersion: number;
 };
 
+/**
+ * @cc [owner:mixxorz,label:architecture] pre-snapshot-placeholder
+ * This value MUST be used only before the first accepted backend snapshot or in isolated mocks; it
+ * MUST NOT overwrite an accepted snapshot or be treated as evidence of backend disconnection.
+ */
 export const disconnectedAppViewState: AppViewState = {
   settings: {
     autoLoadLastShowFile: false,

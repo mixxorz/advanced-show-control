@@ -3,6 +3,12 @@ import type { AppCommands } from "../appContext";
 const mutationCompleted = async () => {};
 const mutationSucceeded = async () => true;
 
+/**
+ * @cc [owner:mixxorz,label:testing] default-story-commands-are-deterministic
+ * Default story commands MUST perform no application, network, filesystem, timer, or shared-state
+ * side effects and MUST resolve deterministically; stories that need behavior MUST provide an
+ * explicit command override.
+ */
 export const mockAppCommands: AppCommands = {
   abortAll: mutationCompleted,
   addSceneToActiveCueList: mutationCompleted,

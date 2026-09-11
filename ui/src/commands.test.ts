@@ -17,7 +17,9 @@ import {
   probeLv1TcpConnectLatency,
   recallCuedCue,
   recallScene,
+  reorderCueEntries,
   reorderCueLists,
+  replaceAppSettings,
   selectSceneConfig,
   setChannelScoped,
 } from "./commands";
@@ -143,12 +145,61 @@ describe("cue list commands", () => {
     });
   });
 
+  it("forwards the complete cue-entry order", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+
+    await reorderCueEntries(["entry-c", "entry-a", "entry-b"]);
+
+    expect(invoke).toHaveBeenCalledWith("reorder_cue_entries", {
+      orderedEntryIds: ["entry-c", "entry-a", "entry-b"],
+    });
+  });
+
   it("calls recall_cued_cue without arguments", async () => {
     vi.mocked(invoke).mockResolvedValue(undefined);
 
     await recallCuedCue();
 
     expect(invoke).toHaveBeenCalledWith("recall_cued_cue");
+  });
+});
+
+describe("settings commands", () => {
+  it("forwards one complete settings replacement", async () => {
+    vi.mocked(invoke).mockResolvedValue(undefined);
+    const settings = {
+      autoLoadLastShowFile: true,
+      autoSaveSessions: false,
+      keyboardShortcuts: {
+        go: {
+          key: "Space",
+          modifiers: {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+          },
+        },
+        cue: {
+          key: "C",
+          modifiers: {
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+          },
+        },
+      },
+      timeDisplay: "twentyFourHour" as const,
+      faderOverrideSensitivity: 9,
+      enableExtensiveDiagnostics: false,
+      sameSceneRecallEnabled: true,
+      sameSceneRecallThresholdMs: 500,
+    };
+
+    await replaceAppSettings(settings);
+
+    expect(invoke).toHaveBeenCalledWith("replace_app_settings", { settings });
   });
 });
 

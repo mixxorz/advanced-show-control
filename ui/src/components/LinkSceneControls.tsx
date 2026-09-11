@@ -1,10 +1,15 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { SceneConfig, SceneSummary } from "../types";
 import { useAppCommands } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
 import { OverwriteSceneLinkModal } from "./OverwriteSceneLinkModal";
 import { Panel } from "./Panel";
 
+/**
+ * @cc [owner:mixxorz,label:product] link-target-fallback-order
+ * The default link target MUST be the first LV1 scene without an existing config, falling back to
+ * the first LV1 scene and then to no target when the LV1 scene list is empty.
+ */
 function defaultTargetIndex(
   lv1Scenes: SceneSummary[],
   existingConfigs: SceneConfig[],
@@ -19,6 +24,21 @@ function defaultTargetIndex(
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:product;safety] link-overwrite-gating
+ * Linking MUST dispatch nothing unless the target index exists in the latest `lv1Scenes`. A target
+ * currently claimed by a config MUST require explicit overwrite confirmation; an unclaimed target
+ * MUST link with overwrite disabled.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] link-selection-and-command-sequencing
+ * A selection absent from the latest `lv1Scenes` MUST fall back using `link-target-fallback-order`.
+ * Pending overwrite intent MUST remain bound to the exact source internal ID and target index/name
+ * that created it, and MUST be cleared when either identity ceases to match current props.
+ * Confirmation MUST revalidate the latest conflict state, dispatch at most once using that conflict
+ * as the overwrite flag, and clear the modal. Cancellation MUST clear it without dispatch. Delete
+ * MUST target only the source scene's internal ID.
+ */
 export function LinkSceneControls(props: {
   scene: SceneConfig;
   lv1Scenes: SceneSummary[];
@@ -31,39 +51,84 @@ export function LinkSceneControls(props: {
   );
   const [selectedTargetIndex, setSelectedTargetIndex] =
     useState(fallbackTargetIndex);
-  const [pendingOverwriteTargetIndex, setPendingOverwriteTargetIndex] =
-    useState<number | null>(null);
+  const [pendingOverwrite, setPendingOverwrite] = useState<{
+    sourceInternalSceneId: string;
+    targetIndex: number;
+    targetName: string;
+  } | null>(null);
   const effectiveSelectedTargetIndex = props.lv1Scenes.some(
     (scene) => String(scene.index) === selectedTargetIndex,
   )
     ? selectedTargetIndex
     : fallbackTargetIndex;
 
+  const pendingTarget =
+    pendingOverwrite?.sourceInternalSceneId === props.scene.internalSceneId
+      ? props.lv1Scenes.find(
+          (scene) =>
+            scene.index === pendingOverwrite.targetIndex &&
+            scene.name === pendingOverwrite.targetName,
+        )
+      : undefined;
+
+  useEffect(() => {
+    if (!pendingOverwrite || pendingTarget) return;
+
+    queueMicrotask(() => {
+      setPendingOverwrite((current) =>
+        current === pendingOverwrite ? null : current,
+      );
+    });
+  }, [pendingOverwrite, pendingTarget]);
+
   function linkSelectedTarget() {
     if (!effectiveSelectedTargetIndex) return;
-    const targetIndex = Number(effectiveSelectedTargetIndex);
+    const target = props.lv1Scenes.find(
+      (scene) => String(scene.index) === effectiveSelectedTargetIndex,
+    );
+    if (!target) return;
+
     const conflict = props.existingConfigs.some(
-      (scene) => scene.sceneIndex === targetIndex,
+      (scene) => scene.sceneIndex === target.index,
     );
     if (conflict) {
-      setPendingOverwriteTargetIndex(targetIndex);
+      setPendingOverwrite({
+        sourceInternalSceneId: props.scene.internalSceneId,
+        targetIndex: target.index,
+        targetName: target.name,
+      });
       return;
     }
-    linkTarget(targetIndex, false);
+    linkTarget(props.scene.internalSceneId, target.index, false);
   }
 
-  function linkTarget(targetIndex: number, overwriteExisting: boolean) {
+  function linkTarget(
+    sourceInternalSceneId: string,
+    targetIndex: number,
+    overwriteExisting: boolean,
+  ) {
     void commands.linkSceneConfig(
-      props.scene.internalSceneId,
+      sourceInternalSceneId,
       targetIndex,
       overwriteExisting,
     );
   }
 
   function confirmOverwrite() {
-    if (pendingOverwriteTargetIndex === null) return;
-    linkTarget(pendingOverwriteTargetIndex, true);
-    setPendingOverwriteTargetIndex(null);
+    if (!pendingOverwrite || !pendingTarget) {
+      setPendingOverwrite(null);
+      return;
+    }
+
+    const conflictStillExists = props.existingConfigs.some(
+      (scene) => scene.sceneIndex === pendingOverwrite.targetIndex,
+    );
+    linkTarget(
+      pendingOverwrite.sourceInternalSceneId,
+      pendingOverwrite.targetIndex,
+      conflictStillExists,
+    );
+    setPendingOverwrite(null);
   }
 
   function deleteUnlinkedScene() {
@@ -126,17 +191,13 @@ export function LinkSceneControls(props: {
           </ConsoleButton>
         </div>
       </Panel>
-      {pendingOverwriteTargetIndex !== null ? (
+      {pendingOverwrite && pendingTarget ? (
         <OverwriteSceneLinkModal
-          onCancel={() => setPendingOverwriteTargetIndex(null)}
+          onCancel={() => setPendingOverwrite(null)}
           onOverwrite={confirmOverwrite}
           sourceSceneName={props.scene.sceneName}
-          targetSceneIndex={pendingOverwriteTargetIndex}
-          targetSceneName={
-            props.lv1Scenes.find(
-              (scene) => scene.index === pendingOverwriteTargetIndex,
-            )?.name ?? "Unknown"
-          }
+          targetSceneIndex={pendingOverwrite.targetIndex}
+          targetSceneName={pendingTarget.name}
         />
       ) : null}
     </>

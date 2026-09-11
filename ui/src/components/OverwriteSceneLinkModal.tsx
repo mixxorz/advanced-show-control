@@ -1,5 +1,18 @@
+import { useId } from "react";
 import { ConsoleButton } from "./ConsoleButton";
 
+/**
+ * @cc [owner:mixxorz,label:product;safety] overwrite-modal-explicit-choice
+ * The modal MUST describe the exact one-based target scene number/name and source scene name, state
+ * that only ASC fade settings are replaced, and offer only cancellation or explicit overwrite;
+ * rendering the modal MUST NOT itself invoke either callback.
+ */
+/**
+ * @cc [owner:mixxorz,label:accessibility] overwrite-modal-dialog-obligations
+ * The confirmation surface MUST be exposed as a modal dialog programmatically named by its visible
+ * decision heading, and both actions MUST be native named buttons wired to their corresponding
+ * callback.
+ */
 export function OverwriteSceneLinkModal(props: {
   targetSceneIndex: number;
   targetSceneName: string;
@@ -7,14 +20,20 @@ export function OverwriteSceneLinkModal(props: {
   onCancel: () => void;
   onOverwrite: () => void;
 }) {
+  const headingId = useId();
+
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/70 p-6">
       <section
+        aria-labelledby={headingId}
         aria-modal="true"
         className="max-w-md rounded-console-panel border border-console-line bg-console-panel p-6 shadow-2xl"
         role="dialog"
       >
-        <h2 className="text-lg font-normal uppercase text-console-primary">
+        <h2
+          className="text-lg font-normal uppercase text-console-primary"
+          id={headingId}
+        >
           Overwrite Existing Fade Settings?
         </h2>
         <p className="mt-3 text-sm text-console-secondary">

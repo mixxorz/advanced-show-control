@@ -3,9 +3,30 @@ import { useAppCommands, useAppState } from "../appHooks";
 import type { DiscoveredLv1System, Lv1SystemIdentity } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
 
+/**
+ * @cc [owner:mixxorz,label:product] connection-actions-from-projection
+ * The dialog MUST derive discovered and connected console state from the projected app snapshot,
+ * expose explicit disconnect only while connected, and use `onResume` only to close/resume the UI.
+ * It MUST NOT initiate discovery retries or transport reconnect attempts.
+ */
 export function ConnectionModal(props: { onResume: () => void }) {
   const { appState, commandError } = useAppState();
   const commands = useAppCommands();
+  const selectionPending = useRef(false);
+  const [pendingIdentity, setPendingIdentity] =
+    useState<Lv1SystemIdentity | null>(null);
+
+  async function selectSystem(identity: Lv1SystemIdentity) {
+    if (selectionPending.current) return;
+    selectionPending.current = true;
+    setPendingIdentity(identity);
+    try {
+      await commands.selectSystem(identity);
+    } finally {
+      selectionPending.current = false;
+      setPendingIdentity(null);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-40 grid place-items-center bg-black/75 p-6 font-ui text-console-primary">
@@ -66,7 +87,8 @@ export function ConnectionModal(props: { onResume: () => void }) {
                   key={systemKey(system)}
                   system={system}
                   onProbeLatency={commands.probeLv1TcpConnectLatency}
-                  onSelectSystem={commands.selectSystem}
+                  onSelectSystem={selectSystem}
+                  pendingIdentity={pendingIdentity}
                   onResume={props.onResume}
                 />
               ))
@@ -84,6 +106,17 @@ type LatencyState =
   | { status: "success"; latencyMs: number }
   | { status: "error"; message: string };
 
+/**
+ * @cc [owner:mixxorz,label:safety;product] console-selection-gates
+ * An unavailable console MUST NOT be selected. Selecting the already connected identity MUST only
+ * resume the UI. Across all rows, only one available-console connection request MAY execute at a
+ * time; every other available row MUST remain blocked until that request settles.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] latency-probe-isolation
+ * A latency probe MUST be row-local and single-flight, MUST not select or connect the console, and
+ * MUST replace its pending state with either the measured TCP latency or an accessible error.
+ */
 function SystemRow(props: {
   connectedIdentity: Lv1SystemIdentity | null;
   system: DiscoveredLv1System;
@@ -92,36 +125,30 @@ function SystemRow(props: {
   ) => Promise<{ tcpConnectMs: number }>;
   onSelectSystem: (identity: Lv1SystemIdentity) => Promise<void>;
   onResume: () => void;
+  pendingIdentity: Lv1SystemIdentity | null;
 }) {
   const { system } = props;
   const [latency, setLatency] = useState<LatencyState>({ status: "idle" });
-  const [selectPending, setSelectPending] = useState(false);
   const probePending = useRef(false);
-  const selectionPending = useRef(false);
   const displayName = system.identity.host ?? "LV1 Console";
   const isConnected = identitiesMatch(system.identity, props.connectedIdentity);
   const isUnavailable = system.status === "unavailable";
+  const selectPending = props.pendingIdentity !== null;
+  const isSelecting = identitiesMatch(system.identity, props.pendingIdentity);
   const rowClass = isConnected
     ? "border-status-current bg-console-section/70"
     : isUnavailable
       ? "border-console-line bg-console-section/40 opacity-70"
       : "border-console-line bg-console-section/70";
 
-  async function selectSystem() {
-    if (selectionPending.current || isUnavailable) return;
+  function selectSystem() {
+    if (isUnavailable) return;
     if (isConnected) {
       props.onResume();
       return;
     }
-
-    selectionPending.current = true;
-    setSelectPending(true);
-    try {
-      await props.onSelectSystem(system.identity);
-    } finally {
-      selectionPending.current = false;
-      setSelectPending(false);
-    }
+    if (selectPending) return;
+    void props.onSelectSystem(system.identity);
   }
 
   async function probeLatency() {
@@ -150,7 +177,7 @@ function SystemRow(props: {
         className={`grid min-w-0 gap-3 rounded-console-control px-2 py-0.5 text-left md:grid-cols-[1fr_auto_auto] md:items-center ${rowClass} ${
           isUnavailable ? "cursor-not-allowed" : "hover:bg-console-control/70"
         }`}
-        disabled={isUnavailable || selectPending}
+        disabled={isUnavailable || (selectPending && !isConnected)}
         onClick={() => void selectSystem()}
         type="button"
       >
@@ -184,7 +211,7 @@ function SystemRow(props: {
             ? "Unavailable"
             : isConnected
               ? "Connected"
-              : selectPending
+              : isSelecting
                 ? "Connecting…"
                 : "Available"}
         </span>
@@ -230,6 +257,11 @@ function LatencyResult(props: { state: LatencyState }) {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] connected-identity-match
+ * Two identities MUST match by UUID when both UUIDs exist; otherwise host, address, and port MUST
+ * all match. A missing connected identity MUST never match.
+ */
 function identitiesMatch(
   system: Lv1SystemIdentity,
   connected: Lv1SystemIdentity | null,
@@ -247,6 +279,11 @@ function identitiesMatch(
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] discovery-row-identity
+ * The row key MUST change when UUID, host, address, or port changes so row-local pending and latency
+ * state cannot carry over to a different discovered endpoint.
+ */
 function systemKey(system: DiscoveredLv1System) {
   const { uuid, host, address, port } = system.identity;
   return [uuid ?? "", host ?? "", address, port].join("\u0000");

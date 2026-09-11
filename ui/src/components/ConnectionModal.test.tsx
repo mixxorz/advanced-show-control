@@ -204,6 +204,38 @@ describe("ConnectionModal", () => {
     );
   });
 
+  it("blocks duplicate and cross-row connection submissions until settlement", async () => {
+    const user = userEvent.setup();
+    const connection = createDeferred<void>();
+    const selectSystem = vi.fn(() => connection.promise);
+    const appState: AppViewState = {
+      ...discoveredSystemsAppState,
+      discoveredLv1Systems: discoveredSystemsAppState.discoveredLv1Systems.map(
+        (system) => ({ ...system, status: "available" as const }),
+      ),
+    };
+    renderModal({ appState, selectSystem });
+    const first = screen.getByRole("button", { name: "Select FOH LV1" });
+    const second = screen.getByRole("button", { name: "Select LV1 Console" });
+
+    await user.click(first);
+    expect(first).toBeDisabled();
+    expect(second).toBeDisabled();
+    await user.click(first);
+    await user.click(second);
+    expect(selectSystem).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      connection.resolve();
+      await connection.promise;
+    });
+    expect(first).toBeEnabled();
+    expect(second).toBeEnabled();
+
+    await user.click(second);
+    expect(selectSystem).toHaveBeenCalledTimes(2);
+  });
+
   it("guards a row against duplicate connection submissions", async () => {
     const user = userEvent.setup();
     const connection = createDeferred<void>();

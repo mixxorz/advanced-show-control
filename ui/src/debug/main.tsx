@@ -49,6 +49,12 @@ document.addEventListener("click", (event) => {
 
 void start();
 
+/**
+ * @cc [owner:mixxorz,label:verification] smoke-report-is-authoritative
+ * Completion MUST append `SUITE PASS` or `SUITE FAIL` through `debug_smoke_log` only after cleanup
+ * has affected the final result. The rendered status, terminal output, and process exit MUST NOT be
+ * treated as the suite result when that report write fails.
+ */
 async function start() {
   await executeSmokeLifecycle<AppViewState, AppSettings>({
     listen: (receiveState) =>
@@ -78,6 +84,12 @@ async function start() {
   });
 }
 
+/**
+ * @cc [owner:mixxorz,label:architecture] smoke-production-command-boundary
+ * Frontend smoke workflows MUST invoke production Tauri commands when exercising application
+ * behavior. They MUST invoke a `debug_smoke_*` command only for smoke reporting, process exit, or
+ * setup and observation that no production command exposes.
+ */
 async function run() {
   await waitFor(() => state, "initial app state");
   await test("cue-list-create", async () => {
@@ -708,6 +720,11 @@ function sameValue(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/**
+ * @cc [owner:mixxorz,label:errors] smoke-waits-fail-explicitly
+ * When a smoke wait reaches its deadline without a truthy result, it MUST reject with an error
+ * naming the awaited condition; deadline expiration MUST NOT become a skipped or passing assertion.
+ */
 async function waitFor<T>(
   check: () => T | Promise<T>,
   labelText: string,

@@ -10,6 +10,11 @@ type ConsoleIconButtonProps = {
   variant?: ConsoleIconButtonVariant;
 } & ButtonHTMLAttributes<HTMLButtonElement>;
 
+/**
+ * @cc [owner:mixxorz,label:accessibility] icon-button-native-semantics
+ * The control MUST require an accessible label, preserve native button attributes including
+ * `disabled`, and default to `type="button"` unless the caller explicitly supplies another type.
+ */
 export function ConsoleIconButton({
   size = "default",
   variant = "secondary",

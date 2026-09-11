@@ -157,6 +157,43 @@ describe("KeyboardProvider", () => {
     expect(repeats).toEqual([true]);
   });
 
+  it("routes capture before an external handler with a higher numeric priority", () => {
+    const onCapture = vi.fn();
+    const externalHandler = vi.fn(() => "handled" as const);
+
+    function Harness() {
+      const capture = useShortcutCapture();
+      useKeyboardHandler({
+        id: "external-high-priority",
+        priority: Number.MAX_SAFE_INTEGER,
+        handleKeyDown: externalHandler,
+      });
+      return (
+        <button
+          type="button"
+          onClick={() => capture.startCapture({ id: "go", onCapture })}
+        >
+          capture
+        </button>
+      );
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    fireKeyDown("Enter");
+
+    expect(onCapture).toHaveBeenCalledWith({
+      key: "Enter",
+      modifiers: { shift: false, control: false, alt: false, meta: false },
+    });
+    expect(externalHandler).not.toHaveBeenCalled();
+  });
+
   it("captures a non-modifier key with modifiers and exits capture mode", () => {
     const onCapture = vi.fn();
 

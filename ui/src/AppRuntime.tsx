@@ -21,6 +21,17 @@ import {
 
 export type AppStatusListener = (appState: AppViewState) => void;
 
+/**
+ * @cc [owner:mixxorz,label:architecture] runtime-service-boundary
+ * `listenForAppStatus` MUST be the only state-bearing service callback; mutation services MUST
+ * report request completion or failure without returning replacement `AppViewState` values.
+ */
+/**
+ * @cc [owner:mixxorz,label:lifecycle] frontend-request-backend-lifecycle-ownership
+ * Services MAY request discovery, startup auto-connect, explicit connect, and explicit disconnect.
+ * They MUST NOT expose frontend control of transport reconnect attempts, connection generations,
+ * or runtime peer installation, which remain backend-owned.
+ */
 export type AppRuntimeServices = {
   frontendReady: () => Promise<void>;
   abortAll: () => Promise<void>;
@@ -91,6 +102,12 @@ type ConnectionModalMode = "startup" | "manual" | null;
 
 const GO_SHORTCUT_PRIORITY = 100;
 
+/**
+ * @cc [owner:mixxorz,label:safety;keyboard] go-shortcut-routing
+ * A matching GO keydown MUST be consumed, but MUST dispatch at most one recall while a prior GO
+ * recall is unsettled and MUST dispatch only when the projected active cue resolves to a projected
+ * scene config. Repeats and blocked interaction targets MUST NOT dispatch.
+ */
 function AppShortcutHandler(props: {
   appState: AppViewState;
   commands: AppCommands;
@@ -141,6 +158,23 @@ function AppShortcutHandler(props: {
   return null;
 }
 
+/**
+ * @cc [owner:mixxorz,label:architecture] snapshot-version-ordering
+ * The first received snapshot MAY have any version; afterward `AppRuntime` MUST apply only a
+ * snapshot whose `stateVersion` is strictly greater than the latest accepted version. Equal or
+ * lower versions MUST NOT change projected UI state or snapshot-driven modal state.
+ */
+/**
+ * @cc [owner:mixxorz,label:lifecycle] listener-before-ready
+ * Startup MUST establish the status listener before signaling frontend readiness or requesting
+ * auto-connect, and unmount MUST prevent late callbacks and release an established listener.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] latest-user-command-error
+ * Among overlapping user commands routed through `runCheckedCommand`, only the latest-started
+ * request MAY clear or set `commandError`; an older late failure MUST NOT overwrite a newer outcome.
+ * Startup, discovery, and window-title errors remain outside this ordering rule.
+ */
 export function AppRuntime(props: { services: AppRuntimeServices }) {
   const { services } = props;
   const [activeTab, setActiveTab] = useState<MainTab>("scenes");
@@ -152,6 +186,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
   );
   const latestAppState = useRef(disconnectedAppViewState);
   const hasAppliedSnapshot = useRef(false);
+  const checkedCommandRequestId = useRef(0);
   const showConnection = connectionModalMode !== null;
 
   // Async service calls and status events can resolve out of order. Only newer
@@ -178,12 +213,16 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
 
   const runCheckedCommand = useCallback(
     async (command: () => Promise<void>) => {
+      const requestId = checkedCommandRequestId.current + 1;
+      checkedCommandRequestId.current = requestId;
       setCommandError(null);
       try {
         await command();
         return true;
       } catch (error) {
-        setCommandError(String(error));
+        if (checkedCommandRequestId.current === requestId) {
+          setCommandError(String(error));
+        }
         return false;
       }
     },

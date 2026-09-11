@@ -5,6 +5,17 @@ import { ConsoleButton } from "./ConsoleButton";
 import { DurationInput } from "./DurationInput";
 import { SelectedSceneActions } from "./SelectedSceneActions";
 
+/**
+ * @cc [owner:mixxorz,label:product;safety] selected-scene-recall-gating
+ * Recall MUST be disabled when `scene.sceneIndex` is null and otherwise dispatch only the supplied
+ * scene's internal ID.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] selected-scene-identity-state
+ * Current styling MUST require exact LV1 index and name equality. The visible scene number MUST use
+ * the unlinked placeholder fallback, and the identity region's accessible label MUST distinguish
+ * the caller-provided cued state.
+ */
 export function SelectedSceneHeader(props: {
   currentScene: SceneSummary | null;
   cued: boolean;
@@ -28,6 +39,7 @@ export function SelectedSceneHeader(props: {
       <div
         aria-label={props.cued ? "Selected scene, cued" : "Selected scene"}
         className={`flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-console-panel border border-console-line bg-console-bg px-5 py-3 font-mono text-xl ${identityTextClass}`}
+        role="group"
       >
         <span className="text-accent-orange">
           {formatSceneNumber(props.scene.sceneIndex)}

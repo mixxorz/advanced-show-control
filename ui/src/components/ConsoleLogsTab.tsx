@@ -7,6 +7,11 @@ const severityClass = {
   error: "text-status-danger",
 };
 
+/**
+ * @cc [owner:mixxorz,label:product] projected-log-display
+ * The tab MUST render projected log entries in snapshot order without filtering severities, preserve
+ * each timestamp, severity, and message, and show the empty-state fallback only when no entries exist.
+ */
 export function ConsoleLogsTab() {
   const { appState } = useAppState();
 

@@ -8,6 +8,11 @@ import { AppCommandsContext, AppStateContext } from "./appContextValues";
 
 type AppMutation = Promise<void>;
 
+/**
+ * @cc [owner:mixxorz,label:architecture] command-context-results
+ * Context mutations MUST represent request completion rather than projected backend state;
+ * operations that return `boolean` MUST use it only to report whether the request succeeded.
+ */
 export type AppCommands = {
   abortAll: () => AppMutation;
   addSceneToActiveCueList: (
@@ -74,6 +79,11 @@ export type AppStateContextValue = {
   commandError: string | null;
 };
 
+/**
+ * @cc [owner:mixxorz,label:architecture] state-provider-passthrough
+ * The state provider MUST expose the accepted `AppViewState` unchanged and MUST keep transient
+ * command errors separate from that backend-owned snapshot.
+ */
 export function AppStateProvider(
   props: AppStateContextValue & { children: ReactNode },
 ) {
@@ -86,6 +96,11 @@ export function AppStateProvider(
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:architecture] commands-provider-required
+ * The commands provider MUST publish an explicit complete `AppCommands` implementation; consumers
+ * MUST NOT silently fall back to no-op or direct Tauri commands when a command is absent.
+ */
 export function AppCommandsProvider(props: {
   commands: AppCommands;
   children: ReactNode;

@@ -9,6 +9,11 @@ type ConsoleButtonVariant =
   | "ghost-secondary";
 type ConsoleButtonSize = "default" | "small" | "big";
 
+/**
+ * @cc [owner:mixxorz,label:accessibility] console-button-native-semantics
+ * The control MUST use native button disabled behavior and MUST default to `type="button"` so it
+ * cannot submit an enclosing form unless a caller explicitly requests another button type.
+ */
 export function ConsoleButton(
   props: {
     active?: boolean;

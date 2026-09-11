@@ -11,6 +11,11 @@ import { type MainTab, TopTabBar } from "./TopTabBar";
 
 export type { MainTab } from "./TopTabBar";
 
+/**
+ * @cc [owner:mixxorz,label:product] shell-view-selection
+ * The shell MUST render only the content for `activeTab`, MUST pass settings replacements through
+ * unchanged, and MUST mount the connection dialog only while `showConnection` is true.
+ */
 export function AppShell(props: {
   activeTab: MainTab;
   onOpenConnection: () => void;

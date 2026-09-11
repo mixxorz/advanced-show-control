@@ -5,6 +5,21 @@ import { CSS } from "@dnd-kit/utilities";
 import type { SceneConfig, SceneSummary } from "../types";
 import { formatSceneDurationSummary, formatSceneNumber } from "../format";
 
+/**
+ * @cc [owner:mixxorz,label:product] scene-row-state-identity-and-fallback
+ * Current state MUST require exact LV1 index and name equality. Unlinked rows MUST display `---` as
+ * their number. Status-indicator, text, and duration colors MUST derive from current, cued, and
+ * selected state with current precedence. The left border is selection chrome: it MUST remain
+ * transparent when unselected and, when selected, use current then cued then unlinked then selected
+ * color precedence; selected row border and background styling MAY remain visible.
+ */
+/**
+ * @cc [owner:mixxorz,label:accessibility] scene-row-selection-and-drag-obligations
+ * The whole row MUST remain a non-submit native named button invoking `onSelect`. Dragging MUST be
+ * disabled when `dragId` is absent. A caller enabling scene drag MUST supply
+ * `dragId="scene:<internalSceneId>"` and `dragData={ kind: "scene", sceneInternalId }`; the dnd-kit
+ * attributes, listeners, and node ref MUST remain attached to that same button.
+ */
 export function SceneListRow(props: {
   currentScene: SceneSummary | null;
   cued: boolean;
@@ -79,6 +94,7 @@ export function SceneListRow(props: {
       {...draggable.attributes}
       {...draggable.listeners}
       onClick={props.onSelect}
+      type="button"
     >
       <span className="flex justify-start overflow-visible">
         {showIndicator ? (
