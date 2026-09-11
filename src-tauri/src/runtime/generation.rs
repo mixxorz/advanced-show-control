@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+/// @cc [owner:mixxorz,label:safety] production-generation-monotonic
+/// Production-visible mutation of `RuntimeGeneration` MUST leave the current value unchanged or
+/// increase it. It MUST NOT assign an older value or wrap on overflow; arbitrary assignment is
+/// test-only.
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeGeneration {
     current: Arc<Mutex<u64>>,

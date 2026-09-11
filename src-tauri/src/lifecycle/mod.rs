@@ -600,6 +600,13 @@ impl AppLifecycle {
         ShowCommandResult { changed: false }
     }
 
+    /// @cc [owner:mixxorz,label:safety] generation-fenced-disconnect-effects
+    /// For an `Ok` result targeting generation `N`, this function MUST clear connection metadata
+    /// and runtime endpoints, publish its disconnect facts, emit the success log, and return
+    /// `changed: true` only when generation checks accept `N` as current. If `N` was superseded, it
+    /// MUST preserve the newer generation's state, publish no disconnect success facts or log, and
+    /// return `changed: false`. Show mailbox or reply failures MUST return `Err` without clearing
+    /// runtime endpoints or publishing disconnect success facts or log.
     async fn finish_disconnect(&self, generation: u64) -> Result<ShowCommandResult, String> {
         let cleared = self
             .set_lv1_connection_metadata(generation, None)
