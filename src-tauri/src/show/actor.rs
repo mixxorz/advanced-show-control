@@ -864,7 +864,7 @@ mod tests {
     };
     use crate::cue_lists::{
         CueListDocument, CueListsCommand, CueListsEvent, CueListsProjectionReason,
-        CueListsProjectionState, build_cue_lists_actor_with_scenes,
+        CueListsProjectionState,
     };
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
@@ -936,11 +936,9 @@ mod tests {
             AppSettings::default(),
             test_lockout_reader(),
         );
+        let cue_lists = task.cue_lists_handle();
         task.spawn();
         peers.set_scenes(scenes);
-        let (cue_lists, task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(AppEventBus::default(), peers.scenes().unwrap());
-        task.spawn();
         peers.set_cue_lists(cue_lists);
         peers
     }
@@ -1329,11 +1327,9 @@ mod tests {
             AppSettings::default(),
             test_lockout_reader(),
         );
+        let cue_lists = task.cue_lists_handle();
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(event_bus, scenes.clone());
-        task.spawn();
         peers.set_cue_lists(cue_lists.clone());
 
         let lv1 = lv1_snapshot(vec![
@@ -1559,11 +1555,9 @@ mod tests {
             AppSettings::default(),
             test_lockout_reader(),
         );
+        let cue_lists = task.cue_lists_handle();
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
-        task.spawn();
         peers.set_cue_lists(cue_lists.clone());
 
         let scenes_document = crate::scenes::SceneDocument {
@@ -1612,11 +1606,9 @@ mod tests {
             AppSettings::default(),
             test_lockout_reader(),
         );
+        let cue_lists = task.cue_lists_handle();
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
-        task.spawn();
         peers.set_cue_lists(cue_lists.clone());
         let new_lv1 = lv1_snapshot(vec![SceneListEntry {
             index: 1,
@@ -1686,11 +1678,9 @@ mod tests {
             AppSettings::default(),
             test_lockout_reader(),
         );
+        let cue_lists = task.cue_lists_handle();
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
-        task.spawn();
         peers.set_cue_lists(cue_lists.clone());
         let new_lv1 = lv1_snapshot(vec![SceneListEntry {
             index: 1,
@@ -1843,11 +1833,9 @@ mod tests {
             AppSettings::default(),
             test_lockout_reader(),
         );
+        let cue_lists = task.cue_lists_handle();
         task.spawn();
         peers.set_scenes(scenes.clone());
-        let (cue_lists, task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
-        task.spawn();
         peers.set_cue_lists(cue_lists.clone());
         event_bus.publish(crate::runtime::events::AppEvent::Runtime(
             RuntimeLifecycleEvent::ActiveGenerationChanged { generation: 1 },

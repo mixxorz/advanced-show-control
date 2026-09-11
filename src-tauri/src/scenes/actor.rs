@@ -215,6 +215,8 @@ pub struct ScenesTask {
     initial_settings: AppSettings,
     lockout: ShowLockoutReader,
     command_rx: mpsc::Receiver<ScenesCommand>,
+    cue_lists: crate::cue_lists::CueListsHandle,
+    cue_commands: mpsc::Receiver<crate::cue_lists::CueListsCommand>,
     #[cfg(test)]
     pending_scene_observer: Option<oneshot::Sender<()>>,
     #[cfg(test)]
@@ -228,6 +230,10 @@ struct BeforeFadeHandoff {
 }
 
 impl ScenesTask {
+    pub fn cue_lists_handle(&self) -> crate::cue_lists::CueListsHandle {
+        self.cue_lists.clone()
+    }
+
     pub fn spawn(self) {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(run_scenes_actor(self));
@@ -247,6 +253,7 @@ pub fn build_scenes_actor(
     lockout: ShowLockoutReader,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
+    let (cue_lists, cue_commands) = mpsc::channel(8);
 
     let handle = command_tx;
     let peers = ScenesPeers::default();
@@ -260,6 +267,8 @@ pub fn build_scenes_actor(
         initial_settings,
         lockout,
         command_rx,
+        cue_lists,
+        cue_commands,
         #[cfg(test)]
         pending_scene_observer: None,
         #[cfg(test)]
@@ -329,16 +338,22 @@ async fn run_scenes_actor(task: ScenesTask) {
         initial_settings,
         mut lockout,
         mut command_rx,
+        cue_lists,
+        mut cue_commands,
         #[cfg(test)]
         mut pending_scene_observer,
         #[cfg(test)]
         mut before_fade_handoff,
     } = task;
 
+    drop(cue_lists);
     let mut active_generation = initial_generation;
     let mut cached_scene_list: Option<Vec<crate::lv1::SceneListEntry>> = None;
     let mut scene_library_status = SceneLibraryStatus::AwaitingPeers;
     let mut recall_state = ScenesState::default();
+    let mut cues = crate::cue_lists::operations::CueLists::new(event_bus.clone());
+    let mut cue_commands_open = true;
+    let mut scene_commands_open = true;
     let mut recall_queue = RecallQueue::default();
     let mut late_canceled_observations = LateCanceledObservations::default();
     let mut settings = initial_settings;
@@ -360,6 +375,15 @@ async fn run_scenes_actor(task: ScenesTask) {
     // - Configurable repeat delay (500 ms default): Prevents the same scene from triggering two
     //                         consecutive recalls if a bounce or duplicate event arrives.
     loop {
+        if !scene_commands_open && !cue_commands_open {
+            break;
+        }
+        let scene_ids: Vec<_> = recall_state
+            .scene_configs()
+            .iter()
+            .map(|scene| scene.internal_scene_id)
+            .collect();
+        let mut replacing_document = false;
         let recall_deadline = recall_queue
             .in_flight
             .as_ref()
@@ -381,10 +405,28 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
         };
         tokio::select! {
-            command = command_rx.recv() => {
+            command = cue_commands.recv(), if cue_commands_open && !cues.recall_pending() => {
+                match command {
+                    Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
+                        if let Some(command) = cues.begin_recall(reply) {
+                            dispatch_scenes_command(
+                                command, &mut recall_state, &mut recall_queue, &peers, &event_bus,
+                                active_generation, &runtime_generation, &lockout,
+                                &mut late_canceled_observations, &mut cached_scene_list, &mut scene_library_status,
+                            ).await;
+                        }
+                    }
+                    Some(crate::cue_lists::CueListsCommand::Shutdown) | None => cue_commands_open = false,
+                    Some(command) => cues.dispatch(command),
+                }
+            }
+            () = cues.complete_recall() => {}
+            command = command_rx.recv(), if scene_commands_open => {
                 let Some(command) = command else {
-                    break;
+                    scene_commands_open = false;
+                    continue;
                 };
+                replacing_document = matches!(&command, ScenesCommand::ReplaceSceneDocument { reason: ScenesProjectionReason::FileReplacement, .. });
                 if matches!(&command, ScenesCommand::RuntimePeersReady { .. }) {
                     let authoritative_generation = runtime_generation.current().await;
                     if authoritative_generation != active_generation {
@@ -627,6 +669,14 @@ async fn run_scenes_actor(task: ScenesTask) {
                     active_generation,
                 ).await;
             }
+        }
+        if !replacing_document
+            && !scene_ids.iter().copied().eq(recall_state
+                .scene_configs()
+                .iter()
+                .map(|scene| scene.internal_scene_id))
+        {
+            cues.reconcile(recall_state.scene_configs());
         }
     }
 
@@ -4675,24 +4725,20 @@ mod tests {
 
     #[tokio::test]
     async fn recall_queue_command_channel_closure_cancels_waiting_recall() {
-        let second = {
-            let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
-                queue_scene(1, "Intro"),
-                queue_scene(2, "Verse"),
-            ])
-            .await;
-            let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
-            let dispatch = fixture.next_lv1_recall().await;
-            dispatch.reply(Ok(RecallSceneDispatch {
-                scene_observation_sequence: 10,
-            }));
-            assert!(first.await.unwrap().is_ok());
-            let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
-            confirm_queue_admission(&fixture.handle).await;
-
-            drop(fixture);
-            second
-        };
+        let mut fixture = RecallQueueFixture::connected_with_scenes(vec![
+            queue_scene(1, "Intro"),
+            queue_scene(2, "Verse"),
+        ])
+        .await;
+        let first = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
+        let dispatch = fixture.next_lv1_recall().await;
+        dispatch.reply(Ok(RecallSceneDispatch {
+            scene_observation_sequence: 10,
+        }));
+        assert!(first.await.unwrap().is_ok());
+        let second = fixture.send_recall(uuid::Uuid::from_u128(2)).await;
+        confirm_queue_admission(&fixture.handle).await;
+        drop(fixture.handle);
 
         assert!(matches!(
             second.await.unwrap(),

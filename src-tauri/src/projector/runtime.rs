@@ -342,14 +342,10 @@ mod tests {
             initial_settings.clone(),
             lockout,
         );
-        let (cue_lists, cue_task, _cue_peers) = crate::cue_lists::build_cue_lists_actor_with_scenes(
-            source_events.clone(),
-            scenes.clone(),
-        );
+        let cue_lists = scenes_task.cue_lists_handle();
         show_task.spawn();
         settings_task.spawn();
         scenes_task.spawn();
-        cue_task.spawn();
         spawn_projector(ProjectorInputs {
             app: handle,
             generation,
@@ -663,10 +659,9 @@ mod tests {
                     initial_settings,
                     lockout,
                 );
+                let cue = scenes_task.cue_lists_handle();
                 scenes_task.spawn();
-                let (cue, cue_task, _) =
-                    crate::cue_lists::build_cue_lists_actor_with_scenes(source_events, scenes);
-                cue_task.spawn();
+                drop(scenes);
                 cue
             },
             settings: {
@@ -747,11 +742,9 @@ mod tests {
             initial_settings,
             lockout,
         );
-        let (cue_lists, cue_task, _) =
-            crate::cue_lists::build_cue_lists_actor_with_scenes(source_events, scenes.clone());
+        let cue_lists = scenes_task.cue_lists_handle();
         settings_task.spawn();
         scenes_task.spawn();
-        cue_task.spawn();
 
         let mut cache = ProjectionCache::new();
         cache.set_active_generation(7);

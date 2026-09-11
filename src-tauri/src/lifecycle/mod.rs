@@ -11,9 +11,7 @@ use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tracing::instrument::WithSubscriber;
 
-#[cfg(test)]
-use crate::cue_lists::CueListsPeers;
-use crate::cue_lists::{CueListsHandle, build_cue_lists_actor};
+use crate::cue_lists::CueListsHandle;
 use crate::fade::{FadeEngineHandle, build_engine};
 use crate::logging::UiLogEvent;
 use crate::lv1::{ConnectionStatus, Lv1ActorHandle, Lv1Command, Lv1Event, build_actor};
@@ -169,8 +167,6 @@ pub struct AppLifecycle {
     #[cfg(test)]
     lockout: ShowLockoutReader,
     cue_lists: CueListsHandle,
-    #[cfg(test)]
-    cue_lists_peers: CueListsPeers,
     scenes: ScenesHandle,
     scenes_peers: ScenesPeers,
     settings: SettingsHandle,
@@ -191,9 +187,6 @@ impl AppLifecycle {
         settings: SettingsHandle,
         initial_settings: crate::settings::AppSettings,
     ) -> Self {
-        let (cue_lists, cue_lists_task, cue_lists_peers) = build_cue_lists_actor(event_bus.clone());
-        show_peers.set_cue_lists(cue_lists.clone());
-        cue_lists_task.spawn();
         let runtime_generation = show_peers.runtime_generation();
         let (scenes, scenes_task, scenes_peers) = build_scenes_actor(
             0,
@@ -204,8 +197,9 @@ impl AppLifecycle {
             initial_settings,
             lockout.clone(),
         );
+        let cue_lists = scenes_task.cue_lists_handle();
+        show_peers.set_cue_lists(cue_lists.clone());
         show_peers.set_scenes(scenes.clone());
-        cue_lists_peers.set_scenes(scenes.clone());
         scenes_task.spawn();
 
         Self {
@@ -223,8 +217,6 @@ impl AppLifecycle {
             #[cfg(test)]
             lockout,
             cue_lists,
-            #[cfg(test)]
-            cue_lists_peers,
             scenes,
             scenes_peers,
             settings,
@@ -1406,7 +1398,7 @@ mod tests {
             build_connected_runtime(generation, runtime_generation, &identity, event_bus);
 
         assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+        assert!(lifecycle.show_peers.cue_lists().is_some());
     }
 
     #[tokio::test]
@@ -1442,7 +1434,7 @@ mod tests {
 
         assert!(connect_result.is_ok());
         assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+        assert!(lifecycle.show_peers.cue_lists().is_some());
         let (reply, response) = tokio::sync::oneshot::channel();
         lifecycle
             .scenes
@@ -1560,20 +1552,17 @@ mod tests {
         show_rx
             .await
             .expect("newer Show scenes peer should reply to mailbox commands");
-        let cue_lists_scenes = lifecycle
-            .cue_lists_peers
-            .scenes()
-            .expect("newer cue-list scenes peer should remain installed");
         let (cue_lists_reply, cue_lists_rx) = oneshot::channel();
-        cue_lists_scenes
-            .send(ScenesCommand::InitialProjectionState {
+        lifecycle
+            .cue_lists_handle()
+            .send(crate::cue_lists::CueListsCommand::InitialProjectionState {
                 reply: cue_lists_reply,
             })
             .await
-            .expect("newer cue-list scenes peer should accept mailbox commands");
+            .expect("cue-list owner should accept mailbox commands");
         cue_lists_rx
             .await
-            .expect("newer cue-list scenes peer should reply to mailbox commands");
+            .expect("cue-list owner should reply to mailbox commands");
         let (reply, rx) = oneshot::channel();
         lifecycle
             .show
@@ -2613,7 +2602,7 @@ mod tests {
         );
         assert!(lifecycle.current_lv1().await.is_some());
         assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.cue_lists_peers.scenes().is_some());
+        assert!(lifecycle.show_peers.cue_lists().is_some());
     }
 
     #[tokio::test]

@@ -13,7 +13,7 @@ The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
 | `lv1`       | Generation-scoped actor. Owns TCP transport/reconnect, OSC, and the LV1 live-state mirror.                                                      |
 | `fade`      | Generation-scoped actor. Owns fade timing, interpolation, readiness, override, abort, overlap, and writes.                                      |
 | `scenes`    | One app-lifetime actor/document. Owns configs, selection, clipboard, scene-library reconciliation, capture/link/edit, recall policy, and queue. |
-| `cue_lists` | App-lifetime actor. Owns cue-list documents, active/cued entries, recall workflow state, and scene-UUID reconciliation.                         |
+| `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents and active/cued entries; has no task, peers, or event subscription. |
 | `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
 | `settings`  | App-lifetime actor. Owns app settings and private remembered LV1 identity in app-config `settings.json`.                                        |
 | `lifecycle` | Owns connection-generation transitions and generation-scoped peer installation/removal.                                                         |
@@ -60,7 +60,7 @@ Direct peers are intentional:
 - `FadeEngine` requires its `Lv1ActorHandle` when constructed and sends `Lv1Command::WriteBatch` directly. This immutable, generation-scoped dependency has no optional peer slot, installation step, or peer mutex.
 - `Scenes` receives the active generation's `Lv1ActorHandle` and `FadeEngineHandle` after lifecycle acceptance.
 - `Show` holds app-lifetime Scenes/Cue Lists peers and the current LV1 peer only while connected.
-- `CueLists` holds the app-lifetime Scenes peer.
+- Scenes and Cue Lists have separate bounded command endpoints, processed by the same app-lifetime owner. Neither sends mailbox requests to the other.
 
 Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and frontend discovery share this path.
 
@@ -92,7 +92,9 @@ Fade feedback remains active during readiness. A manual fader override beyond th
 
 New and load require a currently connected LV1 snapshot to initialize or align the scene document against the live scene list. Save does not require LV1, but queries the current app-lifetime Scenes and Cue Lists documents before writing and then marks the show saved. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
 
-Scenes reconciles configs. Cue Lists use config UUIDs, retain cue entries, and clear invalid active/cued references. For `FileReplacement`, Show explicitly supplies the imported document and its valid scene UUID set to Cue Lists; Cue Lists does not infer this from the ignored replacement event. After ordinary Scenes updates or cue-event lag, Cue Lists obtains the authoritative Scenes projection and reconciles again.
+Scenes reconciles configs and directly reconciles cue references when the owned scene identities change. Cue entries survive missing scenes; invalid active/cued references are cleared. Projected scene facts cannot mutate the cue document, and there is no cue subscriber, generation cache, or lag-recovery query. For `FileReplacement`, Show still explicitly supplies both documents and the imported scene UUID set.
+
+Cue recall enters the existing recall queue locally. The owner polls its dispatch reply without a forwarding task, advances only after successful LV1 dispatch, and keeps subsequent cue commands bounded in their mailbox until completion. Scene commands and runtime safety events continue to be processed while a cue awaits queued dispatch.
 
 Settings loads normalized defaults or persisted values from `settings.json`, saves changed full-object replacements immediately, and publishes `SettingsEvent::StateChanged`. Remembered LV1 identity is private metadata in the same file and is accessed by lifecycle through dedicated commands, not projected as public settings.
 

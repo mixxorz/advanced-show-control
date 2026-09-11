@@ -42,7 +42,6 @@ impl ShowStateHandle {
 mod tests {
     use super::*;
     use crate::connection_state::Lv1SystemIdentity;
-    use crate::cue_lists::build_cue_lists_actor_with_scenes;
     use crate::lv1::{ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
@@ -112,8 +111,7 @@ mod tests {
             AppSettings::default(),
             lockout.clone(),
         );
-        let (cue_lists, cue_lists_task, _cue_lists_peers) =
-            build_cue_lists_actor_with_scenes(event_bus.clone(), scenes.clone());
+        let cue_lists = scenes_task.cue_lists_handle();
         peers.set_scenes(scenes);
         peers.set_cue_lists(cue_lists);
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
@@ -136,7 +134,6 @@ mod tests {
         peers.set_lv1(0, crate::lv1::test_actor_handle(lv1_tx));
         task.spawn();
         scenes_task.spawn();
-        cue_lists_task.spawn();
 
         let path = std::env::temp_dir().join(format!("show-lockout-{}.ascs", uuid::Uuid::new_v4()));
         crate::show_file::write_show_file(
