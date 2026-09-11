@@ -216,9 +216,6 @@ async fn handle_command(
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
         }
-        ShowCommand::GetLockout { reply } => {
-            let _ = reply.send(state.lockout());
-        }
         ShowCommand::InitialProjectionState { reply } => {
             let _ = reply.send(state.projection_state());
         }
@@ -300,9 +297,13 @@ async fn handle_command(
                 let _ = reply.send(ShowCommandResult { changed });
             }
         }
+        #[cfg(test)]
         ShowCommand::CompleteLv1Connection { identity, reply } => {
-            let outcome = state.complete_lv1_connection(identity);
-            let changed = outcome.changed;
+            let changed = state.set_lv1_connection(Some(identity));
+            let outcome = super::CompleteConnectionOutcome {
+                accepted: true,
+                changed,
+            };
             publish_if_changed(
                 event_bus,
                 ShowProjectionReason::ConnectionMetadata,
@@ -313,38 +314,15 @@ async fn handle_command(
                 let _ = reply.send(outcome);
             }
         }
-        ShowCommand::CompleteLv1ConnectionIfCurrent {
+        ShowCommand::SetLv1ConnectionIfCurrent {
             identity,
-            runtime_generation,
             expected_generation,
             reply,
         } => {
-            let outcome = runtime_generation
+            let outcome = peers
+                .runtime_generation
                 .if_current(expected_generation, || {
-                    let outcome = state.complete_lv1_connection(identity);
-                    publish_if_changed(
-                        event_bus,
-                        ShowProjectionReason::ConnectionMetadata,
-                        state,
-                        outcome.changed,
-                    );
-                    outcome
-                })
-                .await
-                .unwrap_or(super::CompleteConnectionOutcome {
-                    accepted: false,
-                    changed: false,
-                });
-            let _ = reply.send(outcome);
-        }
-        ShowCommand::ClearLv1ConnectionIfCurrent {
-            runtime_generation,
-            expected_generation,
-            reply,
-        } => {
-            let outcome = runtime_generation
-                .if_current(expected_generation, || {
-                    let changed = state.clear_lv1_connection();
+                    let changed = state.set_lv1_connection(identity);
                     publish_if_changed(
                         event_bus,
                         ShowProjectionReason::ConnectionMetadata,
@@ -363,8 +341,9 @@ async fn handle_command(
                 });
             let _ = reply.send(outcome);
         }
+        #[cfg(test)]
         ShowCommand::FailLv1Connection { reply } => {
-            let changed = state.fail_lv1_connection();
+            let changed = state.set_lv1_connection(None);
             publish_if_changed(
                 event_bus,
                 ShowProjectionReason::ConnectionMetadata,
@@ -374,32 +353,6 @@ async fn handle_command(
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
             }
-        }
-        ShowCommand::FailLv1ConnectionIfCurrent {
-            runtime_generation,
-            expected_generation,
-            reply,
-        } => {
-            let outcome = runtime_generation
-                .if_current(expected_generation, || {
-                    let changed = state.fail_lv1_connection();
-                    publish_if_changed(
-                        event_bus,
-                        ShowProjectionReason::ConnectionMetadata,
-                        state,
-                        changed,
-                    );
-                    super::CompleteConnectionOutcome {
-                        accepted: true,
-                        changed,
-                    }
-                })
-                .await
-                .unwrap_or(super::CompleteConnectionOutcome {
-                    accepted: false,
-                    changed: false,
-                });
-            let _ = reply.send(outcome);
         }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
             let result = async {
@@ -787,8 +740,8 @@ mod tests {
         let _ = events.recv().await.unwrap();
 
         let (reply, response) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::ClearLv1ConnectionIfCurrent {
-            runtime_generation: RuntimeGeneration::default(),
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: None,
             expected_generation: 0,
             reply,
         })

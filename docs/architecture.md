@@ -63,6 +63,8 @@ Direct peers are intentional:
 - `Show` holds the app-lifetime document-owner endpoint and the current LV1 peer only while connected; it has no Cue Lists peer.
 - Scenes and Cue Lists have separate bounded command endpoints, processed by the same app-lifetime owner. Neither sends mailbox requests to the other.
 
+Connection completion, failure, and disconnect use one `SetLv1ConnectionIfCurrent` command with an optional identity. Show checks its own shared generation authority during the synchronous metadata update; callers cannot supply a different generation guard.
+
 Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and frontend discovery share this path.
 
 `Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The frontend requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.

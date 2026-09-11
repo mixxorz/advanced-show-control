@@ -44,28 +44,13 @@ impl ShowState {
         }
     }
 
-    pub(crate) fn complete_lv1_connection(
-        &mut self,
-        identity: Lv1SystemIdentity,
-    ) -> CompleteConnectionOutcome {
-        let changed = self.connected_lv1_identity.as_ref() != Some(&identity);
-        self.connected_lv1_identity = Some(identity);
-        CompleteConnectionOutcome {
-            accepted: true,
-            changed,
-        }
-    }
-
-    pub(crate) fn clear_lv1_connection(&mut self) -> bool {
-        let changed = self.connected_lv1_identity.take().is_some();
-        if changed {
+    pub(crate) fn set_lv1_connection(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
+        let changed = self.connected_lv1_identity != identity;
+        if changed && identity.is_none() {
             self.last_event_at = Some(crate::time::current_timestamp_millis());
         }
+        self.connected_lv1_identity = identity;
         changed
-    }
-
-    pub(crate) fn fail_lv1_connection(&mut self) -> bool {
-        self.clear_lv1_connection()
     }
 
     pub(crate) fn lockout(&self) -> bool {
@@ -129,15 +114,9 @@ mod tests {
         let next = identity("new");
         let mut state = ShowState::default();
 
-        assert_eq!(
-            state.complete_lv1_connection(next.clone()),
-            CompleteConnectionOutcome {
-                accepted: true,
-                changed: true,
-            }
-        );
+        assert!(state.set_lv1_connection(Some(next.clone())));
         assert_eq!(state.projection_state().connected_lv1_identity, Some(next));
-        assert!(!state.complete_lv1_connection(identity("new")).changed);
+        assert!(!state.set_lv1_connection(Some(identity("new"))));
     }
 
     #[test]
@@ -147,8 +126,8 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(state.fail_lv1_connection());
+        assert!(state.set_lv1_connection(None));
         assert_eq!(state.projection_state().connected_lv1_identity, None);
-        assert!(!state.fail_lv1_connection());
+        assert!(!state.set_lv1_connection(None));
     }
 }

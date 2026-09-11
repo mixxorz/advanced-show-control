@@ -8,9 +8,6 @@ pub enum ShowCommand {
     CurrentShowFilePath {
         reply: oneshot::Sender<Option<std::path::PathBuf>>,
     },
-    GetLockout {
-        reply: oneshot::Sender<bool>,
-    },
     InitialProjectionState {
         reply: oneshot::Sender<super::events::ShowProjectionState>,
     },
@@ -29,37 +26,26 @@ pub enum ShowCommand {
         systems: Vec<DiscoveredLv1System>,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
+    #[cfg(test)]
     CompleteLv1Connection {
         identity: Lv1SystemIdentity,
         reply: Option<oneshot::Sender<super::CompleteConnectionOutcome>>,
     },
-    CompleteLv1ConnectionIfCurrent {
-        identity: Lv1SystemIdentity,
-        runtime_generation: crate::runtime::generation::RuntimeGeneration,
+    SetLv1ConnectionIfCurrent {
+        identity: Option<Lv1SystemIdentity>,
         expected_generation: u64,
         reply: oneshot::Sender<super::CompleteConnectionOutcome>,
     },
-    ClearLv1ConnectionIfCurrent {
-        runtime_generation: crate::runtime::generation::RuntimeGeneration,
-        expected_generation: u64,
-        reply: oneshot::Sender<super::CompleteConnectionOutcome>,
-    },
+    #[cfg(test)]
     FailLv1Connection {
         reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
-    FailLv1ConnectionIfCurrent {
-        runtime_generation: crate::runtime::generation::RuntimeGeneration,
-        expected_generation: u64,
-        reply: oneshot::Sender<super::CompleteConnectionOutcome>,
     },
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
     },
     #[cfg(test)]
-    ClearForTest {
-        reply: Option<oneshot::Sender<()>>,
-    },
+    ClearForTest { reply: Option<oneshot::Sender<()>> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

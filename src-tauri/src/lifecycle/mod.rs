@@ -527,7 +527,7 @@ impl AppLifecycle {
         }
 
         let completion = self
-            .complete_lv1_connection_metadata(generation, identity.clone())
+            .set_lv1_connection_metadata(generation, Some(identity.clone()))
             .await
             .map_err(|error| error.to_string())?;
         if !completion.accepted {
@@ -610,7 +610,7 @@ impl AppLifecycle {
         if let Some(before_connection_metadata) = before_connection_metadata {
             before_connection_metadata(self.current_runtime_generation().await).await;
         }
-        let failure = self.fail_lv1_connection_metadata(generation).await;
+        let failure = self.set_lv1_connection_metadata(generation, None).await;
         if failure.as_ref().is_ok_and(|outcome| outcome.accepted) {
             let generation_guard = self.current_runtime_generation().await;
             let _ = generation_guard
@@ -621,36 +621,18 @@ impl AppLifecycle {
         Err(error)
     }
 
-    async fn complete_lv1_connection_metadata(
+    async fn set_lv1_connection_metadata(
         &self,
         expected_generation: u64,
-        identity: crate::connection_state::Lv1SystemIdentity,
+        identity: Option<crate::connection_state::Lv1SystemIdentity>,
     ) -> Result<crate::show::CompleteConnectionOutcome, AppCommandError> {
         let (reply, rx) = oneshot::channel();
         self.show
-            .send(ShowCommand::CompleteLv1ConnectionIfCurrent {
+            .send(ShowCommand::SetLv1ConnectionIfCurrent {
                 identity,
-                runtime_generation: self.current_runtime_generation().await,
                 expected_generation,
                 reply,
             })
-            .await
-            .map_err(|_| AppCommandError::ShowUnavailable)?;
-        rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)
-    }
-
-    async fn fail_lv1_connection_metadata(
-        &self,
-        expected_generation: u64,
-    ) -> Result<crate::show::CompleteConnectionOutcome, AppCommandError> {
-        let (reply, rx) = oneshot::channel();
-        let command = ShowCommand::FailLv1ConnectionIfCurrent {
-            runtime_generation: self.current_runtime_generation().await,
-            expected_generation,
-            reply,
-        };
-        self.show
-            .send(command)
             .await
             .map_err(|_| AppCommandError::ShowUnavailable)?;
         rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)
@@ -684,25 +666,11 @@ impl AppLifecycle {
         ShowCommandResult { changed: false }
     }
 
-    async fn clear_lv1_connection_metadata(
-        &self,
-        expected_generation: u64,
-    ) -> Result<crate::show::CompleteConnectionOutcome, String> {
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::ClearLv1ConnectionIfCurrent {
-                runtime_generation: self.current_runtime_generation().await,
-                expected_generation,
-                reply,
-            })
-            .await
-            .map_err(|_| "Show state is unavailable".to_string())?;
-        rx.await
-            .map_err(|_| "Show state reply channel is closed".to_string())
-    }
-
     async fn finish_disconnect(&self, generation: u64) -> Result<ShowCommandResult, String> {
-        let cleared = self.clear_lv1_connection_metadata(generation).await?;
+        let cleared = self
+            .set_lv1_connection_metadata(generation, None)
+            .await
+            .map_err(|error| error.to_string())?;
         if !cleared.accepted {
             return Ok(self.superseded_disconnect(generation));
         }
@@ -1609,7 +1577,7 @@ mod tests {
         let generation = lifecycle.begin_connecting().await.unwrap();
         while events.try_recv().is_ok() {}
         lifecycle
-            .complete_lv1_connection_metadata(generation, identity.clone())
+            .set_lv1_connection_metadata(generation, Some(identity.clone()))
             .await
             .expect("connected metadata should apply");
 
