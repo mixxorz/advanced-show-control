@@ -1,9 +1,6 @@
 use tokio::sync::oneshot;
 
-use super::{
-    CueListsCommand, CueListsCommandResult, CueListsEvent, CueListsProjectionReason,
-    CueListsProjectionState, CueListsState,
-};
+use super::{CueListsCommand, CueListsCommandResult, CueListsProjectionState, CueListsState};
 use crate::runtime::events::{AppEvent, AppEventBus};
 
 pub(crate) struct CueLists {
@@ -55,6 +52,16 @@ impl CueLists {
         })
     }
 
+    pub fn cancel_recall(&mut self) {
+        if let Some(pending) = self.pending_recall.take() {
+            let _ = pending.reply.send(Err(
+                crate::runtime::errors::AppCommandError::RecallCanceled(
+                    "session was replaced".into(),
+                ),
+            ));
+        }
+    }
+
     pub async fn complete_recall(&mut self) {
         use crate::runtime::errors::AppCommandError;
         let Some(pending) = &mut self.pending_recall else {
@@ -72,7 +79,7 @@ impl CueLists {
                 .state
                 .advance_after_successful_recall()
                 .map_err(AppCommandError::CommandFailed)?;
-            self.publish(CueListsProjectionReason::CueListState, true);
+            self.publish();
             Ok(super::CueRecallResult {
                 recalled_entry_id: entry.id,
                 next_cued_entry_id: self.state.document().cued_cue_entry_id,
@@ -81,15 +88,11 @@ impl CueLists {
         let _ = pending.reply.send(result);
     }
 
-    pub fn publish(&self, reason: CueListsProjectionReason, persisted_cue_list_edit: bool) {
+    fn publish(&self) {
         self.event_bus
-            .publish(AppEvent::CueLists(CueListsEvent::StateChanged {
-                reason,
-                state: CueListsProjectionState {
-                    document: self.state.document(),
-                    last_recall_status: None,
-                },
-                persisted_cue_list_edit,
+            .publish(AppEvent::CueLists(CueListsProjectionState {
+                document: self.state.document(),
+                last_recall_status: None,
             }));
     }
 
@@ -107,7 +110,7 @@ impl CueLists {
             );
         }
         if result.active_cue_list_cleared || result.cued_entry_cleared.is_some() {
-            self.publish(CueListsProjectionReason::CueListState, true);
+            self.publish();
         }
     }
 
@@ -124,28 +127,6 @@ impl CueLists {
                     document: state.document(),
                     last_recall_status: None,
                 });
-                return;
-            }
-            CueListsCommand::GetCueListDocument { reply } => {
-                let _ = reply.send(state.document());
-                return;
-            }
-            CueListsCommand::ReplaceCueListDocument {
-                document,
-                valid_scene_ids,
-                persisted_cue_list_edit,
-                reply,
-            } => {
-                let reconciliation = state.replace_document(document, valid_scene_ids);
-                self.publish(
-                    CueListsProjectionReason::FileReplacement,
-                    persisted_cue_list_edit
-                        || reconciliation.active_cue_list_cleared
-                        || reconciliation.cued_entry_cleared.is_some(),
-                );
-                if let Some(reply) = reply {
-                    let _ = reply.send(changed(true));
-                }
                 return;
             }
             CueListsCommand::CreateCueList { name, reply } => (
@@ -216,7 +197,7 @@ impl CueLists {
             }
         };
         if result.as_ref().is_ok_and(|result| result.changed) {
-            self.publish(CueListsProjectionReason::CueListState, true);
+            self.publish();
         }
         if let Some(reply) = reply {
             let _ = reply.send(result);

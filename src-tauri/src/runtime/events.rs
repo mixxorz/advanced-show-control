@@ -1,6 +1,6 @@
 use tokio::sync::broadcast;
 
-use crate::cue_lists::CueListsEvent;
+use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scenes::ScenesEvent;
@@ -16,10 +16,24 @@ pub enum RuntimeLifecycleEvent {
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Runtime(RuntimeLifecycleEvent),
-    Lv1 { generation: u64, event: Lv1Event },
-    Fade { generation: u64, event: FadeEvent },
-    Scenes { generation: u64, event: ScenesEvent },
-    CueLists(CueListsEvent),
+    Lv1 {
+        generation: u64,
+        event: Lv1Event,
+    },
+    Fade {
+        generation: u64,
+        event: FadeEvent,
+    },
+    Scenes {
+        generation: u64,
+        event: ScenesEvent,
+    },
+    CueLists(CueListsProjectionState),
+    SessionReplaced {
+        generation: u64,
+        scenes: crate::scenes::ScenesProjectionState,
+        cue_lists: crate::cue_lists::CueListsProjectionState,
+    },
     Show(ShowEvent),
     Settings(SettingsEvent),
 }

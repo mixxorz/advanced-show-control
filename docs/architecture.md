@@ -34,7 +34,8 @@ Runtime(ActiveGenerationChanged)
 Lv1 { generation, event }
 Fade { generation, event }
 Scenes { generation, event }
-CueLists(event)
+CueLists(state)
+SessionReplaced { generation, scenes, cue_lists }
 Show(event)
 Settings(event)
 ```
@@ -59,7 +60,7 @@ Direct peers are intentional:
 
 - `FadeEngine` requires its `Lv1ActorHandle` when constructed and sends `Lv1Command::WriteBatch` directly. This immutable, generation-scoped dependency has no optional peer slot, installation step, or peer mutex.
 - `Scenes` receives the active generation's `Lv1ActorHandle` and `FadeEngineHandle` after lifecycle acceptance.
-- `Show` holds app-lifetime Scenes/Cue Lists peers and the current LV1 peer only while connected.
+- `Show` holds the app-lifetime document-owner endpoint and the current LV1 peer only while connected; it has no Cue Lists peer.
 - Scenes and Cue Lists have separate bounded command endpoints, processed by the same app-lifetime owner. Neither sends mailbox requests to the other.
 
 Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and frontend discovery share this path.
@@ -88,11 +89,13 @@ Fade feedback remains active during readiness. A manual fader override beyond th
 
 ## Show, Cue Lists, and Persistence
 
-`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Persisted Scenes/Cue Lists edits publish `persisted_*_edit: true`; Show observes these app-lifetime facts without generation filtering, marks dirty, and publishes file metadata. On Show event-bus lag it conservatively marks the file dirty.
+`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show observes these app-lifetime facts without generation filtering, marks dirty, and publishes file metadata. On Show event-bus lag it conservatively marks the file dirty.
 
-New and load require a currently connected LV1 snapshot to initialize or align the scene document against the live scene list. Save does not require LV1, but queries the current app-lifetime Scenes and Cue Lists documents before writing and then marks the show saved. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
+New and load require a currently connected LV1 snapshot to initialize or align scenes against the live scene list. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
 
-Scenes reconciles configs and directly reconciles cue references when the owned scene identities change. Cue entries survive missing scenes; invalid active/cued references are cleared. Projected scene facts cannot mutate the cue document, and there is no cue subscriber, generation cache, or lag-recovery query. For `FileReplacement`, Show still explicitly supplies both documents and the imported scene UUID set.
+Replacement commits both documents and returns the reconciled result in one owner turn. Generation validation surrounds only this synchronous commit, never mailbox waits or file I/O. A `SessionReplacement` ticket serializes timeout cancellation with commit: a canceled request cannot apply later, and a committed request remains successful even if its acknowledgement arrives late. There are no old-document snapshots, compensating replacements, or rollback protocol. Replacement cancels queued recall intent and pending cue advancement without aborting an active fade.
+
+Scenes reconciles configs and directly reconciles cue references when the owned scene identities change. Cue entries survive missing scenes; invalid active/cued references are cleared. Projected scene facts cannot mutate the cue document, and there is no cue subscriber, generation cache, or lag-recovery query. A replacement emits one `SessionReplaced` fact, so the projector applies both documents together rather than presenting a mixed replacement.
 
 Cue recall enters the existing recall queue locally. The owner polls its dispatch reply without a forwarding task, advances only after successful LV1 dispatch, and keeps subsequent cue commands bounded in their mailbox until completion. Scene commands and runtime safety events continue to be processed while a cue awaits queued dispatch.
 

@@ -198,7 +198,6 @@ impl AppLifecycle {
             lockout.clone(),
         );
         let cue_lists = scenes_task.cue_lists_handle();
-        show_peers.set_cue_lists(cue_lists.clone());
         show_peers.set_scenes(scenes.clone());
         scenes_task.spawn();
 
@@ -915,36 +914,22 @@ impl AppLifecycle {
         let initial_show_state = rx
             .await
             .map_err(|_| "Show state reply channel is closed".to_string())?;
-        let initial_scenes_state = if let Some(scenes_handle) = self.show_peers.scenes() {
-            let (reply, rx) = oneshot::channel();
-            scenes_handle
-                .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
-                .await
-                .map_err(|_| "Scenes state is unavailable".to_string())?;
-            rx.await
-                .map_err(|_| "Scenes state reply channel is closed".to_string())?
-        } else {
-            crate::scenes::ScenesProjectionState {
-                scene_configs: Vec::new(),
-                selected_scene_internal_id: None,
-                scene_settings_clipboard_available: false,
-                ready_generation: None,
-            }
-        };
-        let initial_cue_lists_state = if let Some(cue_lists_handle) = self.show_peers.cue_lists() {
-            let (reply, rx) = oneshot::channel();
-            cue_lists_handle
-                .send(crate::cue_lists::CueListsCommand::InitialProjectionState { reply })
-                .await
-                .map_err(|_| "Cue lists state is unavailable".to_string())?;
-            rx.await
-                .map_err(|_| "Cue lists state reply channel is closed".to_string())?
-        } else {
-            crate::cue_lists::CueListsProjectionState {
-                document: crate::cue_lists::CueListDocument::default(),
-                last_recall_status: None,
-            }
-        };
+        let (reply, rx) = oneshot::channel();
+        self.scenes
+            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+            .await
+            .map_err(|_| "Scenes state is unavailable".to_string())?;
+        let initial_scenes_state = rx
+            .await
+            .map_err(|_| "Scenes state reply channel is closed".to_string())?;
+        let (reply, rx) = oneshot::channel();
+        self.cue_lists
+            .send(crate::cue_lists::CueListsCommand::InitialProjectionState { reply })
+            .await
+            .map_err(|_| "Cue lists state is unavailable".to_string())?;
+        let initial_cue_lists_state = rx
+            .await
+            .map_err(|_| "Cue lists state reply channel is closed".to_string())?;
         let initial_settings = self.settings_snapshot().await?;
         let mut inner = self.inner.lock().await;
         if inner.frontend_ready {
@@ -1038,7 +1023,6 @@ fn log_lv1_connect_failed(identity: &crate::connection_state::Lv1SystemIdentity)
 mod tests {
     use super::*;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
-    use crate::cue_lists::CueListsEvent;
     use crate::fade::FadeEngineHandle;
     use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
@@ -1398,7 +1382,7 @@ mod tests {
             build_connected_runtime(generation, runtime_generation, &identity, event_bus);
 
         assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.show_peers.cue_lists().is_some());
+        assert!(!lifecycle.cue_lists_handle().is_closed());
     }
 
     #[tokio::test]
@@ -1434,7 +1418,7 @@ mod tests {
 
         assert!(connect_result.is_ok());
         assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.show_peers.cue_lists().is_some());
+        assert!(!lifecycle.cue_lists_handle().is_closed());
         let (reply, response) = tokio::sync::oneshot::channel();
         lifecycle
             .scenes
@@ -2168,7 +2152,7 @@ mod tests {
         let lifecycle = lifecycle_for_test(event_bus);
 
         let _command_handle = lifecycle.cue_lists_handle();
-        assert!(lifecycle.show_peers.cue_lists().is_some());
+        assert!(!lifecycle.cue_lists_handle().is_closed());
     }
 
     #[tokio::test]
@@ -2194,9 +2178,7 @@ mod tests {
             .expect("create cue list should return cue list");
 
         loop {
-            if let AppEvent::CueLists(CueListsEvent::StateChanged { state, .. }) =
-                events.recv().await.unwrap()
-            {
+            if let AppEvent::CueLists(state) = events.recv().await.unwrap() {
                 assert_eq!(state.document.active_cue_list_id, Some(created.id));
                 assert!(
                     state
@@ -2602,7 +2584,7 @@ mod tests {
         );
         assert!(lifecycle.current_lv1().await.is_some());
         assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(lifecycle.show_peers.cue_lists().is_some());
+        assert!(!lifecycle.cue_lists_handle().is_closed());
     }
 
     #[tokio::test]

@@ -111,9 +111,7 @@ mod tests {
             AppSettings::default(),
             lockout.clone(),
         );
-        let cue_lists = scenes_task.cue_lists_handle();
         peers.set_scenes(scenes);
-        peers.set_cue_lists(cue_lists);
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {

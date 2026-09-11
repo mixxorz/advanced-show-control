@@ -1,11 +1,5 @@
 use crate::scenes::SceneConfig;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScenesProjectionReason {
-    SceneState,
-    FileReplacement,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScenesProjectionState {
     pub scene_configs: Vec<SceneConfig>,
@@ -18,7 +12,6 @@ pub struct ScenesProjectionState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScenesEvent {
     StateChanged {
-        reason: ScenesProjectionReason,
         state: ScenesProjectionState,
         persisted_scene_edit: bool,
     },

@@ -5,12 +5,15 @@ use crate::runtime::errors::AppCommandError;
 use crate::scenes::{SceneConfig, SceneDocument};
 use uuid::Uuid;
 
-use super::events::ScenesProjectionReason;
-
 #[derive(Debug)]
 pub enum ScenesCommand {
-    GetSceneDocument {
-        reply: oneshot::Sender<SceneDocument>,
+    GetSessionDocument {
+        reply: oneshot::Sender<crate::session::SessionDocument>,
+    },
+    ReplaceSessionDocument {
+        replacement: crate::session::SessionReplacement,
+        expected_generation: u64,
+        reply: oneshot::Sender<Result<crate::session::SessionDocument, String>>,
     },
     GetSceneConfig {
         internal_scene_id: Uuid,
@@ -78,12 +81,6 @@ pub enum ScenesCommand {
     StoreSceneConfigFromCurrentLv1 {
         internal_scene_id: Uuid,
         reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
-    },
-    ReplaceSceneDocument {
-        document: SceneDocument,
-        reason: ScenesProjectionReason,
-        persisted_scene_edit: bool,
-        reply: Option<oneshot::Sender<ScenesCommandResult>>,
     },
     RecallScene {
         internal_scene_id: Uuid,

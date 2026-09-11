@@ -1,21 +1,12 @@
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use super::{CueEntry, CueList, CueListDocument};
+use super::{CueEntry, CueList};
 
 #[derive(Debug)]
 pub enum CueListsCommand {
     InitialProjectionState {
         reply: oneshot::Sender<CueListsProjectionState>,
-    },
-    GetCueListDocument {
-        reply: oneshot::Sender<CueListDocument>,
-    },
-    ReplaceCueListDocument {
-        document: CueListDocument,
-        valid_scene_ids: Vec<Uuid>,
-        persisted_cue_list_edit: bool,
-        reply: Option<oneshot::Sender<CueListsCommandResult>>,
     },
     CreateCueList {
         name: String,

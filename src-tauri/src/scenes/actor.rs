@@ -24,8 +24,8 @@ use crate::scenes::recall_queue::{
 };
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
-    RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult, ScenesEvent,
-    ScenesProjectionReason, ScenesState, SelectedSceneResult,
+    RecallSceneResult, SceneDocument, ScenesCommand, ScenesCommandResult, ScenesEvent, ScenesState,
+    SelectedSceneResult,
 };
 use crate::settings::{AppSettings, SettingsCommand, SettingsEvent, SettingsHandle};
 use crate::show::ShowLockoutReader;
@@ -383,7 +383,6 @@ async fn run_scenes_actor(task: ScenesTask) {
             .iter()
             .map(|scene| scene.internal_scene_id)
             .collect();
-        let mut replacing_document = false;
         let recall_deadline = recall_queue
             .in_flight
             .as_ref()
@@ -426,7 +425,32 @@ async fn run_scenes_actor(task: ScenesTask) {
                     scene_commands_open = false;
                     continue;
                 };
-                replacing_document = matches!(&command, ScenesCommand::ReplaceSceneDocument { reason: ScenesProjectionReason::FileReplacement, .. });
+                let command = match command {
+                    ScenesCommand::GetSessionDocument { reply } => {
+                        let _ = reply.send(crate::session::SessionDocument {
+                            scenes: recall_state.snapshot(), cue_lists: cues.state.document(),
+                        });
+                        continue;
+                    }
+                    ScenesCommand::ReplaceSessionDocument { replacement, expected_generation, reply } => {
+                        let result = runtime_generation.if_current(expected_generation, || {
+                            replacement.commit(|document| {
+                                cancel_recall_queue(&mut recall_queue, &mut late_canceled_observations, "session was replaced", true);
+                                cues.cancel_recall();
+                                recall_state.replace_snapshot_for_session(document.scenes);
+                                cues.state.replace_document(document.cue_lists, recall_state.scene_configs().iter().map(|scene| scene.internal_scene_id));
+                                event_bus.publish(AppEvent::SessionReplaced {
+                                    generation: active_generation, scenes: recall_state.projection_state(),
+                                    cue_lists: crate::cue_lists::CueListsProjectionState { document: cues.state.document(), last_recall_status: None },
+                                });
+                                crate::session::SessionDocument { scenes: recall_state.snapshot(), cue_lists: cues.state.document() }
+                            })
+                        }).await.unwrap_or_else(|| Err("LV1 generation is no longer current".into()));
+                        let _ = reply.send(result);
+                        continue;
+                    }
+                    command => command,
+                };
                 if matches!(&command, ScenesCommand::RuntimePeersReady { .. }) {
                     let authoritative_generation = runtime_generation.current().await;
                     if authoritative_generation != active_generation {
@@ -525,7 +549,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                         publish_scene_state_changed(
                             &event_bus,
                             active_generation,
-                            ScenesProjectionReason::SceneState,
                             &recall_state,
                             false,
                         );
@@ -570,7 +593,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                         publish_scene_state_changed(
                             &event_bus,
                             active_generation,
-                            ScenesProjectionReason::SceneState,
                             &recall_state,
                             false,
                         );
@@ -670,11 +692,10 @@ async fn run_scenes_actor(task: ScenesTask) {
                 ).await;
             }
         }
-        if !replacing_document
-            && !scene_ids.iter().copied().eq(recall_state
-                .scene_configs()
-                .iter()
-                .map(|scene| scene.internal_scene_id))
+        if !scene_ids.iter().copied().eq(recall_state
+            .scene_configs()
+            .iter()
+            .map(|scene| scene.internal_scene_id))
         {
             cues.reconcile(recall_state.scene_configs());
         }
@@ -722,13 +743,7 @@ fn transition_scene_generation(
     if previous_generation != next_generation {
         peers.clear_peers_for_generation(previous_generation);
     }
-    publish_scene_state_changed(
-        event_bus,
-        *active_generation,
-        ScenesProjectionReason::SceneState,
-        recall_state,
-        false,
-    );
+    publish_scene_state_changed(event_bus, *active_generation, recall_state, false);
 }
 
 fn cancel_recall_queue(
@@ -782,8 +797,8 @@ async fn dispatch_scenes_command(
     scene_library_status: &mut SceneLibraryStatus,
 ) -> ScenesCommandDispatch {
     match command {
-        ScenesCommand::GetSceneDocument { reply } => {
-            let _ = reply.send(recall_state.snapshot());
+        ScenesCommand::GetSessionDocument { .. } | ScenesCommand::ReplaceSessionDocument { .. } => {
+            unreachable!("handled by the document owner")
         }
         ScenesCommand::GetSceneConfig {
             internal_scene_id,
@@ -820,7 +835,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.set_scene_duration_ms(internal_scene_id, duration_ms),
                 event_bus,
@@ -837,7 +851,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.set_scene_scope_faders_enabled(internal_scene_id, enabled),
                 event_bus,
@@ -854,7 +867,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.set_scene_scope_pan_enabled(internal_scene_id, enabled),
                 event_bus,
@@ -877,7 +889,6 @@ async fn dispatch_scenes_command(
                     }
                     mutate_scene_state(
                         recall_state,
-                        ScenesProjectionReason::SceneState,
                         true,
                         |state| {
                             state.link_scene_config_by_index(
@@ -902,7 +913,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.delete_scene_config(internal_scene_id),
                 event_bus,
@@ -921,7 +931,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.set_channel_scoped(internal_scene_id, group, channel, scoped),
                 event_bus,
@@ -938,7 +947,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.set_all_channels_scoped(internal_scene_id, scoped),
                 event_bus,
@@ -956,13 +964,7 @@ async fn dispatch_scenes_command(
                 .select_scene_config(internal_scene_id)
                 .map(|changed| {
                     if changed {
-                        publish_scene_state_changed(
-                            event_bus,
-                            generation,
-                            ScenesProjectionReason::SceneState,
-                            recall_state,
-                            false,
-                        );
+                        publish_scene_state_changed(event_bus, generation, recall_state, false);
                     }
                     SelectedSceneResult {
                         scene: recall_state.get_scene_config(internal_scene_id).unwrap(),
@@ -992,7 +994,6 @@ async fn dispatch_scenes_command(
         } => {
             let result = mutate_scene_state(
                 recall_state,
-                ScenesProjectionReason::SceneState,
                 true,
                 |state| state.paste_scene_settings(destination_internal_scene_id),
                 event_bus,
@@ -1029,24 +1030,6 @@ async fn dispatch_scenes_command(
             };
             if let Some(reply) = reply {
                 let _ = reply.send(result);
-            }
-        }
-        ScenesCommand::ReplaceSceneDocument {
-            document,
-            reason,
-            persisted_scene_edit,
-            reply,
-        } => {
-            recall_state.replace_snapshot_for_session(document);
-            publish_scene_state_changed(
-                event_bus,
-                generation,
-                reason,
-                recall_state,
-                persisted_scene_edit,
-            );
-            if let Some(reply) = reply {
-                let _ = reply.send(ScenesCommandResult { changed: true });
             }
         }
         ScenesCommand::RecallScene {
@@ -1169,26 +1152,18 @@ fn apply_scene_list(
     if changed {
         log_scene_alignment(&before, recall_state, &scene_list);
     }
-    publish_scene_state_changed(
-        event_bus,
-        generation,
-        ScenesProjectionReason::SceneState,
-        recall_state,
-        changed,
-    );
+    publish_scene_state_changed(event_bus, generation, recall_state, changed);
 }
 
 fn publish_scene_state_changed(
     event_bus: &AppEventBus,
     generation: u64,
-    reason: ScenesProjectionReason,
     state: &ScenesState,
     persisted_scene_edit: bool,
 ) {
     event_bus.publish_scenes(
         generation,
         ScenesEvent::StateChanged {
-            reason,
             state: state.projection_state(),
             persisted_scene_edit,
         },
@@ -1209,7 +1184,6 @@ fn log_scene_alignment(
 
 fn mutate_scene_state<F>(
     state: &mut ScenesState,
-    reason: ScenesProjectionReason,
     persisted_scene_edit: bool,
     op: F,
     event_bus: &AppEventBus,
@@ -1220,7 +1194,7 @@ where
 {
     let changed = op(state)?;
     if changed {
-        publish_scene_state_changed(event_bus, generation, reason, state, persisted_scene_edit);
+        publish_scene_state_changed(event_bus, generation, state, persisted_scene_edit);
     }
     Ok(ScenesCommandResult { changed })
 }
@@ -1233,13 +1207,7 @@ fn copy_scene_settings(
 ) -> Result<ScenesCommandResult, String> {
     let result = state.copy_scene_settings(source_internal_scene_id)?;
     if result.availability_changed {
-        publish_scene_state_changed(
-            event_bus,
-            generation,
-            ScenesProjectionReason::SceneState,
-            state,
-            false,
-        );
+        publish_scene_state_changed(event_bus, generation, state, false);
     }
     Ok(ScenesCommandResult {
         changed: result.contents_changed,
@@ -1272,13 +1240,7 @@ async fn store_scene_config_from_current_lv1(
             }
             let changed = state.store_scene_config(internal_scene_id, &snapshot.channels)?;
             if changed {
-                publish_scene_state_changed(
-                    event_bus,
-                    generation,
-                    ScenesProjectionReason::SceneState,
-                    state,
-                    true,
-                );
+                publish_scene_state_changed(event_bus, generation, state, true);
             }
             Ok(ScenesCommandResult { changed })
         })
@@ -2854,7 +2816,7 @@ mod tests {
     async fn confirm_queue_admission(handle: &ScenesHandle) {
         let (reply, received) = oneshot::channel();
         handle
-            .send(ScenesCommand::GetSceneDocument { reply })
+            .send(ScenesCommand::GetSessionDocument { reply })
             .await
             .unwrap();
         received.await.unwrap();
@@ -5392,31 +5354,26 @@ mod tests {
         task.spawn();
         mark_runtime_peers_ready(&handle, 1).await;
 
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ScenesCommand::ReplaceSceneDocument {
-                document: SceneDocument {
-                    scene_configs: vec![SceneConfig {
-                        internal_scene_id: scene_id,
-                        scene_index: Some(3),
-                        scene_name: "Song 2 -- Changed".to_string(),
-                        duration_ms: 1_000,
-                        channel_configs: vec![],
-                        scoped_channels: vec![],
-                        scope_toggles: SceneScopeToggles {
-                            faders: false,
-                            pan: true,
-                        },
-                    }],
-                    selected_scene_internal_id: None,
-                },
-                reason: ScenesProjectionReason::SceneState,
-                persisted_scene_edit: false,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        assert_eq!(rx.await.unwrap(), ScenesCommandResult { changed: true });
+        crate::session::tests::replace_scenes(
+            &handle,
+            SceneDocument {
+                scene_configs: vec![SceneConfig {
+                    internal_scene_id: scene_id,
+                    scene_index: Some(3),
+                    scene_name: "Song 2 -- Changed".to_string(),
+                    duration_ms: 1_000,
+                    channel_configs: vec![],
+                    scoped_channels: vec![],
+                    scope_toggles: SceneScopeToggles {
+                        faders: false,
+                        pan: true,
+                    },
+                }],
+                selected_scene_internal_id: None,
+            },
+            1,
+        )
+        .await;
 
         let mut events = event_bus.subscribe();
 
@@ -5488,28 +5445,23 @@ mod tests {
         );
         task.spawn();
 
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ScenesCommand::ReplaceSceneDocument {
-                document: SceneDocument {
-                    scene_configs: vec![SceneConfig {
-                        internal_scene_id: scene_id,
-                        scene_index: Some(1),
-                        scene_name: "Intro".to_string(),
-                        duration_ms: 1_000,
-                        channel_configs: vec![],
-                        scoped_channels: vec![],
-                        scope_toggles: Default::default(),
-                    }],
-                    selected_scene_internal_id: None,
-                },
-                reason: ScenesProjectionReason::SceneState,
-                persisted_scene_edit: false,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        assert_eq!(rx.await.unwrap(), ScenesCommandResult { changed: true });
+        crate::session::tests::replace_scenes(
+            &handle,
+            SceneDocument {
+                scene_configs: vec![SceneConfig {
+                    internal_scene_id: scene_id,
+                    scene_index: Some(1),
+                    scene_name: "Intro".to_string(),
+                    duration_ms: 1_000,
+                    channel_configs: vec![],
+                    scoped_channels: vec![],
+                    scope_toggles: Default::default(),
+                }],
+                selected_scene_internal_id: None,
+            },
+            0,
+        )
+        .await;
 
         let mut events = event_bus.subscribe();
 
@@ -5584,20 +5536,15 @@ mod tests {
         other_source.scene_name = "Chorus".to_string();
         other_source.duration_ms = 3_000;
 
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ScenesCommand::ReplaceSceneDocument {
-                document: SceneDocument {
-                    scene_configs: vec![source.clone(), destination, other_source.clone()],
-                    selected_scene_internal_id: None,
-                },
-                reason: ScenesProjectionReason::FileReplacement,
-                persisted_scene_edit: false,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        assert_eq!(rx.await.unwrap(), ScenesCommandResult { changed: true });
+        crate::session::tests::replace_scenes(
+            &handle,
+            SceneDocument {
+                scene_configs: vec![source.clone(), destination, other_source.clone()],
+                selected_scene_internal_id: None,
+            },
+            1,
+        )
+        .await;
 
         let mut events = event_bus.subscribe();
 
@@ -5753,17 +5700,7 @@ mod tests {
         );
         assert_no_scene_state_change_for_generation(&mut events, 1).await;
 
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ScenesCommand::ReplaceSceneDocument {
-                document: SceneDocument::empty(),
-                reason: ScenesProjectionReason::FileReplacement,
-                persisted_scene_edit: false,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        assert_eq!(rx.await.unwrap(), ScenesCommandResult { changed: true });
+        crate::session::tests::replace_scenes(&handle, SceneDocument::empty(), 1).await;
         let (persisted_scene_edit, state) =
             next_scene_state_change_for_generation(&mut events, 1).await;
         assert!(!persisted_scene_edit);
@@ -7019,18 +6956,22 @@ mod tests {
         generation: u64,
     ) -> (bool, crate::scenes::ScenesProjectionState) {
         loop {
-            if let AppEvent::Scenes {
-                generation: event_generation,
-                event:
-                    ScenesEvent::StateChanged {
-                        state,
-                        persisted_scene_edit,
-                        ..
-                    },
-            } = events.recv().await.unwrap()
-                && event_generation == generation
-            {
-                break (persisted_scene_edit, state);
+            match events.recv().await.unwrap() {
+                AppEvent::Scenes {
+                    generation: event_generation,
+                    event:
+                        ScenesEvent::StateChanged {
+                            state,
+                            persisted_scene_edit,
+                            ..
+                        },
+                } if event_generation == generation => break (persisted_scene_edit, state),
+                AppEvent::SessionReplaced {
+                    generation: event_generation,
+                    scenes,
+                    ..
+                } if event_generation == generation => break (false, scenes),
+                _ => {}
             }
         }
     }
@@ -7453,17 +7394,7 @@ mod tests {
                 })
             })
             .collect();
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ScenesCommand::ReplaceSceneDocument {
-                document,
-                reason: ScenesProjectionReason::FileReplacement,
-                persisted_scene_edit: false,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        let _ = rx.await;
+        crate::session::tests::replace_scenes(&handle, document, generation).await;
         mark_runtime_peers_ready_with_list(&handle, generation, initial_scene_list).await;
         handle
     }
@@ -7543,17 +7474,7 @@ mod tests {
                 })
             })
             .collect();
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(ScenesCommand::ReplaceSceneDocument {
-                document,
-                reason: ScenesProjectionReason::FileReplacement,
-                persisted_scene_edit: false,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        let _ = rx.await;
+        crate::session::tests::replace_scenes(handle, document, generation).await;
         mark_runtime_peers_ready_with_list(handle, generation, initial_scene_list).await;
     }
 }
