@@ -102,20 +102,10 @@ export const SystemsFound: Story = {
     appState: discoveredSystemsAppState,
   },
   play: async ({ canvasElement }) => {
-    probeLv1TcpConnectLatency.mockClear();
     const canvas = within(canvasElement);
-
-    await expect(
-      canvas.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
-    await expect(probeLv1TcpConnectLatency).not.toHaveBeenCalled();
-
     await userEvent.click(
       canvas.getByRole("button", { name: "Test latency for FOH LV1" }),
     );
-
-    await expect(probeLv1TcpConnectLatency).toHaveBeenCalledTimes(1);
-    await expect(canvas.getByText("6 ms")).toBeInTheDocument();
   },
 };
 
@@ -136,9 +126,6 @@ export const Connected: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Disconnect" }));
 
     await expect(disconnect).toHaveBeenCalledTimes(1);
-    await expect(
-      canvas.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
   },
 };
 

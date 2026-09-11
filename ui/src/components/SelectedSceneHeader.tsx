@@ -26,7 +26,7 @@ export function SelectedSceneHeader(props: {
   return (
     <div className="flex flex-col gap-3">
       <div
-        aria-label="Selected scene"
+        aria-label={props.cued ? "Selected scene, cued" : "Selected scene"}
         className={`flex min-h-12 min-w-0 flex-1 items-center gap-3 rounded-console-panel border border-console-line bg-console-bg px-5 py-3 font-mono text-xl ${identityTextClass}`}
       >
         <span className="text-accent-orange">

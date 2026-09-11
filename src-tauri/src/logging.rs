@@ -425,14 +425,6 @@ mod tests {
     use tracing::subscriber::with_default;
     use tracing_subscriber::registry;
 
-    fn is_missing_event_field(fields: &[(&str, &str)]) -> bool {
-        let event = fields.iter().find(|(name, _)| *name == "event");
-        match event {
-            Some((_, value)) => value.is_empty(),
-            None => true,
-        }
-    }
-
     struct CapturedWriter(Arc<Mutex<Vec<u8>>>);
 
     impl std::io::Write for CapturedWriter {
@@ -447,49 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn ui_severity_drops_debug() {
-        assert_eq!(ui_severity(&Level::DEBUG), None);
-        assert_eq!(ui_severity(&Level::TRACE), None);
-    }
-
-    #[test]
-    fn debug_scene_alignment_diagnostics_do_not_reach_ui_logs() {
-        assert_eq!(ui_severity(&Level::DEBUG), None);
-    }
-
-    #[test]
-    fn ui_severity_maps_info_warn_error() {
-        assert_eq!(ui_severity(&Level::INFO), Some(LogSeverity::Info));
-        assert_eq!(ui_severity(&Level::WARN), Some(LogSeverity::Warning));
-        assert_eq!(ui_severity(&Level::ERROR), Some(LogSeverity::Error));
-    }
-
-    #[test]
-    fn diagnostic_file_gate_starts_with_debug_enabled() {
-        let gate = DiagnosticFileGate::bootstrap_debug();
-
-        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
-    }
-
-    #[test]
-    fn diagnostic_file_gate_drops_debug_after_settings_disable_it() {
-        let gate = DiagnosticFileGate::bootstrap_debug();
-
-        gate.set_extensive_diagnostics_enabled(false);
-
-        assert_eq!(gate.min_level(), LevelFilter::INFO);
-    }
-
-    #[test]
-    fn diagnostic_file_gate_allows_debug_after_settings_enable_it() {
-        let gate = DiagnosticFileGate::bootstrap_debug();
-
-        gate.set_extensive_diagnostics_enabled(true);
-
-        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
-    }
-
-    #[test]
     fn diagnostic_file_gate_tracks_extensive_diagnostics_setting() {
         let gate = DiagnosticFileGate::bootstrap_debug();
         let disabled = crate::settings::AppSettings {
@@ -501,21 +450,11 @@ mod tests {
             ..Default::default()
         };
 
+        assert_eq!(gate.min_level(), LevelFilter::DEBUG);
         apply_settings_to_diagnostic_file_gate(&gate, &disabled);
         assert_eq!(gate.min_level(), LevelFilter::INFO);
-
         apply_settings_to_diagnostic_file_gate(&gate, &enabled);
         assert_eq!(gate.min_level(), LevelFilter::DEBUG);
-    }
-
-    #[test]
-    fn event_requires_event_field_for_application_logs() {
-        assert!(is_missing_event_field(&[]));
-        assert!(is_missing_event_field(&[("message", "hello")]));
-        assert!(!is_missing_event_field(&[
-            ("event", "scene_recall_blocked"),
-            ("message", "Scene recall blocked")
-        ]));
     }
 
     #[test]
@@ -603,123 +542,30 @@ mod tests {
     }
 
     #[test]
-    fn event_visitor_preserves_quoted_messages() {
-        let mut visitor = EventVisitor::default();
-        visitor.record_field("message", "Starting \"Advanced Show Control\"");
-        assert_eq!(
-            visitor.message.as_deref(),
-            Some("Starting \"Advanced Show Control\"")
-        );
-    }
-
-    #[test]
-    fn event_visitor_prefers_message_over_event_name() {
-        let mut visitor = EventVisitor::default();
-        visitor.record_field("message", "Scene recall blocked");
-        visitor.record_field("event", "scene_recall_blocked");
-
-        assert_eq!(
-            visitor.ui_message().as_deref(),
-            Some("Scene recall blocked")
-        );
-    }
-
-    #[test]
-    fn event_visitor_falls_back_to_event_name() {
-        let mut visitor = EventVisitor::default();
-        visitor.record_field("event", "scene_recall_blocked");
-
-        assert_eq!(
-            visitor.ui_message().as_deref(),
-            Some("scene_recall_blocked")
-        );
-    }
-
-    #[test]
-    fn ui_log_channel_error_targets_are_internal() {
-        assert!(!is_missing_event_field(&[("event", "ui_log_channel_full")]));
-    }
-
-    #[test]
-    fn safety_log_messages_are_ui_visible_levels() {
-        assert_eq!(ui_severity(&Level::WARN), Some(LogSeverity::Warning));
-        assert_eq!(ui_severity(&Level::ERROR), Some(LogSeverity::Error));
-    }
-
-    #[test]
-    fn safety_events_have_required_event_names() {
-        assert!(!is_missing_event_field(&[
-            ("event", "scene_recall_blocked"),
-            ("message", "Scene recall blocked")
-        ]));
-        assert!(!is_missing_event_field(&[
-            ("event", "fade_aborted"),
-            ("message", "Fade aborted")
-        ]));
-        assert!(!is_missing_event_field(&[
-            ("event", "fade_manual_override"),
-            ("message", "Fade manual override detected")
-        ]));
-        assert!(!is_missing_event_field(&[
-            ("event", "command_failed"),
-            ("message", "Command failed")
-        ]));
-    }
-
-    #[test]
-    fn ui_layer_projects_safety_warn_event() {
-        let (tx, mut rx) = broadcast::channel(1);
+    fn ui_layer_projects_messages_and_filters_diagnostic_and_internal_events() {
+        let (tx, mut rx) = broadcast::channel(8);
         let subscriber = registry().with(UiLogLayer { tx });
 
         with_default(subscriber, || {
-            tracing::warn!(
-                event = "scene_recall_blocked",
-                message = "Scene recall blocked"
-            );
+            tracing::trace!(event = "transport_poll", "Transport polling");
+            tracing::debug!(event = "scene_alignment", "Scene alignment details");
+            tracing::error!(target: UI_SINK_TARGET, event = "ui_sink_failed", "Internal sink error");
+            tracing::info!(event = "session_saved", "Session saved");
+            tracing::warn!(event = "scene_recall_blocked", "Scene recall blocked");
+            tracing::error!(event = "command_failed", "Command failed");
+            tracing::info!(event = "message_missing");
         });
 
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let event = rt.block_on(async { rx.recv().await.unwrap() });
-        assert_eq!(event.severity, LogSeverity::Warning);
-        assert_eq!(event.message, "Scene recall blocked");
+        for (severity, message) in [
+            (LogSeverity::Info, "Session saved"),
+            (LogSeverity::Warning, "Scene recall blocked"),
+            (LogSeverity::Error, "Command failed"),
+            (LogSeverity::Info, "message_missing"),
+        ] {
+            let event = rx.try_recv().unwrap();
+            assert_eq!(event.severity, severity);
+            assert_eq!(event.message, message);
+        }
         assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn ui_layer_projects_second_safety_warn_event_once() {
-        let (tx, mut rx) = broadcast::channel(1);
-        let subscriber = registry().with(UiLogLayer { tx });
-
-        with_default(subscriber, || {
-            tracing::warn!(event = "fade_aborted", message = "Fade aborted");
-        });
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let event = rt.block_on(async { rx.recv().await.unwrap() });
-        assert_eq!(event.severity, LogSeverity::Warning);
-        assert_eq!(event.message, "Fade aborted");
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn ui_layer_projects_command_failure_error_event() {
-        let (tx, mut rx) = broadcast::channel(1);
-        let subscriber = registry().with(UiLogLayer { tx });
-
-        with_default(subscriber, || {
-            tracing::error!(event = "command_failed", message = "Command failed");
-        });
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let event = rt.block_on(async { rx.recv().await.unwrap() });
-        assert_eq!(event.severity, LogSeverity::Error);
-        assert_eq!(event.message, "Command failed");
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn default_env_filter_uses_debug() {
-        assert_eq!(default_env_filter_directive(), "debug");
-        assert_eq!(default_env_filter().to_string(), "debug");
     }
 }

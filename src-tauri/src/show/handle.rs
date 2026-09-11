@@ -9,7 +9,7 @@ mod tests {
     use crate::runtime::generation::RuntimeGeneration;
     use crate::scenes::build_scenes_actor;
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
-    use crate::show::{ShowCommand, ShowCommandResult, ShowFile, ShowFileSafety};
+    use crate::show::{ShowCommand, ShowFile, ShowFileSafety};
 
     async fn recv_show_event(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
         loop {
@@ -24,6 +24,21 @@ mod tests {
         let (show, task, _, _) = super::super::actor::build_show_actor(event_bus);
         task.spawn();
         show
+    }
+
+    async fn set_connection(
+        show: &ShowStateHandle,
+        identity: Option<Lv1SystemIdentity>,
+    ) -> crate::show::CompleteConnectionOutcome {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity,
+            expected_generation: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+        response.await.unwrap()
     }
 
     fn fake_settings_handle() -> SettingsHandle {
@@ -198,15 +213,8 @@ mod tests {
             port: 50_000,
         };
 
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::CompleteLv1Connection {
-            identity: identity.clone(),
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
         assert_eq!(
-            rx.await.unwrap(),
+            set_connection(&show, Some(identity.clone())).await,
             crate::show::CompleteConnectionOutcome {
                 accepted: true,
                 changed: true,
@@ -220,15 +228,8 @@ mod tests {
         assert_eq!(state.connected_lv1_identity, Some(identity.clone()));
         assert!(events.try_recv().is_err());
 
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::CompleteLv1Connection {
-            identity,
-            reply: Some(reply),
-        })
-        .await
-        .unwrap();
         assert_eq!(
-            rx.await.unwrap(),
+            set_connection(&show, Some(identity)).await,
             crate::show::CompleteConnectionOutcome {
                 accepted: true,
                 changed: false,
@@ -248,19 +249,16 @@ mod tests {
             address: "192.168.1.35".to_string(),
             port: 50_000,
         };
-        show.send(ShowCommand::CompleteLv1Connection {
-            identity,
-            reply: None,
-        })
-        .await
-        .unwrap();
+        set_connection(&show, Some(identity)).await;
         recv_show_event(&mut events).await;
 
-        let (reply, rx) = tokio::sync::oneshot::channel();
-        show.send(ShowCommand::FailLv1Connection { reply: Some(reply) })
-            .await
-            .unwrap();
-        assert_eq!(rx.await.unwrap(), ShowCommandResult { changed: true });
+        assert_eq!(
+            set_connection(&show, None).await,
+            crate::show::CompleteConnectionOutcome {
+                accepted: true,
+                changed: true,
+            }
+        );
         let AppEvent::Show(state) = events.recv().await.unwrap() else {
             panic!("expected Show projection");
         };
@@ -280,12 +278,7 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 12345,
         };
-        show.send(ShowCommand::CompleteLv1Connection {
-            identity: identity.clone(),
-            reply: None,
-        })
-        .await
-        .unwrap();
+        set_connection(&show, Some(identity.clone())).await;
         recv_show_event(&mut show_events).await;
 
         event_bus.publish(AppEvent::Runtime(
@@ -323,12 +316,7 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 12345,
         };
-        show.send(ShowCommand::CompleteLv1Connection {
-            identity,
-            reply: None,
-        })
-        .await
-        .unwrap();
+        set_connection(&show, Some(identity)).await;
         recv_show_event(&mut show_events).await;
 
         event_bus.publish(AppEvent::Runtime(

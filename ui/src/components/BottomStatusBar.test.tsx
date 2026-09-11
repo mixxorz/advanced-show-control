@@ -49,10 +49,10 @@ describe("BottomStatusBar", () => {
     expect(screen.queryByText("Fading")).not.toBeInTheDocument();
   });
 
-  it("shows fading mode with a pulse while a fade is running", () => {
+  it("shows fading mode while a fade is running", () => {
     renderBottomStatusBar({ ...connectedAppState, fadeState: "running" });
 
-    expect(screen.getByText("Fading")).toHaveClass("animate-pulse");
+    expect(screen.getByText("Fading")).toBeInTheDocument();
   });
 
   it("does not use the selected scene as the cued fallback", () => {

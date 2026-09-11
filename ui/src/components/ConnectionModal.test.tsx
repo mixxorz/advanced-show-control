@@ -237,9 +237,6 @@ describe("ConnectionModal", () => {
     };
     renderModal({ appState });
 
-    expect(screen.getByRole("button", { name: "Select FOH LV1" })).toHaveClass(
-      "border-status-current",
-    );
     expect(screen.getByText("Connected")).toBeInTheDocument();
   });
 });

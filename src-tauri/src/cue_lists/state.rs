@@ -307,11 +307,14 @@ mod tests {
     #[test]
     fn creating_a_cue_list_makes_it_active_and_clears_cued_entry() {
         let mut state = CueListsState::default();
+        state.create_cue_list("Existing".to_string()).unwrap();
+        let entry = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
+        state.cue_entry(Some(entry.id)).unwrap();
 
         let created = state.create_cue_list(" Main ".to_string()).unwrap();
 
-        assert_eq!(state.document().cue_lists.len(), 1);
-        assert_eq!(state.document().cue_lists[0].name, "Main");
+        assert_eq!(state.document().cue_lists.len(), 2);
+        assert_eq!(state.document().cue_lists[1].name, "Main");
         assert_eq!(state.document().active_cue_list_id, Some(created.id));
         assert_eq!(state.document().cued_cue_entry_id, None);
     }
@@ -406,7 +409,7 @@ mod tests {
     #[test]
     fn cueing_entry_from_inactive_list_is_rejected() {
         let mut state = CueListsState::default();
-        let first = state.create_cue_list("First".to_string()).unwrap().id;
+        state.create_cue_list("First".to_string()).unwrap();
         let first_entry = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
         let second = state.create_cue_list("Second".to_string()).unwrap().id;
         state.set_active_cue_list(Some(second)).unwrap();
@@ -416,7 +419,6 @@ mod tests {
         assert_eq!(state.document().active_cue_list_id, Some(second));
         assert_eq!(err, "Cue blocked: cue entry is not in the active cue list");
         assert_eq!(state.document().cued_cue_entry_id, None);
-        assert_ne!(first, second);
     }
 
     #[test]

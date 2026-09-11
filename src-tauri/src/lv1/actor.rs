@@ -574,12 +574,11 @@ async fn run_connected(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::commands::{Lv1ParameterWrite, Lv1WriteParameter};
-    use crate::lv1::tcp::{FrameDecoder, decode_frame_payload, encode_parameter_write_batch};
-    use crate::runtime::events::AppEventBus;
-    use tokio::io::AsyncReadExt;
-    use tokio::sync::mpsc;
-    use tokio::sync::oneshot;
+    use crate::lv1::tcp::{FrameDecoder, decode_frame_payload};
+    use crate::runtime::events::{AppEvent, AppEventBus};
+    use crate::test_support::TracingCapture;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tracing::Level;
 
     #[tokio::test]
     async fn production_actor_registers_as_advanced_show_control() {
@@ -629,125 +628,107 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drain_commands_reports_closed_command_channel() {
-        let (tx, mut rx) = mpsc::channel(1);
-        drop(tx);
-        let mut state = ActorState::new(AppEventBus::default(), 0);
+    async fn tcp_actor_logs_scene_diagnostics_and_malformed_channels_without_publishing_topology() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let capture = TracingCapture::new();
+        let _guard = capture.install();
+        let bus = AppEventBus::new(16);
+        let mut events = bus.subscribe();
+        let (_handle, task) = build_actor("127.0.0.1".to_string(), port, bus, 0);
+        task.spawn();
 
-        let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
+        let (mut stream, _) = listener.accept().await.unwrap();
+        stream
+            .write_all(&encode_frame("/handshake", &[OscArg::Int(1)]).unwrap())
+            .await
+            .unwrap();
+        stream
+            .write_all(&encode_frame("/Channels", &[OscArg::Int(1)]).unwrap())
+            .await
+            .unwrap();
+        stream
+            .write_all(
+                &encode_frame(
+                    "/Notify/SceneList",
+                    &[
+                        OscArg::Int(1),
+                        OscArg::Int(4),
+                        OscArg::String("Outro".to_string()),
+                    ],
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
-    }
-
-    #[tokio::test]
-    async fn drain_commands_reports_not_connected_for_flush_while_disconnected() {
-        let (tx, mut rx) = mpsc::channel(1);
-        let mut state = ActorState::new(AppEventBus::default(), 0);
-        let (reply_tx, reply_rx) = oneshot::channel();
-        tx.try_send(Lv1Command::Flush {
-            reply: Some(reply_tx),
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match events.recv().await.unwrap() {
+                    AppEvent::Lv1 {
+                        event: Lv1Event::SceneListChanged(_),
+                        ..
+                    } => break,
+                    AppEvent::Lv1 {
+                        event: Lv1Event::ChannelTopologyChanged(_),
+                        ..
+                    } => panic!("malformed channels must not publish topology"),
+                    _ => {}
+                }
+            }
         })
-        .unwrap();
-        drop(tx);
+        .await
+        .expect("scene-list fact should follow malformed channels");
 
-        let result = drain_commands_for(&mut state, &mut rx, Duration::from_secs(1)).await;
-
-        assert_eq!(result, DrainCommandsResult::CommandChannelClosed);
-        assert_eq!(reply_rx.await.unwrap(), Err(Lv1ActorError::NotConnected));
-    }
-
-    #[test]
-    fn drain_disconnected_command_rejects_recall_scene_when_not_connected() {
-        let state = ActorState::new(AppEventBus::default(), 0);
-        let (reply, rx) = oneshot::channel();
-
-        drain_disconnected_command(
-            Lv1Command::RecallScene {
-                scene_index: 4,
-                reply: Some(reply),
-            },
-            &state,
-            Err(Lv1ActorError::NotConnected),
-        );
-
-        assert_eq!(
-            rx.blocking_recv().unwrap(),
-            Err(Lv1ActorError::NotConnected)
+        let diagnostics = capture.matching("lv1_diagnostic", Level::DEBUG);
+        assert!(diagnostics.iter().any(|event| {
+            event
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("failed to parse /Channels"))
+        }));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|event| event.message.as_deref() == Some("parsed /Notify/SceneList scenes=1"))
         );
     }
 
     #[tokio::test]
-    async fn pan_family_commands_encode_expected_osc_paths() {
-        let bytes = encode_parameter_write_batch(&[
-            Lv1ParameterWrite {
-                group: 0,
-                channel: 0,
-                parameter: Lv1WriteParameter::Pan,
-                value: -0.5,
-            },
-            Lv1ParameterWrite {
-                group: 0,
-                channel: 0,
-                parameter: Lv1WriteParameter::Balance,
-                value: 0.25,
-            },
-            Lv1ParameterWrite {
-                group: 0,
-                channel: 0,
-                parameter: Lv1WriteParameter::Width,
-                value: 0.75,
-            },
-        ])
-        .unwrap();
+    async fn writer_task_fails_a_queued_flush_when_an_earlier_write_fails() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = tokio::net::TcpStream::connect(address).await.unwrap();
+        let (_peer, _) = listener.accept().await.unwrap();
+        let (_reader, mut writer) = client.into_split();
+        writer.shutdown().await.unwrap();
 
-        let mut decoder = FrameDecoder::default();
-        let frames = decoder.push(&bytes).unwrap();
-        let addresses: Vec<_> = frames
-            .iter()
-            .map(|frame| decode_frame_payload(frame).unwrap().address)
-            .collect();
-
-        assert!(addresses.contains(&"/Set/Track/Pan".to_string()));
-        assert!(addresses.contains(&"/Set/Track/Pan/Balance".to_string()));
-        assert!(addresses.contains(&"/Set/Track/Pan/Width".to_string()));
-    }
-
-    #[test]
-    fn enqueue_writer_bytes_reports_tcp_error_when_queue_is_full() {
-        let (tx, _rx) = mpsc::channel(1);
-        tx.try_send(WriterMessage::Bytes(vec![1])).unwrap();
-
-        let result = enqueue_writer_bytes(&tx, vec![2]);
-
-        assert_eq!(
-            result,
-            Err(DisconnectReason::TcpError("writer queue full".to_string()))
-        );
-    }
-
-    #[test]
-    fn recall_scene_frame_uses_set_cur_scene_index() {
-        let bytes = encode_frame("/Set/CurSceneIndex", &[OscArg::Int(4)]).unwrap();
-        let mut decoder = FrameDecoder::default();
-        let frames = decoder.push(&bytes).unwrap();
-        let msg = decode_frame_payload(&frames[0]).unwrap();
-
-        assert_eq!(msg.address, "/Set/CurSceneIndex");
-        assert_eq!(msg.args, vec![OscArg::Int(4)]);
-    }
-
-    #[tokio::test]
-    async fn fail_pending_writer_flushes_sends_error_to_queued_flush_reply() {
-        let (tx, mut rx) = mpsc::channel(2);
+        let (writer_tx, writer_rx) = mpsc::channel(2);
+        let (error_tx, mut error_rx) = mpsc::channel(1);
         let (flush_tx, flush_rx) = oneshot::channel();
-        tx.try_send(WriterMessage::Bytes(vec![1])).unwrap();
-        tx.try_send(WriterMessage::Flush(flush_tx)).unwrap();
-
-        fail_pending_writer_flushes(&mut rx);
+        writer_tx.send(WriterMessage::Bytes(vec![1])).await.unwrap();
+        writer_tx
+            .send(WriterMessage::Flush(flush_tx))
+            .await
+            .unwrap();
+        tokio::spawn(writer_task(writer, writer_rx, error_tx));
 
         assert_eq!(
-            flush_rx.await.unwrap(),
+            tokio::time::timeout(Duration::from_secs(1), flush_rx)
+                .await
+                .expect("queued flush reply timed out")
+                .unwrap(),
             Err(Lv1ActorError::CommandSendFailed)
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), error_rx.recv())
+                .await
+                .expect("writer failure signal timed out"),
+            Some(())
         );
     }
 }

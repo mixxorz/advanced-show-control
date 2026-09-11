@@ -439,13 +439,8 @@ export const CueListsTab: Story = {
     appState: cueListsTabAppState,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-
     await expect(
-      canvas.getByRole("heading", { name: "Scene library" }),
-    ).toBeInTheDocument();
-    await expect(
-      canvas.getByRole("heading", { name: "Service" }),
+      within(canvasElement).getByRole("heading", { name: "Service" }),
     ).toBeInTheDocument();
   },
 };

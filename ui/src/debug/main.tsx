@@ -29,11 +29,12 @@ const tests = [
   "fade-completes",
   "same-scene-finish",
   "same-scene-override",
-  "decreasing-xfade",
+  "decreasing-duration-final-targets",
   "link-unlinked-scene",
   "lockout-blocks-recall",
 ].map((name) => ({ name, status: "pending", detail: "" }));
 let state: AppViewState | undefined;
+let discoveredIdentity: Lv1SystemIdentity | undefined;
 let connectedIdentity: Lv1SystemIdentity | undefined;
 let suiteStatus = "Running";
 let closeIn: number | undefined;
@@ -101,15 +102,18 @@ async function run() {
   });
   await test("connection", async () => {
     await invoke("refresh_lv1_discovery", { timeoutMs: 5000 });
-    const identity = await waitFor(
+    discoveredIdentity = await waitFor(
       () => state?.discoveredLv1Systems[0]?.identity,
       "LV1 discovery",
     );
-    await invoke("connect_lv1_system", { identity });
-    await waitFor(() => state?.connection === "connected", "LV1 connected");
+    await invoke("connect_lv1_system", { identity: discoveredIdentity });
     connectedIdentity = await waitFor(
-      () => state?.connectedLv1Identity,
-      "projected connected LV1 identity",
+      () =>
+        state?.connection === "connected" &&
+        sameValue(state.connectedLv1Identity, discoveredIdentity)
+          ? state.connectedLv1Identity
+          : undefined,
+      "LV1 connected to discovered identity",
     );
     if (!connectedIdentity.uuid) {
       throw new Error("startup auto-connect smoke requires an LV1 UUID");
@@ -119,12 +123,12 @@ async function run() {
     }, "smoke scene configs");
     sceneA = scenes.sceneA;
     sceneB = scenes.sceneB;
-    await log(`CONNECTED ${label(identity)}`);
+    await log(`CONNECTED ${label(discoveredIdentity)}`);
   });
   await test("startup-auto-connect", async () => {
-    const expectedUuid = connectedIdentity?.uuid;
-    if (!expectedUuid) {
-      throw new Error("connected LV1 UUID is unavailable");
+    const expectedIdentity = discoveredIdentity;
+    if (!expectedIdentity?.uuid) {
+      throw new Error("discovered LV1 identity is unavailable");
     }
 
     await invoke("disconnect_lv1");
@@ -137,7 +141,7 @@ async function run() {
     const reconnected = await waitFor(
       () =>
         state?.connection === "connected" &&
-        state.connectedLv1Identity?.uuid === expectedUuid
+        sameValue(state.connectedLv1Identity, expectedIdentity)
           ? state.connectedLv1Identity
           : undefined,
       "startup auto-connected LV1 identity",
@@ -402,7 +406,7 @@ async function run() {
       await setSameSceneSettings(true, 500);
     }
   });
-  await test("decreasing-xfade", async () => {
+  await test("decreasing-duration-final-targets", async () => {
     await reset(sceneA, targetA);
     for (const [durationMs, internalSceneId, target] of [
       [5000, sceneB, targetB],
@@ -690,6 +694,7 @@ async function assertEmptySceneSettings(internalSceneId: string, name: string) {
     `projected ${name} scene settings`,
   );
   if (
+    scene.durationMs !== 0 ||
     scene.scopeToggles.faders ||
     scene.scopeToggles.pan ||
     scene.channelConfigs.length !== 0 ||

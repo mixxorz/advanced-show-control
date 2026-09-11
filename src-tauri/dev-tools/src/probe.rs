@@ -198,36 +198,22 @@ mod tests {
     }
 
     #[test]
-    fn writes_log_entries_as_json_lines() {
-        let path = std::env::temp_dir().join(format!(
-            "lv1-probe-test-{}-{}.jsonl",
-            std::process::id(),
-            unique_suffix()
-        ));
-        let mut logger = JsonlLogger::create(&path).unwrap();
+    fn serializes_log_entry_representation() {
+        let entry = ProbeLogEntry {
+            timestamp_ms: 12,
+            direction: "received".to_string(),
+            kind: MessageKind::Keepalive,
+            address: Some("/ping".to_string()),
+            args: vec![],
+            frame_size: Some(8),
+            header_hex: Some("0000000000000008".to_string()),
+            error: None,
+        };
 
-        logger
-            .write(ProbeLogEntry {
-                timestamp_ms: 0,
-                direction: "received".to_string(),
-                kind: MessageKind::Keepalive,
-                address: Some("/ping".to_string()),
-                args: vec![],
-                frame_size: Some(8),
-                header_hex: Some("0000000000000008".to_string()),
-                error: None,
-            })
-            .unwrap();
-
-        let contents = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        let line = contents.lines().next().unwrap();
-        let value: serde_json::Value = serde_json::from_str(line).unwrap();
-        assert_eq!(contents.lines().count(), 1);
-        assert!(value["timestamp_ms"].as_u64().is_some());
-        assert_eq!(value["direction"], "received");
-        assert_eq!(value["kind"], "Keepalive");
-        assert_eq!(value["address"], "/ping");
+        assert_eq!(
+            serde_json::to_string(&entry).unwrap(),
+            r#"{"timestamp_ms":12,"direction":"received","kind":"Keepalive","address":"/ping","args":[],"frame_size":8,"header_hex":"0000000000000008","error":null}"#
+        );
     }
 
     fn msg(address: &str) -> OscMessage {
@@ -235,12 +221,5 @@ mod tests {
             address: address.to_string(),
             args: vec![],
         }
-    }
-
-    fn unique_suffix() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
     }
 }

@@ -234,18 +234,6 @@ describe("CueListsTab", () => {
     expect(cueButton).toBeDisabled();
   });
 
-  it("opens cue list management from the panel header", async () => {
-    const user = userEvent.setup();
-
-    renderWithAppProviders(<CueListsTab />, { appState: cueListStateFixture });
-
-    await user.click(screen.getByRole("button", { name: /Manage Cue Lists/i }));
-
-    expect(
-      screen.getByRole("dialog", { name: /Manage Cue Lists/i }),
-    ).toBeInTheDocument();
-  });
-
   it("does not cue a stale selected entry after the active list changes", async () => {
     const user = userEvent.setup();
     const cueEntry = vi.fn();

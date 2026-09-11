@@ -352,8 +352,7 @@ mod tests {
 
     #[test]
     fn decoder_rejects_truncated_blob() {
-        // claims 5 bytes of data but only 2 follow; total length is not a multiple of 4
-        let packet = [b'/', b'b', 0, 0, b',', b'b', 0, 0, 0, 0, 0, 5, 1, 2];
-        assert!(decode_packet(&packet).is_err());
+        let packet = [b'/', b'b', 0, 0, b',', b'b', 0, 0, 0, 0, 0, 5, 1, 2, 0, 0];
+        assert_eq!(decode_packet(&packet), Err(OscError::UnexpectedEof("blob")));
     }
 }

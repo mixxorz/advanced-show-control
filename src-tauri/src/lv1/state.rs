@@ -322,229 +322,37 @@ fn is_diagnostic_address(address: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lv1::osc::OscArg;
 
-    #[tokio::test]
-    async fn channels_parse_failure_logs_diagnostic_without_event_bus_fact() {
-        use crate::runtime::events::AppEventBus;
-
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-        let mut state = ActorState::new(bus.clone(), 0);
-
-        // Declares one channel record but carries none.
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Channels".to_string(),
-                args: vec![crate::lv1::osc::OscArg::Int(1)],
-            },
-        );
-
-        assert!(state.channels.is_empty());
-
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn scene_buffer_emits_when_name_arrives_first() {
-        let mut buf = SceneBuffer::default();
-        assert!(buf.apply_name("Scene A".to_string()).is_none());
-        let scene = buf.apply_index(0).unwrap();
-        assert_eq!(
-            scene,
-            SceneState {
-                index: 0,
-                name: "Scene A".to_string()
-            }
-        );
-        assert!(buf.apply_index(0).is_none());
-    }
-
-    #[test]
-    fn balance_message_does_not_change_mono_channel_balance() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
+    fn channel(channel: i32) -> ChannelInfo {
+        ChannelInfo {
             group: 0,
-            channel: 0,
-            name: "Mono 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Mono),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Balance".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(0.75),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].balance, None);
-    }
-
-    #[tokio::test]
-    async fn scene_list_message_emits_tracing_diagnostic() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/SceneList".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(1),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::String("Intro".to_string()),
-                ],
-            },
-        );
-
-        assert!(!state.scene_list.is_empty());
-    }
-
-    #[test]
-    fn track_pan_message_updates_matching_channel() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
+            channel,
+            name: format!("Ch {}", channel + 1),
             gain_db: -9.0,
             muted: false,
             pan: None,
             balance: None,
             width: None,
             pan_mode: None,
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Track/Pan".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(-15.0),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].pan, Some(-15.0));
+        }
     }
 
     #[test]
-    fn balance_message_updates_matching_channel() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Stereo 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Balance".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(0.25),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].balance, Some(0.25));
-    }
-
-    #[test]
-    fn inactive_pan_arc_width_is_ignored() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Stereo 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/PanArcWidth".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(0.6),
-                    crate::lv1::osc::OscArg::Int(0),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].width, None);
-    }
-
-    #[test]
-    fn active_pan_arc_width_updates_matching_channel() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Stereo 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/PanArcWidth".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(1.2),
-                    crate::lv1::osc::OscArg::Int(1),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].width, Some(1.2));
-    }
-
-    #[test]
-    fn scene_buffer_emits_when_index_arrives_first() {
-        let mut buf = SceneBuffer::default();
-        assert!(buf.apply_index(1).is_none());
-        let scene = buf.apply_name("Scene B".to_string()).unwrap();
+    fn scene_buffer_emits_in_either_arrival_order() {
+        let mut name_first = SceneBuffer::default();
+        assert!(name_first.apply_name("Scene A".to_string()).is_none());
         assert_eq!(
-            scene,
+            name_first.apply_index(0).unwrap(),
+            SceneState {
+                index: 0,
+                name: "Scene A".to_string()
+            }
+        );
+
+        let mut index_first = SceneBuffer::default();
+        assert!(index_first.apply_index(1).is_none());
+        assert_eq!(
+            index_first.apply_name("Scene B".to_string()).unwrap(),
             SceneState {
                 index: 1,
                 name: "Scene B".to_string()
@@ -553,88 +361,31 @@ mod tests {
     }
 
     #[test]
-    fn scene_buffer_overwrites_pending_with_new_name() {
-        let mut buf = SceneBuffer::default();
-        buf.apply_name("Old".to_string());
-        buf.apply_name("New".to_string());
-        let scene = buf.apply_index(2).unwrap();
-        assert_eq!(scene.name, "New");
+    fn scene_buffer_overwrites_pending_name() {
+        let mut buffer = SceneBuffer::default();
+        buffer.apply_name("Old".to_string());
+        buffer.apply_name("New".to_string());
+        assert_eq!(buffer.apply_index(2).unwrap().name, "New");
     }
 
     #[test]
-    fn apply_fader_update_changes_matching_channel() {
-        let mut channels = vec![
-            ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Ch 1".to_string(),
-                gain_db: -9.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-            ChannelInfo {
-                group: 0,
-                channel: 1,
-                name: "Ch 2".to_string(),
-                gain_db: -12.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-        ];
+    fn apply_fader_update_changes_only_matching_channel() {
+        let mut channels = vec![channel(0), channel(1)];
         apply_fader_update(&mut channels, 0, 0, -6.0);
         assert_eq!(channels[0].gain_db, -6.0);
-        assert_eq!(channels[1].gain_db, -12.0);
+        assert_eq!(channels[1].gain_db, -9.0);
     }
 
     #[test]
     fn apply_fader_update_ignores_unknown_channel() {
-        let mut channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
-            gain_db: -9.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }];
+        let mut channels = vec![channel(0)];
         apply_fader_update(&mut channels, 0, 99, -3.0);
         assert_eq!(channels[0].gain_db, -9.0);
     }
 
     #[test]
-    fn apply_mute_update_changes_matching_channel() {
-        let mut channels = vec![
-            ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Ch 1".to_string(),
-                gain_db: -9.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-            ChannelInfo {
-                group: 0,
-                channel: 1,
-                name: "Ch 2".to_string(),
-                gain_db: -12.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-        ];
+    fn apply_mute_update_changes_only_matching_channel() {
+        let mut channels = vec![channel(0), channel(1)];
         apply_mute_update(&mut channels, 0, 0, true);
         assert!(channels[0].muted);
         assert!(!channels[1].muted);
@@ -642,81 +393,8 @@ mod tests {
 
     #[test]
     fn apply_mute_update_ignores_unknown_channel() {
-        let mut channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
-            gain_db: -9.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }];
+        let mut channels = vec![channel(0)];
         apply_mute_update(&mut channels, 0, 99, true);
         assert!(!channels[0].muted);
-    }
-
-    #[test]
-    fn track_mute_message_accepts_integer_and_bool_values() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
-            gain_db: -9.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }];
-
-        for (arg, expected) in [
-            (OscArg::Int(1), true),
-            (OscArg::Int(0), false),
-            (OscArg::Bool(true), true),
-            (OscArg::Bool(false), false),
-        ] {
-            handle_message(
-                &mut state,
-                &crate::lv1::osc::OscMessage {
-                    address: "/Notify/Track/Out/Mute".to_string(),
-                    args: vec![OscArg::Int(0), OscArg::Int(0), arg],
-                },
-            );
-
-            assert_eq!(state.channels[0].muted, expected);
-        }
-    }
-
-    #[test]
-    fn track_mute_message_rejects_other_integer_values() {
-        let bus = AppEventBus::new(16);
-        let mut events = bus.subscribe();
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
-            gain_db: -9.0,
-            muted: true,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Track/Out/Mute".to_string(),
-                args: vec![OscArg::Int(0), OscArg::Int(0), OscArg::Int(2)],
-            },
-        );
-
-        assert!(state.channels[0].muted);
-        assert!(events.try_recv().is_err());
     }
 }

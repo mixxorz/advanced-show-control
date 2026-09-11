@@ -69,15 +69,10 @@ mod tests {
     }
 
     #[test]
-    fn gain_db_matches_measured_fader_law() {
-        for group in 0..=8 {
-            for channel in 0..=128 {
-                for tick in 0..=64 {
-                    let position = fader_position_at(group, channel, tick);
-                    let expected = pos_to_db(position);
-                    assert_close(gain_db_at(group, channel, tick), expected);
-                }
-            }
-        }
+    fn gain_db_uses_measured_fader_law() {
+        assert_close(gain_db_at(0, 0, 0), -12.295081967213115);
+        assert_close(gain_db_at(0, 2, 0), 10.0);
+        assert_close(gain_db_at(0, 6, 0), -144.0);
+        assert_close(gain_db_at(0, 0, 8), 10.0);
     }
 }

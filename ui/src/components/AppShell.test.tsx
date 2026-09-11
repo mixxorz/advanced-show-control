@@ -25,39 +25,4 @@ describe("AppShell", () => {
 
     expect(onOpenConnection).toHaveBeenCalledTimes(1);
   });
-
-  it("does not render the Sessions tab in the shell navigation", () => {
-    renderWithAppProviders(
-      <AppShell
-        activeTab="scenes"
-        onOpenConnection={vi.fn()}
-        onResume={vi.fn()}
-        onSelectTab={vi.fn()}
-        showConnection={false}
-      />,
-      { appState: connectedAppState },
-    );
-
-    expect(
-      screen.queryByRole("button", { name: "Sessions" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("renders the cue lists tab in the cue-lists slot", () => {
-    renderWithAppProviders(
-      <AppShell
-        activeTab="cue-lists"
-        onOpenConnection={vi.fn()}
-        onResume={vi.fn()}
-        onSelectTab={vi.fn()}
-        showConnection={false}
-      />,
-      { appState: connectedAppState },
-    );
-
-    expect(screen.getByRole("heading", { name: "Main" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /Manage Cue Lists/i }),
-    ).toBeInTheDocument();
-  });
 });

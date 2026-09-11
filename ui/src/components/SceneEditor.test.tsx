@@ -90,9 +90,10 @@ describe("SceneEditor", () => {
       cuedCueEntryId: "cue-2",
     });
 
-    expect(screen.getByLabelText("Selected scene")).not.toHaveClass(
-      "text-status-cued",
-    );
+    expect(screen.getByLabelText("Selected scene")).toBeInTheDocument();
+    expect(
+      screen.queryByLabelText("Selected scene, cued"),
+    ).not.toBeInTheDocument();
 
     rerender(
       editorTree({
@@ -103,9 +104,7 @@ describe("SceneEditor", () => {
       }),
     );
 
-    expect(screen.getByLabelText("Selected scene")).toHaveClass(
-      "text-status-cued",
-    );
+    expect(screen.getByLabelText("Selected scene, cued")).toBeInTheDocument();
   });
 
   it("confirms overwrite in-app when linking to a scene with an existing config", async () => {

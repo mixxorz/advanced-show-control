@@ -26,26 +26,15 @@ pub enum ShowCommand {
         systems: Vec<DiscoveredLv1System>,
         reply: Option<oneshot::Sender<ShowCommandResult>>,
     },
-    #[cfg(test)]
-    CompleteLv1Connection {
-        identity: Lv1SystemIdentity,
-        reply: Option<oneshot::Sender<super::CompleteConnectionOutcome>>,
-    },
     SetLv1ConnectionIfCurrent {
         identity: Option<Lv1SystemIdentity>,
         expected_generation: u64,
         reply: oneshot::Sender<super::CompleteConnectionOutcome>,
     },
-    #[cfg(test)]
-    FailLv1Connection {
-        reply: Option<oneshot::Sender<ShowCommandResult>>,
-    },
     LoadShowFileFromPath {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
     },
-    #[cfg(test)]
-    ClearForTest { reply: Option<oneshot::Sender<()>> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

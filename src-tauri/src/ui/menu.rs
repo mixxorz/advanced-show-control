@@ -115,24 +115,3 @@ pub fn handle_session_menu_event(app: &AppHandle<tauri::Wry>, event: MenuEvent) 
         _ => return,
     };
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn menu_ids_are_stable() {
-        assert_eq!(MENU_NEW_SESSION, "session:new");
-        assert_eq!(MENU_OPEN_SESSION, "session:open");
-        assert_eq!(MENU_SAVE_SESSION, "session:save");
-        assert_eq!(MENU_SAVE_SESSION_AS, "session:save-as");
-    }
-
-    #[test]
-    fn file_menu_accelerators_are_standard() {
-        assert_eq!(MENU_NEW_SESSION_ACCELERATOR, "CmdOrCtrl+N");
-        assert_eq!(MENU_OPEN_SESSION_ACCELERATOR, "CmdOrCtrl+O");
-        assert_eq!(MENU_SAVE_SESSION_ACCELERATOR, "CmdOrCtrl+S");
-        assert_eq!(MENU_SAVE_SESSION_AS_ACCELERATOR, "CmdOrCtrl+Shift+S");
-    }
-}

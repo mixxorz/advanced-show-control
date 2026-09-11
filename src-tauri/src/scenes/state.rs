@@ -616,28 +616,6 @@ mod tests {
     }
 
     #[test]
-    fn baseline_scene_seen_shortly_after_arming_is_suppressed() {
-        let mut state = ScenesState::default();
-        let start = Instant::now();
-        let delay = Duration::from_millis(1_200);
-
-        assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
-        // Scene re-observed late in the arming window becomes the baseline.
-        assert!(!state.accepts_at(
-            &scene(1, "Intro"),
-            start + Duration::from_millis(1_900),
-            delay,
-        ));
-        // The same scene re-broadcast just after arming is the pre-existing
-        // scene, not an operator recall.
-        assert!(!state.accepts_at(
-            &scene(1, "Intro"),
-            start + Duration::from_millis(2_100),
-            delay,
-        ));
-    }
-
-    #[test]
     fn suppressed_baseline_echo_counts_as_trigger_for_repeat_suppression() {
         let mut state = ScenesState::default();
         let start = Instant::now();
@@ -781,7 +759,7 @@ mod tests {
         assert!(!state.is_scene_list_edit_suppressed(now));
         assert!(!state.accepts_at(
             &scene(1, "Intro"),
-            now + Duration::from_millis(1),
+            now + RECALL_ARMING_DELAY + Duration::from_millis(1),
             Duration::from_millis(500),
         ));
     }

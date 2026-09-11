@@ -124,7 +124,7 @@ async fn projector_emits_ui_log_entries_from_log_input() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn ping_event_does_not_emit_app_status_changed() {
     let mut test = ProjectorTest::new(AppEventBus::default());
     test.snapshot().await;
@@ -207,7 +207,7 @@ async fn session_replacement_projects_scenes_and_cues_together() {
     assert_eq!(snapshot["cueLists"][0]["name"], "Main");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn unchanged_state_does_not_emit_another_snapshot() {
     let mut test = ProjectorTest::new(AppEventBus::default());
     test.events.publish(show_event(true));

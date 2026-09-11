@@ -199,7 +199,7 @@ describe("AppRuntime connection lifecycle", () => {
     expect(screen.queryByText("Offline")).not.toBeInTheDocument();
   });
 
-  it("keeps the modal closed when a stale startup snapshot resolves after a newer connected status", async () => {
+  it("ignores a lower-version disconnected snapshot after a newer connected status", async () => {
     let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
     const services = makeServices({
       listenForAppStatus: vi.fn(async (listener) => {
@@ -219,15 +219,21 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Connect to LV1" }),
-      ).not.toBeInTheDocument();
+      expect(screen.getByText("Connected")).toBeInTheDocument();
     });
+
+    await act(async () => {
+      appStatusListener?.({
+        ...disconnectedAppViewState,
+        stateVersion: connectedAppState.stateVersion - 1,
+      });
+    });
+
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connect to LV1" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("Connected")).toBeInTheDocument();
-    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
   });
 
   it("keeps the modal open when the engineer opens it while connected", async () => {

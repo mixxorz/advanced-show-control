@@ -58,15 +58,6 @@ impl SettingsState {
         self.document.last_connected_lv1.clone()
     }
 
-    #[cfg(test)]
-    pub fn set_last_connected_lv1(&mut self, identity: Lv1SystemIdentity) -> Result<bool, String> {
-        let Some(staged) = self.stage_last_connected_lv1(identity)? else {
-            return Ok(false);
-        };
-        self.publish_staged(staged)?;
-        Ok(true)
-    }
-
     pub(crate) fn stage_last_connected_lv1(
         &self,
         identity: Lv1SystemIdentity,
@@ -199,109 +190,5 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
             );
             PersistedSettings::default().normalized()
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::connection_state::Lv1SystemIdentity;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_settings_dir(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "asc-settings-state-{name}-{}-{unique}",
-            std::process::id()
-        ))
-    }
-
-    fn identity(uuid: &str, host: &str, address: &str) -> Lv1SystemIdentity {
-        Lv1SystemIdentity {
-            uuid: Some(uuid.to_string()),
-            host: Some(host.to_string()),
-            address: address.to_string(),
-            port: 50000,
-        }
-    }
-
-    #[test]
-    fn invalid_persisted_document_resets_public_and_private_settings() {
-        let dir = temp_settings_dir("invalid-document");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("settings.json"), r#"{"lastConnectedLv1":42}"#).unwrap();
-
-        let state = SettingsState::load(dir);
-
-        assert_eq!(state.settings(), AppSettings::default());
-        assert_eq!(state.last_connected_lv1(), None);
-    }
-
-    #[test]
-    fn replacing_public_settings_preserves_remembered_identity() {
-        let dir = temp_settings_dir("preserve-identity");
-        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
-        let mut state = SettingsState::load(dir.clone());
-        state.set_last_connected_lv1(identity.clone()).unwrap();
-
-        state
-            .replace_settings(AppSettings {
-                auto_save_sessions: true,
-                ..Default::default()
-            })
-            .unwrap();
-
-        let reloaded = SettingsState::load(dir);
-        assert!(reloaded.settings().auto_save_sessions);
-        assert_eq!(reloaded.last_connected_lv1(), Some(identity));
-    }
-
-    #[test]
-    fn public_replacement_failure_keeps_memory_and_cleans_staged_file() {
-        let dir = temp_settings_dir("replacement-failure");
-        std::fs::create_dir_all(dir.join("settings.json")).unwrap();
-        let mut state = SettingsState::load(dir.clone());
-        let original = state.settings();
-
-        let result = state.replace_settings(AppSettings {
-            auto_save_sessions: true,
-            ..Default::default()
-        });
-
-        assert!(result.is_err());
-        assert_eq!(state.settings(), original);
-        assert!(staged_settings_files(&dir).is_empty());
-    }
-
-    fn staged_settings_files(dir: &Path) -> Vec<PathBuf> {
-        std::fs::read_dir(dir)
-            .into_iter()
-            .flatten()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| path.file_name().is_some_and(|name| name != "settings.json"))
-            .collect()
-    }
-
-    #[test]
-    fn remembered_identity_uses_the_existing_flat_private_schema() {
-        let dir = temp_settings_dir("flat-private-schema");
-        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
-        let mut state = SettingsState::load(dir.clone());
-        state
-            .set_last_connected_lv1(identity)
-            .expect("remembered identity should save");
-
-        let document: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("settings.json"))
-                .expect("settings document should exist"),
-        )
-        .expect("settings document should be JSON");
-        assert_eq!(document["lastConnectedLv1"]["uuid"], "uuid-1");
-        assert_eq!(document["lastConnectedLv1"]["host"], "LV1-FOH");
-        assert!(document.get("settings").is_none());
     }
 }

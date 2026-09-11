@@ -17,7 +17,7 @@ describe("SettingsTab", () => {
     replaceAppSettings.mockReset();
   });
 
-  it("renders projected settings and replaces the full object on toggle", () => {
+  it("updates auto-save by replacing the full settings object", () => {
     const state = {
       ...disconnectedAppViewState,
       settings: {
@@ -60,82 +60,42 @@ describe("SettingsTab", () => {
     });
   });
 
-  it("sends sensitivity updates as a bounded number", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
+  it.each([
+    {
+      control: "Increase Fader override sensitivity",
+      expected: { faderOverrideSensitivity: 10 },
+    },
+    {
+      control: "Auto load last show file",
+      expected: { autoLoadLastShowFile: true },
+    },
+    {
+      control: "Extensive diagnostics",
+      expected: { enableExtensiveDiagnostics: true },
+    },
+    {
+      control: "Same scene recall finishing",
+      expected: { sameSceneRecallEnabled: false },
+    },
+    {
+      control: "Increase Same scene recall threshold",
+      expected: { sameSceneRecallThresholdMs: 600 },
+    },
+  ])(
+    "replaces the full settings object when using $control",
+    ({ control, expected }) => {
+      renderWithAppProviders(<SettingsTab />, {
+        appState: disconnectedAppViewState,
+      });
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Increase Fader override sensitivity",
-      }),
-    );
+      fireEvent.click(screen.getByRole("button", { name: control }));
 
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      faderOverrideSensitivity:
-        disconnectedAppViewState.settings.faderOverrideSensitivity + 1,
-    });
-  });
-
-  it("updates auto-load while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Auto load last show file"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      autoLoadLastShowFile: true,
-    });
-  });
-
-  it("updates extensive diagnostics while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Extensive diagnostics"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      enableExtensiveDiagnostics: true,
-    });
-  });
-
-  it("updates same-scene finishing while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Same scene recall finishing"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      sameSceneRecallEnabled: false,
-    });
-  });
-
-  it("updates the same-scene threshold in 100ms increments", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    expect(screen.getByLabelText("Same scene recall threshold")).toHaveValue(
-      "500 ms",
-    );
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Increase Same scene recall threshold",
-      }),
-    );
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      sameSceneRecallThresholdMs: 600,
-    });
-  });
+      expect(replaceAppSettings).toHaveBeenCalledWith({
+        ...disconnectedAppViewState.settings,
+        ...expected,
+      });
+    },
+  );
 
   it.each([
     [0, "Decrease Same scene recall threshold"],

@@ -470,35 +470,40 @@ mod tests {
     }
 
     #[test]
-    fn cache_clears_lv1_snapshot_on_disconnect() {
+    fn lv1_disconnect_clears_live_state_but_preserves_show_owned_metadata() {
         let mut cache = ProjectionCache::new();
         let mut state = AppStateSnapshot::default();
-
-        state.show.connected_lv1_identity = Some(Lv1SystemIdentity {
-            uuid: Some("connected-uuid".to_string()),
-            host: Some("lv1.local".to_string()),
-            address: "192.0.2.10".to_string(),
-            port: 7788,
-        });
-
-        cache.apply_lv1_event(
+        cache.apply_lv1_snapshot(
             0,
-            &Lv1Event::Disconnected {
-                reason: "link lost".to_string(),
+            crate::lv1::Lv1StateSnapshot {
+                connection: crate::lv1::ConnectionStatus::Connected,
+                scene: Some(SceneState {
+                    index: 3,
+                    name: "Bridge".into(),
+                }),
+                scene_list: vec![crate::lv1::SceneListEntry {
+                    index: 3,
+                    name: "Bridge".into(),
+                }],
+                channels: vec![ChannelInfo {
+                    group: 0,
+                    channel: 1,
+                    name: "Vox".into(),
+                    gain_db: -5.0,
+                    muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }],
+                ping_sequence: 0,
             },
         );
-
-        let snapshot = cache.build_snapshot(&state);
-
-        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
-        assert!(snapshot.current_scene.is_none());
-        assert_eq!(snapshot.scenes.len(), 0);
-    }
-
-    #[test]
-    fn lv1_disconnect_does_not_clear_show_owned_connection_metadata() {
-        let mut cache = ProjectionCache::new();
-        let mut state = AppStateSnapshot::default();
+        let connected = cache.build_snapshot(&state);
+        assert_eq!(connected.connection, AppConnectionState::Connected);
+        assert_eq!(connected.current_scene.unwrap().name, "Bridge");
+        assert_eq!(connected.scenes.len(), 1);
+        assert_eq!(connected.channel_count, 1);
 
         let connected_identity = Lv1SystemIdentity {
             uuid: Some("connected-uuid".to_string()),
@@ -530,6 +535,10 @@ mod tests {
         assert!(changed);
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert_eq!(snapshot.connected_lv1_identity, Some(connected_identity));
+        assert!(snapshot.current_scene.is_none());
+        assert!(snapshot.scenes.is_empty());
+        assert!(snapshot.channels.is_empty());
+        assert_eq!(snapshot.channel_count, 0);
     }
 
     #[test]

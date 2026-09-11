@@ -78,16 +78,6 @@ mod tests {
         assert!((v - -7.5).abs() < 1e-10);
     }
 
-    #[test]
-    fn db_to_pos_at_minus_144_is_0() {
-        assert!((db_to_pos(-144.0) - 0.0).abs() < 1e-10);
-    }
-
-    #[test]
-    fn db_to_pos_at_plus_10_is_1() {
-        assert!((db_to_pos(10.0) - 1.0).abs() < 1e-10);
-    }
-
     fn assert_close(actual: f64, expected: f64) {
         assert!(
             (actual - expected).abs() < 1e-6,
@@ -107,11 +97,6 @@ mod tests {
         assert_close(db_to_pos(0.0), 394.0 / 516.0);
         assert_close(db_to_pos(5.0), 455.0 / 516.0);
         assert_close(db_to_pos(10.0), 516.0 / 516.0);
-    }
-
-    #[test]
-    fn db_to_pos_at_0_uses_measured_position() {
-        assert!((db_to_pos(0.0) - 394.0 / 516.0).abs() < 1e-10);
     }
 
     #[test]

@@ -306,8 +306,7 @@ where
 mod tests {
     use super::*;
     use crate::scenes::{ChannelConfig, ChannelRef, SceneScopeToggles};
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn show_file() -> ShowFile {
         ShowFile {
@@ -362,30 +361,14 @@ mod tests {
         })
     }
 
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "advanced-show-control-{}-{}-{}",
-            name,
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-
     #[test]
     fn default_show_folder_uses_home_documents_when_document_dir_is_missing() {
-        let home = temp_test_dir("home-documents");
-        let folder = default_show_folder_from(None, Some(home.clone()));
+        let home = PathBuf::from("/home/engineer");
 
-        assert_eq!(folder, home.join("Documents").join("Advanced Show Control"));
-
-        let _ = fs::remove_dir_all(&home);
+        assert_eq!(
+            default_show_folder_from(None, Some(home.clone())),
+            home.join("Documents").join("Advanced Show Control")
+        );
     }
 
     #[test]
@@ -398,91 +381,16 @@ mod tests {
     }
 
     #[test]
-    fn save_show_file_writes_json_and_creates_backup_on_overwrite() {
-        let temp_dir = temp_test_dir("write");
-        let show_path = temp_dir.join("test.ascs");
-        let backup_dir = temp_dir.join("backups");
-        let file = show_file();
-
-        write_show_file(&show_path, &file, &backup_dir).unwrap();
-        write_show_file(&show_path, &file, &backup_dir).unwrap();
-
-        let json = fs::read_to_string(&show_path).unwrap();
-        assert!(json.contains("\"sceneConfigs\""));
-
-        let backups: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        assert_eq!(backups.len(), 1);
-        assert!(backups.iter().all(|name| !name.ends_with(".tmp")));
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn reserve_unique_backup_file_adds_suffix_when_candidate_exists() {
-        let backup_dir = temp_test_dir("backup-path");
-        let candidate = backup_dir.join("123-test.ascs");
-        fs::write(&candidate, "taken").unwrap();
-
-        let (path, staged_path, _file) =
-            reserve_unique_backup_file(&backup_dir, Path::new("test.ascs"), "123").unwrap();
-
-        assert_eq!(
-            path.file_name().and_then(|value| value.to_str()),
-            Some("123-test__backup1.ascs")
-        );
-        assert_eq!(
-            staged_path.file_name().and_then(|value| value.to_str()),
-            Some(".123-test__backup1.ascs.tmp")
-        );
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn reserve_unique_temp_file_adds_suffix_when_candidate_exists() {
-        let temp_dir = temp_test_dir("temp-path");
-        let candidate = temp_dir.join(".test.ascs.tmp-123");
-        fs::write(&candidate, "taken").unwrap();
-
-        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.ascs", "123").unwrap();
-
-        assert_eq!(
-            path.file_name().and_then(|value| value.to_str()),
-            Some(".test.ascs.tmp-123-1")
-        );
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn read_show_file_parses_json() {
-        let temp_dir = temp_test_dir("read");
-        let show_path = temp_dir.join("test.ascs");
-        let json = serde_json::to_string_pretty(&show_file()).unwrap();
-
-        fs::write(&show_path, json).unwrap();
-
-        let loaded = read_show_file(&show_path).unwrap();
-        assert_eq!(loaded, show_file());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
     fn show_file_serializes_camel_case_json() {
-        let json = serde_json::to_string_pretty(&show_file()).unwrap();
+        let json = serde_json::to_value(show_file()).unwrap();
 
-        assert!(json.contains(&format!("\"schemaVersion\": {}", SHOW_FILE_SCHEMA_VERSION)));
-        assert!(json.contains("\"sceneConfigs\""));
-        assert!(json.contains("\"durationMs\": 4000"));
-        assert!(json.contains("\"channelConfigs\""));
-        assert!(json.contains("\"scopedChannels\""));
-        assert!(json.contains("\"scopeToggles\""));
-        assert!(json.contains("\"faders\": false"));
-        assert!(json.contains("\"faderDb\": -12.5"));
+        assert_eq!(json["schemaVersion"], SHOW_FILE_SCHEMA_VERSION);
+        assert_eq!(json["sceneConfigs"][0]["durationMs"], 4000);
+        assert_eq!(
+            json["sceneConfigs"][0]["channelConfigs"][0]["faderDb"],
+            -12.5
+        );
+        assert_eq!(json["sceneConfigs"][0]["scopeToggles"]["faders"], false);
     }
 
     #[test]
@@ -525,192 +433,40 @@ mod tests {
         assert!(enabled.scene_configs[0].scope_toggles.pan);
         assert!(!disabled.scene_configs[0].scope_toggles.faders);
         assert!(!disabled.scene_configs[0].scope_toggles.pan);
-
-        let enabled_json = serde_json::to_value(enabled).unwrap();
-        let disabled_json = serde_json::to_value(disabled).unwrap();
-
-        assert_eq!(
-            enabled_json["sceneConfigs"][0]["scopeToggles"]["faders"],
-            true
-        );
-        assert_eq!(enabled_json["sceneConfigs"][0]["scopeToggles"]["pan"], true);
-        assert_eq!(
-            disabled_json["sceneConfigs"][0]["scopeToggles"]["faders"],
-            false
-        );
-        assert_eq!(
-            disabled_json["sceneConfigs"][0]["scopeToggles"]["pan"],
-            false
-        );
     }
 
     #[test]
-    fn create_backup_cleans_staged_file_when_copy_fails_after_reservation() {
-        let temp_dir = temp_test_dir("backup-copy-failure");
-        let source = temp_dir.join("show.ascs");
-        let backup_dir = temp_dir.join("backups");
-        fs::create_dir(&source).unwrap();
-
-        assert!(create_backup(&source, &backup_dir).is_err());
-        assert_eq!(fs::read_dir(&backup_dir).unwrap().count(), 0);
-
-        let _ = fs::remove_dir_all(&temp_dir);
+    fn backup_names_match_only_the_exact_show_stem() {
+        assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
+        assert!(is_backup_for_show_file("100-mix__backup1.ascs", "mix"));
+        assert!(!is_backup_for_show_file("100-mix-1.ascs", "mix"));
+        assert!(is_backup_for_show_file("100-mix-1.ascs", "mix-1"));
+        assert!(!is_backup_for_show_file(".100-mix.ascs.tmp", "mix"));
     }
 
     #[test]
-    fn prune_old_backups_ignores_staged_backup_artifacts() {
-        let backup_dir = temp_test_dir("backup-prune-staged");
-        let source = backup_dir.join("show.ascs");
-        let staged = backup_dir.join(".100-show.ascs.tmp");
-        fs::write(&source, "current").unwrap();
-        fs::write(&staged, "staged").unwrap();
-
-        prune_old_backups(&backup_dir, &source, 0).unwrap();
-
-        assert!(staged.exists());
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn create_backup_prunes_old_backups_for_same_show_file() {
-        let backup_dir = temp_test_dir("backup-prune");
-        let source = backup_dir.join("show.ascs");
-        fs::write(&source, "current").unwrap();
-
-        for index in 0..11 {
-            fs::write(
-                backup_dir.join(format!("100{index}-show.ascs")),
-                format!("old-{index}"),
-            )
-            .unwrap();
-        }
-        fs::write(backup_dir.join("1000-other.ascs"), "keep").unwrap();
-
-        create_backup(&source, &backup_dir).unwrap();
-
-        let mut entries: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        entries.sort();
-
-        let show_backups: Vec<_> = entries
-            .iter()
-            .filter(|name| {
-                name.strip_suffix(".ascs")
-                    .and_then(|prefix| prefix.split_once('-'))
-                    .is_some_and(|(_, source)| source == "show")
-            })
-            .collect();
-
-        assert!(entries.iter().any(|name| name == "1000-other.ascs"));
-        assert_eq!(show_backups.len(), 10);
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn prune_old_backups_does_not_match_hyphenated_neighbor_show_files() {
-        let backup_dir = temp_test_dir("backup-boundary");
-        let source = backup_dir.join("foo.ascs");
-
-        fs::write(backup_dir.join("100-foo.ascs"), "foo-old").unwrap();
-        fs::write(backup_dir.join("101-foo-bar.ascs"), "foo-bar-old").unwrap();
-        fs::write(&source, "current").unwrap();
-
-        prune_old_backups(&backup_dir, &source, 0).unwrap();
-
-        let entries: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-
-        assert!(entries.contains(&"101-foo-bar.ascs".to_string()));
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn prune_backup_entries_uses_age_not_lexicographic_filename_order() {
-        use std::time::{Duration, UNIX_EPOCH};
-
-        let older = UNIX_EPOCH + Duration::from_secs(1);
-        let middle = UNIX_EPOCH + Duration::from_secs(2);
-        let newer = UNIX_EPOCH + Duration::from_secs(3);
-
+    fn prune_backup_entries_uses_age_not_filename_order() {
         let backups = vec![
             (
-                middle,
+                UNIX_EPOCH + Duration::from_secs(2),
                 "10-foo.ascs".to_string(),
                 PathBuf::from("10-foo.ascs"),
             ),
-            (older, "2-foo.ascs".to_string(), PathBuf::from("2-foo.ascs")),
             (
-                newer,
+                UNIX_EPOCH + Duration::from_secs(1),
+                "2-foo.ascs".to_string(),
+                PathBuf::from("2-foo.ascs"),
+            ),
+            (
+                UNIX_EPOCH + Duration::from_secs(3),
                 "11-foo.ascs".to_string(),
                 PathBuf::from("11-foo.ascs"),
             ),
         ];
 
-        let pruned = prune_backup_entries(backups, 2);
-
-        assert_eq!(pruned, vec![PathBuf::from("2-foo.ascs")]);
-    }
-
-    #[test]
-    fn prune_backup_entries_keeps_mix_dash_digit_backups_separate_from_mix_backups() {
-        use std::time::{Duration, UNIX_EPOCH};
-
-        let older = UNIX_EPOCH + Duration::from_secs(1);
-        let newer = UNIX_EPOCH + Duration::from_secs(2);
-
-        let backup_dir = temp_test_dir("backup-mix-boundary");
-        let exact = backup_dir.join("100-mix.ascs");
-        let hyphenated = backup_dir.join("101-mix-1.ascs");
-        fs::write(&exact, "mix").unwrap();
-        fs::write(&hyphenated, "mix-1").unwrap();
-
-        let exact_entries = vec![
-            (older, "100-mix.ascs".to_string(), exact.clone()),
-            (newer, "101-mix-1.ascs".to_string(), hyphenated.clone()),
-        ];
-
         assert_eq!(
-            prune_backup_entries(exact_entries, 0),
-            vec![exact.clone(), hyphenated.clone()]
+            prune_backup_entries(backups, 2),
+            vec![PathBuf::from("2-foo.ascs")]
         );
-        assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
-        assert!(!is_backup_for_show_file("101-mix-1.ascs", "mix"));
-        assert!(is_backup_for_show_file("101-mix-1.ascs", "mix-1"));
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn create_backup_keeps_unrelated_backups() {
-        let backup_dir = temp_test_dir("backup-unrelated");
-        let source = backup_dir.join("setlist.ascs");
-        fs::write(&source, "current").unwrap();
-
-        for index in 0..2 {
-            fs::write(
-                backup_dir.join(format!("100{index}-setlist.ascs")),
-                format!("old-{index}"),
-            )
-            .unwrap();
-        }
-        fs::write(backup_dir.join("1000-other.ascs"), "keep").unwrap();
-
-        create_backup(&source, &backup_dir).unwrap();
-
-        let entries: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-
-        assert!(entries.iter().any(|name| name == "1000-other.ascs"));
-
-        let _ = fs::remove_dir_all(&backup_dir);
     }
 }

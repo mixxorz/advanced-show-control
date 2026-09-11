@@ -13,12 +13,6 @@ mod tests {
         assert_eq!(settings.time_display, TimeDisplayFormat::TwentyFourHour);
         assert_eq!(settings.fader_override_sensitivity, 9);
         assert!(!settings.enable_extensive_diagnostics);
-    }
-
-    #[test]
-    fn default_settings_enable_same_scene_finishing_with_500ms_threshold() {
-        let settings = AppSettings::default();
-
         assert!(settings.same_scene_recall_enabled);
         assert_eq!(settings.same_scene_recall_threshold_ms, 500);
     }

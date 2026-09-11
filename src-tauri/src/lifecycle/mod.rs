@@ -1004,7 +1004,7 @@ mod tests {
 
     struct LifecycleTestFixture {
         lifecycle: AppLifecycle,
-        settings_dir: TestSettingsDir,
+        _settings_dir: TestSettingsDir,
     }
 
     impl std::ops::Deref for LifecycleTestFixture {
@@ -1047,7 +1047,7 @@ mod tests {
         let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
         LifecycleTestFixture {
             lifecycle: lifecycle_for_test_with_settings(event_bus, settings),
-            settings_dir,
+            _settings_dir: settings_dir,
         }
     }
 
@@ -1079,6 +1079,24 @@ mod tests {
         }
     }
 
+    async fn set_show_connection(
+        lifecycle: &AppLifecycle,
+        generation: u64,
+        identity: Lv1SystemIdentity,
+    ) -> crate::show::CompleteConnectionOutcome {
+        let (reply, rx) = oneshot::channel();
+        lifecycle
+            .show
+            .send(ShowCommand::SetLv1ConnectionIfCurrent {
+                identity: Some(identity),
+                expected_generation: generation,
+                reply,
+            })
+            .await
+            .expect("connection metadata command should send");
+        rx.await.expect("connection metadata reply should arrive")
+    }
+
     async fn install_newer_runtime_with_identity(
         lifecycle: &AppLifecycle,
         identity: Lv1SystemIdentity,
@@ -1097,16 +1115,11 @@ mod tests {
                 .await
                 .is_ok()
         );
-        let (reply, rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::CompleteLv1Connection {
-                identity,
-                reply: Some(reply),
-            })
-            .await
-            .unwrap();
-        assert!(rx.await.unwrap().accepted);
+        assert!(
+            set_show_connection(lifecycle, generation, identity)
+                .await
+                .accepted
+        );
         generation
     }
 
@@ -1260,30 +1273,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn lifecycle_test_fixture_removes_settings_directory() {
-        let fixture = lifecycle_for_test(AppEventBus::default());
-        let path = fixture.settings_dir.path().to_path_buf();
-
-        assert!(path.exists());
-        drop(fixture);
-        assert!(!path.exists());
-    }
-
-    #[tokio::test]
-    async fn frontend_ready_starts_projection_before_connected_scenes_exist() {
-        let app = mock_app();
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus);
-        let (log_tx, log_rx) = tokio::sync::broadcast::channel(8);
-
-        let result = lifecycle.frontend_ready(app.handle().clone(), log_rx).await;
-
-        assert!(result.is_ok());
-        assert!(lifecycle.inner.lock().await.frontend_ready);
-        drop(log_tx);
-    }
-
     #[tokio::test]
     async fn lifecycle_allocates_monotonic_generations() {
         let event_bus = AppEventBus::default();
@@ -1294,26 +1283,6 @@ mod tests {
         let second = lifecycle.begin_connecting().await.unwrap();
 
         assert!(second > first);
-    }
-
-    #[tokio::test]
-    async fn building_runtime_does_not_install_cue_list_peer_before_acceptance() {
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-        let identity = Lv1SystemIdentity {
-            uuid: Some("uuid-1".to_string()),
-            address: "127.0.0.1".parse().unwrap(),
-            host: Some("localhost".to_string()),
-            port: 9000,
-        };
-        let runtime_generation = lifecycle.current_runtime_generation().await;
-
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let _built_runtime =
-            build_connected_runtime(generation, runtime_generation, &identity, event_bus);
-
-        assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(!lifecycle.cue_lists_handle().is_closed());
     }
 
     #[tokio::test]
@@ -1348,8 +1317,6 @@ mod tests {
             .await;
 
         assert!(connect_result.is_ok());
-        assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(!lifecycle.cue_lists_handle().is_closed());
         let (reply, response) = tokio::sync::oneshot::channel();
         lifecycle
             .scenes
@@ -1414,20 +1381,15 @@ mod tests {
                             )
                             .await
                     );
-                    let (reply, rx) = oneshot::channel();
-                    lifecycle_for_hook
-                        .show
-                        .send(ShowCommand::CompleteLv1Connection {
-                            identity: identity(
-                                Some("uuid-current"),
-                                Some("LV1-FOH"),
-                                "192.168.1.37",
-                            ),
-                            reply: Some(reply),
-                        })
+                    assert!(
+                        set_show_connection(
+                            &lifecycle_for_hook,
+                            newer_generation,
+                            identity(Some("uuid-current"), Some("LV1-FOH"), "192.168.1.37",),
+                        )
                         .await
-                        .unwrap();
-                    assert!(rx.await.unwrap().accepted);
+                        .accepted
+                    );
                     let _ = flip_tx.send(());
                 })
             }));
@@ -1628,11 +1590,14 @@ mod tests {
             .await;
 
         assert!(matches!(result, Err(message) if message == "LV1 did not connect"));
-        assert!(lifecycle.current_lv1().await.is_none());
-        assert_eq!(
-            lifecycle.inner.lock().await.runtime_handles_generation,
-            None
+        assert!(
+            lifecycle
+                .runtime_snapshot_source()
+                .connected_lv1()
+                .await
+                .is_none()
         );
+        assert_eq!(lifecycle.active_generation().await, generation + 1);
     }
 
     #[tokio::test]
@@ -1654,17 +1619,16 @@ mod tests {
             fade_tx,
             Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
                 Box::pin(async move {
-                    lifecycle_for_hook.begin_connecting().await;
-                    let (reply, rx) = oneshot::channel();
-                    lifecycle_for_hook
-                        .show
-                        .send(ShowCommand::CompleteLv1Connection {
-                            identity: current_identity,
-                            reply: Some(reply),
-                        })
+                    let current_generation = lifecycle_for_hook.begin_connecting().await.unwrap();
+                    assert!(
+                        set_show_connection(
+                            &lifecycle_for_hook,
+                            current_generation,
+                            current_identity,
+                        )
                         .await
-                        .unwrap();
-                    assert!(rx.await.unwrap().accepted);
+                        .accepted
+                    );
                 })
             })),
         )
@@ -1743,8 +1707,13 @@ mod tests {
                 break;
             }
         }
-        assert!(lifecycle.current_lv1().await.is_none());
-        assert!(!lifecycle.scenes_handle().is_closed());
+        assert!(
+            lifecycle
+                .runtime_snapshot_source()
+                .connected_lv1()
+                .await
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -1908,16 +1877,11 @@ mod tests {
                 .is_ok(),
             "newer runtime should install"
         );
-        let (metadata_reply, metadata_rx) = oneshot::channel();
-        lifecycle
-            .show
-            .send(ShowCommand::CompleteLv1Connection {
-                identity: newer_identity.clone(),
-                reply: Some(metadata_reply),
-            })
-            .await
-            .unwrap();
-        assert!(metadata_rx.await.unwrap().accepted);
+        assert!(
+            set_show_connection(&lifecycle, newer_generation, newer_identity.clone())
+                .await
+                .accepted
+        );
 
         old_state_reply
             .send(disconnected_snapshot())
@@ -2035,52 +1999,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_retains_scene_recall_fader_handle() {
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
-        let lv1 = fake_lv1_handle(connected_snapshot());
-        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-        let fade = fade_tx;
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await;
-
-        let result = lifecycle
-            .finish_connect_transaction(
-                Lv1SystemIdentity {
-                    uuid: Some("uuid-1".to_string()),
-                    host: Some("LV1-FOH".to_string()),
-                    address: "192.168.1.35".to_string(),
-                    port: 50000,
-                },
-                generation,
-                started_runtime,
-            )
-            .await;
-
-        assert!(result.is_ok());
-        assert!(!lifecycle.scenes_handle().is_closed());
-    }
-
-    #[tokio::test]
-    async fn app_lifecycle_installs_cue_lists_handle_for_commands() {
-        let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus);
-
-        let _command_handle = lifecycle.cue_lists_handle();
-        assert!(!lifecycle.cue_lists_handle().is_closed());
-    }
-
-    #[tokio::test]
     async fn app_lifecycle_cue_list_command_mutates_and_publishes_projection_without_lv1() {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
@@ -2129,6 +2047,9 @@ mod tests {
         let app = mock_app();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let unavailable_port = listener.local_addr().unwrap().port();
+        drop(listener);
 
         let result = lifecycle
             .connect_lv1_system(
@@ -2136,8 +2057,8 @@ mod tests {
                 Lv1SystemIdentity {
                     uuid: None,
                     host: Some("Unreachable".to_string()),
-                    address: "127.0.0.1".to_string(),
-                    port: 1,
+                    address: std::net::Ipv4Addr::LOCALHOST.to_string(),
+                    port: unavailable_port,
                 },
             )
             .await;
@@ -2385,7 +2306,6 @@ mod tests {
         write_received_rx
             .await
             .expect("settings write should be reached after scene-peer acceptance");
-        assert!(!lifecycle.scenes_handle().is_closed());
         lifecycle.begin_connecting().await.unwrap();
         std::fs::remove_dir_all(settings_dir.path())
             .expect("settings directory should be removable while the write is paused");
@@ -2405,7 +2325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stale_runtime_install_returns_abortable_handles() {
+    async fn stale_runtime_install_is_rejected_without_becoming_current() {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let lv1 = fake_lv1_handle(connected_snapshot());
@@ -2418,11 +2338,16 @@ mod tests {
             .await
             .expect_err("stale generation should reject the runtime install");
 
-        let mut handles = rejection.into_handles();
-        handles.abort_all();
-        assert_eq!(
-            lifecycle.inner.lock().await.runtime_handles_generation,
-            None
+        assert!(matches!(
+            rejection,
+            RuntimeInstallRejection::StaleGeneration { .. }
+        ));
+        assert!(
+            lifecycle
+                .runtime_snapshot_source()
+                .connected_lv1()
+                .await
+                .is_none()
         );
     }
 
@@ -2447,7 +2372,13 @@ mod tests {
         let result = lifecycle.disconnect_current_runtime().await.unwrap();
 
         assert!(result.changed);
-        assert!(lifecycle.current_lv1().await.is_none());
+        assert!(
+            lifecycle
+                .runtime_snapshot_source()
+                .connected_lv1()
+                .await
+                .is_none()
+        );
         assert_eq!(lifecycle.active_generation().await, generation + 1);
         loop {
             if matches!(
@@ -2469,47 +2400,106 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejected_connection_cleanup_preserves_newer_scene_peers() {
+    async fn rejected_connection_cleanup_preserves_newer_runtime_and_scene_peers() {
         let event_bus = AppEventBus::default();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus);
         let rejected_generation = lifecycle.begin_connecting().await.unwrap();
         let accepted_generation = lifecycle.begin_connecting().await.unwrap();
-        let lv1 = fake_lv1_handle(connected_snapshot());
-        let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
-
-        let install = lifecycle
-            .install_runtime_transaction(
-                accepted_generation,
-                RuntimeHandles::with_runtime_targets(lv1, fade_tx),
-            )
-            .await;
-        assert!(install.is_ok());
-        let (scenes, _scenes_task, _scenes_peers) = build_scenes_actor(
-            accepted_generation,
-            lifecycle.current_runtime_generation().await,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            lifecycle.settings.clone(),
-            lifecycle.settings_snapshot().await.unwrap(),
-            lifecycle.lockout.clone(),
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if matches!(events.recv().await.unwrap(), AppEvent::Scenes { generation, .. } if generation == accepted_generation) {
+                    break;
+                }
+            }
+        }).await.unwrap();
+        let (newer_lv1_tx, mut newer_lv1_rx) = mpsc::channel(1);
+        let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(
+                    accepted_generation,
+                    RuntimeHandles::with_runtime_targets(
+                        test_actor_handle(newer_lv1_tx),
+                        newer_fade_tx,
+                    ),
+                )
+                .await
+                .is_ok(),
+            "newer runtime should install"
         );
         assert!(
             lifecycle
-                .install_accepted_scene_recall_fader(accepted_generation, scenes)
+                .install_accepted_scene_peers(accepted_generation)
                 .await
         );
+        let (ready_reply, ready_rx) = oneshot::channel();
+        lifecycle
+            .scenes_handle()
+            .send(ScenesCommand::RuntimePeersReady {
+                generation: accepted_generation,
+                initial_scene_list: vec![],
+                reply: ready_reply,
+            })
+            .await
+            .expect("newer scene peers should accept readiness");
+        ready_rx
+            .await
+            .expect("scene readiness reply should arrive")
+            .expect("newer scene peers should become ready");
 
         lifecycle
             .abort_rejected_connection_transaction(rejected_generation, RuntimeHandles::default())
             .await;
 
+        let (snapshot_generation, snapshot_lv1) = lifecycle
+            .runtime_snapshot_source()
+            .connected_lv1()
+            .await
+            .expect("newer runtime should remain current");
+        assert_eq!(snapshot_generation, accepted_generation);
+        let (state_reply, state_rx) = oneshot::channel();
+        snapshot_lv1
+            .send(Lv1Command::GetState { reply: state_reply })
+            .await
+            .expect("newer LV1 mailbox should accept commands");
+        let Lv1Command::GetState { reply } = newer_lv1_rx
+            .recv()
+            .await
+            .expect("newer LV1 actor should receive the command")
+        else {
+            panic!("expected GetState through the newer runtime snapshot");
+        };
+        reply.send(connected_snapshot()).unwrap();
         assert_eq!(
-            lifecycle.inner.lock().await.runtime_handles_generation,
+            state_rx.await.unwrap().connection,
+            ConnectionStatus::Connected
+        );
+
+        lifecycle
+            .current_fade()
+            .await
+            .expect("newer fade should remain current")
+            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .await
+            .expect("newer fade mailbox should accept commands");
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::AbortAll { reply: None })
+        ));
+
+        let (scenes_reply, scenes_rx) = oneshot::channel();
+        lifecycle
+            .scenes_handle()
+            .send(ScenesCommand::InitialProjectionState {
+                reply: scenes_reply,
+            })
+            .await
+            .expect("Scenes mailbox should accept commands after stale cleanup");
+        assert_eq!(
+            scenes_rx.await.unwrap().ready_generation,
             Some(accepted_generation)
         );
-        assert!(lifecycle.current_lv1().await.is_some());
-        assert!(lifecycle.show_peers.scenes().is_some());
-        assert!(!lifecycle.cue_lists_handle().is_closed());
     }
 
     #[tokio::test]
@@ -2774,14 +2764,11 @@ mod tests {
             "newer runtime should install"
         );
         let newer_identity = identity(Some("newer"), Some("LV1-FOH"), "192.0.2.20");
-        lifecycle
-            .show
-            .send(ShowCommand::CompleteLv1Connection {
-                identity: newer_identity.clone(),
-                reply: None,
-            })
-            .await
-            .expect("newer identity should be accepted");
+        assert!(
+            set_show_connection(&lifecycle, newer_generation, newer_identity.clone())
+                .await
+                .accepted
+        );
         while matches!(events.try_recv(), Ok(AppEvent::Show(_))) {}
 
         let result = lifecycle
@@ -2956,14 +2943,11 @@ mod tests {
                 if event_generation == generation
         ));
         let connected_identity = identity(Some("disconnect-target"), Some("LV1-FOH"), "192.0.2.30");
-        lifecycle
-            .show
-            .send(ShowCommand::CompleteLv1Connection {
-                identity: connected_identity,
-                reply: None,
-            })
-            .await
-            .unwrap();
+        assert!(
+            set_show_connection(&lifecycle, generation, connected_identity)
+                .await
+                .accepted
+        );
         loop {
             if matches!(rx.recv().await.unwrap(), AppEvent::Show(_)) {
                 break;

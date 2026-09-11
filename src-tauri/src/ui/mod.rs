@@ -89,39 +89,3 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             menu::handle_session_menu_event(app, event);
         })
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn build_app_constructs_builder() {
-        let _builder = super::build_app();
-    }
-
-    #[test]
-    fn command_adapter_exports_existing_command_names() {
-        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
-        let _ = super::commands::lifecycle::disconnect_lv1;
-        let _ = super::commands::lifecycle::probe_lv1_tcp_connect_latency;
-        let _ = super::commands::cue_lists::create_cue_list;
-        let _ = super::commands::cue_lists::recall_cued_cue;
-        let _ = super::commands::scenes::recall_scene;
-        let _ = super::commands::scenes::copy_scene_settings;
-        let _ = super::commands::scenes::delete_scene_config;
-        let _ = super::commands::scenes::link_scene_config;
-        let _ = super::commands::scenes::paste_scene_settings;
-        let _ = super::commands::scenes::select_scene_config;
-        let _ = super::commands::scenes::set_all_channels_scoped;
-        let _ = super::commands::scenes::set_channel_scoped;
-        let _ = super::commands::scenes::set_scene_duration_ms;
-        let _ = super::commands::scenes::set_scene_scope_faders_enabled;
-        let _ = super::commands::scenes::set_scene_scope_pan_enabled;
-        let _ = super::commands::scenes::store_scene_config;
-        let _ = super::commands::settings::replace_app_settings;
-        let _ = super::commands::show::set_lockout;
-    }
-
-    #[test]
-    fn invoke_handler_includes_frontend_ready() {
-        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
-    }
-}

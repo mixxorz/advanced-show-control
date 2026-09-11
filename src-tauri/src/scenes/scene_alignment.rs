@@ -289,19 +289,6 @@ mod tests {
     }
 
     #[test]
-    fn same_index_same_name_diff_order_keeps_configs() {
-        let old = vec![
-            scene(1, Some(1), "Intro", 1_000),
-            scene(2, Some(2), "Verse", 2_000),
-        ];
-        let new = vec![lv1_scene(1, "Intro"), lv1_scene(2, "Verse")];
-
-        let aligned = align_scene_configs(old.clone(), &new);
-
-        assert_eq!(aligned, old);
-    }
-
-    #[test]
     fn diagnostic_includes_duplicates_and_strategy() {
         let old = vec![scene(1, Some(1), "Intro", 1_000)];
         let new = vec![
@@ -314,6 +301,7 @@ mod tests {
 
         assert!(diagnostic.contains("duplicate_names=[Introx2]"));
         assert!(diagnostic.contains("strategy=exact-unique-name-single-rename"));
+        assert!(diagnostic.contains("lv1=[1:\"Intro\" | 2:\"Intro\" | 3:\"Verse\"]"));
     }
 
     #[test]
@@ -444,17 +432,5 @@ mod tests {
         assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
         assert_eq!(aligned[2].scene_name, "Verse");
         assert_eq!(aligned[2].duration_ms, 0);
-    }
-
-    #[test]
-    fn diagnostic_is_string_only() {
-        let old = vec![scene(1, Some(1), "Intro", 1_000)];
-        let new = vec![scene(1, Some(1), "Intro", 1_000)];
-        let lv1 = vec![lv1_scene(1, "Intro")];
-
-        let diagnostic = scene_alignment_diagnostic(&old, &new, &lv1);
-
-        assert!(diagnostic.contains("strategy=exact-unique-name-single-rename"));
-        assert!(diagnostic.contains("lv1=[1:\"Intro\"]"));
     }
 }

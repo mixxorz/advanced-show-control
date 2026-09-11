@@ -30,6 +30,21 @@ impl SettingsActorTask {
     }
 
     #[cfg(test)]
+    fn spawn_with_dispatch(self, dispatch: tracing::Dispatch) {
+        use tracing::instrument::WithSubscriber;
+
+        tauri::async_runtime::spawn(
+            run_settings_actor(
+                self.rx,
+                self.event_bus,
+                self.state,
+                self.set_last_connected_lv1_gate,
+            )
+            .with_subscriber(dispatch),
+        );
+    }
+
+    #[cfg(test)]
     pub(crate) fn pause_set_last_connected_lv1(
         mut self,
         received: tokio::sync::oneshot::Sender<()>,
@@ -206,6 +221,7 @@ mod tests {
     use crate::test_support::TracingCapture;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot;
+    use tracing_subscriber::prelude::*;
 
     fn temp_settings_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -237,6 +253,15 @@ mod tests {
         rx.await.unwrap()
     }
 
+    async fn get_last_connected_lv1(handle: &SettingsHandle) -> Option<Lv1SystemIdentity> {
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
+
     fn staged_settings_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(dir)
             .into_iter()
@@ -262,11 +287,12 @@ mod tests {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("invalid");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("settings.json"), "not json").unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"lastConnectedLv1":42}"#).unwrap();
         let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         assert_eq!(get_settings(&handle).await, AppSettings::default());
+        assert_eq!(get_last_connected_lv1(&handle).await, None);
     }
 
     #[tokio::test]
@@ -295,7 +321,10 @@ mod tests {
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("replace");
         let (handle, task, _initial_settings) = build_settings_actor(dir.clone(), event_bus);
-        task.spawn();
+        let captured = TracingCapture::new();
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+        task.spawn_with_dispatch(dispatch);
 
         let (reply, rx) = oneshot::channel();
         handle
@@ -315,10 +344,12 @@ mod tests {
             rx.await.unwrap().unwrap(),
             SettingsCommandResult { changed: true }
         );
-        let saved = std::fs::read_to_string(dir.join("settings.json")).unwrap();
-        assert!(saved.contains("autoSaveSessions"));
-        assert!(saved.contains("\"faderOverrideSensitivity\": 10"));
-        assert!(saved.contains("\"sameSceneRecallThresholdMs\": 5000"));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["autoSaveSessions"], true);
+        assert_eq!(saved["faderOverrideSensitivity"], 10);
+        assert_eq!(saved["sameSceneRecallThresholdMs"], 5_000);
 
         let received = events.recv().await.unwrap();
         assert!(matches!(
@@ -328,6 +359,20 @@ mod tests {
                     && settings.fader_override_sensitivity == 10
                     && settings.same_scene_recall_threshold_ms == 5_000
         ));
+        let logs = captured.matching("settings_updated", tracing::Level::INFO);
+        assert!(logs.iter().any(|event| {
+            event.fields.get("auto_save_sessions").map(String::as_str) == Some("true")
+                && event
+                    .fields
+                    .get("fader_override_sensitivity")
+                    .map(String::as_str)
+                    == Some("10")
+                && event
+                    .fields
+                    .get("same_scene_recall_threshold_ms")
+                    .map(String::as_str)
+                    == Some("5000")
+        }));
     }
 
     #[tokio::test]
@@ -357,6 +402,31 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn actor_preserves_public_settings_when_publication_fails_and_cleans_staging() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("failed-publication");
+        std::fs::create_dir_all(dir.join("settings.json")).unwrap();
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        task.spawn();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::ReplaceSettings {
+                settings: AppSettings {
+                    auto_save_sessions: true,
+                    ..Default::default()
+                },
+                reply,
+            })
+            .await
+            .unwrap();
+
+        assert!(rx.await.unwrap().is_err());
+        assert_eq!(get_settings(&handle).await, AppSettings::default());
+        assert!(staged_settings_files(&dir).is_empty());
     }
 
     #[tokio::test]
@@ -413,7 +483,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("remembered-identity-private");
-        let (handle, task, _) = build_settings_actor(dir, event_bus);
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
         task.spawn();
         let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
 
@@ -459,7 +529,13 @@ mod tests {
             .send(SettingsCommand::GetLastConnectedLv1 { reply })
             .await
             .unwrap();
-        assert_eq!(rx.await.unwrap(), Some(identity));
+        assert_eq!(rx.await.unwrap(), Some(identity.clone()));
+
+        let reloaded_bus = AppEventBus::default();
+        let (reloaded, reloaded_task, reloaded_settings) = build_settings_actor(dir, reloaded_bus);
+        reloaded_task.spawn();
+        assert!(reloaded_settings.auto_save_sessions);
+        assert_eq!(get_last_connected_lv1(&reloaded).await, Some(identity));
     }
 
     #[tokio::test]
@@ -569,37 +645,5 @@ mod tests {
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(original));
         assert!(staged_settings_files(&dir).is_empty());
-    }
-
-    #[tokio::test]
-    async fn actor_logs_settings_update_fields() {
-        let captured = TracingCapture::new();
-        let _guard = captured.install();
-
-        super::log_settings_updated(&AppSettings {
-            enable_extensive_diagnostics: true,
-            same_scene_recall_enabled: false,
-            same_scene_recall_threshold_ms: 1_200,
-            ..Default::default()
-        });
-
-        let events = captured.matching("settings_updated", tracing::Level::INFO);
-        assert!(events.iter().any(|event| {
-            event
-                .fields
-                .get("enable_extensive_diagnostics")
-                .map(String::as_str)
-                == Some("true")
-                && event
-                    .fields
-                    .get("same_scene_recall_enabled")
-                    .map(String::as_str)
-                    == Some("false")
-                && event
-                    .fields
-                    .get("same_scene_recall_threshold_ms")
-                    .map(String::as_str)
-                    == Some("1200")
-        }));
     }
 }

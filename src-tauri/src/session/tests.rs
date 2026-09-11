@@ -259,11 +259,12 @@ async fn deleting_a_scene_reconciles_its_cue_before_the_next_document_read() {
 }
 
 #[tokio::test]
-async fn projected_scene_facts_cannot_mutate_the_owned_cue_document() {
+async fn projected_facts_and_generation_changes_cannot_mutate_the_owned_cue_document() {
     let session = Session::new().await;
     let id = Uuid::new_v4();
     session.install(vec![scene(id)]).await;
     let entry = session.cue(id).await;
+    let mut events = session.events.subscribe();
     session.events.publish(AppEvent::Scenes {
         generation: 0,
         event: crate::scenes::ScenesEvent::StateChanged {
@@ -276,10 +277,19 @@ async fn projected_scene_facts_cannot_mutate_the_owned_cue_document() {
             persisted_scene_edit: true,
         },
     });
-    for _ in 0..32 {
-        tokio::task::yield_now().await;
-        assert_eq!(session.document().await.cued_cue_entry_id, Some(entry.id));
-    }
+    session.events.publish_runtime_generation_changed(8);
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let event = events.recv().await.unwrap();
+            assert!(!matches!(event, AppEvent::CueLists(_)));
+            if matches!(event, AppEvent::Scenes { generation: 8, .. }) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(session.document().await.cued_cue_entry_id, Some(entry.id));
 }
 
 #[tokio::test]
@@ -441,25 +451,6 @@ async fn cue_advances_only_after_successful_lv1_dispatch() {
 }
 
 #[tokio::test]
-async fn generation_changes_preserve_cue_references_without_persisted_edits() {
-    let session = Session::new().await;
-    let id = Uuid::new_v4();
-    session.install(vec![scene(id)]).await;
-    let entry = session.cue(id).await;
-    let mut events = session.events.subscribe();
-    session.events.publish_runtime_generation_changed(8);
-    loop {
-        if let AppEvent::Scenes { generation: 8, .. } = events.recv().await.unwrap() {
-            break;
-        }
-    }
-    assert_eq!(session.document().await.cued_cue_entry_id, Some(entry.id));
-    while let Ok(event) = events.try_recv() {
-        assert!(!matches!(event, AppEvent::CueLists(_)));
-    }
-}
-
-#[tokio::test]
 async fn session_replacement_returns_one_reconciled_document() {
     let session = Session::new().await;
     let id = Uuid::new_v4();
@@ -517,37 +508,35 @@ async fn timed_out_new_session_leaves_documents_intact_and_releases_show_command
 }
 
 #[tokio::test]
-async fn late_cue_dispatch_completion_cannot_advance_a_replaced_document() {
-    for _ in 0..32 {
-        let id = Uuid::new_v4();
-        let mut config = scene(id);
-        config.scene_index = Some(1);
-        let mut session = Session::with_scenes(vec![config]).await;
-        session.cue(id).await;
-        let original = session.snapshot().await;
-        let (reply, recalled) = oneshot::channel();
-        session
-            .cues
-            .send(CueListsCommand::RecallCuedCue { reply })
-            .await
-            .unwrap();
-        let crate::lv1::Lv1Command::RecallScene {
-            reply: Some(dispatch),
-            ..
-        } = session.recalls.recv().await.unwrap()
-        else {
-            panic!("expected recall");
-        };
-        let (_, replaced) = session.replace(original.clone(), 0).await;
-        dispatch
-            .send(Ok(crate::lv1::RecallSceneDispatch {
-                scene_observation_sequence: 0,
-            }))
-            .unwrap();
-        assert_eq!(replaced.await.unwrap().unwrap(), original);
-        let _ = recalled.await.unwrap();
-        assert_eq!(session.snapshot().await, original);
-    }
+async fn replacement_queued_during_recall_dispatch_preserves_the_replacement_document() {
+    let id = Uuid::new_v4();
+    let mut config = scene(id);
+    config.scene_index = Some(1);
+    let mut session = Session::with_scenes(vec![config]).await;
+    session.cue(id).await;
+    let original = session.snapshot().await;
+    let (reply, recalled) = oneshot::channel();
+    session
+        .cues
+        .send(CueListsCommand::RecallCuedCue { reply })
+        .await
+        .unwrap();
+    let crate::lv1::Lv1Command::RecallScene {
+        reply: Some(dispatch),
+        ..
+    } = session.recalls.recv().await.unwrap()
+    else {
+        panic!("expected recall");
+    };
+    let (_, replaced) = session.replace(original.clone(), 0).await;
+    dispatch
+        .send(Ok(crate::lv1::RecallSceneDispatch {
+            scene_observation_sequence: 0,
+        }))
+        .unwrap();
+    assert_eq!(replaced.await.unwrap().unwrap(), original);
+    let _ = recalled.await.unwrap();
+    assert_eq!(session.snapshot().await, original);
 }
 
 #[tokio::test]

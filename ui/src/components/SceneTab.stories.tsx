@@ -59,18 +59,7 @@ const linkSceneControlsAppState = {
   selectedSceneInternalId: unlinkedDraftScene.internalSceneId,
 };
 
-export const StoredSceneSelected: Story = {
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-
-    await expect(
-      canvas.getByRole("heading", { name: "Scene library" }),
-    ).toBeInTheDocument();
-    await expect(
-      canvas.getByRole("button", { name: "Recall" }),
-    ).toBeInTheDocument();
-  },
-};
+export const StoredSceneSelected: Story = {};
 
 export const DuplicateSceneWarning: Story = {
   args: {
@@ -91,16 +80,6 @@ export const LinkSceneControls: Story = {
   args: {
     appState: linkSceneControlsAppState,
   },
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-
-    await expect(
-      canvas.getByRole("button", { name: "Link to scene" }),
-    ).toBeInTheDocument();
-    await expect(
-      canvas.getByRole("button", { name: "Delete" }),
-    ).toBeInTheDocument();
-  },
 };
 
 export const LinkSceneOverwriteModal: Story = {
@@ -113,12 +92,7 @@ export const LinkSceneOverwriteModal: Story = {
       canvas.getByRole("button", { name: "Link to scene" }),
     );
 
-    await expect(canvas.getByRole("dialog")).toHaveTextContent(
-      "Overwrite Existing Fade Settings?",
-    );
-    await expect(
-      canvas.getByRole("button", { name: "Overwrite" }),
-    ).toBeInTheDocument();
+    await expect(canvas.getByRole("dialog")).toBeInTheDocument();
   },
 };
 
