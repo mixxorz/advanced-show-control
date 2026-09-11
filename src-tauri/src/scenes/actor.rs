@@ -10,8 +10,8 @@ use crate::fade::{
     SameSceneRecallBehavior,
 };
 use crate::lv1::{
-    ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1StateSnapshot,
-    SceneObservation, SceneState,
+    ConnectionStatus, Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1Connection, Lv1Event,
+    Lv1StateSnapshot, SceneObservation, SceneState,
 };
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
@@ -34,15 +34,15 @@ const SCENE_CHANGED_SETTLE_DELAY: std::time::Duration = std::time::Duration::fro
 const LATE_CANCELED_OBSERVATION_CAPACITY: usize = 8;
 const LATE_CANCELED_OBSERVATION_TTL: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ScenesPeers {
+    authority: RuntimeGeneration,
     peers: Arc<Mutex<Option<ScenesPeerHandles>>>,
 }
 
 #[derive(Clone)]
 struct ScenesPeerHandles {
-    generation: u64,
-    lv1: Lv1ActorHandle,
+    lv1: Lv1Connection,
     fade: FadeEngineHandle,
 }
 
@@ -54,8 +54,7 @@ impl ScenesPeers {
         fade: FadeEngineHandle,
     ) {
         *self.peers.lock().expect("scene recall peer lock poisoned") = Some(ScenesPeerHandles {
-            generation,
-            lv1,
+            lv1: Lv1Connection::new(lv1, self.authority.clone(), generation),
             fade,
         });
     }
@@ -64,23 +63,19 @@ impl ScenesPeers {
         let mut peers = self.peers.lock().expect("scene recall peer lock poisoned");
         if peers
             .as_ref()
-            .is_some_and(|current| current.generation == generation)
+            .is_some_and(|current| current.lv1.generation() == generation)
         {
             *peers = None;
         }
     }
 
-    fn handles_exact(&self, generation: u64) -> Option<ScenesPeerHandles> {
+    fn handles(&self, generation: u64) -> Option<ScenesPeerHandles> {
         self.peers
             .lock()
             .expect("scene recall peer lock poisoned")
             .as_ref()
-            .filter(|peers| peers.generation == generation)
+            .filter(|peers| peers.lv1.generation() == generation)
             .cloned()
-    }
-
-    fn handles(&self, generation: u64) -> Option<ScenesPeerHandles> {
-        self.handles_exact(generation)
     }
 }
 
@@ -256,7 +251,10 @@ pub fn build_scenes_actor(
     let (cue_lists, cue_commands) = mpsc::channel(8);
 
     let handle = command_tx;
-    let peers = ScenesPeers::default();
+    let peers = ScenesPeers {
+        authority: runtime_generation.clone(),
+        peers: Arc::default(),
+    };
     let task = ScenesTask {
         initial_generation: generation,
         runtime_generation,
@@ -600,24 +598,17 @@ async fn run_scenes_actor(task: ScenesTask) {
                             break;
                         };
                         settings = updated_settings;
-                        let Some(peer_handles) = peers.handles_exact(active_generation) else {
+                        let Some(peer_handles) = peers.handles(active_generation) else {
                             continue;
                         };
-                        let (reply, response) = oneshot::channel();
-                        if peer_handles
+                        let Ok(snapshot) = peer_handles
                             .lv1
-                            .send(Lv1Command::GetState { reply })
+                            .request(|reply| Lv1Command::GetState { reply })
                             .await
-                            .is_err()
-                        {
-                            continue;
-                        }
-                        let Ok(snapshot) = response.await else {
+                        else {
                             continue;
                         };
-                        if runtime_generation.current().await != active_generation
-                            || peers.handles_exact(active_generation).is_none()
-                        {
+                        if peers.handles(active_generation).is_none() {
                             continue;
                         }
                         if let Some(scene_list) = authoritative_scene_list(&snapshot) {
@@ -663,8 +654,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                         continue;
                     };
                     process_scene_observation(
-                        active_generation,
-                        &runtime_generation,
                         &peer_handles.lv1,
                         &peer_handles.fade,
                         &event_bus,
@@ -816,7 +805,7 @@ async fn dispatch_scenes_command(
         } => {
             let result = runtime_generation
                 .if_current(ready_generation, || {
-                    if ready_generation != generation || peers.handles_exact(generation).is_none() {
+                    if ready_generation != generation || peers.handles(generation).is_none() {
                         return Err(AppCommandError::ScenesUnavailable);
                     }
                     let scene_list = cached_scene_list.take().unwrap_or(initial_scene_list);
@@ -1018,8 +1007,6 @@ async fn dispatch_scenes_command(
                     store_scene_config_from_current_lv1(
                         &peer_handles.lv1,
                         event_bus,
-                        generation,
-                        runtime_generation,
                         scene_library_status,
                         recall_state,
                         internal_scene_id,
@@ -1049,8 +1036,6 @@ async fn dispatch_scenes_command(
                 &peer_handles.lv1,
                 recall_state,
                 recall_queue,
-                generation,
-                runtime_generation,
                 late_canceled_observations,
                 internal_scene_id,
                 reply,
@@ -1113,10 +1098,6 @@ async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<
             None
         }
     }
-}
-
-async fn is_generation_current(expected: u64, runtime_generation: &RuntimeGeneration) -> bool {
-    runtime_generation.current().await == expected
 }
 
 fn authoritative_scene_list(
@@ -1215,37 +1196,32 @@ fn copy_scene_settings(
 }
 
 async fn store_scene_config_from_current_lv1(
-    lv1: &Lv1ActorHandle,
+    lv1: &Lv1Connection,
     event_bus: &AppEventBus,
-    generation: u64,
-    runtime_generation: &RuntimeGeneration,
     scene_library_status: &SceneLibraryStatus,
     state: &mut ScenesState,
     internal_scene_id: uuid::Uuid,
 ) -> Result<ScenesCommandResult, String> {
-    let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::GetState { reply })
-        .await
-        .map_err(|_| "Store scene blocked: LV1 state is unavailable".to_string())?;
-    let snapshot = rx
+    let generation = lv1.generation();
+    let snapshot = lv1
+        .request(|reply| Lv1Command::GetState { reply })
         .await
         .map_err(|_| "Store scene blocked: LV1 state is unavailable".to_string())?;
     if snapshot.connection != ConnectionStatus::Connected {
         return Err("Store scene blocked: LV1 state is unavailable".to_string());
     }
-    runtime_generation
-        .if_current(generation, || {
-            if *scene_library_status != SceneLibraryStatus::Ready {
-                return Err("Store scene blocked: scene library is unavailable".to_string());
-            }
-            let changed = state.store_scene_config(internal_scene_id, &snapshot.channels)?;
-            if changed {
-                publish_scene_state_changed(event_bus, generation, state, true);
-            }
-            Ok(ScenesCommandResult { changed })
-        })
-        .await
-        .unwrap_or_else(|| Err("Store scene blocked: scene library is unavailable".to_string()))
+    lv1.if_current(|| {
+        if *scene_library_status != SceneLibraryStatus::Ready {
+            return Err("Store scene blocked: scene library is unavailable".to_string());
+        }
+        let changed = state.store_scene_config(internal_scene_id, &snapshot.channels)?;
+        if changed {
+            publish_scene_state_changed(event_bus, generation, state, true);
+        }
+        Ok(ScenesCommandResult { changed })
+    })
+    .await
+    .unwrap_or_else(|| Err("Store scene blocked: scene library is unavailable".to_string()))
 }
 
 #[derive(Clone, Copy)]
@@ -1344,8 +1320,6 @@ async fn handle_readiness_completion(
         &peer_handles.lv1,
         recall_state,
         recall_queue,
-        generation,
-        runtime_generation,
         late_canceled_observations,
     )
     .await;
@@ -1399,9 +1373,7 @@ fn accept_queue_readiness(
 
 #[allow(clippy::too_many_arguments)]
 async fn process_scene_observation(
-    generation: u64,
-    runtime_generation: &RuntimeGeneration,
-    lv1: &Lv1ActorHandle,
+    lv1: &Lv1Connection,
     fade: &FadeEngineHandle,
     event_bus: &AppEventBus,
     recall_state: &mut ScenesState,
@@ -1412,6 +1384,7 @@ async fn process_scene_observation(
     #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
     observation: PendingSceneObservation,
 ) {
+    let generation = lv1.generation();
     let now = tokio::time::Instant::now();
     let queue_readiness = exact_queue_readiness(&observation, recall_queue);
     if queue_readiness
@@ -1463,14 +1436,14 @@ async fn process_scene_observation(
         return;
     }
 
-    if !is_generation_current(generation, runtime_generation).await {
+    if lv1.ensure_current().await.is_err() {
         return;
     }
 
     let lv1_snapshot = match fresh_lv1_snapshot(lv1, &observation.scene).await {
         Ok(snapshot) => snapshot,
         Err(err) => {
-            if !is_generation_current(generation, runtime_generation).await {
+            if lv1.ensure_current().await.is_err() {
                 return;
             }
             event_bus.publish_scenes(
@@ -1565,7 +1538,7 @@ async fn process_scene_observation(
                         None,
                     )
                 };
-            if !is_generation_current(generation, runtime_generation).await {
+            if lv1.ensure_current().await.is_err() {
                 return;
             }
             tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
@@ -1610,7 +1583,7 @@ async fn process_scene_observation(
                     return;
                 }
             };
-            let result = if !is_generation_current(generation, runtime_generation).await {
+            let result = if lv1.ensure_current().await.is_err() {
                 Err(AppCommandError::StaleGeneration)
             } else if queued_handoff && lockout.current() {
                 cancel_recall_queue(
@@ -1627,9 +1600,14 @@ async fn process_scene_observation(
                     readiness,
                     reply: Some(reply),
                 });
-                match rx.await {
+                let result = match rx.await {
                     Ok(result) => result,
                     Err(_) => Err(AppCommandError::ReplyChannelClosed),
+                };
+                if lv1.ensure_current().await.is_err() {
+                    Err(AppCommandError::StaleGeneration)
+                } else {
+                    result
                 }
             };
             match result {
@@ -1650,7 +1628,7 @@ async fn process_scene_observation(
                         recall_queue,
                         late_canceled_observations,
                         "LV1 connection generation changed",
-                        true,
+                        false,
                     );
                 }
                 Err(AppCommandError::StaleGeneration) => (),
@@ -1674,7 +1652,7 @@ async fn process_scene_observation(
             }
         }
         RecallPolicyDecision::Skip { reason } | RecallPolicyDecision::Blocked { reason } => {
-            if !is_generation_current(generation, runtime_generation).await {
+            if lv1.ensure_current().await.is_err() {
                 return;
             }
             let scene_label = scene_label(&observation.scene);
@@ -1726,7 +1704,7 @@ async fn process_scene_observation(
                     );
                     return;
                 };
-                if !is_generation_current(generation, runtime_generation).await {
+                if lv1.ensure_current().await.is_err() {
                     cancel_recall_queue(
                         recall_queue,
                         late_canceled_observations,
@@ -1753,15 +1731,25 @@ async fn process_scene_observation(
                     readiness,
                     reply: Some(reply),
                 });
-                let cancellation = match rx.await {
-                    Ok(Ok(())) => {
-                        (!accept_queue_readiness(recall_queue, queue_readiness, completion))
-                            .then_some("LV1 recall readiness was lost")
+                let reply = rx.await;
+                let cancellation = if lv1.ensure_current().await.is_err() {
+                    Some("LV1 connection generation changed")
+                } else {
+                    match reply {
+                        Ok(Ok(())) => {
+                            (!accept_queue_readiness(recall_queue, queue_readiness, completion))
+                                .then_some("LV1 recall readiness was lost")
+                        }
+                        Ok(Err(_)) | Err(_) => Some("Fade engine is unavailable"),
                     }
-                    Ok(Err(_)) | Err(_) => Some("Fade engine is unavailable"),
                 };
                 if let Some(reason) = cancellation {
-                    cancel_recall_queue(recall_queue, late_canceled_observations, reason, true);
+                    cancel_recall_queue(
+                        recall_queue,
+                        late_canceled_observations,
+                        reason,
+                        reason != "LV1 connection generation changed",
+                    );
                 }
             }
         }
@@ -1775,11 +1763,9 @@ fn scene_label(scene: &SceneState) -> String {
 #[allow(clippy::too_many_arguments)]
 async fn admit_explicit_recall_scene(
     lockout: &ShowLockoutReader,
-    lv1: &Lv1ActorHandle,
+    lv1: &Lv1Connection,
     recall_state: &ScenesState,
     recall_queue: &mut RecallQueue,
-    generation: u64,
-    runtime_generation: &RuntimeGeneration,
     late_canceled_observations: &mut LateCanceledObservations,
     internal_scene_id: uuid::Uuid,
     reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
@@ -1793,7 +1779,8 @@ async fn admit_explicit_recall_scene(
     let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            log_explicit_recall_blocked(internal_scene_id, &error);
+            lv1.if_current(|| log_explicit_recall_blocked(internal_scene_id, &error))
+                .await;
             let _ = reply.send(Err(error));
             return;
         }
@@ -1828,8 +1815,6 @@ async fn admit_explicit_recall_scene(
             lv1,
             recall_state,
             recall_queue,
-            generation,
-            runtime_generation,
             late_canceled_observations,
         )
         .await;
@@ -1838,26 +1823,33 @@ async fn admit_explicit_recall_scene(
 
 async fn dispatch_next_recall(
     lockout: &ShowLockoutReader,
-    lv1: &Lv1ActorHandle,
+    lv1: &Lv1Connection,
     recall_state: &ScenesState,
     recall_queue: &mut RecallQueue,
-    generation: u64,
-    runtime_generation: &RuntimeGeneration,
     late_canceled_observations: &mut LateCanceledObservations,
 ) {
+    let generation = lv1.generation();
     while let Some(queued) = recall_queue.take_next() {
         let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
             Ok(snapshot) => snapshot,
-            Err(_) => {
-                let _ = queued.reply.send(Err(AppCommandError::RecallCanceled(
-                    "LV1 state is unavailable".to_string(),
-                )));
+            Err(error) => {
+                let (reason, clear_late) = if error == AppCommandError::StaleGeneration {
+                    ("LV1 connection generation changed", true)
+                } else {
+                    ("LV1 state is unavailable", false)
+                };
+                let _ = queued
+                    .reply
+                    .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
                 cancel_recall_queue(
                     recall_queue,
                     late_canceled_observations,
-                    "LV1 state is unavailable",
-                    true,
+                    reason,
+                    !clear_late,
                 );
+                if clear_late {
+                    late_canceled_observations.clear();
+                }
                 return;
             }
         };
@@ -1876,72 +1868,23 @@ async fn dispatch_next_recall(
             }
         };
 
-        let permit = match lv1.reserve().await {
-            Ok(permit) => permit,
-            Err(error) => {
-                let error = AppCommandError::CommandFailed(error.to_string());
-                log_explicit_recall_blocked(queued.internal_scene_id, &error);
-                let _ = queued.reply.send(Err(error));
-                cancel_recall_queue(
-                    recall_queue,
-                    late_canceled_observations,
-                    "LV1 state is unavailable",
-                    true,
-                );
-                return;
-            }
-        };
-        if runtime_generation.current().await != generation {
-            let _ = queued.reply.send(Err(AppCommandError::RecallCanceled(
-                "LV1 connection generation changed".to_string(),
-            )));
-            cancel_recall_queue(
-                recall_queue,
-                late_canceled_observations,
-                "LV1 connection generation changed",
-                true,
-            );
-            late_canceled_observations.clear();
-            return;
-        }
-        if lockout.current() {
-            let _ = queued.reply.send(Err(AppCommandError::RecallCanceled(
-                "lockout was enabled".to_string(),
-            )));
-            cancel_recall_queue(
-                recall_queue,
-                late_canceled_observations,
-                "lockout was enabled",
-                true,
-            );
-            return;
-        }
-        let (reply, rx) = oneshot::channel();
-        if runtime_generation
-            .if_current(generation, || {
-                permit.send(Lv1Command::RecallScene {
+        let dispatch = lv1
+            .request_checked(
+                |reply| Lv1Command::RecallScene {
                     scene_index: result.lv1_scene_index,
                     reply: Some(reply),
-                });
-            })
+                },
+                || {
+                    if lockout.current() {
+                        Err(AppCommandError::RecallCanceled(
+                            "lockout was enabled".to_string(),
+                        ))
+                    } else {
+                        Ok(())
+                    }
+                },
+            )
             .await
-            .is_none()
-        {
-            let _ = queued.reply.send(Err(AppCommandError::RecallCanceled(
-                "LV1 connection generation changed".to_string(),
-            )));
-            cancel_recall_queue(
-                recall_queue,
-                late_canceled_observations,
-                "LV1 connection generation changed",
-                true,
-            );
-            late_canceled_observations.clear();
-            return;
-        }
-        let dispatch = rx
-            .await
-            .map_err(|_| AppCommandError::ReplyChannelClosed)
             .and_then(|result| {
                 result.map_err(|error| match error {
                     Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
@@ -1950,6 +1893,22 @@ async fn dispatch_next_recall(
             });
         let dispatch = match dispatch {
             Ok(dispatch) => dispatch,
+            Err(AppCommandError::StaleGeneration) => {
+                let reason = "LV1 connection generation changed";
+                let _ = queued
+                    .reply
+                    .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
+                cancel_recall_queue(recall_queue, late_canceled_observations, reason, false);
+                late_canceled_observations.clear();
+                return;
+            }
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "lockout was enabled" => {
+                let _ = queued
+                    .reply
+                    .send(Err(AppCommandError::RecallCanceled(reason.clone())));
+                cancel_recall_queue(recall_queue, late_canceled_observations, &reason, true);
+                return;
+            }
             Err(error) => {
                 log_explicit_recall_blocked(queued.internal_scene_id, &error);
                 let _ = queued.reply.send(Err(error));
@@ -1962,20 +1921,6 @@ async fn dispatch_next_recall(
                 return;
             }
         };
-
-        if runtime_generation.current().await != generation {
-            let _ = queued.reply.send(Err(AppCommandError::RecallCanceled(
-                "LV1 connection generation changed".to_string(),
-            )));
-            cancel_recall_queue(
-                recall_queue,
-                late_canceled_observations,
-                "LV1 connection generation changed",
-                true,
-            );
-            late_canceled_observations.clear();
-            return;
-        }
 
         tracing::debug!(
             event = "scene_recall_command_sent",
@@ -2000,18 +1945,16 @@ async fn dispatch_next_recall(
 }
 
 async fn explicit_recall_lv1_snapshot(
-    lv1: &Lv1ActorHandle,
+    lv1: &Lv1Connection,
 ) -> Result<Lv1StateSnapshot, AppCommandError> {
-    let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::GetState { reply })
+    lv1.request(|reply| Lv1Command::GetState { reply })
         .await
         .map_err(|error| match error {
-            Lv1ActorError::NotConnected => AppCommandError::CommandFailed(
+            AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
                 "Recall blocked: LV1 state is unavailable".to_string(),
             ),
-            other => AppCommandError::CommandFailed(other.to_string()),
-        })?;
-    rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)
+            other => other,
+        })
 }
 
 fn validate_explicit_recall(
@@ -2039,19 +1982,12 @@ fn log_explicit_recall_blocked(internal_scene_id: uuid::Uuid, error: &AppCommand
 }
 
 async fn fresh_lv1_snapshot(
-    lv1: &Lv1ActorHandle,
+    lv1: &Lv1Connection,
     scene: &SceneState,
 ) -> Result<Lv1StateSnapshot, AppCommandError> {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        let (reply, rx) = oneshot::channel();
-        lv1.send(Lv1Command::GetState { reply })
-            .await
-            .map_err(|error| match error {
-                crate::lv1::Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-                other => AppCommandError::CommandFailed(other.to_string()),
-            })?;
-        let snapshot = rx.await.map_err(|_| AppCommandError::ReplyChannelClosed)?;
+        let snapshot = lv1.request(|reply| Lv1Command::GetState { reply }).await?;
         if snapshot.connection == ConnectionStatus::Connected
             && snapshot.scene.as_ref() == Some(scene)
         {
@@ -4024,6 +3960,8 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn recall_queue_does_not_dispatch_initial_recall_after_generation_changes_during_dispatch()
      {
+        let captured = TracingCapture::new();
+        let _guard = captured.install();
         let event_bus = AppEventBus::default();
         let (snapshot_request, snapshot_requested) = oneshot::channel();
         let (release_snapshot, release_snapshot_rx) = oneshot::channel();
@@ -4108,6 +4046,11 @@ mod tests {
             Err(AppCommandError::RecallCanceled(reason)) if reason == "LV1 connection generation changed"
         ));
         assert!(fade_commands.try_recv().is_err());
+        assert!(
+            captured
+                .matching("scene_recall_blocked", Level::WARN)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
@@ -4557,6 +4500,7 @@ mod tests {
             1
         );
         assert!(writes.try_recv().is_err());
+        scenes_peers.clear_peers_for_generation(1);
 
         tokio::time::advance(deadline.duration_since(tokio::time::Instant::now())).await;
         yield_to_actor().await;
@@ -5087,58 +5031,50 @@ mod tests {
 
     #[tokio::test]
     async fn explicit_recall_rechecks_lockout_after_fresh_lv1_state() {
+        tokio::time::timeout(Duration::from_secs(2), async {
+        let snapshot = || Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: vec![scene_entry(1, "Intro")],
+            channels: Vec::new(),
+            ping_sequence: 0,
+        };
         let event_bus = AppEventBus::default();
         let (show, show_task, _show_peers, mut lockout) =
             crate::show::build_show_actor(event_bus.clone());
         show_task.spawn();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
-        let (state_requested, state_requested_rx) = oneshot::channel();
-        let (release_state, release_state_rx) = oneshot::channel();
-        let recall_count = Arc::new(AtomicUsize::new(0));
-        let recall_count_for_server = recall_count.clone();
-        let server = tokio::spawn(async move {
-            let Some(crate::lv1::Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
-                panic!("expected an LV1 state request");
-            };
-            let _ = state_requested.send(());
-            let _ = release_state_rx.await;
-            let _ = reply.send(Lv1StateSnapshot {
-                connection: crate::lv1::ConnectionStatus::Connected,
-                scene: None,
-                scene_list: vec![scene_entry(1, "Intro")],
-                channels: Vec::new(),
-                ping_sequence: 0,
-            });
-            while let Some(command) = lv1_rx.recv().await {
-                match command {
-                    crate::lv1::Lv1Command::RecallScene { reply, .. } => {
-                        recall_count_for_server.fetch_add(1, Ordering::SeqCst);
-                        let _ = reply.unwrap().send(Ok(RecallSceneDispatch {
-                            scene_observation_sequence: 1,
-                        }));
-                    }
-                    _ => panic!("unexpected LV1 command"),
-                }
-            }
-        });
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
-        let scene_events = event_bus.subscribe();
         let (scenes, scenes_task, peers) = build_scenes_actor(
             1,
             runtime_generation,
-            event_bus,
-            scene_events,
+            event_bus.clone(),
+            event_bus.subscribe(),
             fake_settings_handle(AppSettings::default()),
             AppSettings::default(),
             lockout.clone(),
         );
-        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx.clone()), fade);
         scenes_task.spawn();
         install_scene_document(&scenes, intro_scene_document()).await;
 
-        let (reply, rx) = oneshot::channel();
+        let set_lockout = |enabled| {
+            let show = show.clone();
+            async move {
+                let (reply, result) = oneshot::channel();
+                show.send(crate::show::ShowCommand::SetLockout {
+                    enabled,
+                    reply: Some(reply),
+                })
+                .await
+                .unwrap();
+                result.await.unwrap();
+            }
+        };
+
+        let (reply, snapshot_wait) = oneshot::channel();
         scenes
             .send(ScenesCommand::RecallScene {
                 internal_scene_id: intro_internal_scene_id(),
@@ -5146,30 +5082,54 @@ mod tests {
             })
             .await
             .unwrap();
-        state_requested_rx.await.unwrap();
-
-        let (lockout_reply, lockout_rx) = oneshot::channel();
-        show.send(crate::show::ShowCommand::SetLockout {
-            enabled: true,
-            reply: Some(lockout_reply),
-        })
-        .await
-        .unwrap();
-        lockout_rx.await.unwrap();
+        let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
+            panic!("expected admission snapshot request");
+        };
+        set_lockout(true).await;
         assert!(lockout.changed().await.unwrap());
-
-        release_state.send(()).unwrap();
+        reply.send(snapshot()).unwrap();
         assert!(matches!(
-            rx.await.unwrap(),
+            snapshot_wait.await.unwrap(),
             Err(AppCommandError::CommandFailed(message)) if message == "Recall blocked: lockout is enabled"
         ));
-        assert_eq!(recall_count.load(Ordering::SeqCst), 0);
+
+        set_lockout(false).await;
+        assert!(!lockout.changed().await.unwrap());
+        let (reply, capacity_wait) = oneshot::channel();
+        scenes
+            .send(ScenesCommand::RecallScene {
+                internal_scene_id: intro_internal_scene_id(),
+                reply,
+            })
+            .await
+            .unwrap();
+        for request in 0..2 {
+            let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
+                panic!("expected snapshot request {request}");
+            };
+            if request == 1 {
+                lv1_tx
+                    .send(Lv1Command::WriteBatch(Vec::new()))
+                    .await
+                    .unwrap();
+            }
+            reply.send(snapshot()).unwrap();
+        }
+        yield_to_actor().await;
+        set_lockout(true).await;
+        assert!(lockout.changed().await.unwrap());
+        assert!(matches!(
+            lv1_rx.recv().await,
+            Some(Lv1Command::WriteBatch(writes)) if writes.is_empty()
+        ));
+        assert!(matches!(
+            capacity_wait.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "lockout was enabled"
+        ));
+        assert!(lv1_rx.try_recv().is_err());
 
         scenes.send(ScenesCommand::Shutdown).await.unwrap();
-        drop(peers);
-        drop(scenes);
-        drop(show);
-        server.await.unwrap();
+        }).await.expect("recall checks should complete without sending a locked-out command");
     }
 
     #[tokio::test]

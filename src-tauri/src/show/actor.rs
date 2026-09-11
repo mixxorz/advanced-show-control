@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 
 use crate::cue_lists::CueListDocument;
-use crate::lv1::{Lv1ActorError, Lv1ActorHandle, Lv1Command, Lv1StateSnapshot};
+use crate::lv1::{Lv1ActorHandle, Lv1Command, Lv1Connection, Lv1StateSnapshot};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::runtime::generation::RuntimeGeneration;
@@ -24,7 +24,7 @@ const SHOW_LOCAL_ACTOR_TIMEOUT: Duration = Duration::from_millis(500);
 #[derive(Clone, Default)]
 pub struct ShowActorPeers {
     runtime_generation: RuntimeGeneration,
-    lv1: Arc<Mutex<Option<(u64, Lv1ActorHandle)>>>,
+    lv1: Arc<Mutex<Option<Lv1Connection>>>,
     scenes: Arc<Mutex<Option<ScenesHandle>>>,
 }
 
@@ -34,7 +34,11 @@ impl ShowActorPeers {
     }
 
     pub fn set_lv1(&self, generation: u64, lv1: Lv1ActorHandle) {
-        *self.lv1.lock().expect("show peer lock poisoned") = Some((generation, lv1));
+        *self.lv1.lock().expect("show peer lock poisoned") = Some(Lv1Connection::new(
+            lv1,
+            self.runtime_generation.clone(),
+            generation,
+        ));
     }
 
     pub fn set_scenes(&self, scenes: ScenesHandle) {
@@ -45,18 +49,18 @@ impl ShowActorPeers {
         let mut lv1 = self.lv1.lock().expect("show peer lock poisoned");
         if lv1
             .as_ref()
-            .is_some_and(|(peer_generation, _)| *peer_generation == generation)
+            .is_some_and(|connection| connection.generation() == generation)
         {
             *lv1 = None;
         }
     }
 
-    fn lv1(&self) -> Option<(u64, Lv1ActorHandle)> {
+    fn lv1(&self) -> Option<Lv1Connection> {
         self.lv1
             .lock()
             .expect("show peer lock poisoned")
             .as_ref()
-            .map(|(generation, lv1)| (*generation, lv1.clone()))
+            .cloned()
     }
 
     pub fn scenes(&self) -> Option<ScenesHandle> {
@@ -330,35 +334,35 @@ async fn handle_command(
 }
 
 async fn current_lv1_snapshot(peers: &ShowActorPeers) -> Result<(u64, Lv1StateSnapshot), String> {
-    let (generation, lv1) = peers
+    let lv1 = peers
         .lv1()
         .ok_or(AppCommandError::Lv1Unavailable)
         .map_err(map_app_command_error)?;
-    let snapshot = get_lv1_state(&lv1).await?;
+    let snapshot = get_lv1_state(&lv1).await.map_err(map_app_command_error)?;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable.to_string());
     }
-    Ok((generation, snapshot))
+    Ok((lv1.generation(), snapshot))
 }
 
-async fn get_lv1_state(lv1: &Lv1ActorHandle) -> Result<Lv1StateSnapshot, String> {
+async fn get_lv1_state(lv1: &Lv1Connection) -> Result<Lv1StateSnapshot, AppCommandError> {
     let (reply, rx) = tokio::sync::oneshot::channel();
-    tokio::time::timeout(
+    let send = tokio::time::timeout(
         SHOW_LOCAL_ACTOR_TIMEOUT,
         lv1.send(Lv1Command::GetState { reply }),
     )
     .await
-    .map_err(|_| "LV1 state request timed out".to_string())?
-    .map_err(|error| match error {
-        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-        other => AppCommandError::CommandFailed(other.to_string()),
-    })
-    .map_err(map_app_command_error)?;
-    tokio::time::timeout(SHOW_LOCAL_ACTOR_TIMEOUT, rx)
+    .map_err(|_| AppCommandError::CommandFailed("LV1 state request timed out".to_string()))
+    .and_then(|result| result);
+    lv1.ensure_current().await?;
+    send?;
+
+    let response = tokio::time::timeout(SHOW_LOCAL_ACTOR_TIMEOUT, rx)
         .await
-        .map_err(|_| "LV1 state reply timed out".to_string())?
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)
+        .map_err(|_| AppCommandError::CommandFailed("LV1 state reply timed out".to_string()))
+        .and_then(|result| result.map_err(|_| AppCommandError::ReplyChannelClosed));
+    lv1.ensure_current().await?;
+    response
 }
 
 async fn validate_lv1_snapshot(
@@ -366,13 +370,11 @@ async fn validate_lv1_snapshot(
     expected_generation: u64,
     expected_snapshot: &Lv1StateSnapshot,
 ) -> Result<(), String> {
-    let (peer_generation, lv1) = peers
+    let lv1 = peers
         .lv1()
+        .filter(|lv1| lv1.generation() == expected_generation)
         .ok_or_else(|| "LV1 generation is no longer current".to_string())?;
-    if peer_generation != expected_generation {
-        return Err("LV1 generation is no longer current".to_string());
-    }
-    let snapshot = get_lv1_state(&lv1).await?;
+    let snapshot = get_lv1_state(&lv1).await.map_err(map_app_command_error)?;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err("LV1 is no longer connected".to_string());
     }
@@ -384,6 +386,7 @@ async fn validate_lv1_snapshot(
 
 fn map_app_command_error(error: AppCommandError) -> String {
     match error {
+        AppCommandError::StaleGeneration => "LV1 generation is no longer current".to_string(),
         AppCommandError::CommandFailed(message) => message,
         other => other.to_string(),
     }
@@ -630,6 +633,7 @@ mod tests {
                         first = false;
                         if advance_after_first_snapshot {
                             advance_generation.advance().await;
+                            continue;
                         }
                     }
                     let _ = reply.send(snapshot.clone());

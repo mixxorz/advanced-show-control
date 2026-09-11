@@ -348,10 +348,16 @@ async fn set_active_cue_list_publishes_persisted_cue_list_edit() {
         .unwrap();
     assert!(rx.await.unwrap().unwrap().changed);
 
-    assert!(matches!(
-        events.recv().await.unwrap(),
-        AppEvent::CueLists(_)
-    ));
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if let AppEvent::CueLists(state) = events.recv().await.unwrap() {
+                assert!(state.document.active_cue_list_id.is_none());
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
 
     handle.send(CueListsCommand::Shutdown).await.unwrap();
 }

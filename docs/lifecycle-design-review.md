@@ -2,6 +2,8 @@
 
 Status: proposed architecture, not implemented or approved. Reviewed against `b359d29` on 2026-09-11. This does not replace the description of the current implementation in [architecture.md](architecture.md).
 
+Subsequent narrow refactors implemented a complete `InstalledRuntime` value and connection-bound LV1 clients for Fade, Show, and Scenes. The existing coordinator and peer-installation mechanism remain; the connection-owner actor, shared runtime reader, and task-scope rewrite below are still only proposals. The findings and LOC figures below describe the original review baseline.
+
 ## Decision under evaluation
 
 Prefer a small connection-owner actor with a constructor-injected, read-only runtime reference. Preserve generation-scoped LV1 and Fade endpoints. Do not add handle-attachment messages, a generic supervisor framework, or a universal application command router.

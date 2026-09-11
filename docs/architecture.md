@@ -61,9 +61,11 @@ A connect transaction:
 Direct peers are intentional:
 
 - `FadeEngine` binds its LV1 handle and generation authority once at construction in an `Lv1Connection`. The client fences mailbox admission after capacity waits and rechecks replies before returning them. It never retargets itself; there is no optional peer slot, installation step, or peer mutex.
-- `Scenes` receives the active generation's `Lv1ActorHandle` and `FadeEngineHandle` after lifecycle acceptance.
-- `Show` holds the app-lifetime document-owner endpoint and the current LV1 peer only while connected; it has no Cue Lists peer.
+- `Scenes` receives the active generation's LV1 and Fade endpoints after lifecycle acceptance. Its existing peer installer binds LV1 to an `Lv1Connection`; connection-specific operations derive their generation from that client.
+- `Show` holds the app-lifetime document-owner endpoint and a current `Lv1Connection` bound by its existing peer installer; it has no Cue Lists peer. Snapshot reads retain separate send/reply timeouts and revalidate generation after either wait.
 - Scenes and Cue Lists have separate bounded command endpoints, processed by the same app-lifetime owner. Neither sends mailbox requests to the other.
+
+`Lv1Connection::request_checked` combines fenced admission and reply freshness. Scenes supplies its lockout validation to run after mailbox capacity is available, inside the generation fence. Readiness completion remains app-lifetime queue policy and is processed even when peers have been removed; only dispatching the next recall requires a peer.
 
 Connection completion, failure, and disconnect use one `SetLv1ConnectionIfCurrent` command with an optional identity. Show checks its own shared generation authority during the synchronous metadata update; callers cannot supply a different generation guard.
 

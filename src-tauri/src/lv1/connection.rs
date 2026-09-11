@@ -7,6 +7,7 @@ use super::{Lv1ActorError, Lv1ActorHandle, Lv1Command};
 
 /// Pins an LV1 endpoint to one runtime generation; it never switches actors.
 /// Checks fence mailbox admission, not bytes already handed to the transport.
+#[derive(Clone)]
 pub(crate) struct Lv1Connection {
     handle: Lv1ActorHandle,
     authority: RuntimeGeneration,
@@ -41,6 +42,14 @@ impl Lv1Connection {
     }
 
     pub(crate) async fn send(&self, command: Lv1Command) -> Result<(), AppCommandError> {
+        self.send_checked(command, || Ok(())).await
+    }
+
+    pub(crate) async fn send_checked(
+        &self,
+        command: Lv1Command,
+        validate: impl FnOnce() -> Result<(), AppCommandError>,
+    ) -> Result<(), AppCommandError> {
         self.ensure_current().await?;
         let permit = self.handle.reserve().await;
         // Revocation wins even when the wait ended because the mailbox closed.
@@ -49,6 +58,7 @@ impl Lv1Connection {
                 Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
                 other => AppCommandError::CommandFailed(other.to_string()),
             })?;
+            validate()?;
             permit.send(command);
             Ok(())
         })
@@ -60,8 +70,16 @@ impl Lv1Connection {
         &self,
         command: impl FnOnce(oneshot::Sender<T>) -> Lv1Command,
     ) -> Result<T, AppCommandError> {
+        self.request_checked(command, || Ok(())).await
+    }
+
+    pub(crate) async fn request_checked<T>(
+        &self,
+        command: impl FnOnce(oneshot::Sender<T>) -> Lv1Command,
+        validate: impl FnOnce() -> Result<(), AppCommandError>,
+    ) -> Result<T, AppCommandError> {
         let (reply, response) = oneshot::channel();
-        self.send(command(reply)).await?;
+        self.send_checked(command(reply), validate).await?;
         let result = response
             .await
             .map_err(|_| AppCommandError::ReplyChannelClosed);
