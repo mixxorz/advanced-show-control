@@ -1,7 +1,6 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use crate::atomic_file::StagedFile;
 use crate::connection_state::Lv1SystemIdentity;
 use serde::{Deserialize, Serialize};
 
@@ -71,85 +70,31 @@ impl SettingsState {
         StagedSettingsUpdate::prepare(self.file_path.clone(), updated).map(Some)
     }
 
-    pub(crate) fn publish_staged(
-        &mut self,
-        mut staged: StagedSettingsUpdate,
-    ) -> Result<(), String> {
-        crate::atomic_file::replace(&staged.staged_path, &self.file_path).map_err(|err| {
+    pub(crate) fn publish_staged(&mut self, staged: StagedSettingsUpdate) -> Result<(), String> {
+        staged.file.publish().map_err(|err| {
             format!(
-                "Failed to publish settings {} from {}: {err}",
-                self.file_path.display(),
-                staged.staged_path.display()
+                "Failed to publish settings {}: {err}",
+                self.file_path.display()
             )
         })?;
-        self.document = staged
-            .document
-            .take()
-            .expect("staged settings document should be available until publication");
+        self.document = staged.document;
         Ok(())
     }
 }
 
 pub(crate) struct StagedSettingsUpdate {
-    document: Option<PersistedSettings>,
-    staged_path: PathBuf,
+    document: PersistedSettings,
+    file: StagedFile,
 }
 
 impl StagedSettingsUpdate {
     fn prepare(file_path: PathBuf, document: PersistedSettings) -> Result<Self, String> {
         let contents = serde_json::to_string_pretty(&document)
             .map_err(|err| format!("Failed to serialize settings: {err}"))?;
-        let parent = file_path
-            .parent()
-            .ok_or_else(|| format!("Settings path has no parent: {}", file_path.display()))?;
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("Failed to create settings directory: {err}"))?;
-        let (staged_path, mut staged_file) = reserve_staged_settings_file(parent)?;
-
-        let write_result = staged_file
-            .write_all(contents.as_bytes())
-            .and_then(|_| staged_file.sync_all())
-            .map_err(|err| format!("Failed to write staged settings: {err}"));
-        if let Err(error) = write_result {
-            drop(staged_file);
-            let _ = fs::remove_file(&staged_path);
-            return Err(error);
-        }
-
-        Ok(Self {
-            document: Some(document),
-            staged_path,
-        })
+        let file = StagedFile::prepare(&file_path, contents.as_bytes())
+            .map_err(|err| format!("Failed to stage settings {}: {err}", file_path.display()))?;
+        Ok(Self { document, file })
     }
-}
-
-impl Drop for StagedSettingsUpdate {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.staged_path);
-    }
-}
-
-fn reserve_staged_settings_file(parent: &Path) -> Result<(PathBuf, fs::File), String> {
-    let timestamp = crate::time::current_timestamp_millis();
-    for suffix in 0.. {
-        let name = if suffix == 0 {
-            format!(".settings.json.tmp-{timestamp}")
-        } else {
-            format!(".settings.json.tmp-{timestamp}-{suffix}")
-        };
-        let staged_path = parent.join(name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&staged_path)
-        {
-            Ok(file) => return Ok((staged_path, file)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => return Err(format!("Failed to reserve staged settings file: {err}")),
-        }
-    }
-
-    unreachable!("suffix loop is unbounded")
 }
 
 fn load_settings_file(file_path: &Path) -> PersistedSettings {

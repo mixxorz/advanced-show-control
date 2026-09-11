@@ -105,6 +105,8 @@ Scenes reconciles configs and directly reconciles cue references when the owned 
 
 Cue recall enters the existing recall queue locally. The owner polls its dispatch reply without a forwarding task, advances only after successful LV1 dispatch, and keeps subsequent cue commands bounded in their mailbox until completion. Scene commands and runtime safety events continue to be processed while a cue awaits queued dispatch.
 
+Settings and session saves share `StagedFile`: it reserves and syncs a temporary file beside the destination, publishes through the platform-specific atomic replacement, and cleans unpublished files on drop. Settings keeps generation validation around publication; session backup naming and retention remain separate policy.
+
 Settings loads normalized defaults or persisted values from `settings.json`, saves changed full-object replacements immediately, and publishes `SettingsEvent::StateChanged`. Remembered LV1 identity is private metadata in the same file and is accessed by lifecycle through dedicated commands, not projected as public settings.
 
 ## Projection and Frontend Boundary

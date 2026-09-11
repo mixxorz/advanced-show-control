@@ -5,7 +5,7 @@ pub use crate::show::{
 
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 const MAX_BACKUPS_PER_SHOW_FILE: usize = 10;
@@ -23,50 +23,13 @@ pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Resul
         create_backup(path, backup_dir)?;
     }
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "Failed to create parent directory {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
-
     let json = serde_json::to_string_pretty(file)
         .map_err(|err| format!("Failed to serialize session {}: {err}", path.display()))?;
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Session path has no parent: {}", path.display()))?;
-    let timestamp = crate::time::current_timestamp_millis();
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("show");
-    let (temp_path, mut temp_file) = reserve_unique_temp_file(parent, file_name, &timestamp)?;
-
-    let write_result = (|| -> Result<(), String> {
-        temp_file
-            .write_all(json.as_bytes())
-            .and_then(|_| temp_file.sync_all())
-            .map_err(|err| {
-                format!(
-                    "Failed to write temp session {}: {err}",
-                    temp_path.display()
-                )
-            })?;
-        drop(temp_file);
-        crate::atomic_file::replace(&temp_path, path).map_err(|err| {
-            format!(
-                "Failed to replace session {} from {}: {err}",
-                path.display(),
-                temp_path.display()
-            )
-        })
-    })();
-
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-
-    write_result
+    crate::atomic_file::StagedFile::prepare(path, json.as_bytes())
+        .map_err(|err| format!("Failed to stage session {}: {err}", path.display()))?
+        .publish()
+        .map_err(|err| format!("Failed to replace session {}: {err}", path.display()))
 }
 
 pub fn default_show_folder() -> PathBuf {
@@ -258,48 +221,6 @@ fn prune_backup_entries(
         .take(prune_count)
         .map(|(_, _, path)| path)
         .collect()
-}
-
-fn reserve_unique_temp_file(
-    parent_dir: &Path,
-    file_name: &str,
-    timestamp: &str,
-) -> Result<(PathBuf, fs::File), String> {
-    reserve_unique_file(parent_dir, |suffix| {
-        if suffix == 0 {
-            format!(".{file_name}.tmp-{timestamp}")
-        } else {
-            format!(".{file_name}.tmp-{timestamp}-{suffix}")
-        }
-    })
-}
-
-fn reserve_unique_file<F>(
-    directory: &Path,
-    candidate_name: F,
-) -> Result<(PathBuf, fs::File), String>
-where
-    F: Fn(usize) -> String,
-{
-    for suffix in 0.. {
-        let candidate = directory.join(candidate_name(suffix));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => return Ok((candidate, file)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                return Err(format!(
-                    "Failed to reserve file {}: {err}",
-                    candidate.display()
-                ));
-            }
-        }
-    }
-
-    unreachable!("suffix loop is unbounded")
 }
 
 #[cfg(test)]
