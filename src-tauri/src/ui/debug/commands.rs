@@ -1,8 +1,9 @@
 use crate::lifecycle::AppLifecycle;
 use crate::lv1::Lv1Command;
+use crate::scenes::SceneScopeToggles;
 use crate::show::{
     SHOW_FILE_SCHEMA_VERSION, ShowCommand, ShowFile, ShowFileSafety, ShowFileSceneConfig,
-    ShowFileSceneScopeToggles, ShowStateHandle,
+    ShowStateHandle,
 };
 use crate::show_file::write_show_file;
 use std::io::Write;
@@ -208,7 +209,7 @@ pub async fn debug_smoke_load_unlinked_scene_session<R: Runtime>(
             duration_ms: 1_000,
             channel_configs: Vec::new(),
             scoped_channels: Vec::new(),
-            scope_toggles: ShowFileSceneScopeToggles::default(),
+            scope_toggles: SceneScopeToggles::default(),
         }],
         cue_lists: Vec::new(),
         active_cue_list_id: None,

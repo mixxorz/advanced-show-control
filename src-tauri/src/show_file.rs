@@ -1,6 +1,5 @@
 pub use crate::show::{
-    ImportedShowFile, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig,
-    ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig, ShowFileSceneScopeToggles,
+    ImportedShowFile, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileSafety, ShowFileSceneConfig,
     export_show_file, import_show_file,
 };
 
@@ -306,6 +305,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::scenes::{ChannelConfig, ChannelRef, SceneScopeToggles};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -323,7 +323,7 @@ mod tests {
                 scene_index: Some(1),
                 scene_name: "Intro".to_string(),
                 duration_ms: 4000,
-                channel_configs: vec![ShowFileChannelConfig {
+                channel_configs: vec![ChannelConfig {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-12.5),
@@ -332,11 +332,11 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
-                scoped_channels: vec![ShowFileChannelRef {
+                scoped_channels: vec![ChannelRef {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: ShowFileSceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles::default(),
             }],
         }
     }

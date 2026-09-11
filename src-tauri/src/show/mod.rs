@@ -14,8 +14,7 @@ pub use events::{ShowEvent, ShowProjectionReason, ShowProjectionState};
 pub use handle::ShowStateHandle;
 pub use lockout::ShowLockoutReader;
 pub use show_file::{
-    ImportedShowFile, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileChannelConfig,
-    ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig, ShowFileSceneScopeToggles,
+    ImportedShowFile, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileSafety, ShowFileSceneConfig,
     export_show_file, import_show_file,
 };
 pub(crate) use state::CompleteConnectionOutcome;

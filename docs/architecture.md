@@ -91,6 +91,8 @@ Fade feedback remains active during readiness. A manual fader override beyond th
 
 `Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show observes these app-lifetime facts without generation filtering, marks dirty, and publishes file metadata. On Show event-bus lag it conservatively marks the file dirty.
 
+Persistence shares the scene domain's channel targets, channel references, and scope toggles directly; there is no duplicate file-only model or conversion for those values. The file scene wrapper remains distinct because legacy files may omit the durable scene UUID.
+
 New and load require a currently connected LV1 snapshot to initialize or align scenes against the live scene list. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
 
 Replacement commits both documents and returns the reconciled result in one owner turn. Generation validation surrounds only this synchronous commit, never mailbox waits or file I/O. A `SessionReplacement` ticket serializes timeout cancellation with commit: a canceled request cannot apply later, and a committed request remains successful even if its acknowledgement arrives late. There are no old-document snapshots, compensating replacements, or rollback protocol. Replacement cancels queued recall intent and pending cue advancement without aborting an active fade.

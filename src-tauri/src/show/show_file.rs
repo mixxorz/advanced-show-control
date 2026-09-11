@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cue_lists::{CueList, CueListDocument};
-use crate::lv1::{Lv1StateSnapshot, PanMode};
+use crate::lv1::Lv1StateSnapshot;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 2;
@@ -36,37 +36,10 @@ pub struct ShowFileSceneConfig {
     pub scene_index: Option<i32>,
     pub scene_name: String,
     pub duration_ms: u64,
-    pub channel_configs: Vec<ShowFileChannelConfig>,
-    pub scoped_channels: Vec<ShowFileChannelRef>,
+    pub channel_configs: Vec<ChannelConfig>,
+    pub scoped_channels: Vec<ChannelRef>,
     #[serde(default)]
-    pub scope_toggles: ShowFileSceneScopeToggles,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-#[serde(default)]
-pub struct ShowFileSceneScopeToggles {
-    pub faders: bool,
-    pub pan: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelConfig {
-    pub group: i32,
-    pub channel: i32,
-    pub fader_db: Option<f64>,
-    pub pan: Option<f64>,
-    pub balance: Option<f64>,
-    pub width: Option<f64>,
-    pub pan_mode: Option<PanMode>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelRef {
-    pub group: i32,
-    pub channel: i32,
+    pub scope_toggles: SceneScopeToggles,
 }
 
 pub struct ImportedShowFile {
@@ -156,31 +129,9 @@ fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
         scene_index: config.scene_index,
         scene_name: config.scene_name,
         duration_ms: config.duration_ms,
-        channel_configs: config
-            .channel_configs
-            .into_iter()
-            .map(|target| ShowFileChannelConfig {
-                group: target.group,
-                channel: target.channel,
-                fader_db: target.fader_db,
-                pan: target.pan,
-                balance: target.balance,
-                width: target.width,
-                pan_mode: target.pan_mode,
-            })
-            .collect(),
-        scoped_channels: config
-            .scoped_channels
-            .into_iter()
-            .map(|channel| ShowFileChannelRef {
-                group: channel.group,
-                channel: channel.channel,
-            })
-            .collect(),
-        scope_toggles: ShowFileSceneScopeToggles {
-            faders: config.scope_toggles.faders,
-            pan: config.scope_toggles.pan,
-        },
+        channel_configs: config.channel_configs,
+        scoped_channels: config.scoped_channels,
+        scope_toggles: config.scope_toggles,
     }
 }
 
@@ -190,31 +141,9 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
         scene_index: config.scene_index,
         scene_name: config.scene_name.clone(),
         duration_ms: config.duration_ms,
-        channel_configs: config
-            .channel_configs
-            .iter()
-            .map(|target| ChannelConfig {
-                group: target.group,
-                channel: target.channel,
-                fader_db: target.fader_db,
-                pan: target.pan,
-                balance: target.balance,
-                width: target.width,
-                pan_mode: target.pan_mode.clone(),
-            })
-            .collect(),
-        scoped_channels: config
-            .scoped_channels
-            .iter()
-            .map(|channel| ChannelRef {
-                group: channel.group,
-                channel: channel.channel,
-            })
-            .collect(),
-        scope_toggles: SceneScopeToggles {
-            faders: config.scope_toggles.faders,
-            pan: config.scope_toggles.pan,
-        },
+        channel_configs: config.channel_configs.clone(),
+        scoped_channels: config.scoped_channels.clone(),
+        scope_toggles: config.scope_toggles.clone(),
     }
 }
 
@@ -222,7 +151,7 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
 mod tests {
     use super::*;
     use crate::cue_lists::{CueEntry, CueList, CueListDocument};
-    use crate::lv1::{ConnectionStatus, SceneListEntry};
+    use crate::lv1::{ConnectionStatus, PanMode, SceneListEntry};
 
     #[test]
     fn export_show_file_contains_current_configs() {
@@ -326,7 +255,7 @@ mod tests {
                     duration_ms: 5_000,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
-                    scope_toggles: ShowFileSceneScopeToggles::default(),
+                    scope_toggles: SceneScopeToggles::default(),
                 },
                 ShowFileSceneConfig {
                     internal_scene_id: Some(missing_internal_scene_id),
@@ -335,7 +264,7 @@ mod tests {
                     duration_ms: 5_000,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
-                    scope_toggles: ShowFileSceneScopeToggles::default(),
+                    scope_toggles: SceneScopeToggles::default(),
                 },
             ],
         };
@@ -374,7 +303,7 @@ mod tests {
                 duration_ms: 0,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: ShowFileSceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles::default(),
             }],
             cue_lists: Vec::new(),
             active_cue_list_id: None,
@@ -419,7 +348,7 @@ mod tests {
                 duration_ms: 1_000,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: ShowFileSceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles::default(),
             }],
         };
         let lv1 = Lv1StateSnapshot {
