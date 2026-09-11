@@ -1,7 +1,7 @@
 //! Fade engine actor — animates LV1 faders over time.
 
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::fade::FadeEngineHandle;
@@ -11,17 +11,17 @@ use crate::fade::commands::{
 use crate::fade::events::FadeEvent;
 use crate::fade::state::{EngineState, PingGateProgress, READINESS_PINGS_REQUIRED};
 use crate::fade::tick::{ActiveTarget, ActiveTargetInit, TICK_HZ};
-use crate::fade::types::{FadeParameter, FadeTarget, FadeTargetKey};
-use crate::lv1::{Lv1ActorHandle, Lv1Command, Lv1Event, Lv1ParameterWrite, Lv1WriteParameter};
+use crate::fade::types::{FadeParameter, FadeTarget};
+use crate::lv1::{
+    Lv1ActorHandle, Lv1Command, Lv1Connection, Lv1Event, Lv1ParameterWrite, Lv1WriteParameter,
+};
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
 use crate::runtime::generation::RuntimeGeneration;
 
 pub struct FadeEngineTask {
-    runtime_generation: RuntimeGeneration,
-    lv1: Lv1ActorHandle,
+    connection: Lv1Connection,
     event_bus: AppEventBus,
-    generation: u64,
     cmd_rx: mpsc::Receiver<FadeCommand>,
 }
 
@@ -32,37 +32,9 @@ enum RecallSceneFadeOutcome {
     Overriding { target_count: usize },
 }
 
-struct PendingWrite {
-    key: FadeTargetKey,
-    value: f64,
-    expected_generation: Option<u64>,
-}
-
-struct PendingCompletion {
-    key: FadeTargetKey,
-    expected_generation: Option<u64>,
-}
-
-impl PendingWrite {
-    fn into_lv1_write(self) -> Lv1ParameterWrite {
-        build_parameter_write(
-            self.key.group,
-            self.key.channel,
-            self.key.parameter,
-            self.value,
-        )
-    }
-}
-
 impl FadeEngineTask {
     pub fn spawn(self) {
-        tokio::spawn(run_engine(
-            self.runtime_generation,
-            self.lv1,
-            self.event_bus,
-            self.generation,
-            self.cmd_rx,
-        ));
+        tokio::spawn(run_engine(self.connection, self.event_bus, self.cmd_rx));
     }
 }
 
@@ -75,22 +47,19 @@ pub fn build_engine(
     let (cmd_tx, cmd_rx) = mpsc::channel(32);
     let handle = cmd_tx;
     let task = FadeEngineTask {
-        runtime_generation,
-        lv1,
+        connection: Lv1Connection::new(lv1, runtime_generation, generation),
         event_bus,
-        generation,
         cmd_rx,
     };
     (handle, task)
 }
 
 async fn run_engine(
-    runtime_generation: RuntimeGeneration,
-    lv1: Lv1ActorHandle,
+    connection: Lv1Connection,
     event_bus: AppEventBus,
-    generation: u64,
     mut cmd_rx: mpsc::Receiver<FadeCommand>,
 ) {
+    let generation = connection.generation();
     let mut app_events = event_bus.subscribe();
     let mut state = EngineState::new(event_bus.clone(), generation);
     let mut tick_interval: Option<tokio::time::Interval> = None;
@@ -119,15 +88,15 @@ async fn run_engine(
             cmd = cmd_rx.recv() => {
                 match cmd {
                     None => break,
-                Some(FadeCommand::RecallSceneFade { config, same_scene_behavior, expected_generation, readiness, reply }) => {
+                    Some(FadeCommand::RecallSceneFade { config, same_scene_behavior, readiness, reply }) => {
                         let scene_index = config.scene.index;
                         let scene_name = config.scene.name.clone();
                         let duration_ms = config.duration_ms;
                         let target_count = config.targets.len();
-                        let result = handle_recall_scene_fade(&runtime_generation, &lv1, &mut state, config, same_scene_behavior, expected_generation, readiness).await;
+                        let result = handle_recall_scene_fade(&connection, &mut state, config, same_scene_behavior, readiness).await;
 
-                        match result {
-                            Ok(outcome) => {
+                        let result = match result {
+                            Ok(outcome) => connection.if_current(|| {
                                 if state.is_active() {
                                     let mut interval = tokio::time::interval(Duration::from_millis(1000 / TICK_HZ));
                                     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -145,24 +114,18 @@ async fn run_engine(
                                         complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
                                     }
                                 }
-                                if let Some(reply) = reply {
-                                    let _ = reply.send(Ok(()));
-                                }
-                            }
-                            Err(err) => {
-                                if let Some(reply) = reply {
-                                    let _ = reply.send(Err(err));
-                                }
-                            }
+                            }).await.ok_or(AppCommandError::StaleGeneration),
+                            Err(err) => Err(err),
+                        };
+                        if let Some(reply) = reply {
+                            let _ = reply.send(result);
                         }
                     }
-                    Some(FadeCommand::WaitForRecallReadiness { scene, expected_generation, readiness, reply }) => {
+                    Some(FadeCommand::WaitForRecallReadiness { scene, readiness, reply }) => {
                         let result = handle_wait_for_recall_readiness(
-                            &runtime_generation,
-                            &lv1,
+                            &connection,
                             &mut state,
                             scene,
-                            expected_generation,
                             readiness,
                         )
                         .await;
@@ -318,66 +281,48 @@ async fn run_engine(
                 for ch in &mut state.channels {
                     if ch.is_done(now) {
                         let target_db = ch.exact_final_send();
-                        writes.push(PendingWrite {
-                            key: ch.key.clone(),
-                            value: target_db,
-                            expected_generation: ch.expected_generation,
-                        });
-                        completed_targets.push(PendingCompletion {
-                            key: ch.key.clone(),
-                            expected_generation: ch.expected_generation,
-                        });
+                        writes.push(build_parameter_write(ch.key.group, ch.key.channel, ch.key.parameter, target_db));
+                        completed_targets.push(ch.key.clone());
                         continue;
                     }
 
                     if let Some(new_value) = ch.next_send(now) {
-                        writes.push(PendingWrite {
-                            key: ch.key.clone(),
-                            value: new_value,
-                            expected_generation: ch.expected_generation,
+                        writes.push(build_parameter_write(ch.key.group, ch.key.channel, ch.key.parameter, new_value));
+                    }
+                }
+
+                let sent = if writes.is_empty() {
+                    connection.ensure_current().await
+                } else {
+                    send_batch(&connection, &state.event_bus, writes).await
+                };
+                if let Err(error) = sent {
+                    let reason = if error == AppCommandError::StaleGeneration {
+                        RecallReadinessCancellation::GenerationChanged
+                    } else {
+                        RecallReadinessCancellation::Disconnected
+                    };
+                    for target in std::mem::take(&mut state.channels) {
+                        state.fan_out(FadeEvent::ChannelCancelled {
+                            group: target.key.group,
+                            channel: target.key.channel,
+                            parameter: target.key.parameter,
                         });
                     }
+                    state.cancel_all_in_place(reason);
+                    tick_interval = None;
+                    state.fan_out(FadeEvent::FadeAborted);
+                    continue;
                 }
-
-                let mut failed_generations = Vec::new();
-                for (expected_generation, writes) in group_writes_by_generation(writes) {
-                    let sent = match expected_generation {
-                        Some(expected_generation) => {
-                            send_batch_if_generation(
-                                &runtime_generation,
-                                &lv1,
-                                &state.event_bus,
-                                expected_generation,
-                                writes,
-                            )
-                            .await
-                        }
-                        None => {
-                            send_batch(&lv1, &state.event_bus, state.generation(), writes).await;
-                            true
-                        }
-                    };
-
-                    if !sent
-                        && let Some(expected_generation) = expected_generation
-                        && !failed_generations.contains(&expected_generation)
-                    {
-                        failed_generations.push(expected_generation);
+                connection.if_current(|| {
+                    for key in completed_targets {
+                        state.channels.retain(|target| target.key != key);
+                        state.fan_out(FadeEvent::ChannelCompleted {
+                            group: key.group, channel: key.channel, parameter: key.parameter,
+                        });
                     }
-                }
-
-                complete_successful_targets(
-                    &mut state,
-                    completed_targets,
-                    &failed_generations,
-                );
-
-                for expected_generation in failed_generations {
-                    cancel_generation_owned_targets(&mut state, expected_generation);
                     maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
-                }
-
-                maybe_complete_fade(&mut tick_interval, &mut state, &mut fade_completed_emitted);
+                }).await;
             }
         }
     }
@@ -413,51 +358,20 @@ fn complete_fade(
 }
 
 async fn handle_recall_scene_fade(
-    runtime_generation: &RuntimeGeneration,
-    lv1: &Lv1ActorHandle,
+    connection: &Lv1Connection,
     state: &mut EngineState,
     config: crate::fade::types::FadeConfig,
     same_scene_behavior: SameSceneRecallBehavior,
-    expected_generation: Option<u64>,
     readiness: RecallReadinessRequest,
 ) -> Result<RecallSceneFadeOutcome, AppCommandError> {
-    if let Some(expected_generation) = expected_generation
-        && runtime_generation.current().await != expected_generation
-    {
-        return Err(AppCommandError::StaleGeneration);
-    }
-
+    connection.ensure_current().await?;
     let completion_owned = readiness.completion.is_some();
     if config.targets.is_empty() && !completion_owned {
         return Ok(RecallSceneFadeOutcome::Started);
     }
-
-    let (reply, rx) = oneshot::channel();
-    if let Err(error) = lv1.send(Lv1Command::GetState { reply }).await {
-        let error = match error {
-            crate::lv1::Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-            other => AppCommandError::CommandFailed(other.to_string()),
-        };
-        return Err(
-            classify_get_state_failure(runtime_generation, expected_generation, error).await,
-        );
-    }
-    let snapshot = match rx.await {
-        Ok(snapshot) => snapshot,
-        Err(_) => {
-            return Err(classify_get_state_failure(
-                runtime_generation,
-                expected_generation,
-                AppCommandError::ReplyChannelClosed,
-            )
-            .await);
-        }
-    };
-    if let Some(expected_generation) = expected_generation
-        && runtime_generation.current().await != expected_generation
-    {
-        return Err(AppCommandError::StaleGeneration);
-    }
+    let snapshot = connection
+        .request(|reply| Lv1Command::GetState { reply })
+        .await?;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable);
     }
@@ -468,7 +382,6 @@ async fn handle_recall_scene_fade(
     if config.targets.is_empty() {
         start_readiness_barrier(
             state,
-            expected_generation.unwrap_or(state.generation()),
             config.scene.index,
             config.scene.name,
             snapshot.ping_sequence,
@@ -491,22 +404,9 @@ async fn handle_recall_scene_fade(
                 )
             })
             .collect();
-        if let Some(expected_generation) = expected_generation {
-            if !send_batch_if_generation(
-                runtime_generation,
-                lv1,
-                &state.event_bus,
-                expected_generation,
-                writes,
-            )
-            .await
-            {
-                return Err(AppCommandError::StaleGeneration);
-            }
-        } else {
-            send_batch(lv1, &state.event_bus, state.generation(), writes).await;
-        }
+        send_batch(connection, &state.event_bus, writes).await?;
 
+        return connection.if_current(|| {
         for target in &config.targets {
             state.channels.retain(|ch| ch.key != target.key());
             state.fan_out(FadeEvent::ChannelCompleted {
@@ -519,7 +419,6 @@ async fn handle_recall_scene_fade(
         if completion_owned {
             start_readiness_barrier(
                 state,
-                expected_generation.unwrap_or(state.generation()),
                 config.scene.index,
                 config.scene.name,
                 snapshot.ping_sequence,
@@ -527,7 +426,8 @@ async fn handle_recall_scene_fade(
                 readiness,
             );
         }
-        return Ok(RecallSceneFadeOutcome::Started);
+        RecallSceneFadeOutcome::Started
+        }).await.ok_or(AppCommandError::StaleGeneration);
     }
 
     let scene_owns_active_targets = state
@@ -596,7 +496,6 @@ async fn handle_recall_scene_fade(
                 curve: config.curve,
                 duration,
                 started_at: now,
-                expected_generation,
             }));
         }
         if overriding_target_count > 0 {
@@ -610,7 +509,6 @@ async fn handle_recall_scene_fade(
 
     start_readiness_barrier(
         state,
-        expected_generation.unwrap_or(state.generation()),
         config.scene.index,
         config.scene.name,
         snapshot.ping_sequence,
@@ -622,83 +520,37 @@ async fn handle_recall_scene_fade(
 }
 
 async fn handle_wait_for_recall_readiness(
-    runtime_generation: &RuntimeGeneration,
-    lv1: &Lv1ActorHandle,
+    connection: &Lv1Connection,
     state: &mut EngineState,
     scene: crate::fade::types::FadeSceneIdentity,
-    expected_generation: u64,
     readiness: RecallReadinessRequest,
 ) -> Result<(), AppCommandError> {
-    if runtime_generation.current().await != expected_generation {
-        return Err(AppCommandError::StaleGeneration);
-    }
-
-    let (reply, rx) = oneshot::channel();
-    if let Err(error) = lv1.send(Lv1Command::GetState { reply }).await {
-        let error = match error {
-            crate::lv1::Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-            other => AppCommandError::CommandFailed(other.to_string()),
-        };
-        return Err(classify_get_state_failure(
-            runtime_generation,
-            Some(expected_generation),
-            error,
-        )
-        .await);
-    }
-    let snapshot = match rx.await {
-        Ok(snapshot) => snapshot,
-        Err(_) => {
-            return Err(classify_get_state_failure(
-                runtime_generation,
-                Some(expected_generation),
-                AppCommandError::ReplyChannelClosed,
-            )
-            .await);
-        }
-    };
-    if runtime_generation.current().await != expected_generation {
-        return Err(AppCommandError::StaleGeneration);
-    }
+    let snapshot = connection
+        .request(|reply| Lv1Command::GetState { reply })
+        .await?;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable);
     }
-
     start_readiness_barrier(
         state,
-        expected_generation,
         scene.index,
         scene.name,
         snapshot.ping_sequence,
         Instant::now(),
         readiness,
     );
-
     Ok(())
-}
-
-async fn classify_get_state_failure(
-    runtime_generation: &RuntimeGeneration,
-    expected_generation: Option<u64>,
-    failure: AppCommandError,
-) -> AppCommandError {
-    if let Some(expected_generation) = expected_generation
-        && runtime_generation.current().await != expected_generation
-    {
-        return AppCommandError::StaleGeneration;
-    }
-    failure
 }
 
 fn start_readiness_barrier(
     state: &mut EngineState,
-    generation: u64,
     scene_index: i32,
     scene_name: String,
     ping_sequence: u64,
     now: Instant,
     readiness: RecallReadinessRequest,
 ) {
+    let generation = state.generation();
     let readiness_action = if state.is_waiting_for_readiness() {
         "reset"
     } else {
@@ -751,120 +603,21 @@ fn build_parameter_write(
 }
 
 async fn send_batch(
-    lv1: &Lv1ActorHandle,
+    connection: &Lv1Connection,
     event_bus: &AppEventBus,
-    generation: u64,
     writes: Vec<Lv1ParameterWrite>,
-) {
-    if let Err(err) = lv1.send(Lv1Command::WriteBatch(writes)).await {
-        publish_write_failed(event_bus, generation, err);
+) -> Result<(), AppCommandError> {
+    let result = connection.send(Lv1Command::WriteBatch(writes)).await;
+    if let Err(error) = &result
+        && *error != AppCommandError::StaleGeneration
+    {
+        connection.if_current(|| {
+            let reason = error.to_string();
+            tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
+            event_bus.publish_fade(connection.generation(), FadeEvent::WriteFailed { reason });
+        }).await;
     }
-}
-
-fn publish_write_failed(
-    event_bus: &AppEventBus,
-    generation: u64,
-    error: crate::lv1::Lv1ActorError,
-) {
-    let reason = format!("{error:?}");
-    tracing::error!(event = "fade_write_failed", reason = %reason, "Fade write failed: {reason}");
-    event_bus.publish(AppEvent::Fade {
-        generation,
-        event: FadeEvent::WriteFailed { reason },
-    });
-}
-
-async fn send_batch_if_generation(
-    runtime_generation: &RuntimeGeneration,
-    lv1: &Lv1ActorHandle,
-    event_bus: &AppEventBus,
-    expected_generation: u64,
-    writes: Vec<Lv1ParameterWrite>,
-) -> bool {
-    if runtime_generation.current().await != expected_generation {
-        return false;
-    }
-
-    let permit = match lv1.reserve().await {
-        Ok(permit) => permit,
-        Err(err) => {
-            runtime_generation
-                .if_current(expected_generation, || {
-                    publish_write_failed(event_bus, expected_generation, err);
-                })
-                .await;
-            return false;
-        }
-    };
-
-    runtime_generation
-        .if_current(expected_generation, || {
-            permit.send(Lv1Command::WriteBatch(writes));
-        })
-        .await
-        .is_some()
-}
-
-fn group_writes_by_generation(
-    writes: Vec<PendingWrite>,
-) -> Vec<(Option<u64>, Vec<Lv1ParameterWrite>)> {
-    let mut grouped: Vec<(Option<u64>, Vec<Lv1ParameterWrite>)> = Vec::new();
-
-    for pending_write in writes {
-        let expected_generation = pending_write.expected_generation;
-        let write = pending_write.into_lv1_write();
-        if let Some((generation, batch)) = grouped.last_mut()
-            && *generation == expected_generation
-        {
-            batch.push(write);
-        } else {
-            grouped.push((expected_generation, vec![write]));
-        }
-    }
-
-    grouped
-}
-
-fn complete_successful_targets(
-    state: &mut EngineState,
-    completed_targets: Vec<PendingCompletion>,
-    failed_generations: &[u64],
-) {
-    for completion in completed_targets {
-        if completion
-            .expected_generation
-            .is_some_and(|generation| failed_generations.contains(&generation))
-        {
-            continue;
-        }
-        state.channels.retain(|target| {
-            target.key != completion.key
-                || target.expected_generation != completion.expected_generation
-        });
-        state.fan_out(FadeEvent::ChannelCompleted {
-            group: completion.key.group,
-            channel: completion.key.channel,
-            parameter: completion.key.parameter,
-        });
-    }
-}
-
-fn cancel_generation_owned_targets(state: &mut EngineState, expected_generation: u64) {
-    let mut removed = Vec::new();
-    state.channels.retain(|ch| {
-        let keep = ch.expected_generation != Some(expected_generation);
-        if !keep {
-            removed.push((ch.key.group, ch.key.channel, ch.key.parameter));
-        }
-        keep
-    });
-    for (group, channel, parameter) in removed {
-        state.fan_out(FadeEvent::ChannelCancelled {
-            group,
-            channel,
-            parameter,
-        });
-    }
+    result
 }
 
 fn handle_pan_family_pan_report(
@@ -962,6 +715,7 @@ mod tests {
     use crate::runtime::errors::AppCommandError;
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::test_support::TracingCapture;
+    use tokio::sync::oneshot;
     use tracing::Level;
 
     fn scene(index: i32, name: &str) -> FadeSceneIdentity {
@@ -1000,7 +754,6 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: std::time::Duration::from_millis(1000),
             started_at: Instant::now(),
-            expected_generation: None,
         })
     }
 
@@ -1048,27 +801,12 @@ mod tests {
         engine: &FadeEngineHandle,
         config: FadeConfig,
     ) -> Result<(), AppCommandError> {
-        start_fade_for_generation(engine, config, None).await
-    }
-
-    async fn start_fade_for_generation(
-        engine: &FadeEngineHandle,
-        config: FadeConfig,
-        expected_generation: Option<u64>,
-    ) -> Result<(), AppCommandError> {
-        start_fade_with_behavior(
-            engine,
-            config,
-            expected_generation,
-            SameSceneRecallBehavior::FinishActiveTargets,
-        )
-        .await
+        start_fade_with_behavior(engine, config, SameSceneRecallBehavior::FinishActiveTargets).await
     }
 
     async fn start_fade_with_behavior(
         engine: &FadeEngineHandle,
         config: FadeConfig,
-        expected_generation: Option<u64>,
         same_scene_behavior: SameSceneRecallBehavior,
     ) -> Result<(), AppCommandError> {
         let (reply, rx) = tokio::sync::oneshot::channel();
@@ -1076,7 +814,6 @@ mod tests {
             .send(FadeCommand::RecallSceneFade {
                 config,
                 same_scene_behavior,
-                expected_generation,
                 readiness: RecallReadinessRequest::detached(
                     Instant::now() + Duration::from_secs(5),
                 ),
@@ -1236,7 +973,6 @@ mod tests {
         engine
             .send(FadeCommand::WaitForRecallReadiness {
                 scene: scene(2, "Verse"),
-                expected_generation: 7,
                 readiness: RecallReadinessRequest {
                     deadline,
                     completion: Some(completion),
@@ -1940,730 +1676,370 @@ mod tests {
         );
     }
 
+    struct ConnectionFixture {
+        authority: RuntimeGeneration,
+        bus: AppEventBus,
+        events: tokio::sync::broadcast::Receiver<AppEvent>,
+        engine: FadeEngineHandle,
+        lv1: Lv1ActorHandle,
+        commands: tokio::sync::mpsc::Receiver<Lv1Command>,
+    }
+
+    impl ConnectionFixture {
+        async fn new() -> Self {
+            let authority = RuntimeGeneration::new();
+            authority.set(7).await;
+            let bus = AppEventBus::default();
+            let events = bus.subscribe();
+            let (tx, commands) = tokio::sync::mpsc::channel(1);
+            let lv1 = test_actor_handle(tx);
+            let (engine, task) = build_engine(authority.clone(), bus.clone(), 7, lv1.clone());
+            task.spawn();
+            Self {
+                authority,
+                bus,
+                events,
+                engine,
+                lv1,
+                commands,
+            }
+        }
+
+        async fn request(
+            &self,
+            readiness_only: bool,
+            duration_ms: u64,
+        ) -> oneshot::Receiver<Result<(), AppCommandError>> {
+            let (reply, response) = oneshot::channel();
+            let readiness =
+                RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5));
+            let command = if readiness_only {
+                FadeCommand::WaitForRecallReadiness {
+                    scene: scene(1, "Intro"),
+                    readiness,
+                    reply: Some(reply),
+                }
+            } else {
+                FadeCommand::RecallSceneFade {
+                    config: fade_config(
+                        scene(1, "Intro"),
+                        vec![
+                            FadeTarget {
+                                group: 0,
+                                channel: 0,
+                                parameter: FadeParameter::FaderDb,
+                                target: -12.5,
+                            },
+                            FadeTarget {
+                                group: 0,
+                                channel: 0,
+                                parameter: FadeParameter::Pan,
+                                target: 25.0,
+                            },
+                            FadeTarget {
+                                group: 0,
+                                channel: 0,
+                                parameter: FadeParameter::Width,
+                                target: 1.2,
+                            },
+                        ],
+                        duration_ms,
+                    ),
+                    same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                    readiness,
+                    reply: Some(reply),
+                }
+            };
+            self.engine.send(command).await.unwrap();
+            response
+        }
+
+        async fn snapshot_request(&mut self) -> oneshot::Sender<Lv1StateSnapshot> {
+            match tokio::time::timeout(Duration::from_secs(1), self.commands.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                Lv1Command::GetState { reply } => reply,
+                _ => panic!("expected an LV1 snapshot request"),
+            }
+        }
+
+        async fn fill_mailbox(&self) {
+            self.lv1.send(Lv1Command::WriteBatch(vec![])).await.unwrap();
+        }
+
+        async fn release_mailbox(&mut self, close: bool) {
+            if close {
+                self.commands.close();
+            }
+            assert!(
+                matches!(self.commands.recv().await, Some(Lv1Command::WriteBatch(batch)) if batch.is_empty())
+            );
+        }
+
+        fn release_readiness(&self) {
+            publish_ping(&self.bus, 7, 1);
+            publish_ping(&self.bus, 7, 2);
+        }
+
+        async fn terminal_events(&mut self) -> Vec<FadeEvent> {
+            tokio::time::timeout(Duration::from_secs(1), async {
+                let mut result = Vec::new();
+                loop {
+                    if let AppEvent::Fade { generation, event } = self.events.recv().await.unwrap()
+                    {
+                        assert_eq!(generation, 7);
+                        let terminal =
+                            matches!(event, FadeEvent::FadeAborted | FadeEvent::FadeCompleted);
+                        result.push(event);
+                        if terminal {
+                            return result;
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap()
+        }
+    }
+
     #[tokio::test]
-    async fn stale_expected_generation_is_rejected_before_lv1_state_lookup() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-        runtime_generation.set(3).await;
-
-        let mut state = EngineState::new(event_bus, 0);
-        let result = handle_recall_scene_fade(
-            &runtime_generation,
-            &lv1,
-            &mut state,
-            fade_config(
-                scene(1, "Intro"),
-                vec![FadeTarget {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::FaderDb,
-                    target: -12.5,
-                }],
-                120,
-            ),
-            SameSceneRecallBehavior::FinishActiveTargets,
-            Some(2),
-            RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
-        )
-        .await;
-
-        assert_eq!(result, Err(AppCommandError::StaleGeneration));
-        assert!(lv1_rx.try_recv().is_err());
-        assert!(state.channels.is_empty());
+    async fn old_engine_cannot_adopt_the_current_connections_generation() {
+        let mut fixture = ConnectionFixture::new().await;
+        fixture.authority.advance().await;
+        for readiness_only in [false, true] {
+            assert_eq!(
+                fixture.request(readiness_only, 0).await.await.unwrap(),
+                Err(AppCommandError::StaleGeneration)
+            );
+        }
+        assert!(fixture.commands.try_recv().is_err());
     }
 
     #[tokio::test]
     async fn generation_flip_while_lv1_snapshot_is_pending_is_rejected_after_snapshot() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-        runtime_generation.set(3).await;
-
-        let runtime_generation_for_lv1 = runtime_generation.clone();
-        tokio::spawn(async move {
-            if let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await {
-                runtime_generation_for_lv1.set(4).await;
-                let _ = reply.send(Lv1StateSnapshot {
-                    connection: ConnectionStatus::Connected,
-                    scene: None,
-                    scene_list: vec![],
-                    channels: vec![],
-                    ping_sequence: 0,
-                });
-            }
-        });
-
-        let mut state = EngineState::new(event_bus, 0);
-        let result = handle_recall_scene_fade(
-            &runtime_generation,
-            &lv1,
-            &mut state,
-            fade_config(
-                scene(1, "Intro"),
-                vec![FadeTarget {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::FaderDb,
-                    target: -12.5,
-                }],
-                120,
-            ),
-            SameSceneRecallBehavior::FinishActiveTargets,
-            Some(3),
-            RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
-        )
-        .await;
-
-        assert_eq!(result, Err(AppCommandError::StaleGeneration));
-        assert!(state.channels.is_empty());
+        for readiness_only in [false, true] {
+            let mut fixture = ConnectionFixture::new().await;
+            let result = fixture.request(readiness_only, 0).await;
+            let reply = fixture.snapshot_request().await;
+            fixture.authority.advance().await;
+            reply.send(connected_snapshot(0, vec![])).unwrap();
+            assert_eq!(result.await.unwrap(), Err(AppCommandError::StaleGeneration));
+            assert!(fixture.commands.try_recv().is_err());
+        }
     }
 
     #[tokio::test]
-    async fn generation_flip_while_lv1_state_send_is_pending_classifies_recall_as_stale() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(3).await;
-        let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-        lv1.send(Lv1Command::WriteBatch(vec![])).await.unwrap();
-
-        let fade_task = tokio::spawn({
-            let runtime_generation = runtime_generation.clone();
-            async move {
-                let mut state = EngineState::new(event_bus, 3);
-                handle_recall_scene_fade(
-                    &runtime_generation,
-                    &lv1,
-                    &mut state,
-                    fade_config(
-                        scene(1, "Intro"),
-                        vec![FadeTarget {
-                            group: 0,
-                            channel: 0,
-                            parameter: FadeParameter::FaderDb,
-                            target: -12.5,
-                        }],
-                        120,
-                    ),
-                    SameSceneRecallBehavior::FinishActiveTargets,
-                    Some(3),
-                    RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
-                )
-                .await
+    async fn pending_snapshot_admission_cannot_cross_generations() {
+        for readiness_only in [false, true] {
+            for close in [false, true] {
+                let mut fixture = ConnectionFixture::new().await;
+                fixture.fill_mailbox().await;
+                let result = fixture.request(readiness_only, 0).await;
+                tokio::task::yield_now().await;
+                fixture.authority.advance().await;
+                fixture.release_mailbox(close).await;
+                assert_eq!(result.await.unwrap(), Err(AppCommandError::StaleGeneration));
+                assert!(fixture.commands.try_recv().is_err());
             }
-        });
-        tokio::task::yield_now().await;
-
-        runtime_generation.set(4).await;
-        drop(lv1_rx);
-
-        assert_eq!(
-            fade_task.await.unwrap(),
-            Err(AppCommandError::StaleGeneration)
-        );
+        }
     }
 
     #[tokio::test]
-    async fn generation_flip_before_lv1_reply_closes_classifies_recall_as_stale() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(3).await;
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-
-        let runtime_generation_for_lv1 = runtime_generation.clone();
-        tokio::spawn(async move {
-            let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
-                panic!("expected LV1 state request");
-            };
-            runtime_generation_for_lv1.set(4).await;
-            drop(reply);
-        });
-
-        let mut state = EngineState::new(event_bus, 3);
-        let result = handle_recall_scene_fade(
-            &runtime_generation,
-            &lv1,
-            &mut state,
-            fade_config(
-                scene(1, "Intro"),
-                vec![FadeTarget {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::FaderDb,
-                    target: -12.5,
-                }],
-                120,
-            ),
-            SameSceneRecallBehavior::FinishActiveTargets,
-            Some(3),
-            RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
-        )
-        .await;
-
-        assert_eq!(result, Err(AppCommandError::StaleGeneration));
-        assert!(state.channels.is_empty());
+    async fn closed_snapshot_reply_reports_staleness_only_after_revocation() {
+        for readiness_only in [false, true] {
+            for revoked in [false, true] {
+                let mut fixture = ConnectionFixture::new().await;
+                let result = fixture.request(readiness_only, 0).await;
+                let reply = fixture.snapshot_request().await;
+                if revoked {
+                    fixture.authority.advance().await;
+                }
+                drop(reply);
+                let expected = if revoked {
+                    AppCommandError::StaleGeneration
+                } else {
+                    AppCommandError::ReplyChannelClosed
+                };
+                assert_eq!(result.await.unwrap(), Err(expected));
+                assert!(fixture.commands.try_recv().is_err());
+            }
+        }
     }
 
     #[tokio::test]
     async fn same_generation_disconnected_snapshot_blocks_zero_duration_recall_write() {
-        let disconnected_snapshot = Lv1StateSnapshot {
-            connection: ConnectionStatus::Disconnected,
-            scene: None,
-            scene_list: vec![],
-            channels: vec![],
-            ping_sequence: 12,
-        };
-        let (_event_bus, engine, mut write_rx) =
-            spawn_runtime_for_ping_gate_test(vec![disconnected_snapshot]).await;
-
-        let result = start_fade_for_generation(
-            &engine,
-            fade_config(
-                scene(1, "Intro"),
-                vec![FadeTarget {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::FaderDb,
-                    target: -12.5,
-                }],
-                0,
-            ),
-            Some(7),
-        )
-        .await;
-
-        assert_eq!(result, Err(AppCommandError::Lv1Unavailable));
-        assert_no_write(&mut write_rx).await;
+        let mut fixture = ConnectionFixture::new().await;
+        let result = fixture.request(false, 0).await;
+        let mut snapshot = connected_snapshot(0, vec![]);
+        snapshot.connection = ConnectionStatus::Disconnected;
+        fixture.snapshot_request().await.send(snapshot).unwrap();
+        assert_eq!(result.await.unwrap(), Err(AppCommandError::Lv1Unavailable));
+        assert!(fixture.commands.try_recv().is_err());
     }
 
     #[tokio::test]
-    async fn zero_duration_recall_fade_uses_generation_checked_write_batch() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-        runtime_generation.set(4).await;
-
-        let (write_tx, write_rx) = tokio::sync::oneshot::channel::<()>();
-        let write_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(write_tx)));
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                if let Lv1Command::WriteBatch(_) = command
-                    && let Some(tx) = write_tx.lock().unwrap().take()
-                {
-                    let _ = tx.send(());
-                    break;
-                }
-            }
-        });
-
-        let mut state = EngineState::new(event_bus, 0);
-        state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(17, "Verse"),
-            key: FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -12.5,
-            }
-            .key(),
-            start_value: -20.0,
-            target_value: -12.5,
-            curve: FadeCurve::Linear,
-            duration: std::time::Duration::from_millis(0),
-            started_at: Instant::now(),
-            expected_generation: Some(3),
-        }));
-
-        let sent = send_batch_if_generation(
-            &runtime_generation,
-            &lv1,
-            &state.event_bus,
-            3,
-            vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
-        )
-        .await;
-        assert!(!sent);
+    async fn zero_duration_write_waiting_for_capacity_is_rejected_after_revocation() {
+        let capture = TracingCapture::new();
+        let _guard = capture.install();
+        for close in [false, true] {
+            let mut fixture = ConnectionFixture::new().await;
+            let result = fixture.request(false, 0).await;
+            let reply = fixture.snapshot_request().await;
+            fixture.fill_mailbox().await;
+            reply.send(connected_snapshot(0, vec![])).unwrap();
+            tokio::task::yield_now().await;
+            fixture.authority.advance().await;
+            fixture.release_mailbox(close).await;
+            assert_eq!(result.await.unwrap(), Err(AppCommandError::StaleGeneration));
+            assert!(fixture.commands.try_recv().is_err());
+            assert!(
+                !std::iter::from_fn(|| fixture.events.try_recv().ok()).any(|event| matches!(
+                    event,
+                    AppEvent::Fade {
+                        event: FadeEvent::ChannelCompleted { .. }
+                            | FadeEvent::FadeCompleted
+                            | FadeEvent::WriteFailed { .. },
+                        ..
+                    }
+                ))
+            );
+        }
         assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), write_rx)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn unowned_write_failure_uses_engine_generation() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
-        drop(lv1_rx);
-        let lv1 = test_actor_handle(lv1_tx);
-
-        send_batch(
-            &lv1,
-            &event_bus,
-            7,
-            vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
-        )
-        .await;
-
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            AppEvent::Fade {
-                generation: 7,
-                event: FadeEvent::WriteFailed { .. }
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn generation_owned_write_failure_uses_expected_generation() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(7).await;
-        let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
-        drop(lv1_rx);
-        let lv1 = test_actor_handle(lv1_tx);
-
-        assert!(
-            !send_batch_if_generation(
-                &runtime_generation,
-                &lv1,
-                &event_bus,
-                7,
-                vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
-            )
-            .await
-        );
-
-        assert!(matches!(
-            events.recv().await.unwrap(),
-            AppEvent::Fade {
-                generation: 7,
-                event: FadeEvent::WriteFailed { .. }
-            }
-        ));
-    }
-
-    #[tokio::test]
-    async fn complete_fade_is_idempotent() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus.clone(), 0);
-        let mut tick_interval = None;
-        let mut emitted = false;
-
-        complete_fade(&mut tick_interval, &mut state, &mut emitted);
-        complete_fade(&mut tick_interval, &mut state, &mut emitted);
-        let event = tokio::time::timeout(std::time::Duration::from_millis(100), events.recv())
-            .await
-            .unwrap()
-            .unwrap();
-
-        assert!(matches!(
-            event,
-            AppEvent::Fade {
-                generation: 0,
-                event: FadeEvent::FadeCompleted
-            }
-        ));
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(50), events.recv())
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn timed_recall_fade_tick_uses_generation_checked_write_batch() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-        runtime_generation.set(3).await;
-
-        let (write_tx, write_rx) = tokio::sync::oneshot::channel::<()>();
-        let write_tx = std::sync::Arc::new(std::sync::Mutex::new(Some(write_tx)));
-        tokio::spawn(async move {
-            while let Some(command) = lv1_rx.recv().await {
-                if let Lv1Command::WriteBatch(_) = command
-                    && let Some(tx) = write_tx.lock().unwrap().take()
-                {
-                    let _ = tx.send(());
-                    break;
-                }
-            }
-        });
-
-        let mut state = EngineState::new(event_bus, 0);
-        state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(17, "Verse"),
-            key: FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -12.5,
-            }
-            .key(),
-            start_value: -20.0,
-            target_value: -12.5,
-            curve: FadeCurve::Linear,
-            duration: std::time::Duration::from_millis(120),
-            started_at: Instant::now(),
-            expected_generation: Some(3),
-        }));
-
-        runtime_generation.set(4).await;
-        let writes = vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)];
-        let sent =
-            send_batch_if_generation(&runtime_generation, &lv1, &state.event_bus, 3, writes).await;
-        assert!(!sent);
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(100), write_rx)
-                .await
-                .is_err()
-        );
-    }
-
-    #[test]
-    fn same_channel_different_parameter_generations_keep_ordered_batches() {
-        let grouped = group_writes_by_generation(vec![
-            PendingWrite {
-                key: FadeTargetKey {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::FaderDb,
-                },
-                value: -12.5,
-                expected_generation: Some(3),
-            },
-            PendingWrite {
-                key: FadeTargetKey {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::Pan,
-                },
-                value: 25.0,
-                expected_generation: None,
-            },
-            PendingWrite {
-                key: FadeTargetKey {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::Balance,
-                },
-                value: -10.0,
-                expected_generation: Some(4),
-            },
-        ]);
-
-        assert_eq!(
-            grouped,
-            vec![
-                (
-                    Some(3),
-                    vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
-                ),
-                (
-                    None,
-                    vec![build_parameter_write(0, 0, FadeParameter::Pan, 25.0)],
-                ),
-                (
-                    Some(4),
-                    vec![build_parameter_write(0, 0, FadeParameter::Balance, -10.0)],
-                ),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn generation_flip_while_write_reservation_is_pending_does_not_send_stale_write() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(3).await;
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-
-        lv1.send(Lv1Command::WriteBatch(vec![build_parameter_write(
-            0,
-            1,
-            FadeParameter::FaderDb,
-            -8.0,
-        )]))
-        .await
-        .unwrap();
-
-        let write_task = tokio::spawn({
-            let runtime_generation = runtime_generation.clone();
-            let lv1 = lv1.clone();
-            let event_bus = event_bus.clone();
-            async move {
-                send_batch_if_generation(
-                    &runtime_generation,
-                    &lv1,
-                    &event_bus,
-                    3,
-                    vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
-                )
-                .await
-            }
-        });
-        tokio::task::yield_now().await;
-
-        runtime_generation.set(4).await;
-        assert!(matches!(
-            lv1_rx.recv().await,
-            Some(Lv1Command::WriteBatch(_))
-        ));
-
-        assert!(!write_task.await.unwrap());
-        assert!(lv1_rx.try_recv().is_err());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn stale_generation_failed_reservation_is_silent() {
-        let captured = TracingCapture::new();
-        let _guard = captured.install();
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(3).await;
-        let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-
-        lv1.send(Lv1Command::WriteBatch(vec![build_parameter_write(
-            0,
-            1,
-            FadeParameter::FaderDb,
-            -8.0,
-        )]))
-        .await
-        .unwrap();
-
-        let write_task = tokio::spawn({
-            let runtime_generation = runtime_generation.clone();
-            let lv1 = lv1.clone();
-            let event_bus = event_bus.clone();
-            async move {
-                send_batch_if_generation(
-                    &runtime_generation,
-                    &lv1,
-                    &event_bus,
-                    3,
-                    vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)],
-                )
-                .await
-            }
-        });
-        tokio::task::yield_now().await;
-
-        runtime_generation.set(4).await;
-        drop(lv1_rx);
-
-        assert!(!write_task.await.unwrap());
-        assert!(events.try_recv().is_err());
-        assert!(
-            captured
+            capture
                 .matching("fade_write_failed", Level::ERROR)
                 .is_empty()
         );
+        assert!(capture.matching("fade_completed", Level::INFO).is_empty());
     }
 
-    #[tokio::test]
-    async fn stale_checked_write_cancels_generation_owned_targets() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-
-        let mut state = EngineState::new(event_bus, 0);
-        state.channels.push(ActiveTarget::new(ActiveTargetInit {
-            scene: scene(17, "Verse"),
-            key: FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -12.5,
-            }
-            .key(),
-            start_value: -20.0,
-            target_value: -12.5,
-            curve: FadeCurve::Linear,
-            duration: std::time::Duration::from_millis(120),
-            started_at: Instant::now(),
-            expected_generation: Some(3),
-        }));
-
-        runtime_generation.set(4).await;
-        let writes = vec![build_parameter_write(0, 0, FadeParameter::FaderDb, -12.5)];
-        let sent =
-            send_batch_if_generation(&runtime_generation, &lv1, &state.event_bus, 3, writes).await;
-        assert!(!sent);
-        cancel_generation_owned_targets(&mut state, 3);
-
-        assert!(state.channels.is_empty());
-        assert!(lv1_rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn failed_generation_cancellation_keeps_done_indices_and_events_consistent() {
-        fn target(
-            channel: i32,
-            duration: Duration,
-            expected_generation: Option<u64>,
-        ) -> ActiveTarget {
-            ActiveTarget::new(ActiveTargetInit {
-                scene: scene(17, "Verse"),
-                key: FadeTarget {
-                    group: 0,
-                    channel,
-                    parameter: FadeParameter::FaderDb,
-                    target: -12.5,
-                }
-                .key(),
-                start_value: -20.0,
-                target_value: -12.5,
-                curve: FadeCurve::Linear,
-                duration,
-                started_at: Instant::now(),
-                expected_generation,
-            })
-        }
-
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let mut state = EngineState::new(event_bus, 0);
-        state.channels = vec![
-            target(0, Duration::ZERO, Some(3)),
-            target(1, Duration::from_secs(1), Some(3)),
-            target(2, Duration::ZERO, None),
-            target(3, Duration::from_secs(1), None),
-        ];
-        let completed_targets = vec![
-            PendingCompletion {
-                key: state.channels[0].key.clone(),
-                expected_generation: Some(3),
-            },
-            PendingCompletion {
-                key: state.channels[2].key.clone(),
-                expected_generation: None,
-            },
-        ];
-
-        complete_successful_targets(&mut state, completed_targets, &[3]);
-        cancel_generation_owned_targets(&mut state, 3);
-
-        assert_eq!(state.channels.len(), 1);
-        assert_eq!(state.channels[0].key.channel, 3);
-        let events: Vec<_> = std::iter::from_fn(|| events.try_recv().ok()).collect();
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                AppEvent::Fade {
-                    event: FadeEvent::ChannelCompleted { channel: 2, .. },
-                    ..
-                }
-            )
-        }));
-        assert!(!events.iter().any(|event| {
-            matches!(
-                event,
-                AppEvent::Fade {
-                    event: FadeEvent::ChannelCompleted { channel: 0, .. },
-                    ..
-                }
-            )
-        }));
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                AppEvent::Fade {
-                    event: FadeEvent::ChannelCancelled { channel: 0, .. },
-                    ..
-                }
-            )
-        }));
-        assert!(events.iter().any(|event| {
-            matches!(
-                event,
-                AppEvent::Fade {
-                    event: FadeEvent::ChannelCancelled { channel: 1, .. },
-                    ..
-                }
-            )
-        }));
-    }
-
-    #[tokio::test]
-    async fn generation_flip_while_lv1_state_send_is_pending_classifies_readiness_as_stale() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(3).await;
-        let (lv1_tx, lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
-        lv1.send(Lv1Command::WriteBatch(vec![])).await.unwrap();
-
-        let readiness_task = tokio::spawn({
-            let runtime_generation = runtime_generation.clone();
-            async move {
-                let mut state = EngineState::new(event_bus, 3);
-                handle_wait_for_recall_readiness(
-                    &runtime_generation,
-                    &lv1,
-                    &mut state,
-                    scene(2, "Verse"),
-                    3,
-                    RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
-                )
-                .await
-            }
-        });
+    async fn assert_failed_tick(revoke: bool, close: bool) {
+        let capture = TracingCapture::new();
+        let _guard = capture.install();
+        let mut fixture = ConnectionFixture::new().await;
+        let result = fixture.request(false, 100).await;
+        fixture
+            .snapshot_request()
+            .await
+            .send(connected_snapshot(0, vec![]))
+            .unwrap();
+        assert_eq!(result.await.unwrap(), Ok(()));
+        fixture.fill_mailbox().await;
+        fixture.release_readiness();
         tokio::task::yield_now().await;
-
-        runtime_generation.set(4).await;
-        drop(lv1_rx);
-
         assert_eq!(
-            readiness_task.await.unwrap(),
-            Err(AppCommandError::StaleGeneration)
+            capture
+                .matching("fade_post_recall_ping_released", Level::DEBUG)
+                .len(),
+            1
         );
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        if revoke {
+            fixture.authority.advance().await;
+        }
+        fixture.release_mailbox(close).await;
+        let events = fixture.terminal_events().await;
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, FadeEvent::FadeAborted))
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            FadeEvent::ChannelCompleted { .. } | FadeEvent::FadeCompleted
+        )));
+        for parameter in [
+            FadeParameter::FaderDb,
+            FadeParameter::Pan,
+            FadeParameter::Width,
+        ] {
+            assert!(events.iter().any(|event| matches!(event, FadeEvent::ChannelCancelled { parameter: cancelled, .. } if *cancelled == parameter)));
+        }
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FadeEvent::WriteFailed { .. }))
+                .count(),
+            usize::from(!revoke)
+        );
+        assert_eq!(
+            capture.matching("fade_write_failed", Level::ERROR).len(),
+            usize::from(!revoke)
+        );
+        assert!(capture.matching("fade_completed", Level::INFO).is_empty());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(fixture.commands.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn generation_flip_before_lv1_reply_closes_classifies_readiness_as_stale() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(3).await;
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
-        let lv1 = test_actor_handle(lv1_tx);
+    #[tokio::test(start_paused = true)]
+    async fn timed_write_waiting_for_capacity_is_rejected_after_revocation() {
+        assert_failed_tick(true, false).await;
+    }
 
-        let runtime_generation_for_lv1 = runtime_generation.clone();
-        tokio::spawn(async move {
-            let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
-                panic!("expected LV1 state request");
-            };
-            runtime_generation_for_lv1.set(4).await;
-            drop(reply);
-        });
+    #[tokio::test(start_paused = true)]
+    async fn stale_generation_failed_reservation_is_silent() {
+        assert_failed_tick(true, true).await;
+    }
 
-        let mut state = EngineState::new(event_bus, 3);
-        let result = handle_wait_for_recall_readiness(
-            &runtime_generation,
-            &lv1,
-            &mut state,
-            scene(2, "Verse"),
-            3,
-            RecallReadinessRequest::detached(Instant::now() + Duration::from_secs(5)),
-        )
-        .await;
+    #[tokio::test(start_paused = true)]
+    async fn current_write_failure_cancels_all_targets_without_reporting_completion() {
+        assert_failed_tick(false, true).await;
+    }
 
-        assert_eq!(result, Err(AppCommandError::StaleGeneration));
-        assert!(!state.is_waiting_for_readiness());
+    #[tokio::test(start_paused = true)]
+    async fn same_connection_batch_preserves_parameter_order_and_completes_once() {
+        let mut fixture = ConnectionFixture::new().await;
+        let result = fixture.request(false, 100).await;
+        fixture
+            .snapshot_request()
+            .await
+            .send(connected_snapshot(0, vec![]))
+            .unwrap();
+        assert_eq!(result.await.unwrap(), Ok(()));
+        fixture.release_readiness();
+        tokio::time::advance(Duration::from_millis(100)).await;
+        let command = fixture.commands.recv().await.unwrap();
+        let Lv1Command::WriteBatch(batch) = command else {
+            panic!("expected final values");
+        };
+        assert!(
+            batch
+                .iter()
+                .all(|write| write.group == 0 && write.channel == 0)
+        );
+        assert_eq!(
+            batch
+                .into_iter()
+                .map(|write| (write.parameter, write.value))
+                .collect::<Vec<_>>(),
+            vec![
+                (Lv1WriteParameter::FaderDb, -12.5),
+                (Lv1WriteParameter::Pan, 25.0),
+                (Lv1WriteParameter::Width, 1.2),
+            ]
+        );
+        let events = fixture.terminal_events().await;
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, FadeEvent::ChannelCompleted { .. }))
+                .count(),
+            3
+        );
+        assert!(matches!(events.last(), Some(FadeEvent::FadeCompleted)));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(fixture.commands.try_recv().is_err());
+        assert!(
+            !std::iter::from_fn(|| fixture.events.try_recv().ok()).any(|event| matches!(
+                event,
+                AppEvent::Fade {
+                    event: FadeEvent::FadeCompleted,
+                    ..
+                }
+            ))
+        );
     }
 
     #[tokio::test(start_paused = true)]
@@ -2676,7 +2052,6 @@ mod tests {
         engine
             .send(FadeCommand::WaitForRecallReadiness {
                 scene: scene(2, "Verse"),
-                expected_generation: 7,
                 readiness: RecallReadinessRequest {
                     deadline: Instant::now() + Duration::from_secs(5),
                     completion: Some(completion),
@@ -2708,7 +2083,6 @@ mod tests {
         engine
             .send(FadeCommand::WaitForRecallReadiness {
                 scene: scene(1, "Intro"),
-                expected_generation: 7,
                 readiness: RecallReadinessRequest {
                     deadline: Instant::now() + Duration::from_secs(5),
                     completion: Some(first_completion),
@@ -2722,7 +2096,6 @@ mod tests {
         engine
             .send(FadeCommand::WaitForRecallReadiness {
                 scene: scene(2, "Verse"),
-                expected_generation: 7,
                 readiness: RecallReadinessRequest::detached(
                     Instant::now() + Duration::from_secs(5),
                 ),
@@ -2750,7 +2123,6 @@ mod tests {
         engine
             .send(FadeCommand::WaitForRecallReadiness {
                 scene: scene(2, "Verse"),
-                expected_generation: 7,
                 readiness: RecallReadinessRequest {
                     deadline: Instant::now() + Duration::from_millis(200),
                     completion: Some(completion),
@@ -2797,7 +2169,6 @@ mod tests {
                     1_000,
                 ),
                 same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-                expected_generation: Some(7),
                 readiness: RecallReadinessRequest {
                     deadline: Instant::now() + Duration::from_millis(200),
                     completion: Some(completion),
@@ -2913,7 +2284,6 @@ mod tests {
             .send(FadeCommand::RecallSceneFade {
                 config: fade_config(scene(2, "Verse"), vec![], 1_000),
                 same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-                expected_generation: Some(7),
                 readiness: RecallReadinessRequest {
                     deadline: Instant::now() + Duration::from_secs(5),
                     completion: Some(completion),
@@ -2942,7 +2312,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -2954,7 +2324,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3025,7 +2394,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3037,7 +2406,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3072,7 +2440,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3084,7 +2452,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3123,7 +2490,7 @@ mod tests {
         .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3135,12 +2502,11 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3152,7 +2518,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3187,7 +2552,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3199,7 +2564,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3229,7 +2593,7 @@ mod tests {
             )])
             .await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3241,7 +2605,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3296,7 +2659,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -3328,7 +2691,6 @@ mod tests {
                 ],
                 5_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3422,7 +2784,7 @@ mod tests {
         .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Scene A"),
@@ -3434,14 +2796,13 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
 
         tokio::time::advance(Duration::from_secs(4)).await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(2, "Scene B"),
@@ -3453,7 +2814,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3475,7 +2835,7 @@ mod tests {
         ])
         .await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Scene A"),
@@ -3487,7 +2847,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3496,7 +2855,7 @@ mod tests {
             event: Lv1Event::PingReceived { sequence: 41 },
         });
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(2, "Scene B"),
@@ -3508,7 +2867,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -3565,7 +2923,7 @@ mod tests {
             1_000,
         );
 
-        start_fade_for_generation(&engine, scene_a_config.clone(), Some(7))
+        start_fade(&engine, scene_a_config.clone())
             .await
             .expect("Scene A recall should validate");
         assert_no_write(&mut write_rx).await;
@@ -3577,7 +2935,7 @@ mod tests {
         assert!(scene_a_running.iter().any(|write| write.channel == 1));
         while write_rx.try_recv().is_ok() {}
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(18, "Chorus"),
@@ -3589,7 +2947,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .expect("Scene B recall should validate");
@@ -3610,7 +2967,7 @@ mod tests {
         );
         while write_rx.try_recv().is_ok() {}
 
-        start_fade_for_generation(&engine, scene_a_config, Some(7))
+        start_fade(&engine, scene_a_config)
             .await
             .expect("repeated Scene A recall should validate");
         assert_no_write(&mut write_rx).await;
@@ -3704,7 +3061,7 @@ mod tests {
             1_000,
         );
 
-        start_fade_for_generation(&engine, repeated_scene_a.clone(), Some(7))
+        start_fade(&engine, repeated_scene_a.clone())
             .await
             .expect("initial Scene A recall should validate");
         publish_ping(&event_bus, 7, 41);
@@ -3716,7 +3073,7 @@ mod tests {
         tokio::task::yield_now().await;
         while write_rx.try_recv().is_ok() {}
 
-        start_fade_for_generation(&engine, repeated_scene_a, Some(7))
+        start_fade(&engine, repeated_scene_a)
             .await
             .expect("repeated Scene A recall should validate");
         publish_ping(&event_bus, 7, 43);
@@ -3759,9 +3116,7 @@ mod tests {
         ])
         .await;
 
-        start_fade_for_generation(&engine, config.clone(), Some(7))
-            .await
-            .unwrap();
+        start_fade(&engine, config.clone()).await.unwrap();
         publish_ping(&event_bus, 7, 41);
         publish_ping(&event_bus, 7, 42);
         tokio::time::advance(Duration::from_millis(250)).await;
@@ -3776,7 +3131,6 @@ mod tests {
         start_fade_with_behavior(
             &engine,
             config,
-            Some(7),
             SameSceneRecallBehavior::OverrideMatchingTargets,
         )
         .await
@@ -3862,9 +3216,7 @@ mod tests {
         ])
         .await;
 
-        start_fade_for_generation(&engine, initial, Some(7))
-            .await
-            .unwrap();
+        start_fade(&engine, initial).await.unwrap();
         publish_ping(&event_bus, 7, 41);
         publish_ping(&event_bus, 7, 42);
         tokio::time::advance(Duration::from_millis(200)).await;
@@ -3874,7 +3226,6 @@ mod tests {
         start_fade_with_behavior(
             &engine,
             reduced,
-            Some(7),
             SameSceneRecallBehavior::OverrideMatchingTargets,
         )
         .await
@@ -3934,18 +3285,14 @@ mod tests {
         ])
         .await;
 
-        start_fade_for_generation(&engine, initial, Some(7))
-            .await
-            .unwrap();
+        start_fade(&engine, initial).await.unwrap();
         publish_ping(&event_bus, 7, 41);
         publish_ping(&event_bus, 7, 42);
         tokio::time::advance(Duration::from_millis(200)).await;
         let _ = next_write_batch(&mut write_rx).await;
         while write_rx.try_recv().is_ok() {}
 
-        start_fade_for_generation(&engine, reduced, Some(7))
-            .await
-            .unwrap();
+        start_fade(&engine, reduced).await.unwrap();
         publish_ping(&event_bus, 7, 43);
         publish_ping(&event_bus, 7, 44);
         tokio::time::advance(Duration::from_millis(100)).await;
@@ -3996,7 +3343,7 @@ mod tests {
             1_000,
         );
 
-        start_fade_for_generation(&engine, repeated_scene_a.clone(), Some(7))
+        start_fade(&engine, repeated_scene_a.clone())
             .await
             .expect("initial Scene A recall should validate");
 
@@ -4010,11 +3357,11 @@ mod tests {
             }],
             1_000,
         );
-        start_fade_for_generation(&engine, scene_b, Some(7))
+        start_fade(&engine, scene_b)
             .await
             .expect("Scene B recall should validate");
 
-        start_fade_for_generation(&engine, repeated_scene_a, Some(7))
+        start_fade(&engine, repeated_scene_a)
             .await
             .expect("repeated Scene A recall should validate");
         event_bus.publish(AppEvent::Lv1 {
@@ -4105,7 +3452,7 @@ mod tests {
         ];
         let (event_bus, engine, mut write_rx) = spawn_runtime_for_ping_gate_test(snapshots).await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Scene A"),
@@ -4125,7 +3472,6 @@ mod tests {
                 ],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4148,7 +3494,7 @@ mod tests {
             .expect("Scene A's unrelated target should write")
             .value;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(2, "Scene B"),
@@ -4160,7 +3506,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4231,7 +3576,7 @@ mod tests {
         .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -4243,7 +3588,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4270,7 +3614,7 @@ mod tests {
         ])
         .await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Scene A"),
@@ -4282,13 +3626,12 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
         tokio::time::advance(Duration::from_millis(250)).await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(2, "Scene B"),
@@ -4300,7 +3643,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4340,7 +3682,7 @@ mod tests {
             )])
             .await;
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -4352,7 +3694,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4396,7 +3737,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -4408,7 +3749,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4457,7 +3797,7 @@ mod tests {
             .await;
         let mut events = event_bus.subscribe();
 
-        start_fade_for_generation(
+        start_fade(
             &engine,
             fade_config(
                 scene(1, "Intro"),
@@ -4469,7 +3809,6 @@ mod tests {
                 }],
                 1_000,
             ),
-            Some(7),
         )
         .await
         .unwrap();
@@ -4540,7 +3879,7 @@ mod tests {
         .await;
 
         for (scene_index, scene_name) in [(1, "Intro"), (2, "Verse")] {
-            start_fade_for_generation(
+            start_fade(
                 &engine,
                 fade_config(
                     scene(scene_index, scene_name),
@@ -4552,7 +3891,6 @@ mod tests {
                     }],
                     1_000,
                 ),
-                Some(7),
             )
             .await
             .unwrap();
@@ -4636,10 +3974,10 @@ mod tests {
             1_000,
         );
 
-        start_fade_for_generation(&engine, repeated_scene.clone(), Some(7))
+        start_fade(&engine, repeated_scene.clone())
             .await
             .expect("initial Scene A recall should validate");
-        start_fade_for_generation(&engine, repeated_scene, Some(7))
+        start_fade(&engine, repeated_scene)
             .await
             .expect("repeated Scene A recall should validate");
 
@@ -4744,16 +4082,11 @@ mod tests {
             1_000,
         );
 
-        start_fade_for_generation(&engine, chorus, Some(7))
-            .await
-            .unwrap();
-        start_fade_for_generation(&engine, verse, Some(7))
-            .await
-            .unwrap();
+        start_fade(&engine, chorus).await.unwrap();
+        start_fade(&engine, verse).await.unwrap();
         start_fade_with_behavior(
             &engine,
             override_verse,
-            Some(7),
             SameSceneRecallBehavior::OverrideMatchingTargets,
         )
         .await

@@ -58,7 +58,7 @@ LV1 and Fade facts are generation-bound and consumers ignore stale generations. 
 
 Direct peers are intentional:
 
-- `FadeEngine` requires its `Lv1ActorHandle` when constructed and sends `Lv1Command::WriteBatch` directly. This immutable, generation-scoped dependency has no optional peer slot, installation step, or peer mutex.
+- `FadeEngine` binds its LV1 handle and generation authority once at construction in an `Lv1Connection`. The client fences mailbox admission after capacity waits and rechecks replies before returning them. It never retargets itself; there is no optional peer slot, installation step, or peer mutex.
 - `Scenes` receives the active generation's `Lv1ActorHandle` and `FadeEngineHandle` after lifecycle acceptance.
 - `Show` holds the app-lifetime document-owner endpoint and the current LV1 peer only while connected; it has no Cue Lists peer.
 - Scenes and Cue Lists have separate bounded command endpoints, processed by the same app-lifetime owner. Neither sends mailbox requests to the other.
@@ -84,6 +84,8 @@ Scenes owns an eight-request FIFO for ASC-originated explicit recalls. Each call
 The in-flight recall owns its Fade readiness receiver directly. The Scenes event loop polls that receiver alongside commands and LV1 facts; canceling the recall drops the receiver. No detached completion-forwarding task or intermediate completion queue survives cancellation. Skipped and blocked observations share the same readiness handoff while retaining distinct diagnostic outcomes.
 
 A recall is validated with fresh LV1 state, generation, lockout, exact scene index/name, linked config, live topology, scopes, and stored targets before Fade is admitted. A genuinely blocked, skipped, or disabled pre-admission recall does not abort an active fade. Once a recall is validated and admitted—including no-target, disabled-scope, or zero-duration cases—it enters the readiness protocol; a readiness timeout aborts paused fades and cancels queued recall intent.
+
+Each Fade engine belongs to exactly one connection generation. Commands and targets carry no independent generation, so a tick produces one checked write batch rather than grouping targets by generation. Rejected writes cancel all its targets without reporting successful completion. Successful start/completion publication is also generation-fenced after awaited requests or writes.
 
 A repeated exact-scene recall is identified by the exact LV1 index/name retained with active targets. With same-scene finishing enabled, matching active targets finish after readiness. With it disabled, matching targets restart from their current interpolated or live values for the configured full duration. Both modes use the same generation-wide two-ping readiness barrier.
 

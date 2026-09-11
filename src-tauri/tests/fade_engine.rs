@@ -237,7 +237,6 @@ async fn start_fade(engine: &FadeEngineHandle, config: FadeConfig) -> Result<(),
         .send(FadeCommand::RecallSceneFade {
             config,
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + std::time::Duration::from_secs(5),
             ),

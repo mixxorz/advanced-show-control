@@ -1624,7 +1624,6 @@ async fn process_scene_observation(
                 permit.send(FadeCommand::RecallSceneFade {
                     config: fade_config,
                     same_scene_behavior,
-                    expected_generation: Some(generation),
                     readiness,
                     reply: Some(reply),
                 });
@@ -1751,7 +1750,6 @@ async fn process_scene_observation(
                         index: observation.scene.index,
                         name: observation.scene.name.clone(),
                     },
-                    expected_generation: generation,
                     readiness,
                     reply: Some(reply),
                 });
@@ -7285,19 +7283,19 @@ mod tests {
             loop {
                 tokio::select! {
                     command = command_rx.recv() => match command {
-                        Some(FadeCommand::RecallSceneFade { config, expected_generation, readiness: request, reply, .. }) => {
+                        Some(FadeCommand::RecallSceneFade { config, readiness: request, reply, .. }) => {
                             let _ = seen_tx.send(QueueFadeCommand::Recall { duration_ms: config.duration_ms }).await;
                             if let Some(reply) = reply {
                                 let _ = reply.send(Ok(()));
                             }
-                            readiness = request.completion.map(|completion| (expected_generation.unwrap_or(1), 0, 0, completion));
+                            readiness = request.completion.map(|completion| (1, 0, 0, completion));
                         }
-                        Some(FadeCommand::WaitForRecallReadiness { scene: _, expected_generation, readiness: request, reply }) => {
+                        Some(FadeCommand::WaitForRecallReadiness { scene: _, readiness: request, reply }) => {
                             let _ = seen_tx.send(QueueFadeCommand::Wait).await;
                             if let Some(reply) = reply {
                                 let _ = reply.send(Ok(()));
                             }
-                            readiness = request.completion.map(|completion| (expected_generation, 0, 0, completion));
+                            readiness = request.completion.map(|completion| (1, 0, 0, completion));
                         }
                         Some(FadeCommand::AbortAll { reply }) => {
                             let _ = seen_tx.send(QueueFadeCommand::Abort).await;

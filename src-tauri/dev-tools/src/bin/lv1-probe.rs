@@ -778,7 +778,6 @@ async fn run_fade_test(
                 curve: fade_curve,
             },
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + Duration::from_secs(5),
             ),
@@ -1173,7 +1172,6 @@ async fn run_pan_family_smoke_step(
         .send(FadeCommand::RecallSceneFade {
             config,
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + Duration::from_secs(5),
             ),

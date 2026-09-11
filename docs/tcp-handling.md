@@ -19,10 +19,10 @@ App-sent frames use the LV1 header `00 00 00 02 00 00 00 00`. Encoding and decod
 Outbound fade writes flow directly through:
 
 ```text
-FadeEngine -> Lv1ActorHandle -> Lv1Command::WriteBatch -> bounded writer channel -> writer task -> socket
+FadeEngine -> Lv1Connection -> LV1 mailbox (WriteBatch) -> bounded writer channel -> writer task -> socket
 ```
 
-There is no `AppCommandBus` in this path. `FadeEngine` holds the generation-scoped LV1 peer installed by lifecycle. The actor encodes each `WriteBatch` into one byte buffer and uses `try_send` to enqueue it. The writer task exclusively owns the TCP write half and writes queued buffers with `write_all`.
+There is no `AppCommandBus` in this path. Fade constructs an `Lv1Connection` from its fixed LV1 handle and generation. The client waits for mailbox capacity, then checks the generation and admits the command under the same guard; no guard is held while waiting. This protects admission, not commands or bytes already accepted. The LV1 actor encodes each `WriteBatch` into one byte buffer and uses `try_send` to enqueue it. The writer task exclusively owns the TCP write half and writes queued buffers with `write_all`.
 
 The read loop routes `/ping` replies through that same writer queue, preserving TCP ordering without blocking reads.
 

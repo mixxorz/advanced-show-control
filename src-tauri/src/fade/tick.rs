@@ -33,7 +33,6 @@ pub(crate) struct ActiveTarget {
     pub(crate) started_at: Instant,
     paused_since: Option<Instant>,
     finish_requested: bool,
-    pub(crate) expected_generation: Option<u64>,
 }
 
 pub(crate) struct ActiveTargetInit {
@@ -44,7 +43,6 @@ pub(crate) struct ActiveTargetInit {
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
-    pub(crate) expected_generation: Option<u64>,
 }
 
 impl ActiveTarget {
@@ -61,7 +59,6 @@ impl ActiveTarget {
             started_at: init.started_at,
             paused_since: None,
             finish_requested: false,
-            expected_generation: init.expected_generation,
         }
     }
 
@@ -210,7 +207,6 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
-            expected_generation: Some(4),
         })
     }
 
@@ -253,7 +249,6 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
-            expected_generation: None,
         });
 
         let mid = ch.started_at + Duration::from_millis(2000);
@@ -280,7 +275,6 @@ mod tests {
         let mut target = make_channel(-20.0, -10.0, 4_000);
         let owner = target.scene.clone();
         let key = target.key.clone();
-        let generation = target.expected_generation;
 
         target.finish_on_next_tick();
 
@@ -288,7 +282,6 @@ mod tests {
         assert_eq!(target.exact_final_send(), -10.0);
         assert_eq!(target.scene, owner);
         assert_eq!(target.key, key);
-        assert_eq!(target.expected_generation, generation);
     }
 
     #[test]
@@ -385,7 +378,6 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
-            expected_generation: None,
         })
     }
 

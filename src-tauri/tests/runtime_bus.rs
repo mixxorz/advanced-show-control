@@ -113,7 +113,6 @@ async fn routed_start_fade_completes_when_fade_queries_lv1_state() {
                 curve: FadeCurve::Linear,
             },
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + Duration::from_secs(5),
             ),

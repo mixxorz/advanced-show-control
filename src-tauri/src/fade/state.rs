@@ -237,7 +237,6 @@ mod tests {
             curve: FadeCurve::Linear,
             duration: Duration::from_secs(1),
             started_at,
-            expected_generation: None,
         })
     }
 
