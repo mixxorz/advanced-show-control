@@ -30,6 +30,11 @@ impl CueLists {
         self.pending_recall.is_some()
     }
 
+    /// @cc [owner:mixxorz,label:safety;product] recall-start-requires-current-cue
+    /// The owning command loop MUST call this method only when `recall_pending()` is false. Recall
+    /// start MUST resolve the cued entry from the active list before creating a scene-recall command.
+    /// Missing or inconsistent cue state MUST return `CommandFailed` to the caller and MUST NOT create
+    /// pending recall work.
     pub fn begin_recall(&mut self, reply: CueRecallReply) -> Option<crate::scenes::ScenesCommand> {
         let entry = match self.state.cued_entry() {
             Ok(entry) => entry,
@@ -52,6 +57,9 @@ impl CueLists {
         })
     }
 
+    /// @cc [owner:mixxorz,label:safety] replacement-cancels-pending-cue-recall
+    /// Canceling a pending cue recall for session replacement MUST remove the pending operation and
+    /// return `RecallCanceled` to its caller without advancing or otherwise editing the cue document.
     pub fn cancel_recall(&mut self) {
         if let Some(pending) = self.pending_recall.take() {
             let _ = pending.reply.send(Err(
@@ -62,6 +70,10 @@ impl CueLists {
         }
     }
 
+    /// @cc [owner:mixxorz,label:safety;product] advance-only-after-dispatch-success
+    /// Completion MUST advance to the next entry only after the scene recall reports successful LV1
+    /// dispatch and the same entry remains cued. Dispatch failure, reply-channel failure, or changed cue
+    /// identity MUST return an error and MUST NOT advance or publish a cue-list edit.
     pub async fn complete_recall(&mut self) {
         use crate::runtime::errors::AppCommandError;
         let Some(pending) = &mut self.pending_recall else {
@@ -96,11 +108,15 @@ impl CueLists {
             }));
     }
 
+    /// @cc [owner:mixxorz,label:persistence;safety] reconciliation-publishes-selection-clears
+    /// Scene reconciliation MUST retain entries whose scene UUID is absent and publish the reconciled
+    /// document whenever active or cued selection is cleared. A cue cleared specifically because its
+    /// scene is absent MUST also emit the user-visible `cue_cleared_missing_scene` warning.
     pub fn reconcile(&mut self, scenes: &[crate::scenes::SceneConfig]) {
         let result = self
             .state
             .reconcile(scenes.iter().map(|scene| scene.internal_scene_id));
-        if let Some(cleared) = &result.cued_entry_cleared {
+        if let Some(cleared) = &result.cued_entry_cleared_for_missing_scene {
             tracing::warn!(
                 event = "cue_cleared_missing_scene",
                 cue_list_id = %cleared.cue_list_id,
@@ -109,11 +125,15 @@ impl CueLists {
                 "Cued entry cleared because its scene is unavailable."
             );
         }
-        if result.active_cue_list_cleared || result.cued_entry_cleared.is_some() {
+        if result.active_cue_list_cleared || result.cued_entry_cleared {
             self.publish();
         }
     }
 
+    /// @cc [owner:mixxorz,label:persistence] successful-commands-publish-persisted-edit
+    /// Every successful cue-list mutation reported with `changed = true` MUST publish the resulting
+    /// full document as an `AppEvent::CueLists` persisted edit before replying. Rejected commands MUST
+    /// return their domain error without publishing an edit.
     pub fn dispatch(&mut self, command: CueListsCommand) {
         let state = &mut self.state;
         let changed = |changed| CueListsCommandResult {

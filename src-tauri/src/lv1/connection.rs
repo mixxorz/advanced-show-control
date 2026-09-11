@@ -45,6 +45,9 @@ impl Lv1Connection {
         self.send_checked(command, || Ok(())).await
     }
 
+    /// @cc [owner:mixxorz,label:safety;generation] generation-fenced-mailbox-admission
+    /// A command MUST be admitted only while this connection's generation is current; generation
+    /// revocation or validation failure after mailbox-capacity waiting MUST prevent the send.
     pub(crate) async fn send_checked(
         &self,
         command: Lv1Command,
@@ -73,6 +76,9 @@ impl Lv1Connection {
         self.request_checked(command, || Ok(())).await
     }
 
+    /// @cc [owner:mixxorz,label:safety;generation] generation-fenced-request-result
+    /// A request MUST fail as stale if its generation is revoked before admission or before its
+    /// reply is returned, even when the actor produced a successful reply.
     pub(crate) async fn request_checked<T>(
         &self,
         command: impl FnOnce(oneshot::Sender<T>) -> Lv1Command,

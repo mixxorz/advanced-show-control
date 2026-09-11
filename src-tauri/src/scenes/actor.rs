@@ -69,6 +69,11 @@ impl ScenesPeers {
         }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:safety] exact-generation-peer-access
+     * Connection-dependent scene work MUST receive peers only when the installed LV1 connection
+     * is bound to the requested generation; peers from any other generation are unavailable.
+     */
     fn handles(&self, generation: u64) -> Option<ScenesPeerHandles> {
         self.peers
             .lock()
@@ -125,6 +130,13 @@ impl LateCanceledObservations {
         );
     }
 
+    /**
+     * @cc [owner:mixxorz,label:safety] late-cancellation-overflow-fails-closed
+     * Exact late-observation suppression MUST retain at most eight entries. Recording beyond that
+     * capacity MUST activate generation-specific suppression of all otherwise spontaneous scene
+     * observations for five seconds; exact matching of a current queued recall MUST remain eligible
+     * before this fallback is consulted.
+     */
     fn record(
         &mut self,
         generation: u64,
@@ -325,6 +337,14 @@ fn build_scenes_actor_with_before_fade_handoff(
     (handle, task, peers)
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] event-bus-lag-fails-closed
+ * On event-bus lag, the actor MUST drain queued facts, reconcile the active generation, cancel
+ * queued recall intent without aborting Fade, clear pending observations and runtime readiness,
+ * refresh Settings, and restore readiness only from a fresh connected snapshot for current peers.
+ * If Settings cannot be refreshed, recall automation MUST stop rather than continue with stale
+ * policy.
+ */
 async fn run_scenes_actor(task: ScenesTask) {
     let ScenesTask {
         initial_generation,
@@ -704,6 +724,12 @@ fn accepts_scene_observation_generation(event_generation: u64, active_generation
 }
 
 #[allow(clippy::too_many_arguments)]
+/**
+ * @cc [owner:mixxorz,label:safety] generation-transition-cancels-runtime-intent
+ * A generation transition MUST clear runtime library/readiness, pending observations, queued
+ * recalls, late-cancellation suppression, and prior-generation peers while preserving the scene
+ * document, selection, and clipboard.
+ */
 fn transition_scene_generation(
     active_generation: &mut u64,
     next_generation: u64,
@@ -735,6 +761,12 @@ fn transition_scene_generation(
     publish_scene_state_changed(event_bus, *active_generation, recall_state, false);
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] recall-cancellation-boundary
+ * Cancellation MUST drop the in-flight readiness receiver, fail every waiting caller, and retain
+ * an awaiting-observation identity for bounded late-event suppression. It MUST NOT itself abort an
+ * active fade or turn the already-dispatched in-flight caller reply into a failure.
+ */
 fn cancel_recall_queue(
     recall_queue: &mut RecallQueue,
     late_canceled_observations: &mut LateCanceledObservations,
@@ -1136,6 +1168,12 @@ fn apply_scene_list(
     publish_scene_state_changed(event_bus, generation, recall_state, changed);
 }
 
+/**
+ * @cc [owner:mixxorz,label:persistence] persisted-edit-classification
+ * `persisted_scene_edit` MUST be true only for changes that independently dirty the show. Selection,
+ * clipboard availability, readiness, and other projection/runtime-only changes MUST publish it as
+ * false, even though selection is included when a session is otherwise serialized.
+ */
 fn publish_scene_state_changed(
     event_bus: &AppEventBus,
     generation: u64,
@@ -1195,6 +1233,11 @@ fn copy_scene_settings(
     })
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] capture-fresh-ready-generation
+ * Store-from-LV1 MUST mutate or publish only from a connected snapshot while the scene library is
+ * `Ready` and the snapshot's connection generation remains current after the awaited state read.
+ */
 async fn store_scene_config_from_current_lv1(
     lv1: &Lv1Connection,
     event_bus: &AppEventBus,
@@ -1231,6 +1274,12 @@ struct QueueReadiness {
     deadline: tokio::time::Instant,
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] recall-observation-exact-and-newer
+ * An observation may advance queued recall readiness only when generation, scene index, and scene
+ * name exactly match the in-flight recall and its sequence is later than the LV1 dispatch
+ * boundary.
+ */
 fn exact_queue_readiness(
     observation: &PendingSceneObservation,
     recall_queue: &RecallQueue,
@@ -1255,6 +1304,12 @@ fn exact_queue_readiness(
 }
 
 #[allow(clippy::too_many_arguments)]
+/**
+ * @cc [owner:mixxorz,label:safety] readiness-completion-fenced
+ * A readiness result MUST affect the queue only when its request and generation still identify the
+ * awaiting in-flight recall and that generation is authoritative. Timeout or cancellation MUST
+ * cancel remaining intent; only success may dispatch the next request.
+ */
 async fn handle_readiness_completion(
     completion: RecallReadinessCompletion,
     runtime_generation: &RuntimeGeneration,
@@ -1325,6 +1380,12 @@ async fn handle_readiness_completion(
     .await;
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] one-deadline-spans-observation-readiness
+ * The Fade readiness request MUST reuse the deadline created at LV1 recall dispatch, so one
+ * five-second deadline spans both exact-scene observation and readiness. An already-expired or
+ * mismatched request MUST be rejected rather than receive a new deadline.
+ */
 fn prepare_queue_readiness(
     recall_queue: &RecallQueue,
     readiness: QueueReadiness,
@@ -1372,6 +1433,18 @@ fn accept_queue_readiness(
 }
 
 #[allow(clippy::too_many_arguments)]
+/**
+ * @cc [owner:mixxorz,label:safety] observation-fade-handoff-gates
+ * Before Fade admission, an accepted observation MUST be validated against fresh exact LV1 state,
+ * current generation, lockout, linked config, live topology, enabled scopes, and required targets;
+ * queued handoff MUST recheck lockout and generation after mailbox reservation waits.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety] nonadmitted-recall-side-effects
+ * A blocked, skipped, suppressed, stale, or disabled pre-admission observation MUST NOT send
+ * `RecallSceneFade` or abort an active fade. A queued exact observation still MUST complete the
+ * readiness handoff without converting a blocked or skipped policy outcome into fade admission.
+ */
 async fn process_scene_observation(
     lv1: &Lv1Connection,
     fade: &FadeEngineHandle,
@@ -1761,6 +1834,11 @@ fn scene_label(scene: &SceneState) -> String {
 }
 
 #[allow(clippy::too_many_arguments)]
+/**
+ * @cc [owner:mixxorz,label:product] explicit-recall-admission-reply
+ * Explicit recall admission MUST reject invalid or over-capacity requests before enqueueing; an
+ * admitted caller reply MUST remain pending until that request is actually dispatched or canceled.
+ */
 async fn admit_explicit_recall_scene(
     lockout: &ShowLockoutReader,
     lv1: &Lv1Connection,
@@ -1821,6 +1899,12 @@ async fn admit_explicit_recall_scene(
     }
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] queued-recall-fresh-dispatch
+ * Each FIFO request MUST obtain and validate a fresh connected LV1 snapshot and exact scene
+ * identity, then recheck lockout inside the generation-fenced LV1 dispatch. Invalid requests may
+ * fail individually, but stale generation, lockout, or dispatch loss MUST cancel later intent.
+ */
 async fn dispatch_next_recall(
     lockout: &ShowLockoutReader,
     lv1: &Lv1Connection,
@@ -1981,6 +2065,13 @@ fn log_explicit_recall_blocked(internal_scene_id: uuid::Uuid, error: &AppCommand
     );
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] fresh-scene-snapshot-exactness
+ * Fresh-state acquisition MUST return only a connected snapshot whose current scene exactly
+ * matches both the requested index and name. Mismatch or disconnection MUST retry for at most two
+ * seconds before returning a timeout error; an LV1 state-request error MUST return immediately
+ * rather than continue retrying.
+ */
 async fn fresh_lv1_snapshot(
     lv1: &Lv1Connection,
     scene: &SceneState,

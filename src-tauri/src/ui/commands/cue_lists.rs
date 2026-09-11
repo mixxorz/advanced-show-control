@@ -120,6 +120,10 @@ pub async fn cue_entry(
     .await
 }
 
+/// @cc [owner:mixxorz,label:architecture] cue-recall-preserves-domain-error
+/// The cued-cue recall adapter MUST await both mailbox delivery and the owner's nested result, map
+/// infrastructure and domain errors through the shared frontend-safe mapping, and MUST NOT advance
+/// cues or implement recall policy itself.
 #[tauri::command]
 pub async fn recall_cued_cue(
     lifecycle: State<'_, AppLifecycle>,
@@ -137,6 +141,10 @@ pub async fn recall_cued_cue(
         .map_err(map_app_command_error)
 }
 
+/// @cc [owner:mixxorz,label:architecture] cue-mutations-use-owner-reply
+/// Cue-list mutation adapters MUST send the caller-selected `CueListsCommand` to the app-lifetime
+/// cue-list owner, await its reply, and preserve domain `Err(String)` values; mailbox send and
+/// dropped-reply failures MUST become frontend-safe command errors without adapter-side policy.
 async fn send_cue_lists_mutation(
     lifecycle: State<'_, AppLifecycle>,
     build_command: impl FnOnce(

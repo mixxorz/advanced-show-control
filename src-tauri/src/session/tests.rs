@@ -225,6 +225,7 @@ async fn deleting_a_scene_reconciles_its_cue_before_the_next_document_read() {
     let id = Uuid::new_v4();
     session.install(vec![scene(id)]).await;
     let entry = session.cue(id).await;
+    let mut events = session.events.subscribe();
     let (reply, response) = oneshot::channel();
     session
         .scenes
@@ -235,6 +236,27 @@ async fn deleting_a_scene_reconciles_its_cue_before_the_next_document_read() {
         .await
         .unwrap();
     response.await.unwrap().unwrap();
+    let (cue_projection, show_projection) =
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let mut cue_projection = None;
+            let mut show_projection = None;
+            while cue_projection.is_none() || show_projection.is_none() {
+                match events.recv().await.unwrap() {
+                    AppEvent::CueLists(state) if state.document.cued_cue_entry_id.is_none() => {
+                        cue_projection = Some(state);
+                    }
+                    AppEvent::Show(state) if state.show_file_dirty => {
+                        show_projection = Some(state);
+                    }
+                    _ => {}
+                }
+            }
+            (cue_projection.unwrap(), show_projection.unwrap())
+        })
+        .await
+        .unwrap();
+    assert_eq!(cue_projection.document.cued_cue_entry_id, None);
+    assert!(show_projection.show_file_dirty);
     let document = session.document().await;
     assert_eq!(document.cued_cue_entry_id, None);
     assert_eq!(document.cue_lists[0].entries, vec![entry.clone()]);

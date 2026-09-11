@@ -26,6 +26,10 @@ pub struct DiscoveredLv1System {
     pub status: DiscoveredLv1Status,
 }
 
+/// @cc [owner:mixxorz,label:product] discovery-identity-endpoint-requirements
+/// Discovery mapping MUST return no identity unless `DiscoveryEntry::port` exists and
+/// `DiscoveryEntry::addresses` contains at least one entry. When both exist, it MUST preserve
+/// UUID/host metadata and use the first `addresses` entry with that port.
 pub fn identity_from_discovery(entry: &DiscoveryEntry) -> Option<Lv1SystemIdentity> {
     let address = entry.addresses.first()?.clone();
     let port = entry.port?;
@@ -37,6 +41,9 @@ pub fn identity_from_discovery(entry: &DiscoveryEntry) -> Option<Lv1SystemIdenti
     })
 }
 
+/// @cc [owner:mixxorz,label:projection] discovered-system-initial-status
+/// A mappable discovery entry MUST project with `Available` status; an entry without a usable
+/// identity endpoint MUST be omitted rather than projected as unavailable.
 pub fn system_from_discovery(entry: &DiscoveryEntry) -> Option<DiscoveredLv1System> {
     Some(DiscoveredLv1System {
         identity: identity_from_discovery(entry)?,
@@ -44,6 +51,12 @@ pub fn system_from_discovery(entry: &DiscoveryEntry) -> Option<DiscoveredLv1Syst
     })
 }
 
+/// @cc [owner:mixxorz,label:safety] startup-identity-match
+/// Startup auto-connect MUST consider only `Available` systems and prefer an exact UUID match. If no
+/// UUID match exists, it MAY use an exact trimmed nonblank hostname only when exactly one available
+/// system has that hostname; address and port MUST NOT establish identity, and ambiguous hostname
+/// or absent matches MUST return no target. A match MUST return the discovered system's identity, including
+/// its currently advertised address and port, rather than the remembered endpoint.
 pub fn startup_auto_connect_target(
     remembered: &Lv1SystemIdentity,
     systems: &[DiscoveredLv1System],

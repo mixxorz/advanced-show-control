@@ -28,6 +28,10 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
+    /// @cc [owner:mixxorz,label:resilience] settings-load-fallback
+    /// Loading MUST use normalized persisted values when the complete document deserializes; a
+    /// missing, unreadable, or invalid `settings.json` MUST instead produce normalized defaults,
+    /// including no remembered LV1 identity, without rewriting the file.
     pub fn load(settings_dir: PathBuf) -> Self {
         let file_path = settings_dir.join("settings.json");
         let document = load_settings_file(&file_path);
@@ -41,6 +45,11 @@ impl SettingsState {
         self.document.settings.clone()
     }
 
+    /// @cc [owner:mixxorz,label:data-integrity] public-settings-replacement-atomicity
+    /// A changed public-settings replacement MUST preserve the remembered LV1 identity and update
+    /// in-memory state only after the complete normalized document is atomically published. A
+    /// staging or publication failure MUST return an error and leave both prior memory and the
+    /// destination document unchanged; normalized no-ops MUST perform no write and return `false`.
     pub fn replace_settings(&mut self, settings: AppSettings) -> Result<bool, String> {
         let normalized = settings.normalized();
         if normalized == self.document.settings {
@@ -57,6 +66,9 @@ impl SettingsState {
         self.document.last_connected_lv1.clone()
     }
 
+    /// @cc [owner:mixxorz,label:data-integrity] stage-private-identity-update
+    /// Staging a changed remembered identity MUST preserve all public settings and MUST NOT mutate
+    /// memory or publish the destination; an identical identity MUST return no staged update.
     pub(crate) fn stage_last_connected_lv1(
         &self,
         identity: Lv1SystemIdentity,
@@ -70,6 +82,9 @@ impl SettingsState {
         StagedSettingsUpdate::prepare(self.file_path.clone(), updated).map(Some)
     }
 
+    /// @cc [owner:mixxorz,label:data-integrity] publish-settings-after-file
+    /// Publication MUST replace `settings.json` before committing the staged document to memory;
+    /// replacement failure MUST return an explanatory error and retain the previous memory state.
     pub(crate) fn publish_staged(&mut self, staged: StagedSettingsUpdate) -> Result<(), String> {
         staged.file.publish().map_err(|err| {
             format!(

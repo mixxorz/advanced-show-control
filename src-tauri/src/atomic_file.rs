@@ -2,7 +2,9 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-/// Owns a synced replacement beside its destination; dropping it cancels publication.
+/// @cc [owner:mixxorz,label:persistence] unpublished-stage-cleanup
+/// Until publication succeeds, dropping `StagedFile` MUST leave the destination unchanged and
+/// remove its reserved temporary file on a best-effort basis.
 pub(crate) struct StagedFile {
     destination: PathBuf,
     temporary: PathBuf,
@@ -10,6 +12,10 @@ pub(crate) struct StagedFile {
 }
 
 impl StagedFile {
+    /// @cc [owner:mixxorz,label:persistence] stage-complete-synced-content
+    /// Success MUST mean a uniquely created file beside `destination` contains all `contents` and
+    /// has completed file-data synchronization; any write or sync failure MUST return an error and
+    /// MUST NOT publish partial content at `destination`.
     pub(crate) fn prepare(destination: &Path, contents: &[u8]) -> io::Result<Self> {
         let parent = destination.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent")
@@ -45,6 +51,9 @@ impl StagedFile {
         unreachable!("suffix loop is unbounded")
     }
 
+    /// @cc [owner:mixxorz,label:persistence;safety] atomic-publication-result
+    /// Success MUST atomically replace `destination` with the fully staged file. Failure MUST leave
+    /// the stage unpublished so cleanup is attempted, and MUST NOT report publication success.
     pub(crate) fn publish(mut self) -> io::Result<()> {
         replace(&self.temporary, &self.destination)?;
         self.published = true;

@@ -21,6 +21,10 @@ pub struct ProbeLogEntry {
     pub error: Option<String>,
 }
 
+/// @cc [owner:mixxorz,label:protocol] classify-only-exact-osc-families
+/// Classification MUST recognize faders only when the OSC path has a `Track` segment and ends in
+/// `Gain`, and scenes only from complete `Scene` or `CurrentScene` segments; look-alike names MUST
+/// remain `Other`.
 pub fn classify_message(msg: &OscMessage) -> MessageKind {
     let address = msg.address.as_str();
     if is_fader_gain_address(address) {
@@ -81,6 +85,9 @@ impl JsonlLogger {
         })
     }
 
+    /// @cc [owner:mixxorz,label:diagnostics] jsonl-entry-is-durable-before-success
+    /// A successful call MUST append exactly one newline-terminated JSON object, timestamp it from
+    /// this logger's start, and flush it; serialization, write, and flush failures MUST be returned.
     pub fn write(&mut self, mut entry: ProbeLogEntry) -> std::io::Result<()> {
         use std::io::Write;
         entry.timestamp_ms = self.start.elapsed().as_millis();

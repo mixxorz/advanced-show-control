@@ -185,6 +185,10 @@ pub async fn set_channel_scoped(
     .await?
 }
 
+/// @cc [owner:mixxorz,label:architecture] scene-commands-use-owner-reply
+/// Scene adapters MUST construct an explicit `ScenesCommand`, send it to the app-lifetime Scenes
+/// owner, and await the caller-specific reply type; mailbox send and dropped-reply failures MUST be
+/// mapped to frontend-safe errors without performing scene validation or mutation in this helper.
 async fn send_scene_command<T>(
     lifecycle: State<'_, AppLifecycle>,
     build_command: impl FnOnce(oneshot::Sender<T>) -> ScenesCommand,

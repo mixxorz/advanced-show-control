@@ -48,6 +48,12 @@ pub(super) struct RecallQueue {
 }
 
 impl RecallQueue {
+    /**
+     * @cc [owner:mixxorz,label:safety] readiness-owned-by-in-flight-recall
+     * Readiness completion MUST be polled only from the current in-flight recall's owned receiver;
+     * absent or already-consumed readiness MUST remain pending, and receiver closure MUST surface
+     * as cancellation rather than success.
+     */
     pub async fn readiness_completion(&mut self) -> RecallReadinessCompletion {
         let Some(InFlightRecall {
             request_id,
@@ -74,6 +80,11 @@ impl RecallQueue {
         }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:product] recall-capacity-includes-in-flight
+     * Queue occupancy MUST count both the in-flight request and waiting requests so total admitted
+     * explicit recall intent never exceeds `RECALL_QUEUE_CAPACITY`.
+     */
     pub fn len(&self) -> usize {
         self.waiting.len() + usize::from(self.in_flight.is_some())
     }
@@ -86,6 +97,11 @@ impl RecallQueue {
         self.waiting.push_back(recall);
     }
 
+    /**
+     * @cc [owner:mixxorz,label:product] explicit-recall-fifo
+     * Waiting explicit recalls MUST be removed in admission order; repeated requests for the same
+     * scene remain distinct queue entries.
+     */
     pub fn take_next(&mut self) -> Option<QueuedRecall> {
         self.waiting.pop_front()
     }
@@ -94,6 +110,11 @@ impl RecallQueue {
         self.in_flight = Some(recall);
     }
 
+    /**
+     * @cc [owner:mixxorz,label:safety] cancel-waiting-replies
+     * Draining MUST remove every waiting request and resolve each still-open caller reply with the
+     * supplied cancellation error; it MUST NOT report any waiting request as dispatched.
+     */
     pub fn drain_pending(&mut self, error: AppCommandError) {
         for queued in self.waiting.drain(..) {
             let _ = queued.reply.send(Err(error.clone()));

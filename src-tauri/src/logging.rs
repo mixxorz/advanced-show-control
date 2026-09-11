@@ -37,6 +37,9 @@ pub struct UiLogEvent {
     pub message: String,
 }
 
+/// @cc [owner:mixxorz,label:observability] frontend-log-level-boundary
+/// This function MUST map `ERROR`, `WARN`, and `INFO` to `Error`, `Warning`, and `Info` respectively,
+/// and MUST return `None` for `DEBUG` and `TRACE`.
 pub fn ui_severity(level: &Level) -> Option<LogSeverity> {
     match *level {
         Level::ERROR => Some(LogSeverity::Error),
@@ -82,6 +85,9 @@ impl<S> tracing_subscriber::layer::Filter<S> for DiagnosticFileGate {
     }
 }
 
+/// @cc [owner:mixxorz,label:reliability] logging-worker-lifetime
+/// The returned runtime's worker guard MUST remain owned by application state for the application
+/// lifetime so queued diagnostic records continue to flush.
 pub struct LoggingRuntime {
     pub guard: WorkerGuard,
     pub ui_logs: broadcast::Sender<UiLogEvent>,
@@ -125,6 +131,12 @@ fn apply_settings_to_diagnostic_file_gate(gate: &DiagnosticFileGate, settings: &
     gate.set_extensive_diagnostics_enabled(settings.enable_extensive_diagnostics);
 }
 
+/// @cc [owner:mixxorz,label:observability] logging-sink-delivery
+/// Initialization MUST install an append-only JSON diagnostic-file sink, a human-readable stdout
+/// sink, and the frontend sink. Subject to the process-wide environment filter, the file and stdout
+/// sinks MUST admit `DEBUG` and above at bootstrap, while the frontend sink MUST admit only `INFO`
+/// and above; disabling extensive diagnostics MUST raise only the file sink's minimum level to
+/// `INFO`.
 pub fn init_logging<R: Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<LoggingRuntime, Box<dyn Error>> {
@@ -360,6 +372,10 @@ impl StdoutOscMessageVisitor {
     }
 }
 
+/// @cc [owner:mixxorz,label:privacy;observability] frontend-log-payload
+/// A frontend log event MUST contain only its mapped severity and the tracing `message`, falling
+/// back to the stable `event` field when no message exists. Other structured fields MUST NOT cross
+/// this sink, and events emitted by this sink's own target MUST NOT be re-enqueued.
 struct UiLogLayer {
     tx: broadcast::Sender<UiLogEvent>,
 }

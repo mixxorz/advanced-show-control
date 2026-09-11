@@ -94,6 +94,12 @@ impl ScenesState {
         }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:persistence] scene-document-snapshot
+     * The persisted scene document MUST contain scene configs and selection, and MUST exclude
+     * connection-derived readiness, recall tracking, scene-list suppression, and the settings
+     * clipboard.
+     */
     pub(crate) fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
@@ -106,6 +112,12 @@ impl ScenesState {
         self.selected_scene_internal_id = snapshot.selected_scene_internal_id;
     }
 
+    /**
+     * @cc [owner:mixxorz,label:persistence] session-replacement-resets-ephemera
+     * Replacing a session document MUST install its configs and selection while clearing the
+     * settings clipboard, recall gate, and scene-list edit suppression inherited from the prior
+     * session.
+     */
     pub(crate) fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
         self.replace_snapshot(snapshot);
         self.scene_settings_clipboard = None;
@@ -201,6 +213,11 @@ impl ScenesState {
         })
     }
 
+    /**
+     * @cc [owner:mixxorz,label:product] paste-preserves-destination-identity
+     * Pasting MUST reject an unlinked destination and MUST copy only duration, scopes, and channel
+     * values; the destination's durable UUID and linked LV1 index/name MUST remain unchanged.
+     */
     pub(crate) fn paste_scene_settings(
         &mut self,
         destination_internal_scene_id: uuid::Uuid,
@@ -336,6 +353,11 @@ impl ScenesState {
         previous != self.scene_configs
     }
 
+    /**
+     * @cc [owner:mixxorz,label:architecture] runtime-unavailability-preserves-document
+     * Losing the runtime scene library MUST clear readiness, cached LV1 scenes, and recall
+     * tracking without changing scene configs, selection, or the settings clipboard.
+     */
     pub(crate) fn mark_scene_library_unavailable(&mut self) {
         self.ready_generation = None;
         self.last_scene_list = None;

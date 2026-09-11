@@ -5,6 +5,10 @@ use crate::show::{ShowProjectionState, ShowState};
 
 use super::events::AppEvent;
 
+/// @cc [owner:mixxorz,label:architecture] retained-app-state-only
+/// The retained snapshot MUST contain only app-lifetime Show, Scenes, Cue Lists, and Settings
+/// projections; generation-bound LV1/Fade state and operational runtime facts MUST NOT be retained
+/// here.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AppStateSnapshot {
     pub show: ShowProjectionState,
@@ -25,6 +29,18 @@ impl Default for AppStateSnapshot {
 }
 
 impl AppStateSnapshot {
+    /**
+     * @cc [owner:mixxorz,label:architecture] retained-event-selection
+     * Applying an event MUST update only the retained projection family represented by `Show`,
+     * scene `StateChanged`, `CueLists`, settings `StateChanged`, or `SessionReplaced`; all other
+     * facts MUST leave the snapshot unchanged and return `false`.
+     */
+    /**
+     * @cc [owner:mixxorz,label:consistency] session-replacement-atomic-projection
+     * `SessionReplaced` MUST apply its Scenes and Cue Lists projections in the same watch-state
+     * mutation and report a change when either projection differs, preventing a mixed retained
+     * session snapshot.
+     */
     pub(super) fn apply(&mut self, event: &AppEvent) -> bool {
         match event {
             AppEvent::Show(state) => replace(&mut self.show, state),

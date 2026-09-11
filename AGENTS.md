@@ -66,6 +66,19 @@ Roadmap and actionable work live in GitHub Milestones and Issues:
 - For UI work, preserve the existing design language unless the task is to redesign it.
 - For frontend styling, define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables. Avoid hard-coded Tailwind values when a reusable token is appropriate.
 
+## Code Contracts
+
+- Before changing or reviewing production code, discover applicable `@cc` comments and ancestor
+  `CONTRACTS` files manually or with `cc-check list path/to/file.rs` or
+  `cc-check list path/to/file.rs:42`. The command accepts a source file or source location, not a
+  directory, and includes ancestor `CONTRACTS` files unless `--no-global` is passed.
+- Treat applicable contracts as simultaneous requirements. Keep implementation, behavior tests, and
+  contract prose aligned in the same change.
+- Surface changes or removals of existing contracts explicitly to their listed owners. Do not weaken
+  a contract merely to make an implementation appear compliant.
+- Use `cc-check format` to validate syntax and duplicate IDs. The command does not prove semantic
+  compliance; verify behavior from implementation, callers, and tests.
+
 ## Logging Policy
 
 - Follow `docs/coding-conventions.md` as the source of truth for logging policy.

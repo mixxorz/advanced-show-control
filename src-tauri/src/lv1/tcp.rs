@@ -21,8 +21,13 @@ pub enum Lv1TcpError {
     Osc(#[from] OscError),
     #[error("invalid LV1 payload length: {0}")]
     InvalidLength(usize),
+    #[error("invalid LV1 frame header: {0:?}")]
+    InvalidHeader([u8; 8]),
 }
 
+/// @cc [owner:mixxorz,label:protocol] lv1-frame-wire-format
+/// A frame MUST contain the big-endian OSC payload length, the exact eight-byte LV1 header, and one
+/// nonempty OSC payload no larger than the configured maximum.
 pub fn encode_frame(address: &str, args: &[OscArg]) -> Result<Vec<u8>, Lv1TcpError> {
     let payload = encode_message(address, args)?;
     if payload.is_empty() || payload.len() > MAX_FRAME_PAYLOAD {
@@ -44,6 +49,10 @@ pub struct FrameDecoder {
 }
 
 impl FrameDecoder {
+    /// @cc [owner:mixxorz,label:protocol;parsing;safety] incremental-frame-decoding
+    /// Partial frames MUST remain buffered and complete concatenated frames MUST be emitted in wire
+    /// order. Once the 12-byte length/header prefix is buffered, a zero/oversized payload length or
+    /// noncanonical LV1 header MUST fail before waiting for or extracting the declared payload.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Lv1Frame>, Lv1TcpError> {
         self.buffer.extend_from_slice(bytes);
         let mut frames = Vec::new();
@@ -62,13 +71,17 @@ impl FrameDecoder {
                 return Err(Lv1TcpError::InvalidLength(payload_len));
             }
 
+            let mut header = [0_u8; HEADER_LEN];
+            header.copy_from_slice(&self.buffer[4..12]);
+            if header != DEFAULT_HEADER {
+                return Err(Lv1TcpError::InvalidHeader(header));
+            }
+
             let total_len = 4 + HEADER_LEN + payload_len;
             if self.buffer.len() < total_len {
                 break;
             }
 
-            let mut header = [0_u8; HEADER_LEN];
-            header.copy_from_slice(&self.buffer[4..12]);
             let payload = self.buffer[12..total_len].to_vec();
             self.buffer.drain(..total_len);
             frames.push(Lv1Frame { header, payload });
@@ -101,6 +114,9 @@ fn is_noisy_osc_log_address(address: &str) -> bool {
     matches!(address, "/ping" | "/pong" | "/Notify/TempoBlink")
 }
 
+/// @cc [owner:mixxorz,label:protocol;safety] parameter-write-mapping-and-order
+/// Every write MUST map to its parameter's documented LV1 address with `(group, channel, value)`
+/// wire arguments, and the resulting concatenated frames MUST preserve input order.
 pub fn encode_parameter_write_batch(writes: &[Lv1ParameterWrite]) -> Result<Vec<u8>, Lv1TcpError> {
     let mut out = Vec::new();
 
@@ -125,6 +141,9 @@ pub fn encode_parameter_write_batch(writes: &[Lv1ParameterWrite]) -> Result<Vec<
     Ok(out)
 }
 
+/// @cc [owner:mixxorz,label:protocol;connection] myfoh-registration-sequence
+/// Registration MUST send `/handshake` with `(1, -1, 1)` followed by `/device_name` with the
+/// supplied device name and UUID in the same batch.
 pub fn build_myfoh_handshake_batch(device_name: &str, uuid: &str) -> Result<Vec<u8>, Lv1TcpError> {
     let mut out = Vec::new();
     out.extend_from_slice(&encode_frame(
@@ -141,6 +160,9 @@ pub fn build_myfoh_handshake_batch(device_name: &str, uuid: &str) -> Result<Vec<
     Ok(out)
 }
 
+/// @cc [owner:mixxorz,label:protocol;connection] ping-pong-argument-echo
+/// A `/ping` MUST produce a `/pong` carrying an unchanged clone of every argument; every other
+/// address MUST produce no response.
 pub fn pong_for_ping(msg: &OscMessage) -> Option<(&'static str, Vec<OscArg>)> {
     if msg.address == "/ping" {
         Some(("/pong", msg.args.clone()))
@@ -209,6 +231,9 @@ async fn send_bytes(writer: &mut tokio::net::tcp::OwnedWriteHalf, bytes: &[u8]) 
     Ok(())
 }
 
+/// @cc [owner:mixxorz,label:connection;error] tcp-eof-is-disconnect
+/// A zero-byte socket read MUST be reported as `UnexpectedEof`, not as an empty successful frame
+/// batch, so transport closure triggers disconnect handling.
 pub(crate) async fn read_next_async(
     reader: &mut tokio::net::tcp::OwnedReadHalf,
     decoder: &mut FrameDecoder,
@@ -343,6 +368,27 @@ mod tests {
             decode_frame_payload(&frames[0]).unwrap().address,
             "/handshake"
         );
+    }
+
+    #[test]
+    fn rejects_invalid_lv1_frame_header_before_waiting_for_payload() {
+        let mut prefix = Vec::new();
+        prefix.extend_from_slice(&1024_u32.to_be_bytes());
+        prefix.extend_from_slice(&[0, 0, 0, 3, 0, 0, 0, 0]);
+
+        let error = FrameDecoder::default().push(&prefix).unwrap_err();
+
+        assert!(matches!(error, Lv1TcpError::InvalidHeader(_)));
+    }
+
+    #[test]
+    fn rejects_invalid_lv1_frame_header() {
+        let mut bytes = encode_frame("/ping", &[]).unwrap();
+        bytes[4..12].copy_from_slice(&[0, 0, 0, 3, 0, 0, 0, 0]);
+
+        let error = FrameDecoder::default().push(&bytes).unwrap_err();
+
+        assert!(matches!(error, Lv1TcpError::InvalidHeader(_)));
     }
 
     #[test]

@@ -54,6 +54,44 @@ pub fn build_engine(
     (handle, task)
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] generation-fenced-effects
+ * The engine MUST ignore LV1 feedback from other generations and MUST cancel active or paused work
+ * on a matching disconnect, generation revocation, or actor shutdown without making later writes.
+ * Successful start, channel-completion, fade-completion, and write-failure publication MUST occur
+ * only while this engine's generation remains current.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety;product] fader-manual-override-lifecycle
+ * A matching-generation fader report beyond the position-space override threshold MUST remove only
+ * that group/channel's fader target, publish `ChannelOverride` followed by `ChannelCancelled`, and
+ * publish terminal fade completion if no active targets remain.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety] override-feedback-during-readiness
+ * Matching-generation fader and pan feedback MUST continue to apply manual-override cancellation
+ * while readiness pauses interpolation. Removing targets MUST NOT remove the readiness barrier, and
+ * any targets that remain MUST stay paused until readiness releases.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] tick-write-failure-cancels
+ * If a checked tick write or current-generation check fails, the tick MUST cancel every active
+ * target, publish `ChannelCancelled` for each removed target and `FadeAborted`, and MUST NOT publish
+ * `ChannelCompleted` or `FadeCompleted` for that tick.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;safety] successful-tick-terminal-order
+ * Each tick MUST place all due parameter values in one checked write batch. Only after that batch or
+ * an empty-batch generation check succeeds MAY it remove exact-finished targets and publish their
+ * `ChannelCompleted` facts, followed by at most one `FadeCompleted` when no targets remain.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] targetless-zero-duration-events
+ * After an admitted targetless or zero-duration recall, the engine MUST publish `FadeStarted` only
+ * when active targets remain. With no active targets it MUST defer terminal completion while a
+ * readiness barrier exists; otherwise it MAY close the current idle epoch with at most one
+ * `FadeCompleted`.
+ */
 async fn run_engine(
     connection: Lv1Connection,
     event_bus: AppEventBus,
@@ -357,6 +395,40 @@ fn complete_fade(
     state.fan_out(FadeEvent::FadeCompleted);
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] recall-admission
+ * A recall MUST be admitted only while the engine's fixed generation is current and a fresh LV1
+ * snapshot reports `Connected`; rejection MUST leave existing targets and readiness state intact.
+ * A targetless detached recall remains generation-checked but MAY skip the fresh snapshot because it
+ * installs neither targets nor a readiness barrier.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;safety] overlap-and-same-scene
+ * For `FinishActiveTargets`, an exact scene index/name match MUST finish every active target owned by
+ * that scene without installing incoming targets. When no exact-scene target is active, each incoming
+ * target MUST replace only the active target with the same group, channel, and parameter.
+ * `OverrideMatchingTargets` MUST restart incoming keys for the full duration and leave omitted active
+ * targets unchanged.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety;product] zero-duration-write
+ * A zero-duration recall with targets MUST send all exact target values in one checked LV1 batch
+ * before removing overlaps or publishing channel completion; a rejected batch MUST produce none of
+ * those success effects.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;safety] recall-start-value-precedence
+ * For each installed nonzero-duration target, an ungated recall MUST prefer the current interpolated
+ * value of its matching active target over a fresh live value. While readiness is already active, it
+ * MUST prefer the fresh live value; either path MUST fall back to the other source and then to the
+ * configured target when a parameter value is unavailable.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety;product] targetless-zero-duration-readiness
+ * A targetless detached recall MUST install no readiness barrier. A targetless recall with an owned
+ * completion MUST install readiness after connected-snapshot validation. A successful zero-duration
+ * write MUST install readiness exactly when completion is owned.
+ */
 async fn handle_recall_scene_fade(
     connection: &Lv1Connection,
     state: &mut EngineState,
@@ -519,6 +591,10 @@ async fn handle_recall_scene_fade(
     Ok(outcome)
 }
 
+/// @cc [owner:mixxorz,label:safety] readiness-only-admission
+/// A readiness-only request MUST install or replace a barrier only after a generation-checked fresh
+/// LV1 snapshot reports `Connected`; admission failure MUST preserve the existing barrier and active
+/// targets.
 async fn handle_wait_for_recall_readiness(
     connection: &Lv1Connection,
     state: &mut EngineState,
@@ -602,6 +678,11 @@ fn build_parameter_write(
     }
 }
 
+/// @cc [owner:mixxorz,label:safety;reliability] checked-batch-failure-publication
+/// Every fade write batch MUST pass through the generation-fenced LV1 connection. A non-staleness
+/// failure MUST publish exactly one `WriteFailed` fact and a complete user-facing error message if
+/// the engine's generation remains current at publication. If it is stale by that point, the engine
+/// MUST publish and log nothing.
 async fn send_batch(
     connection: &Lv1Connection,
     event_bus: &AppEventBus,
@@ -620,6 +701,12 @@ async fn send_batch(
     result
 }
 
+/// @cc [owner:mixxorz,label:safety;product] pan-family-manual-override
+/// A confirmed manual pan intervention MUST cancel all Pan, Balance, and Width targets for that
+/// group/channel but MUST NOT cancel its fader target. An active Pan target requires consecutive
+/// out-of-threshold reports. If that group/channel has Balance or Width targets but no Pan target, a
+/// pan report MUST cancel those targets immediately. Removing the final active target MUST publish
+/// terminal fade completion.
 fn handle_pan_family_pan_report(
     state: &mut EngineState,
     group: i32,

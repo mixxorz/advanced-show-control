@@ -18,6 +18,11 @@ pub mod menu;
 
 pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
+/// @cc [owner:mixxorz,label:architecture] production-setup-owns-shared-runtime
+/// Production setup MUST create one shared event bus, build and spawn the app-lifetime Show and
+/// Settings owners from it, construct Lifecycle from their handles and initial settings, and manage
+/// those shared handles plus logging state before commands run. Projector startup MUST remain
+/// deferred to `frontend_ready`; setup MUST NOT create a competing projection owner.
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {

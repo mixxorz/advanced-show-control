@@ -3,6 +3,22 @@ use crate::lv1::ChannelInfo;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig};
 use uuid::Uuid;
 impl ScenesState {
+    /**
+     * @cc [owner:mixxorz,label:safety] capture-prerequisites
+     * Capture MUST fail without mutation when the live channel list is empty, the scene config is
+     * missing, or the scene config is unlinked.
+     */
+    /**
+     * @cc [owner:mixxorz,label:product] capture-empty-scope-initialization
+     * When the existing scope is empty, capture MUST initialize it to every channel in the supplied
+     * live snapshot; otherwise it MUST only remove scoped channels absent from that snapshot.
+     */
+    /**
+     * @cc [owner:mixxorz,label:product] capture-preserves-scene-policy
+     * Capture MUST keep the scene's durable UUID, linked index/name, duration, and scope toggles;
+     * it MUST refresh values from the supplied live channels, retain prior pan-family values when
+     * unavailable live, and restrict an existing nonempty scope to channels still present.
+     */
     pub(crate) fn store_scene_config(
         &mut self,
         internal_scene_id: Uuid,

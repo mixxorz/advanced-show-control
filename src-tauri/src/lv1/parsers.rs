@@ -8,13 +8,22 @@ use super::types::{ChannelInfo, SceneListEntry};
 // [16] pan mode (1 mono, 2 stereo), [18] pan degrees.
 const CHANNELS_RECORD_STRIDE: usize = 19;
 
+/// @cc [owner:mixxorz,label:protocol;parsing;safety] channels-record-shape
+/// `/Channels` MUST reject negative counts, counts whose required argument length cannot be checked
+/// without overflow, or payloads missing any declared 19-field record. Known fields MUST use
+/// documented wire types; trailing arguments MAY remain.
 pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'static str> {
     let count = match args.first() {
-        Some(OscArg::Int(n)) => *n as usize,
+        Some(OscArg::Int(n)) => {
+            usize::try_from(*n).map_err(|_| "channel count must be nonnegative")?
+        }
         _ => return Err("missing or wrong-type count arg"),
     };
 
-    let expected_len = 1 + count * CHANNELS_RECORD_STRIDE;
+    let expected_len = count
+        .checked_mul(CHANNELS_RECORD_STRIDE)
+        .and_then(|records_len| records_len.checked_add(1))
+        .ok_or("declared channel count is too large")?;
     if args.len() < expected_len {
         return Err("args too short for declared channel count");
     }
@@ -71,13 +80,22 @@ pub fn parse_channels_batch(args: &[OscArg]) -> Result<Vec<ChannelInfo>, &'stati
     Ok(channels)
 }
 
+/// @cc [owner:mixxorz,label:protocol;parsing;safety] scene-list-record-shape
+/// `/Notify/SceneList` MUST reject negative counts, counts whose required argument length cannot be
+/// checked without overflow, or payloads missing any declared index/name pair. Declared entries
+/// MUST use integer indices and string names; trailing arguments MAY remain.
 pub fn parse_scene_list(args: &[OscArg]) -> Result<Vec<SceneListEntry>, &'static str> {
     let count = match args.first() {
-        Some(OscArg::Int(n)) => *n as usize,
+        Some(OscArg::Int(n)) => {
+            usize::try_from(*n).map_err(|_| "scene count must be nonnegative")?
+        }
         _ => return Err("missing or wrong-type count arg"),
     };
 
-    let expected_len = 1 + count * 2;
+    let expected_len = count
+        .checked_mul(2)
+        .and_then(|records_len| records_len.checked_add(1))
+        .ok_or("declared scene count is too large")?;
     if args.len() < expected_len {
         return Err("args too short for declared scene count");
     }
@@ -191,6 +209,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_negative_channels_counts() {
+        for count in [-1, i32::MIN] {
+            assert!(parse_channels_batch(&[OscArg::Int(count)]).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_excessive_channels_count_without_length_overflow() {
+        assert!(parse_channels_batch(&[OscArg::Int(i32::MAX)]).is_err());
+    }
+
+    #[test]
     fn parses_scene_list_with_multiple_scenes() {
         let args = vec![
             OscArg::Int(2),
@@ -227,6 +257,18 @@ mod tests {
     #[test]
     fn rejects_scene_list_missing_count() {
         assert!(parse_scene_list(&[]).is_err());
+    }
+
+    #[test]
+    fn rejects_negative_scene_counts() {
+        for count in [-1, i32::MIN] {
+            assert!(parse_scene_list(&[OscArg::Int(count)]).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_excessive_scene_count_without_length_overflow() {
+        assert!(parse_scene_list(&[OscArg::Int(i32::MAX)]).is_err());
     }
 
     #[test]

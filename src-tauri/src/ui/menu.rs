@@ -88,6 +88,10 @@ pub fn install_session_menu(app: &mut App<tauri::Wry>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// @cc [owner:mixxorz,label:architecture] session-menu-reuses-command-adapters
+/// Each recognized session menu ID MUST asynchronously invoke the same show command adapter used
+/// by the frontend and log a complete warning on failure; unknown IDs MUST cause no task or side
+/// effect, and menu routing MUST NOT duplicate dialog, mailbox, or persistence policy.
 pub fn handle_session_menu_event(app: &AppHandle<tauri::Wry>, event: MenuEvent) {
     let id = event.id().as_ref();
     let app = app.clone();

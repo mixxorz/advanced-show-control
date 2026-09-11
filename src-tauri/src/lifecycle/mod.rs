@@ -25,6 +25,9 @@ use crate::show::{
     ShowStateHandle,
 };
 
+/// @cc [owner:mixxorz,label:architecture;safety] complete-generation-runtime
+/// An installed runtime MUST bind one generation to both its LV1 and Fade endpoints as one value;
+/// lifecycle state MUST NOT install, clear, or retag either endpoint independently.
 #[derive(Clone)]
 struct InstalledRuntime {
     generation: u64,
@@ -113,6 +116,10 @@ pub struct RuntimeSnapshotSource {
 }
 
 impl RuntimeSnapshotSource {
+    /// @cc [owner:mixxorz,label:safety] current-runtime-snapshot-only
+    /// A snapshot MUST return an LV1 handle only when an installed runtime exists and its generation
+    /// equals the shared active generation read while lifecycle state is locked; otherwise it MUST
+    /// return `None` rather than expose a stale endpoint.
     pub async fn connected_lv1(&self) -> Option<(u64, Lv1ActorHandle)> {
         let inner = self.inner.lock().await;
         let generation = inner.generation.current().await;
@@ -149,6 +156,10 @@ pub struct AppLifecycle {
 }
 
 impl AppLifecycle {
+    /// @cc [owner:mixxorz,label:architecture] app-lifetime-document-owner
+    /// Construction MUST create and start exactly one app-lifetime Scenes owner, derive Cue Lists
+    /// from that same owner, and install the Scenes handle into Show; connection transitions MUST
+    /// reuse these handles rather than replace their documents.
     pub fn new(
         event_bus: AppEventBus,
         show: ShowStateHandle,
@@ -228,6 +239,10 @@ impl AppLifecycle {
         Ok(self.event_bus.state().borrow().settings.clone())
     }
 
+    /// @cc [owner:mixxorz,label:safety;ordering] begin-connection-generation-first
+    /// Beginning a connection MUST serialize with lifecycle transitions, advance the active
+    /// generation before marking the connection pending, and publish that new generation before
+    /// returning it.
     pub async fn begin_connecting(&self) -> Option<u64> {
         let _transition = self.transition_lock.lock().await;
         let mut inner = self.inner.lock().await;
@@ -243,6 +258,10 @@ impl AppLifecycle {
         self.inner.lock().await.generation.current().await
     }
 
+    /// @cc [owner:mixxorz,label:safety] install-current-runtime-only
+    /// Runtime installation MUST accept only an exact active-generation match. Acceptance MUST
+    /// install Show's LV1 peer and the complete runtime before clearing `connecting`; rejection MUST
+    /// return the candidate without changing installed runtime state or Show's peer.
     async fn install_runtime_transaction(
         &self,
         runtime: InstalledRuntime,
@@ -268,6 +287,10 @@ impl AppLifecycle {
         self.install_accepted_scene_peers(generation).await
     }
 
+    /// @cc [owner:mixxorz,label:safety] install-scene-peers-from-current-runtime
+    /// Scene peers MUST be installed only from a complete installed runtime whose generation equals
+    /// both `generation` and the active generation; every mismatch or absence MUST return `false`
+    /// without altering peers.
     async fn install_accepted_scene_peers(&self, generation: u64) -> bool {
         let inner = self.inner.lock().await;
         if inner.generation.current().await != generation {
@@ -288,6 +311,10 @@ impl AppLifecycle {
         true
     }
 
+    /// @cc [owner:mixxorz,label:safety] clear-runtime-compare-and-advance
+    /// Clearing MUST atomically require `expected_generation` to be active, advance the generation,
+    /// remove the installed runtime, clear connecting state, and clear Show/Scenes peers for only
+    /// the expected generation. A stale request MUST perform none of these effects.
     async fn clear_runtime_if_current(
         &self,
         expected_generation: u64,
@@ -310,6 +337,9 @@ impl AppLifecycle {
         })
     }
 
+    /// @cc [owner:mixxorz,label:safety;ordering] publish-generation-after-clear
+    /// A clear transaction MUST publish the newly active generation only after current-generation
+    /// runtime and peer cleanup succeeds; a stale clear request MUST publish nothing.
     pub async fn clear_runtime_transaction(&self, generation: u64) {
         if let Some(transaction) = self.clear_runtime_if_current(generation).await {
             self.event_bus
@@ -322,6 +352,10 @@ impl AppLifecycle {
         self.clear_runtime_transaction(generation).await;
     }
 
+    /// @cc [owner:mixxorz,label:safety] rejected-cleanup-generation-scoped
+    /// Cleanup of a rejected candidate MUST remove lifecycle and Scenes state only if it still
+    /// belongs to the candidate generation, and MUST clear Show's peer through its generation-aware
+    /// operation; it MUST NOT disturb a newer runtime or its peers.
     async fn abort_rejected_connection_transaction(&self, candidate: InstalledRuntime) {
         let generation = candidate.generation;
         drop(candidate);
@@ -334,6 +368,10 @@ impl AppLifecycle {
         self.show_peers.clear_lv1(generation);
     }
 
+    /// @cc [owner:mixxorz,label:safety;ordering] connect-install-before-start
+    /// A connection candidate MUST be installed under its generation fence before its LV1/Fade
+    /// tasks are started. A rejected candidate MUST be cleaned up and return a stale-generation
+    /// error without starting those tasks.
     pub async fn connect_to_identity<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -365,6 +403,10 @@ impl AppLifecycle {
             .map_err(|_| "LV1 connection finalizer task was cancelled".to_string())?
     }
 
+    /// @cc [owner:mixxorz,label:reliability] detached-connect-finalization
+    /// Connection finalization MUST run in its own task so cancellation of the requesting future
+    /// cannot strand an installed candidate or prevent its generation-fenced success/failure
+    /// cleanup; task cancellation MUST surface as an error to a receiver that remains.
     fn spawn_finish_connect_transaction(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
@@ -385,6 +427,10 @@ impl AppLifecycle {
         result
     }
 
+    /// @cc [owner:mixxorz,label:safety] connected-snapshot-required
+    /// Connection completion MUST request an initial LV1 snapshot and MUST accept the candidate only
+    /// when that snapshot reports `Connected`; command-send failure, reply closure, or any other
+    /// status MUST enter generation-fenced failure finalization and return an error.
     async fn finish_connect_transaction(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
@@ -468,6 +514,18 @@ impl AppLifecycle {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /**
+     * @cc [owner:mixxorz,label:safety;ordering] accepted-connect-readiness-order
+     * A connected candidate MUST first have Show metadata accepted for its generation, then install
+     * that generation's Scene peers, then deliver `RuntimePeersReady` with the confirmed initial
+     * scene list. Any rejection or unavailable Scenes actor MUST clean up only the candidate and
+     * return an error; connected success MUST remain generation-fenced after all awaits.
+     */
+    /**
+     * @cc [owner:mixxorz,label:reliability] remembered-identity-best-effort
+     * Failure to persist an otherwise accepted connected identity MUST NOT fail or tear down the
+     * connection; it MUST emit the dedicated error only while that generation remains current.
+     */
     async fn finalize_connection_metadata(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
@@ -481,10 +539,16 @@ impl AppLifecycle {
             before_connection_metadata(self.current_runtime_generation().await).await;
         }
 
-        let completion = self
+        let completion = match self
             .set_lv1_connection_metadata(generation, Some(identity.clone()))
             .await
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(completion) => completion,
+            Err(error) => {
+                self.abort_rejected_connection_transaction(runtime).await;
+                return Err(error.to_string());
+            }
+        };
         if !completion.accepted {
             self.abort_rejected_connection_transaction(runtime).await;
             return Err("LV1 connection was superseded".to_string());
@@ -530,9 +594,18 @@ impl AppLifecycle {
                 result
             })
             .await;
-        accepted.ok_or_else(|| "LV1 connection was superseded".to_string())
+        if let Some(accepted) = accepted {
+            Ok(accepted)
+        } else {
+            self.abort_rejected_connection_transaction(runtime).await;
+            Err("LV1 connection was superseded".to_string())
+        }
     }
 
+    /// @cc [owner:mixxorz,label:safety] failed-connect-generation-fenced-cleanup
+    /// Connection failure MUST request metadata clearing for only the candidate generation, emit
+    /// the failure log only when that clear was accepted and the generation is still current, and
+    /// run generation-fenced runtime cleanup without overwriting newer connection state.
     async fn finalize_failed_connection(
         &self,
         generation: u64,
@@ -555,6 +628,10 @@ impl AppLifecycle {
         Err(error)
     }
 
+    /// @cc [owner:mixxorz,label:safety] show-controls-metadata-acceptance
+    /// Connection identity changes MUST be delegated to Show with the expected generation and MUST
+    /// surface mailbox or reply-channel failure; lifecycle MUST NOT infer acceptance or mutate Show
+    /// metadata directly.
     async fn set_lv1_connection_metadata(
         &self,
         expected_generation: u64,
@@ -713,6 +790,9 @@ impl AppLifecycle {
             .await;
     }
 
+    /// @cc [owner:mixxorz,label:safety;ordering] explicit-connect-replaces-runtime
+    /// An explicit connect MUST invalidate and clear the current runtime before allocating the new
+    /// connection generation, so old generation tasks cannot remain admitted during replacement.
     pub async fn connect_lv1_system<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -734,6 +814,23 @@ impl AppLifecycle {
             .await
     }
 
+    /**
+     * @cc [owner:mixxorz,label:concurrency] serialized-nonblocking-discovery
+     * Discovery calls MUST be serialized so older results cannot overwrite newer results, while
+     * blocking network discovery MUST run off the async worker and MUST NOT hold the lifecycle
+     * transition lock or Show mailbox.
+     */
+    /**
+     * @cc [owner:mixxorz,label:reliability] discovery-failure-preserves-results
+     * Worker or discovery failure MUST return an error without sending replacement results to Show.
+     * Show mailbox-send or reply-channel failure MUST return an error, although a closed reply can
+     * occur after Show has accepted the replacement.
+     */
+    /**
+     * @cc [owner:mixxorz,label:product] bounded-discovery-timeout
+     * The effective discovery timeout MUST default to 1000 ms and clamp caller values to the
+     * inclusive 100–6000 ms range before network I/O.
+     */
     async fn refresh_lv1_discovery_with(
         &self,
         timeout_ms: Option<u64>,
@@ -769,6 +866,10 @@ impl AppLifecycle {
             .map_err(|_| "Show state reply channel is closed".to_string())
     }
 
+    /// @cc [owner:mixxorz,label:product] no-remembered-startup-noop
+    /// When no remembered LV1 identity exists, startup auto-connect MUST return `changed: false`
+    /// without discovery, runtime teardown, or generation advancement; settings/discovery/Show
+    /// failures after an identity is found MUST be returned.
     pub async fn startup_auto_connect_lv1<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -792,6 +893,10 @@ impl AppLifecycle {
             .await
     }
 
+    /// @cc [owner:mixxorz,label:safety] startup-auto-connect-safe-match-only
+    /// Startup auto-connect MUST preserve the active generation, current runtime, and remembered
+    /// identity when discovery does not yield one safe target; only an unambiguous accepted target
+    /// may trigger runtime abort and a new connection generation.
     async fn startup_auto_connect_with_discovered<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -815,6 +920,10 @@ impl AppLifecycle {
         self.connect_to_identity(app, generation, identity).await
     }
 
+    /// @cc [owner:mixxorz,label:architecture] projector-starts-once
+    /// The first frontend-ready call MUST atomically mark readiness and start one projector from the
+    /// current generation and retained/event/log sources; subsequent calls MUST succeed without
+    /// replacing or starting another projector.
     pub async fn frontend_ready<R: Runtime>(
         &self,
         app: AppHandle<R>,
@@ -998,6 +1107,28 @@ mod tests {
         let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
         LifecycleTestFixture {
             lifecycle: lifecycle_for_test_with_settings(event_bus, settings),
+            _settings_dir: settings_dir,
+        }
+    }
+
+    fn lifecycle_for_test_with_show(
+        event_bus: AppEventBus,
+        show: ShowStateHandle,
+    ) -> LifecycleTestFixture {
+        let settings_dir = TestSettingsDir::new();
+        let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
+        let (_unused_show, show_task, show_peers, lockout) =
+            crate::show::build_show_actor(event_bus.clone());
+        drop(show_task);
+        LifecycleTestFixture {
+            lifecycle: AppLifecycle::new(
+                event_bus,
+                show,
+                show_peers,
+                lockout,
+                settings,
+                crate::settings::AppSettings::default(),
+            ),
             _settings_dir: settings_dir,
         }
     }
@@ -1463,6 +1594,356 @@ mod tests {
                 .matching("lv1_connected", tracing::Level::INFO)
                 .is_empty()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn final_fence_supersession_cleans_candidate_before_newer_runtime_install() {
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let (candidate_lv1_tx, mut candidate_lv1_rx) = mpsc::channel(8);
+        let (candidate_lv1_closed_tx, candidate_lv1_closed_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            while let Some(command) = candidate_lv1_rx.recv().await {
+                if let Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(connected_snapshot());
+                }
+            }
+            let _ = candidate_lv1_closed_tx.send(());
+        });
+        let (candidate_fade_tx, mut candidate_fade_rx) = mpsc::channel(1);
+        let (newer_generation_tx, newer_generation_rx) = oneshot::channel();
+        let lifecycle_for_hook = lifecycle.clone();
+        lifecycle
+            .set_before_connection_success(Box::new(move || {
+                Box::pin(async move {
+                    let newer_generation = lifecycle_for_hook.begin_connecting().await.unwrap();
+                    newer_generation_tx.send(newer_generation).unwrap();
+                })
+            }))
+            .await;
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            test_actor_handle(candidate_lv1_tx),
+            candidate_fade_tx,
+            None,
+        )
+        .await;
+        while events.try_recv().is_ok() {}
+
+        let result = lifecycle
+            .finish_connect_transaction(
+                identity(Some("candidate"), Some("LV1-FOH"), "192.0.2.40"),
+                started_runtime,
+            )
+            .await;
+        let newer_generation = newer_generation_rx.await.unwrap();
+
+        assert!(matches!(result, Err(message) if message == "LV1 connection was superseded"));
+        assert!(lifecycle.current_lv1().await.is_none());
+        assert!(lifecycle.current_fade().await.is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(1), candidate_lv1_closed_rx)
+            .await
+            .expect("candidate LV1 task should stop after all endpoints are released")
+            .expect("candidate LV1 task should report shutdown");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), candidate_fade_rx.recv())
+                .await
+                .expect("candidate Fade endpoint should be released")
+                .is_none()
+        );
+
+        let (newer_lv1_tx, mut newer_lv1_rx) = mpsc::channel(1);
+        let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
+        assert!(
+            lifecycle
+                .install_runtime_transaction(installed_runtime(
+                    newer_generation,
+                    test_actor_handle(newer_lv1_tx),
+                    newer_fade_tx,
+                ))
+                .await
+                .is_ok()
+        );
+        assert!(
+            lifecycle
+                .install_accepted_scene_peers(newer_generation)
+                .await
+        );
+        lifecycle
+            .current_lv1()
+            .await
+            .unwrap()
+            .send(Lv1Command::GetState {
+                reply: oneshot::channel().0,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            newer_lv1_rx.recv().await,
+            Some(Lv1Command::GetState { .. })
+        ));
+        lifecycle
+            .current_fade()
+            .await
+            .unwrap()
+            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .await
+            .unwrap();
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::AbortAll { .. })
+        ));
+        assert!(
+            capture
+                .matching("lv1_connected", tracing::Level::INFO)
+                .is_empty()
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(
+                event,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ));
+        }
+    }
+
+    async fn assert_closed_show_reply_cleans_candidate_without_touching_newer_runtime() {
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (show, mut show_rx) = mpsc::channel(1);
+        let (admitted_tx, admitted_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let Some(ShowCommand::SetLv1ConnectionIfCurrent { reply, .. }) = show_rx.recv().await
+            else {
+                panic!("expected connection metadata command");
+            };
+            admitted_tx.send(()).unwrap();
+            drop(reply);
+        });
+        let lifecycle = lifecycle_for_test_with_show(event_bus.clone(), show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let (candidate_lv1_tx, mut candidate_lv1_rx) = mpsc::channel(8);
+        let (candidate_lv1_closed_tx, candidate_lv1_closed_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            while let Some(command) = candidate_lv1_rx.recv().await {
+                if let Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(connected_snapshot());
+                }
+            }
+            let _ = candidate_lv1_closed_tx.send(());
+        });
+        let (candidate_fade_tx, mut candidate_fade_rx) = mpsc::channel(1);
+        let (newer_lv1_tx, mut newer_lv1_rx) = mpsc::channel(1);
+        let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
+        let (newer_generation_tx, newer_generation_rx) = oneshot::channel();
+        let lifecycle_for_hook = lifecycle.clone();
+        let hook = Some(Box::new(move |_runtime_generation: RuntimeGeneration| {
+            Box::pin(async move {
+                let newer_generation = lifecycle_for_hook.begin_connecting().await.unwrap();
+                assert!(
+                    lifecycle_for_hook
+                        .install_runtime_transaction(installed_runtime(
+                            newer_generation,
+                            test_actor_handle(newer_lv1_tx),
+                            newer_fade_tx,
+                        ))
+                        .await
+                        .is_ok()
+                );
+                assert!(
+                    lifecycle_for_hook
+                        .install_accepted_scene_peers(newer_generation)
+                        .await
+                );
+                let (reply, response) = oneshot::channel();
+                lifecycle_for_hook
+                    .scenes
+                    .send(ScenesCommand::RuntimePeersReady {
+                        generation: newer_generation,
+                        initial_scene_list: vec![],
+                        reply,
+                    })
+                    .await
+                    .unwrap();
+                response.await.unwrap().unwrap();
+                newer_generation_tx.send(newer_generation).unwrap();
+            }) as Pin<Box<dyn Future<Output = ()> + Send>>
+        }) as BeforeConnectionMetadataHook);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            test_actor_handle(candidate_lv1_tx),
+            candidate_fade_tx,
+            hook,
+        )
+        .await;
+        while events.try_recv().is_ok() {}
+
+        let result = lifecycle
+            .finish_connect_transaction(
+                identity(Some("candidate"), Some("LV1-FOH"), "192.0.2.40"),
+                started_runtime,
+            )
+            .await;
+        admitted_rx.await.unwrap();
+        assert_eq!(
+            result.unwrap_err(),
+            AppCommandError::ReplyChannelClosed.to_string()
+        );
+        let newer_generation = newer_generation_rx.await.unwrap();
+        assert_eq!(lifecycle.active_generation().await, newer_generation);
+        tokio::time::timeout(std::time::Duration::from_secs(1), candidate_lv1_closed_rx)
+            .await
+            .expect("candidate LV1 endpoint should be released")
+            .expect("candidate LV1 task should report shutdown");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), candidate_fade_rx.recv())
+                .await
+                .expect("candidate Fade endpoint should be released")
+                .is_none()
+        );
+
+        lifecycle
+            .current_lv1()
+            .await
+            .unwrap()
+            .send(Lv1Command::GetState {
+                reply: oneshot::channel().0,
+            })
+            .await
+            .unwrap();
+        assert!(matches!(
+            newer_lv1_rx.recv().await,
+            Some(Lv1Command::GetState { .. })
+        ));
+        lifecycle
+            .current_fade()
+            .await
+            .unwrap()
+            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .await
+            .unwrap();
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::AbortAll { .. })
+        ));
+        let (reply, response) = oneshot::channel();
+        lifecycle
+            .scenes
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            response.await.unwrap().ready_generation,
+            Some(newer_generation)
+        );
+        assert!(
+            capture
+                .matching("lv1_connected", tracing::Level::INFO)
+                .is_empty()
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(
+                event,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unavailable_show_mailbox_cleans_installed_candidate() {
+        let capture = crate::test_support::TracingCapture::new();
+        let _tracing_guard = capture.install();
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (show, show_rx) = mpsc::channel(1);
+        drop(show_rx);
+        let lifecycle = lifecycle_for_test_with_show(event_bus.clone(), show);
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let (candidate_lv1_tx, mut candidate_lv1_rx) = mpsc::channel(8);
+        let (candidate_lv1_closed_tx, candidate_lv1_closed_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            while let Some(command) = candidate_lv1_rx.recv().await {
+                if let Lv1Command::GetState { reply } = command {
+                    let _ = reply.send(connected_snapshot());
+                }
+            }
+            let _ = candidate_lv1_closed_tx.send(());
+        });
+        let (candidate_fade_tx, mut candidate_fade_rx) = mpsc::channel(1);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus,
+            test_actor_handle(candidate_lv1_tx),
+            candidate_fade_tx,
+            None,
+        )
+        .await;
+        while events.try_recv().is_ok() {}
+
+        let result = lifecycle
+            .finish_connect_transaction(
+                identity(Some("candidate"), Some("LV1-FOH"), "192.0.2.40"),
+                started_runtime,
+            )
+            .await;
+
+        assert_eq!(
+            result.unwrap_err(),
+            AppCommandError::ShowUnavailable.to_string()
+        );
+        assert!(lifecycle.current_lv1().await.is_none());
+        assert!(lifecycle.current_fade().await.is_none());
+        tokio::time::timeout(std::time::Duration::from_secs(1), candidate_lv1_closed_rx)
+            .await
+            .expect("candidate LV1 endpoint should be released")
+            .expect("candidate LV1 task should report shutdown");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), candidate_fade_rx.recv())
+                .await
+                .expect("candidate Fade endpoint should be released")
+                .is_none()
+        );
+        assert!(
+            capture
+                .matching("lv1_connected", tracing::Level::INFO)
+                .is_empty()
+        );
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(
+                event,
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn closed_show_reply_after_admission_cleans_candidate_without_touching_newer_runtime() {
+        assert_closed_show_reply_cleans_candidate_without_touching_newer_runtime().await;
     }
 
     #[tokio::test]

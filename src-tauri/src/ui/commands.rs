@@ -28,6 +28,9 @@ pub use show::{
     save_show_file_as_dialog, set_lockout,
 };
 
+/// @cc [owner:mixxorz,label:product] preserve-command-failure-message
+/// `CommandFailed` MUST return its contained frontend-safe message without adding the generic
+/// variant prefix; every other `AppCommandError` MUST use the variant's complete display text.
 pub(super) fn map_app_command_error(error: crate::runtime::errors::AppCommandError) -> String {
     match error {
         crate::runtime::errors::AppCommandError::CommandFailed(message) => message,

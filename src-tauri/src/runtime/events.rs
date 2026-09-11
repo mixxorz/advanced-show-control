@@ -14,6 +14,11 @@ pub enum RuntimeLifecycleEvent {
     ActiveGenerationChanged { generation: u64 },
 }
 
+/// @cc [owner:mixxorz,label:architecture] event-lifetime-classification
+/// `Lv1` and `Fade` facts MUST carry the connection generation that produced them. `Scenes` and
+/// `SessionReplaced` generations are runtime context for app-lifetime documents, while `CueLists`,
+/// `Show`, and `Settings` are also app-lifetime; consumers MUST NOT discard any of these app-lifetime
+/// facts based on generation.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -47,17 +52,38 @@ pub struct AppEventBus {
 }
 
 impl AppEventBus {
+    /// @cc [owner:mixxorz,label:reliability] nonzero-broadcast-capacity
+    /// Construction MUST accept zero without panicking by creating a broadcast channel with at
+    /// least one slot.
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity.max(1));
         let (state, _) = watch::channel(AppStateSnapshot::default());
         Self { tx, state }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:architecture] synchronous-fact-publication
+     * Publishing MUST synchronously retain and broadcast an already-established fact; event variants
+     * MUST NOT contain reply channels or cause publication to await or request actor work.
+     */
+    /**
+     * @cc [owner:mixxorz,label:architecture] retain-before-broadcast
+     * Publishing MUST apply any retained app-state projection before broadcasting the fact, so a
+     * receiver reacting to that fact can read a snapshot at least as new as the fact.
+     */
+    /**
+     * @cc [owner:mixxorz,label:reliability] publish-without-subscribers
+     * Publishing with no broadcast receivers MUST still retain applicable state and MUST return
+     * zero rather than fail.
+     */
     pub fn publish(&self, event: AppEvent) -> usize {
         self.retain(&event);
         self.tx.send(event).unwrap_or(0)
     }
 
+    /// @cc [owner:mixxorz,label:consistency] unchanged-state-does-not-notify
+    /// Retention MUST notify watch subscribers only when an applicable projection value changes;
+    /// duplicate projections and non-retained facts MUST not produce a watch change.
     pub(crate) fn retain(&self, event: &AppEvent) {
         self.state.send_if_modified(|state| state.apply(event));
     }

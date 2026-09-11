@@ -18,6 +18,10 @@ struct Lv1Projection {
     channels: Vec<ChannelSummary>,
 }
 
+/// @cc [owner:mixxorz,label:architecture;state] projector-cache-ownership
+/// The cache MUST own only generation-bound LV1/Fade projection state, bounded frontend logs, and
+/// snapshot/log counters; app-lifetime Show, Scenes, Cue Lists, and Settings state MUST be read from
+/// `AppStateSnapshot` when a view is built rather than copied into this cache.
 #[derive(Debug)]
 pub struct ProjectionCache {
     active_generation: u64,
@@ -61,6 +65,9 @@ impl ProjectionCache {
         self.active_generation = generation;
     }
 
+    /// @cc [owner:mixxorz,label:generation;state] generation-reset-boundary
+    /// A generation reset MUST clear all LV1-derived projection data and return Fade to `Idle`, while
+    /// preserving logs and snapshot/log counters that remain valid across connections.
     pub fn reset_for_generation(&mut self, generation: u64) {
         self.active_generation = generation;
         self.reset_generation_scoped_state();
@@ -79,6 +86,9 @@ impl ProjectionCache {
         self.active_generation
     }
 
+    /// @cc [owner:mixxorz,label:generation;safety] authoritative-snapshot-generation-filter
+    /// An authoritative LV1 snapshot MUST replace live projection fields only when its generation
+    /// equals the cache's active generation; a stale snapshot MUST leave the cache unchanged.
     pub fn apply_lv1_snapshot(&mut self, generation: u64, snapshot: crate::lv1::Lv1StateSnapshot) {
         if generation != self.active_generation {
             return;
@@ -112,6 +122,10 @@ impl ProjectionCache {
             .collect();
     }
 
+    /// @cc [owner:mixxorz,label:generation;projection] lv1-event-materiality
+    /// Stale-generation LV1 facts and parameter/keepalive facts MUST leave projected state unchanged
+    /// and return `false`; accepted connection, scene, scene-list, topology, and disconnect facts MUST
+    /// update or clear the live projection and return `true` so emission dirtiness tracks UI materiality.
     pub fn apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool {
         if generation != self.active_generation {
             return false;
@@ -156,6 +170,10 @@ impl ProjectionCache {
         true
     }
 
+    /// @cc [owner:mixxorz,label:generation;projection] fade-event-generation-filter
+    /// Fade facts from a stale generation MUST neither mutate projected Fade state nor mark the view
+    /// dirty; accepted-generation Fade facts MUST preserve the aggregate Running/Blocked/Idle mapping
+    /// and report projector activity even when a per-channel fact leaves that aggregate unchanged.
     pub fn apply_fade_event(&mut self, generation: u64, event: &FadeEvent) -> bool {
         if generation != self.active_generation {
             return false;
@@ -172,6 +190,11 @@ impl ProjectionCache {
         true
     }
 
+    /// @cc [owner:mixxorz,label:logging;reliability] bounded-ordered-ui-logs
+    /// Accepted UI log events MUST remain in arrival order and evict the oldest entries until no more
+    /// than `MAX_PROJECTOR_LOGS` remain. Cache-local IDs start at 1 and increase with saturation, so
+    /// they MAY repeat at `u64::MAX`; when serialized as JavaScript numbers, exact integer identity is
+    /// not guaranteed above `Number.MAX_SAFE_INTEGER`.
     pub fn append_log(&mut self, event: UiLogEvent) {
         let entry = AppLogEntry {
             id: self.next_log_id,
@@ -186,6 +209,19 @@ impl ProjectionCache {
         }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:projection;consistency] retained-state-at-build
+     * Every snapshot MUST combine the cache's current generation-bound state and logs with the
+     * supplied retained app-state snapshot; missing LV1 state MUST project disconnected with no live
+     * scene, scene-list, or channel data rather than removing app-lifetime state.
+     */
+    /**
+     * @cc [owner:mixxorz,label:projection;ordering] snapshot-version-monotonic
+     * Each build MUST increment the cache-local `state_version` until it saturates at `u64::MAX`, and
+     * generation resets MUST NOT reset it. Versions are therefore nondecreasing, not indefinitely
+     * strictly increasing; when serialized as JavaScript numbers, exact integer ordering is not
+     * guaranteed above `Number.MAX_SAFE_INTEGER`.
+     */
     pub fn build_snapshot(&mut self, state: &AppStateSnapshot) -> AppViewState {
         self.state_version = self.state_version.saturating_add(1);
         let state_version = self.state_version;

@@ -31,6 +31,10 @@ impl RuntimeGeneration {
         *current
     }
 
+    /// @cc [owner:mixxorz,label:safety] compare-and-advance-atomic
+    /// The generation MUST advance exactly once only when its current value equals `expected`;
+    /// mismatch MUST return `None` without mutation, and comparison plus mutation MUST be atomic
+    /// with respect to all other generation operations.
     pub(crate) async fn advance_if_current(&self, expected: u64) -> Option<u64> {
         let mut current = self.current.lock().await;
         if *current != expected {
@@ -40,6 +44,9 @@ impl RuntimeGeneration {
         Some(*current)
     }
 
+    /// @cc [owner:mixxorz,label:safety] current-generation-operation-fence
+    /// `operation` MUST execute exactly once while the generation lock establishes that
+    /// `expected` is current; on mismatch it MUST NOT execute and the method MUST return `None`.
     pub(crate) async fn if_current<T>(
         &self,
         expected: u64,

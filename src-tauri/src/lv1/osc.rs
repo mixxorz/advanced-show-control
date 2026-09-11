@@ -95,6 +95,9 @@ fn take<const N: usize>(
     Ok(out)
 }
 
+/// @cc [owner:mixxorz,label:protocol;parsing] canonical-osc-encoding
+/// Encoded OSC strings and blobs MUST use four-byte alignment with zero padding, booleans/Nil/
+/// Impulse MUST be payload-free type tags, and embedded NUL strings or oversized blobs MUST fail.
 pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscError> {
     if address.contains('\0') {
         return Err(OscError::EmbeddedNul);
@@ -151,6 +154,9 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
     Ok(out)
 }
 
+/// @cc [owner:mixxorz,label:protocol;parsing] strict-osc-decoding
+/// Decoding MUST reject non-four-byte packet lengths, malformed or unterminated strings, nonzero
+/// padding, unsupported tags, truncated values, invalid blob lengths, and trailing bytes.
 pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
     if !bytes.len().is_multiple_of(4) {
         return Err(OscError::InvalidPaddedLength(bytes.len()));

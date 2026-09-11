@@ -9,6 +9,12 @@ use tauri::Manager;
 
 pub(crate) mod commands;
 
+/// @cc [owner:mixxorz,label:debug] debug-builder-preserves-production-boundaries
+/// The debug app MUST use the production Show, Settings, Lifecycle, event-bus, and logging owner
+/// types with their production wiring, and MUST register the production adapters for workflows the
+/// smoke suite exercises. Additional registrations MUST remain smoke reporting, process exit, or
+/// deterministic LV1/session setup and observation unavailable through production commands; they
+/// MUST NOT be added to `build_app`.
 pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
@@ -35,7 +41,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             app.manage(settings);
             app.manage(logging_runtime.guard);
             app.manage(logging_runtime.ui_logs);
-            app.manage(commands::SmokeReport::new());
+            app.manage(commands::SmokeReport::new()?);
             tracing::info!(
                 event = "app_started",
                 "Starting Advanced Show Control debug smoke"

@@ -4,16 +4,28 @@ pub const WAVE_WIDTH_FADERS: f64 = 8.0;
 pub const GROUP_STRIDE: i32 = 128;
 pub const PHASE_STEP: f64 = std::f64::consts::TAU / 32.0;
 
+/// @cc [owner:mixxorz,label:testing] vegas-stable-channel-index
+/// For LV1 identities with `group` in `0..=12` and `channel` in `0..=127`, the same pair MUST map to
+/// `group * 128 + channel` so Vegas animation phases remain stable across runs and callers.
 pub fn stable_index(group: i32, channel: i32) -> i32 {
     group * GROUP_STRIDE + channel
 }
 
+/// @cc [owner:mixxorz,label:testing] vegas-explicit-time-wave
+/// For LV1 identities with `group` in `0..=12` and `channel` in `0..=127`, the output MUST be a
+/// deterministic unit-interval fader position derived only from group, channel, and the explicit
+/// tick. Channel indices eight apart MUST have equivalent phase modulo `TAU` at the same tick, and
+/// each tick MUST advance phase by `TAU / 32`.
 pub fn fader_position_at(group: i32, channel: i32, tick: u64) -> f64 {
     let index = stable_index(group, channel) as f64;
     let phase = (index / WAVE_WIDTH_FADERS) * std::f64::consts::TAU + tick as f64 * PHASE_STEP;
     ((phase.sin() + 1.0) / 2.0).clamp(0.0, 1.0)
 }
 
+/// @cc [owner:mixxorz,label:testing;lv1] vegas-measured-fader-law
+/// For LV1 identities with `group` in `0..=12` and `channel` in `0..=127`, the deterministic Vegas
+/// position MUST be converted to gain with the production measured LV1 fader law; this helper MUST
+/// NOT introduce a separate gain curve.
 pub fn gain_db_at(group: i32, channel: i32, tick: u64) -> f64 {
     pos_to_db(fader_position_at(group, channel, tick))
 }

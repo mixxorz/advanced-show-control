@@ -4,6 +4,10 @@ use crate::show::{ConnectCommandResult, ShowCommandResult};
 use crate::ui::UiLogReceiverState;
 use tauri::{AppHandle, Manager, Runtime, State};
 
+/// @cc [owner:mixxorz,label:architecture] frontend-ready-supplies-log-subscription
+/// The frontend-ready adapter MUST obtain a fresh UI-log receiver from managed logging state and
+/// delegate projector startup and idempotence to Lifecycle; it MUST NOT emit snapshots or start a
+/// projector itself.
 #[tauri::command]
 pub async fn frontend_ready<R: Runtime>(
     app: AppHandle<R>,

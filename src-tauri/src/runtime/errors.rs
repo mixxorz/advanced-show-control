@@ -1,5 +1,10 @@
 use thiserror::Error;
 
+/// @cc [owner:mixxorz,label:product] frontend-safe-command-errors
+/// Static variants MUST render as complete user-facing messages. `CommandFailed` display MUST add
+/// its generic command context and `RecallCanceled` display MUST retain its cancellation context;
+/// frontend mapping MAY deliberately return only the contained `CommandFailed` message while using
+/// every other variant's complete display text.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
 pub enum AppCommandError {
     #[error("LV1 actor is unavailable")]

@@ -176,6 +176,13 @@ fn scene_config_name_counts(configs: &[SceneConfig]) -> HashMap<String, usize> {
     counts
 }
 
+/**
+ * @cc [owner:mixxorz,label:persistence] conservative-scene-alignment
+ * Alignment MUST preserve a config's durable UUID and fade metadata only for an exact index/name
+ * match, a name unique in both old and new lists, or the sole same-index rename in equal-length
+ * lists. Ambiguous or missing matches MUST create default linked configs and retain unmatched old
+ * configs as unlinked rather than guessing identity.
+ */
 pub(crate) fn align_scene_configs(
     configs: Vec<SceneConfig>,
     lv1_scenes: &[SceneListEntry],

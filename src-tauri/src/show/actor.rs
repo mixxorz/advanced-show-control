@@ -21,6 +21,10 @@ use super::{LoadShowFileResult, NewShowFileResult, ShowCommandResult};
 
 const SHOW_LOCAL_ACTOR_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// @cc [owner:mixxorz,label:architecture] show-peer-ownership
+/// Show peers MUST contain only the app-lifetime Scenes document-owner endpoint, the shared
+/// generation authority, and the current generation-bound LV1 connection; Show MUST NOT acquire
+/// ownership of scene or cue-list documents through these peers.
 #[derive(Clone, Default)]
 pub struct ShowActorPeers {
     runtime_generation: RuntimeGeneration,
@@ -33,6 +37,9 @@ impl ShowActorPeers {
         self.runtime_generation.clone()
     }
 
+    /// @cc [owner:mixxorz,label:safety] lv1-peer-generation-binding
+    /// Installing an LV1 peer MUST bind it to both `generation` and Show's shared runtime-generation
+    /// authority so subsequent snapshot requests can reject stale work.
     pub fn set_lv1(&self, generation: u64, lv1: Lv1ActorHandle) {
         *self.lv1.lock().expect("show peer lock poisoned") = Some(Lv1Connection::new(
             lv1,
@@ -45,6 +52,9 @@ impl ShowActorPeers {
         *self.scenes.lock().expect("show peer lock poisoned") = Some(scenes);
     }
 
+    /// @cc [owner:mixxorz,label:safety] lv1-peer-generation-clear
+    /// Clearing generation `N` MUST remove the LV1 peer only when the installed peer also belongs to
+    /// `N`; cleanup from a stale generation MUST preserve a newer peer.
     pub fn clear_lv1(&self, generation: u64) {
         let mut lv1 = self.lv1.lock().expect("show peer lock poisoned");
         if lv1
@@ -102,6 +112,9 @@ impl ShowActorTask {
     }
 }
 
+/// @cc [owner:mixxorz,label:architecture] show-construction-has-no-event-gap
+/// Construction MUST retain the initial full Show projection and subscribe the actor to application
+/// facts before returning, so persisted edits published before task spawn can still dirty the show.
 pub fn build_show_actor(
     event_bus: AppEventBus,
 ) -> (
@@ -138,6 +151,9 @@ fn build_show_actor_with_state(
     (tx, task, peers, ShowLockoutReader::new(lockout_rx))
 }
 
+/// @cc [owner:mixxorz,label:reliability] show-event-lag-fails-dirty
+/// If the Show event subscriber lags, the actor MUST conservatively mark the show dirty and publish
+/// the full Show projection rather than assuming no persisted edit was missed.
 async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -169,6 +185,10 @@ async fn run_show_actor(
     }
 }
 
+/// @cc [owner:mixxorz,label:safety] lockout-watch-follows-command-state
+/// After every processed Show command, this producer MUST synchronize the watch value to Show's
+/// accepted lockout state and MUST notify readers only when that value changed, including lockout
+/// changes caused by set, new, or load commands.
 fn publish_lockout_if_changed(lockout_tx: &watch::Sender<bool>, state: &ShowState) {
     lockout_tx.send_if_modified(|current| {
         let next = state.lockout();
@@ -178,6 +198,10 @@ fn publish_lockout_if_changed(lockout_tx: &watch::Sender<bool>, state: &ShowStat
     });
 }
 
+/// @cc [owner:mixxorz,label:persistence] persisted-domain-events-dirty-show
+/// Every Cue Lists fact and every Scenes state change marked `persisted_scene_edit: true` MUST mark
+/// the show dirty and publish its full projection. Projection-only scene changes and generation tags
+/// MUST NOT affect dirty state.
 fn handle_app_event(event: AppEvent, state: &mut ShowState, event_bus: &AppEventBus) {
     match event {
         AppEvent::Scenes {
@@ -206,6 +230,27 @@ fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool)
     }
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] show-command-outcomes
+ * State-changing commands MUST publish a full Show projection exactly when their owned projected
+ * state changes, except successful new, save, and load operations, which MUST publish their final
+ * projection. `ShowCommandResult.changed` MUST describe that command's accepted state change, and
+ * absence or closure of an optional reply MUST NOT cancel command execution.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety] generation-conditioned-connection-metadata
+ * `SetLv1ConnectionIfCurrent` MUST mutate and publish connected-LV1 metadata only while
+ * `expected_generation` is current. It MUST return `{ accepted: false, changed: false }` for stale
+ * generations and MUST NOT infer connection metadata from LV1 disconnect facts.
+ */
+/**
+ * @cc [owner:mixxorz,label:persistence] show-persistence-orchestration
+ * Save MUST obtain one combined Scenes/Cue Lists `SessionDocument`, write it with current lockout,
+ * and mark path/timestamp clean only after the write succeeds; save MUST NOT require LV1. New and
+ * load MUST require a connected, generation-current LV1 scene snapshot and replace both documents
+ * before updating Show metadata. Any pre-commit read, validation, write, or replacement error MUST
+ * be returned without reporting success or applying the corresponding Show metadata transition.
+ */
 async fn handle_command(
     command: ShowCommand,
     state: &mut ShowState,
@@ -345,6 +390,10 @@ async fn current_lv1_snapshot(peers: &ShowActorPeers) -> Result<(u64, Lv1StateSn
     Ok((lv1.generation(), snapshot))
 }
 
+/// @cc [owner:mixxorz,label:safety] lv1-snapshot-waits-are-generation-fenced
+/// An LV1 state request MUST enforce separate bounded mailbox-send and reply waits and MUST verify
+/// the connection generation after each wait; timeout, closed channels, or stale generation MUST be
+/// returned as an error rather than yielding a snapshot.
 async fn get_lv1_state(lv1: &Lv1Connection) -> Result<Lv1StateSnapshot, AppCommandError> {
     let (reply, rx) = tokio::sync::oneshot::channel();
     let send = tokio::time::timeout(
@@ -365,6 +414,9 @@ async fn get_lv1_state(lv1: &Lv1Connection) -> Result<Lv1StateSnapshot, AppComma
     response
 }
 
+/// @cc [owner:mixxorz,label:safety] replacement-revalidates-lv1-scene-list
+/// Before new/load commits a replacement, the installed LV1 peer MUST still be the expected
+/// generation, connected, and report the same scene list used to construct the replacement.
 async fn validate_lv1_snapshot(
     peers: &ShowActorPeers,
     expected_generation: u64,
@@ -384,6 +436,10 @@ async fn validate_lv1_snapshot(
     Ok(())
 }
 
+/// @cc [owner:mixxorz,label:product] show-errors-remain-actionable
+/// Mapping MUST preserve the message carried by `CommandFailed`, translate `StaleGeneration` to the
+/// explicit current-generation error, and stringify every other `AppCommandError` without converting
+/// it into a successful or no-change outcome.
 fn map_app_command_error(error: AppCommandError) -> String {
     match error {
         AppCommandError::StaleGeneration => "LV1 generation is no longer current".to_string(),
@@ -392,6 +448,11 @@ fn map_app_command_error(error: AppCommandError) -> String {
     }
 }
 
+/// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
+/// A successful load MUST adopt the imported path, saved timestamp, and lockout, and MUST remain
+/// clean only when no scene-ID generation, LV1 scene alignment, or cue reconciliation changed the
+/// imported persisted document. The published Show projection's dirty state MUST account for the
+/// reconciled document returned by the replacement commit.
 async fn load_show_file_from_dto(
     state: &mut ShowState,
     event_bus: &AppEventBus,
@@ -460,6 +521,10 @@ async fn load_show_file_from_dto(
     })
 }
 
+/// @cc [owner:mixxorz,label:persistence] save-reads-owner-document
+/// Saving MUST request the combined `SessionDocument` from the Scenes owner with bounded send and
+/// reply waits. Missing peers, mailbox closure, or either timeout MUST fail the save rather than
+/// falling back to projected, cached, or partial scene/cue state.
 async fn current_session_document(peers: &ShowActorPeers) -> Result<SessionDocument, String> {
     let scenes = peers
         .scenes()
@@ -478,6 +543,10 @@ async fn current_session_document(peers: &ShowActorPeers) -> Result<SessionDocum
         .map_err(|_| "Show blocked: scenes state is unavailable".to_string())
 }
 
+/// @cc [owner:mixxorz,label:persistence] replacement-timeout-serialization
+/// Session replacement MUST use a single `SessionReplacement` ticket: a timeout or closed reply MUST
+/// cancel an uncommitted replacement, while a replacement already committed by Scenes MUST still be
+/// returned as success. Show MUST NOT attempt rollback or a compensating replacement.
 async fn replace_session_document(
     peers: &ShowActorPeers,
     document: SessionDocument,

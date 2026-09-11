@@ -68,6 +68,9 @@ enum DrainCommandsResult {
     CommandChannelClosed,
 }
 
+/// @cc [owner:mixxorz,label:safety;connection;error] writer-failure-fails-flushes
+/// A socket write or flush failure MUST fail every queued flush acknowledgement, signal transport
+/// failure, and stop the writer so callers cannot mistake queued bytes for delivered bytes.
 async fn writer_task(
     mut writer: tokio::net::tcp::OwnedWriteHalf,
     mut rx: mpsc::Receiver<WriterMessage>,
@@ -144,17 +147,14 @@ fn fail_pending_writer_flushes(rx: &mut mpsc::Receiver<WriterMessage>) {
     }
 }
 
-/// Handles a single command received while the actor is disconnected.
-///
-/// # Flush behavior varies by context:
-/// - During reconnect delays (drain_commands_for): Flush replies Err(NotConnected)
-///   because sends truly cannot be queued yet.
-/// - After connection but before full init (post_connect_stale_drain): Flush replies Ok(())
-///   because the actor is about to enter connected mode and can accept sends.
-///
-/// WriteBatch is silently dropped (fire-and-forget; callers tolerate loss while disconnected).
-/// GetState replies with the current snapshot.
-/// All other commands (SetGain, SetPan, SetBalance, SetWidth, SetMute, RecallScene) reply based on flush_reply.
+/// @cc [owner:mixxorz,label:safety;connection;fallback] disconnected-command-outcomes
+/// While disconnected, state reads MUST return the current snapshot, acknowledged parameter writes
+/// and recalls MUST return `NotConnected`, and fire-and-forget batches MUST be dropped.
+/**
+ * @cc [owner:mixxorz,label:connection] post-connect-flush-boundary
+ * Flush MUST fail during reconnect delay but MAY succeed in the stale-command drain after transport
+ * registration, where all commands preceding it have been dispositioned before `Connected`.
+ */
 fn drain_disconnected_command(
     cmd: Lv1Command,
     state: &ActorState,
@@ -316,6 +316,14 @@ enum WriterMessage {
     Flush(oneshot::Sender<Result<(), Lv1ActorError>>),
 }
 
+/// @cc [owner:mixxorz,label:safety;connection;error] connected-failure-disconnects
+/// Ping timeout, read/write failure, frame or write encoding failure, writer-queue exhaustion, or
+/// command-channel closure MUST leave connected processing and trigger connection-state cleanup.
+/**
+ * @cc [owner:mixxorz,label:safety;protocol] recall-dispatch-observation-barrier
+ * A successful recall dispatch MUST report the scene-observation sequence captured before the
+ * recall bytes are queued, allowing callers to require a strictly newer observation.
+ */
 async fn run_connected(
     client: &mut Lv1TcpClient,
     state: &mut ActorState,

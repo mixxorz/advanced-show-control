@@ -1,0 +1,28 @@
+@cc [owner:mixxorz,label:architecture] actor-owned-state-boundaries
+Production code outside a domain owner MUST request state changes through that owner's explicit
+command interface or documented synchronous API. It MUST NOT mutate actor-owned state directly or
+move business validation into handles or Tauri adapters.
+
+@cc [owner:mixxorz,label:architecture] runtime-events-are-facts
+Production `AppEventBus` events MUST report facts that have occurred, never request work. Requests
+MUST use the owning domain's command interface, and diagnostics that do not represent application
+state MUST use `tracing` instead of the event bus.
+
+@cc [owner:mixxorz,label:safety] generation-scoped-stale-work
+Code holding shared generation authority MUST treat a rejected generation check as terminal for the
+operation. It MUST NOT then send LV1 commands, mutate current or app-lifetime state, or publish or
+log success, and stale work MUST NOT affect a newer runtime.
+
+@cc [owner:mixxorz,label:architecture] generation-tagged-fact-filtering
+Generation-scoped LV1 and Fade actors MAY publish facts without reading shared generation authority,
+but every such fact MUST carry the actor's assigned generation. Consumers of generation-bound state
+MUST discard facts that do not match their active generation.
+
+@cc [owner:mixxorz,label:architecture] projector-only-frontend-state
+The projector MUST be the only backend component that constructs and emits `app-status-changed`.
+Tauri command adapters MUST NOT emit backend state snapshots or implement domain policy.
+
+@cc [owner:mixxorz,label:security;logging] diagnostic-data-minimization
+Production tracing and frontend-safe errors MUST NOT include credentials, tokens, raw OSC payloads,
+or serialized or debug-formatted `AppSettings`, `PersistedSettings`, `ShowFile`, or `SessionDocument`
+values. User-facing messages MUST remain understandable without structured diagnostic fields.

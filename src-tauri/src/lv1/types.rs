@@ -21,12 +21,18 @@ pub struct SceneState {
     pub name: String,
 }
 
+/// @cc [owner:mixxorz,label:generation;state] scene-observation-sequence-scope
+/// `sequence` MUST identify ordering only within one transport connection and MUST NOT be treated as
+/// a durable scene identifier or compared across reconnects or generations.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneObservation {
     pub sequence: u64,
     pub scene: SceneState,
 }
 
+/// @cc [owner:mixxorz,label:safety;state] recall-dispatch-barrier-semantics
+/// `scene_observation_sequence` MUST be the last observation known before recall dispatch; recall
+/// completion logic MUST require a matching observation with a strictly greater sequence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecallSceneDispatch {
     pub scene_observation_sequence: u64,

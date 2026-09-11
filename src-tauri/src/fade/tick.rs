@@ -95,7 +95,10 @@ impl ActiveTarget {
         }
     }
 
-    /// Returns the interpolated value at `now`.
+    /// @cc [owner:mixxorz,label:product] parameter-interpolation
+    /// `value_at` MUST clamp normalized elapsed progress to `[0, 1]`, return the finite exact target
+    /// for zero duration, interpolate faders in measured fader-position space, and interpolate Pan,
+    /// Balance, and Width linearly in their native value space.
     pub(crate) fn value_at(&self, now: Instant) -> f64 {
         if self.duration.is_zero() {
             return self.target_value;
@@ -116,9 +119,10 @@ impl ActiveTarget {
         self.finish_requested || now.duration_since(self.started_at) >= self.duration
     }
 
-    /// Returns true if the current parameter value indicates a manual override.
-    /// Faders are compared in position space. Pan uses a direct threshold. Balance
-    /// and width do not participate in override cancellation.
+    /// @cc [owner:mixxorz,label:safety;product] override-thresholds
+    /// Fader override detection MUST compare reported and expected values in measured position
+    /// space, Pan MUST compare native values, and Balance and Width MUST never independently declare
+    /// an override.
     pub(crate) fn is_override(&self, reported_value: f64) -> bool {
         if self.is_fader() {
             let reported_pos = db_to_pos(reported_value);
@@ -131,7 +135,9 @@ impl ActiveTarget {
         }
     }
 
-    /// Records an override report and returns true when override is confirmed.
+    /// @cc [owner:mixxorz,label:safety;product] pan-override-confirmation
+    /// Pan MUST require two consecutive out-of-threshold reports to confirm override and MUST reset
+    /// that evidence on an in-threshold report; fader override confirmation MUST remain immediate.
     pub(crate) fn record_override_report(&mut self, reported_value: f64) -> bool {
         if self.key.parameter != FadeParameter::Pan {
             return self.is_override(reported_value);
@@ -146,7 +152,10 @@ impl ActiveTarget {
         }
     }
 
-    /// Returns Some(new_value) if the target has moved enough to warrant sending.
+    /// @cc [owner:mixxorz,label:product] parameter-send-delta-suppression
+    /// `next_send` MUST suppress values whose change from `expected_value` is below the parameter's
+    /// minimum delta, comparing faders in measured position space and Pan, Balance, and Width in
+    /// native value space. It MUST update `expected_value` exactly when it returns a value.
     pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
         let new_value = if self.is_done(now) {
             self.target_value
@@ -176,6 +185,9 @@ impl ActiveTarget {
         (new_value - self.expected_value).abs() >= delta_threshold
     }
 
+    /// @cc [owner:mixxorz,label:product;safety] exact-final-value
+    /// `exact_final_send` MUST bypass minimum-delta suppression, return the configured target
+    /// exactly, and update the expected value used by feedback comparison to that same target.
     pub(crate) fn exact_final_send(&mut self) -> f64 {
         self.expected_value = self.target_value;
         self.target_value

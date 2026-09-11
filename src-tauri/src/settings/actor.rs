@@ -61,6 +61,10 @@ struct SetLastConnectedLv1Gate {
     release: tokio::sync::oneshot::Receiver<()>,
 }
 
+/// @cc [owner:mixxorz,label:privacy] initial-settings-projection-excludes-identity
+/// Actor construction MUST seed retained settings state and its returned initial value from public
+/// `AppSettings` only; the persisted remembered LV1 identity MUST remain available exclusively via
+/// the dedicated settings commands and MUST NOT enter `SettingsEvent` projection data.
 pub fn build_settings_actor(
     settings_dir: PathBuf,
     event_bus: AppEventBus,
@@ -100,6 +104,19 @@ async fn run_settings_actor(
     tracing::debug!(event = "settings_actor_stopped", "Settings actor stopped");
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] settings-replacement-observable-result
+ * After a successful changed `ReplaceSettings`, the actor MUST publish
+ * `SettingsEvent::StateChanged` and emit the `settings_updated` tracing event. Normalized no-ops
+ * MUST report `changed: false` without either emission, and persistence failures MUST return the
+ * underlying explanatory error without publishing or logging success.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety] remembered-identity-generation-gate
+ * `SetLastConnectedLv1` MUST publish a changed identity only while `expected_generation` is current,
+ * checking both before staging and atomically around publication. Stale work MUST return success as
+ * a no-op, leave memory and `settings.json` unchanged, and clean up its unpublished staged file.
+ */
 async fn handle_command(
     command: SettingsCommand,
     event_bus: &AppEventBus,
@@ -171,6 +188,9 @@ async fn handle_command(
     }
 }
 
+/// @cc [owner:mixxorz,label:privacy] settings-update-log-excludes-private-identity
+/// Settings update logs MUST describe only projected public settings and MUST NOT include the
+/// remembered LV1 identity or serialized settings document.
 fn log_settings_updated(settings: &AppSettings) {
     tracing::info!(
         event = "settings_updated",

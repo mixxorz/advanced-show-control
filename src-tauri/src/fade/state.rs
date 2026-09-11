@@ -57,6 +57,9 @@ impl EngineState {
         }
     }
 
+    /// @cc [owner:mixxorz,label:architecture;safety] generation-tagged-publication
+    /// Every fade fact emitted by this engine state MUST carry the generation fixed when the state
+    /// was constructed; callers MUST NOT supply or retag a publication generation.
     pub(crate) fn fan_out(&mut self, event: FadeEvent) {
         self.event_bus.publish_fade(self.generation, event);
     }
@@ -80,6 +83,10 @@ impl EngineState {
         self.generation
     }
 
+    /// @cc [owner:mixxorz,label:product;safety] readiness-reset-pauses
+    /// Starting or replacing readiness MUST pause every active target at the first pause boundary,
+    /// replace the prior barrier, and complete any prior owned waiter as `Superseded`; elapsed
+    /// readiness time MUST NOT advance target interpolation.
     pub(super) fn start_or_reset_readiness(
         &mut self,
         generation: u64,
@@ -127,6 +134,11 @@ impl EngineState {
         }
     }
 
+    /// @cc [owner:mixxorz,label:safety] readiness-release
+    /// Readiness MUST release only after two strictly newer ping sequences from the barrier's exact
+    /// generation arrive before its absolute deadline with no subscriber lag. Ignored pings MUST
+    /// neither advance the count nor resume targets; release MUST resume all targets and complete an
+    /// owned waiter successfully.
     pub(super) fn observe_ping(
         &mut self,
         generation: u64,
@@ -172,6 +184,10 @@ impl EngineState {
             .map(|barrier| barrier.deadline)
     }
 
+    /// @cc [owner:mixxorz,label:safety;reliability] readiness-timeout
+    /// Timing out an installed barrier MUST clear every active target and complete its owned waiter
+    /// with the barrier's generation, exact scene identity, and observed ping count; no barrier MUST
+    /// be a no-op.
     pub(super) fn timeout_readiness(&mut self) -> Option<ReadinessTimeoutContext> {
         self.readiness_barrier.take().map(|barrier| {
             let context = ReadinessTimeoutContext {
@@ -199,6 +215,10 @@ impl EngineState {
         self.readiness_barrier.is_some()
     }
 
+    /// @cc [owner:mixxorz,label:safety] abort-clears-all
+    /// Cancellation MUST synchronously remove all active targets and the readiness barrier, and MUST
+    /// complete an owned readiness waiter with the supplied cancellation reason so later ticks or
+    /// pings cannot revive the canceled work.
     pub(crate) fn cancel_all_in_place(&mut self, cancellation: RecallReadinessCancellation) {
         self.channels.clear();
         if let Some(barrier) = self.readiness_barrier.take()

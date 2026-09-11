@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 const MAX_BACKUPS_PER_SHOW_FILE: usize = 10;
 
+/// @cc [owner:mixxorz,label:persistence;compatibility] persisted-show-decoding
+/// Success MUST deserialize the persisted camelCase show schema and preserve `schema_version`
+/// unchanged for later validation by `import_show_file`; this function MUST NOT decide schema
+/// support. Legacy optional fields supported by `ShowFile` MUST retain their serde defaults, while
+/// unreadable or malformed files MUST return a path-qualified error.
 pub fn read_show_file(path: &Path) -> Result<ShowFile, String> {
     let json = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read session {}: {err}", path.display()))?;
@@ -18,6 +23,11 @@ pub fn read_show_file(path: &Path) -> Result<ShowFile, String> {
         .map_err(|err| format!("Failed to parse session {}: {err}", path.display()))
 }
 
+/// @cc [owner:mixxorz,label:persistence;safety;compatibility] transactional-show-save
+/// A save MUST serialize the complete `ShowFile` as pretty JSON using its persisted camelCase field
+/// names and current values. If `path` exists, its pre-save bytes MUST first be published as a
+/// synchronized backup; only then may `StagedFile` atomically publish the JSON. Any failure MUST be
+/// returned rather than reported as a successful save, and a new destination requires no backup.
 pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Result<(), String> {
     if path.exists() {
         create_backup(path, backup_dir)?;
@@ -68,6 +78,11 @@ fn app_data_folder_name() -> &'static str {
     }
 }
 
+/// @cc [owner:mixxorz,label:persistence] backup-publication-and-retention
+/// Before returning success, this operation MUST publish a synchronized byte-for-byte copy under
+/// the selected backup name and attempt to prune the oldest published backups matching this show's
+/// exact stem down to `MAX_BACKUPS_PER_SHOW_FILE`. Failure before publication MUST attempt to remove
+/// the reserved temporary backup.
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
     let timestamp = crate::time::current_timestamp_millis();
     let (candidate, staged_path, mut dest) =
@@ -149,16 +164,43 @@ fn prune_old_backups(
     Ok(())
 }
 
+/// @cc [owner:mixxorz,label:persistence;safety] backup-stem-classification-is-exact
+/// Classification MUST accept only generated names whose prefix is canonical decimal Unix-epoch
+/// milliseconds, optionally followed by `__backup` and a canonical positive integer. The complete
+/// source stem after the separator MUST match exactly, and collision suffixes MUST precede that
+/// separator. Legacy suffix-after-stem names MUST NOT be claimed for a shorter ambiguous stem.
 fn is_backup_for_show_file(name: &str, stem: &str) -> bool {
     let Some(prefix) = name.strip_suffix(".ascs") else {
         return false;
     };
 
-    let Some((_, source)) = prefix.split_once('-') else {
+    let Some((generated_prefix, source)) = prefix.split_once('-') else {
         return false;
     };
 
-    source == stem || source.starts_with(&format!("{stem}__backup"))
+    source == stem && is_generated_backup_prefix(generated_prefix)
+}
+
+fn is_generated_backup_prefix(prefix: &str) -> bool {
+    if is_canonical_decimal(prefix) {
+        return true;
+    }
+
+    let Some((timestamp, collision)) = prefix.split_once("__backup") else {
+        return false;
+    };
+    is_canonical_decimal(timestamp)
+        && is_canonical_decimal(collision)
+        && collision
+            .as_bytes()
+            .first()
+            .is_some_and(|digit| *digit != b'0')
+}
+
+fn is_canonical_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
 }
 
 fn reserve_unique_backup_file(
@@ -182,7 +224,7 @@ fn reserve_unique_backup_file(
         let file_name = if suffix == 0 {
             format!("{timestamp}-{stem}.ascs")
         } else {
-            format!("{timestamp}-{stem}__backup{suffix}.ascs")
+            format!("{timestamp}__backup{suffix}-{stem}.ascs")
         };
         let candidate = backup_dir.join(&file_name);
         if candidate.exists() {
@@ -209,6 +251,9 @@ fn reserve_unique_backup_file(
     unreachable!("suffix loop is unbounded")
 }
 
+/// @cc [owner:mixxorz,label:persistence] oldest-backups-pruned-first
+/// The returned paths MUST be exactly the excess entries beyond `max_backups`, ordered oldest first
+/// by modification time with filename as a deterministic tie-breaker.
 fn prune_backup_entries(
     mut backups: Vec<(SystemTime, String, PathBuf)>,
     max_backups: usize,
@@ -359,10 +404,60 @@ mod tests {
     #[test]
     fn backup_names_match_only_the_exact_show_stem() {
         assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
-        assert!(is_backup_for_show_file("100-mix__backup1.ascs", "mix"));
+        assert!(is_backup_for_show_file("100__backup1-mix.ascs", "mix"));
         assert!(!is_backup_for_show_file("100-mix-1.ascs", "mix"));
         assert!(is_backup_for_show_file("100-mix-1.ascs", "mix-1"));
         assert!(!is_backup_for_show_file(".100-mix.ascs.tmp", "mix"));
+    }
+
+    #[test]
+    fn backup_names_reject_unrelated_or_malformed_prefixes() {
+        for name in [
+            "notes-mix.ascs",
+            "-mix.ascs",
+            "01-mix.ascs",
+            "100_extra-mix.ascs",
+            "100__backup-mix.ascs",
+            "100__backup0-mix.ascs",
+            "100__backup01-mix.ascs",
+            "100__backupx-mix.ascs",
+        ] {
+            assert!(!is_backup_for_show_file(name, "mix"), "accepted {name}");
+        }
+    }
+
+    #[test]
+    fn backup_names_cannot_cross_classify_backup_like_show_stems() {
+        assert!(is_backup_for_show_file("100__backup1-mix.ascs", "mix"));
+        assert!(!is_backup_for_show_file(
+            "100__backup1-mix.ascs",
+            "mix__backup1"
+        ));
+        assert!(is_backup_for_show_file(
+            "100-mix__backup1.ascs",
+            "mix__backup1"
+        ));
+        assert!(!is_backup_for_show_file("100-mix__backup1.ascs", "mix"));
+    }
+
+    #[test]
+    fn reserve_unique_backup_file_puts_collision_before_stem_separator() {
+        let backup_dir =
+            std::env::temp_dir().join(format!("show-backup-reservation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&backup_dir).unwrap();
+        fs::write(backup_dir.join("100-mix.ascs"), "existing").unwrap();
+
+        let (candidate, staged, file) =
+            reserve_unique_backup_file(&backup_dir, Path::new("mix.ascs"), "100").unwrap();
+
+        assert_eq!(candidate, backup_dir.join("100__backup1-mix.ascs"));
+        assert_eq!(staged, backup_dir.join(".100__backup1-mix.ascs.tmp"));
+        assert!(is_backup_for_show_file(
+            candidate.file_name().unwrap().to_str().unwrap(),
+            "mix"
+        ));
+        drop(file);
+        fs::remove_dir_all(backup_dir).unwrap();
     }
 
     #[test]
@@ -388,6 +483,33 @@ mod tests {
         assert_eq!(
             prune_backup_entries(backups, 2),
             vec![PathBuf::from("2-foo.ascs")]
+        );
+    }
+
+    #[test]
+    fn prune_backup_entries_breaks_equal_mtime_ties_by_filename() {
+        let modified = UNIX_EPOCH + Duration::from_secs(1);
+        let backups = vec![
+            (
+                modified,
+                "3-foo.ascs".to_string(),
+                PathBuf::from("3-foo.ascs"),
+            ),
+            (
+                modified,
+                "1-foo.ascs".to_string(),
+                PathBuf::from("1-foo.ascs"),
+            ),
+            (
+                modified,
+                "2-foo.ascs".to_string(),
+                PathBuf::from("2-foo.ascs"),
+            ),
+        ];
+
+        assert_eq!(
+            prune_backup_entries(backups, 1),
+            vec![PathBuf::from("1-foo.ascs"), PathBuf::from("2-foo.ascs")]
         );
     }
 }

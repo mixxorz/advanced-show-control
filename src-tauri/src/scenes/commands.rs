@@ -10,6 +10,11 @@ pub enum ScenesCommand {
     GetSessionDocument {
         reply: oneshot::Sender<crate::session::SessionDocument>,
     },
+    /// @cc [owner:mixxorz,label:persistence] session-replacement-single-owner-turn
+    /// Session replacement MUST commit scene and cue documents in one owner turn under the
+    /// replacement ticket and expected-generation check, cancel queued recall and cue-advance
+    /// intent without aborting an active fade, and publish one combined `SessionReplaced`
+    /// projection.
     ReplaceSessionDocument {
         replacement: crate::session::SessionReplacement,
         expected_generation: u64,
@@ -22,8 +27,10 @@ pub enum ScenesCommand {
     InitialProjectionState {
         reply: oneshot::Sender<crate::scenes::ScenesProjectionState>,
     },
-    /// Marks the exact generation's LV1/Fade peers usable and applies any
-    /// scene-list fact received before those peers were accepted.
+    /// @cc [owner:mixxorz,label:safety] runtime-readiness-handoff
+    /// Readiness MUST be accepted only when the supplied generation is still authoritative and a
+    /// complete peer pair for that generation is installed; a same-generation scene list cached
+    /// before handoff MUST supersede the initial list supplied by lifecycle.
     RuntimePeersReady {
         generation: u64,
         initial_scene_list: Vec<crate::lv1::SceneListEntry>,
@@ -108,6 +115,10 @@ pub struct RecallSceneResult {
     pub lv1_scene_index: i32,
 }
 
+/// @cc [owner:mixxorz,label:safety] explicit-recall-exact-identity
+/// A recall request MUST be rejected unless its durable UUID resolves to a linked config and the
+/// connected LV1 scene list contains the config's exact index-and-name identity; lockout MUST also
+/// reject the request.
 pub fn validate_recall_scene_request(
     lockout: bool,
     scene_document: &SceneDocument,

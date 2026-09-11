@@ -17,4 +17,8 @@ pub mod show_file;
 pub(crate) mod test_support;
 pub mod time;
 pub mod ui;
+
+/// @cc [owner:mixxorz,label:architecture;testing] vegas-dev-tool-api
+/// The deterministic Vegas helpers MUST remain exported from the library crate so the separate
+/// development-tools crate can drive the same measured fader behavior without duplicating it.
 pub mod vegas;

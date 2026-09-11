@@ -6,6 +6,10 @@ pub struct CompleteConnectionOutcome {
     pub changed: bool,
 }
 
+/// @cc [owner:mixxorz,label:architecture] show-state-owns-session-metadata-only
+/// `ShowState` MUST own only lockout, show-file metadata/dirty state, discovery results, and
+/// connected-LV1 metadata; scene configurations, selection, clipboard, and cue documents MUST remain
+/// owned by the Scenes domain.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     lockout: bool,
@@ -18,6 +22,9 @@ pub struct ShowState {
 }
 
 impl ShowState {
+    /// @cc [owner:mixxorz,label:persistence] new-show-metadata-reset
+    /// After documents for a new show have committed, resetting metadata MUST clear lockout, path,
+    /// saved timestamp, and dirty state without altering discovery or connected-LV1 metadata.
     pub(crate) fn reset_for_new_show(&mut self) {
         self.clear();
         self.show_file_path = None;
@@ -25,6 +32,10 @@ impl ShowState {
         self.show_file_last_saved_at = None;
     }
 
+    /// @cc [owner:mixxorz,label:persistence] saved-metadata-is-clean
+    /// Recording a successful save or load MUST atomically adopt its path and saved timestamp and
+    /// clear dirty state; callers MUST re-mark dirty afterward when import normalization changed the
+    /// persisted document.
     pub(crate) fn mark_saved(&mut self, path: std::path::PathBuf, saved_at: String) {
         self.show_file_path = Some(path);
         self.show_file_last_saved_at = Some(saved_at);
@@ -35,6 +46,9 @@ impl ShowState {
         self.show_file_dirty = true;
     }
 
+    /// @cc [owner:mixxorz,label:product] discovery-is-whole-list-state
+    /// A discovery update MUST replace the complete discovered-system list and report `changed`
+    /// exactly when the ordered list differs; it MUST NOT modify connection identity or file state.
     pub(crate) fn set_discovered_lv1_systems(&mut self, systems: Vec<DiscoveredLv1System>) -> bool {
         if self.discovered_lv1_systems == systems {
             false
@@ -44,6 +58,10 @@ impl ShowState {
         }
     }
 
+    /// @cc [owner:mixxorz,label:product] connection-metadata-transition
+    /// Setting connection metadata MUST report whether identity changed. A transition to no identity
+    /// MUST timestamp `last_event_at`; an accepted no-op or transition to an identity MUST NOT
+    /// overwrite that timestamp.
     pub(crate) fn set_lv1_connection(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
         let changed = self.connected_lv1_identity != identity;
         if changed && identity.is_none() {
@@ -86,6 +104,9 @@ impl ShowState {
         self.lockout = false;
     }
 
+    /// @cc [owner:mixxorz,label:safety] lockout-change-outcome
+    /// Lockout updates MUST report `true` only when the stored safety value changes; repeated values
+    /// MUST remain no-ops so callers do not publish misleading state changes.
     pub fn set_lockout(&mut self, enabled: bool) -> bool {
         if self.lockout == enabled {
             false

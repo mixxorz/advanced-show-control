@@ -43,6 +43,10 @@ impl Default for DiscoverOptions {
     }
 }
 
+/// @cc [owner:mixxorz,label:connection;fallback] explicit-target-before-discovery
+/// When both host and port are supplied they MUST be returned without discovery; otherwise the
+/// first entry returned by `discover` supplies only missing fields, and missing target data MUST
+/// fail.
 pub fn resolve_target(
     host: Option<String>,
     port: Option<u16>,
@@ -189,6 +193,11 @@ pub fn rank_ip(ip: &str) -> i32 {
     }
 }
 
+/// @cc [owner:mixxorz,label:protocol;parsing] zdns-field-selection
+/// Parsing MUST reject non-`/zDNS` packets or a non-string service, treat absent/empty UUID as
+/// unknown, place only syntactically valid IP strings in the IPv4/IPv6 address lists, use the first
+/// remaining nonempty non-IP string as the hostname, accept only ports in `1025..=65535`, and rank
+/// IPv4 candidates.
 pub fn parse_zdns_packet(bytes: &[u8], source: &str) -> Result<DiscoveryEntry, DiscoveryError> {
     let msg = decode_packet(bytes)?;
     if msg.address != "/zDNS" {

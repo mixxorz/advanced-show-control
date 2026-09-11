@@ -6,6 +6,12 @@ use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, Scene
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 2;
 
+/// @cc [owner:mixxorz,label:persistence;compatibility] persisted-show-file-shape
+/// The persisted DTO MUST use camelCase field names and MUST deserialize omitted cue lists, active
+/// cue-list identity, and cued-entry identity as empty or absent so schema-1 files remain readable.
+/// Explicit values for those fields MUST survive deserialization. Semantic import MUST preserve them
+/// for schema 2, while schema 1 MUST follow `import-schema-and-identity-policy` and clear legacy cue
+/// fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowFile {
@@ -28,6 +34,10 @@ pub struct ShowFileSafety {
     pub lockout: bool,
 }
 
+/// @cc [owner:mixxorz,label:persistence;compatibility] persisted-scene-config-defaults
+/// The persisted scene DTO MUST use camelCase field names and MUST deserialize an omitted durable
+/// scene ID as absent and omitted scope toggles as all-disabled defaults. Explicit IDs, channel
+/// targets, channel references, and scope-toggle values MUST be preserved for semantic import.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowFileSceneConfig {
@@ -50,6 +60,11 @@ pub struct ImportedShowFile {
     pub generated_internal_scene_ids: bool,
 }
 
+/// @cc [owner:mixxorz,label:persistence] export-complete-session-document
+/// Export MUST construct a `ShowFile` from the supplied scene and cue-list documents together with
+/// current lockout, schema version, application version, and saved timestamp. It MUST preserve
+/// channel targets, channel references, scope toggles, and durable scene IDs without a duplicate
+/// conversion model.
 pub fn export_show_file(
     snapshot: SceneDocument,
     cue_list_snapshot: CueListDocument,
@@ -72,6 +87,11 @@ pub fn export_show_file(
     }
 }
 
+/// @cc [owner:mixxorz,label:persistence] import-schema-and-identity-policy
+/// Import MUST reject an empty LV1 scene list and unsupported schemas. Schema 1 MUST import with an
+/// empty cue document; supported files MUST preserve scene configuration content and existing durable
+/// IDs, generate IDs only when absent, and report whether generation occurred so load can stay dirty.
+/// Missing or unlinked scenes MUST NOT be discarded at this DTO boundary.
 pub fn import_show_file(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
