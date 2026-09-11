@@ -27,7 +27,7 @@ Native File menu actions call the same Tauri command functions used by the front
 
 Actors receive explicit mailbox command enums. Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
 
-`AppEventBus` is a non-blocking Tokio broadcast bus for facts, never requests. It has no replay or durable storage. Its families are:
+`AppEventBus` broadcasts ephemeral facts, never requests. Alongside the broadcast channel it retains the latest full Show, Scenes, Cue Lists, and Settings projections in one watch snapshot. Publishing replaces the corresponding projection before broadcasting; unchanged projections do not notify watch subscribers. This is in-memory state, not event replay or durable storage. Its fact families are:
 
 ```text
 Runtime(ActiveGenerationChanged)
@@ -103,11 +103,13 @@ Settings loads normalized defaults or persisted values from `settings.json`, sav
 
 ## Projection and Frontend Boundary
 
-The projector applies facts to `ProjectionCache`, accepts generation-bound LV1/Fade state only for its active generation, and emits dirty snapshots at most every 100 ms. It receives UI log input from the tracing UI sink; `INFO`, `WARN`, and `ERROR` become bounded frontend log entries, while runtime modules use `tracing` rather than facts solely for logging.
+`ProjectionCache` owns only generation-bound LV1/Fade state, bounded logs, and the snapshot version. The projector combines this cache with the latest retained app-state snapshot and emits changed views at most every 100 ms. It neither duplicates app-owned projections nor queries their actors at startup. Show and Settings seed retained state during construction; session replacement updates scenes and cues in one watch update. Serialized document reads for saving still use the owner mailbox, not this display snapshot.
+
+The projector accepts LV1/Fade facts only for its active generation. It receives UI log input from the tracing UI sink; `INFO`, `WARN`, and `ERROR` become bounded frontend log entries, while runtime modules use `tracing` rather than facts solely for logging.
 
 Every emitted `AppViewState` has a monotonically increasing `state_version`. The frontend applies a snapshot only when its version is newer than the latest accepted version; command responses, polling, and event delivery may arrive out of order and must not overwrite newer UI state.
 
-On event-bus lag, the projector drains retained facts, resets generation-bound cache state, obtains an authoritative connected LV1 snapshot when possible, and mailbox-resynchronizes Show, Scenes, Cue Lists, and Settings. This restores app-lifetime state even when generation-scoped facts were lost.
+On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded and falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
 
 ## Debug Smoke Boundary
 

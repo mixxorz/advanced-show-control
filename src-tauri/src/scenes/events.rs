@@ -1,6 +1,6 @@
 use crate::scenes::SceneConfig;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScenesProjectionState {
     pub scene_configs: Vec<SceneConfig>,
     pub selected_scene_internal_id: Option<String>,

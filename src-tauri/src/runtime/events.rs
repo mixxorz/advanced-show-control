@@ -1,4 +1,6 @@
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
+
+use super::AppStateSnapshot;
 
 use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
@@ -41,16 +43,27 @@ pub enum AppEvent {
 #[derive(Clone)]
 pub struct AppEventBus {
     tx: broadcast::Sender<AppEvent>,
+    state: watch::Sender<AppStateSnapshot>,
 }
 
 impl AppEventBus {
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity.max(1));
-        Self { tx }
+        let (state, _) = watch::channel(AppStateSnapshot::default());
+        Self { tx, state }
     }
 
     pub fn publish(&self, event: AppEvent) -> usize {
+        self.retain(&event);
         self.tx.send(event).unwrap_or(0)
+    }
+
+    pub(crate) fn retain(&self, event: &AppEvent) {
+        self.state.send_if_modified(|state| state.apply(event));
+    }
+
+    pub fn state(&self) -> watch::Receiver<AppStateSnapshot> {
+        self.state.subscribe()
     }
 
     pub fn publish_runtime_generation_changed(&self, generation: u64) -> usize {

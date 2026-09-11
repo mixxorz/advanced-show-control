@@ -53,6 +53,9 @@ pub fn build_settings_actor(
     let (tx, rx) = mpsc::channel(32);
     let state = SettingsState::load(settings_dir);
     let initial_settings = state.settings();
+    event_bus.retain(&AppEvent::Settings(SettingsEvent::StateChanged {
+        settings: initial_settings.clone(),
+    }));
     let task = SettingsActorTask {
         rx,
         event_bus,

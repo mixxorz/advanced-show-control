@@ -254,14 +254,9 @@ impl AppLifecycle {
         }
     }
 
+    #[cfg(test)]
     async fn settings_snapshot(&self) -> Result<crate::settings::AppSettings, String> {
-        let (reply, rx) = oneshot::channel();
-        self.settings
-            .send(SettingsCommand::GetSettings { reply })
-            .await
-            .map_err(|_| "Settings are unavailable".to_string())?;
-        rx.await
-            .map_err(|_| "Settings reply channel is closed".to_string())
+        Ok(self.event_bus.state().borrow().settings.clone())
     }
 
     pub async fn begin_connecting(&self) -> Option<u64> {
@@ -906,31 +901,6 @@ impl AppLifecycle {
         app: AppHandle<R>,
         logs: tokio::sync::broadcast::Receiver<UiLogEvent>,
     ) -> Result<(), String> {
-        let (reply, rx) = oneshot::channel();
-        self.show
-            .send(ShowCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| "Show state is unavailable".to_string())?;
-        let initial_show_state = rx
-            .await
-            .map_err(|_| "Show state reply channel is closed".to_string())?;
-        let (reply, rx) = oneshot::channel();
-        self.scenes
-            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| "Scenes state is unavailable".to_string())?;
-        let initial_scenes_state = rx
-            .await
-            .map_err(|_| "Scenes state reply channel is closed".to_string())?;
-        let (reply, rx) = oneshot::channel();
-        self.cue_lists
-            .send(crate::cue_lists::CueListsCommand::InitialProjectionState { reply })
-            .await
-            .map_err(|_| "Cue lists state is unavailable".to_string())?;
-        let initial_cue_lists_state = rx
-            .await
-            .map_err(|_| "Cue lists state reply channel is closed".to_string())?;
-        let initial_settings = self.settings_snapshot().await?;
         let mut inner = self.inner.lock().await;
         if inner.frontend_ready {
             return Ok(());
@@ -941,15 +911,8 @@ impl AppLifecycle {
             crate::projector::ProjectorInputs {
                 app,
                 generation,
-                initial_show_state,
-                initial_scenes_state,
-                initial_cue_lists_state,
-                initial_settings,
+                state: self.event_bus.state(),
                 runtime_source: self.runtime_snapshot_source(),
-                show: self.show.clone(),
-                scenes: self.scenes.clone(),
-                cue_lists: self.cue_lists.clone(),
-                settings: self.settings.clone(),
                 events: self.event_bus.subscribe(),
                 logs,
             },

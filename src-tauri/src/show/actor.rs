@@ -109,6 +109,10 @@ fn build_show_actor_with_state(
     ShowActorPeers,
     ShowLockoutReader,
 ) {
+    event_bus.retain(&AppEvent::Show(ShowEvent::StateChanged {
+        reason: ShowProjectionReason::FileMetadata,
+        state: state.projection_state(),
+    }));
     let (tx, rx) = mpsc::channel(32);
     let (lockout_tx, lockout_rx) = watch::channel(state.lockout());
     let peers = ShowActorPeers::default();
