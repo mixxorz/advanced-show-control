@@ -25,29 +25,11 @@ use crate::show::{
     ShowStateHandle,
 };
 
-#[derive(Default)]
-pub struct RuntimeHandles {
-    pub lv1: Option<Lv1ActorHandle>,
-    pub fade: Option<FadeEngineHandle>,
-}
-
-impl RuntimeHandles {
-    pub fn with_runtime_targets(lv1: Lv1ActorHandle, fade: FadeEngineHandle) -> Self {
-        Self {
-            lv1: Some(lv1),
-            fade: Some(fade),
-        }
-    }
-
-    pub fn abort_all(&mut self) {
-        self.lv1 = None;
-        self.fade = None;
-    }
-}
-
-pub enum RuntimeInstallRejection {
-    StaleGeneration { handles: RuntimeHandles },
-    MissingRuntimeTargets { handles: RuntimeHandles },
+#[derive(Clone)]
+struct InstalledRuntime {
+    generation: u64,
+    lv1: Lv1ActorHandle,
+    fade: FadeEngineHandle,
 }
 
 #[cfg(test)]
@@ -58,23 +40,17 @@ type BeforeConnectionMetadataHook =
 type DisconnectTestHook = Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>;
 
 struct BuiltConnectedRuntime {
-    lv1: Lv1ActorHandle,
+    runtime: InstalledRuntime,
     lv1_task: crate::lv1::Lv1ActorTask,
-    fade: FadeEngineHandle,
     fade_task: crate::fade::FadeEngineTask,
 }
 
 impl BuiltConnectedRuntime {
-    fn runtime_targets(&self) -> RuntimeHandles {
-        RuntimeHandles::with_runtime_targets(self.lv1.clone(), self.fade.clone())
-    }
-
     fn spawn_lv1_and_fade(self) -> StartedConnectedRuntime {
         self.lv1_task.spawn();
         self.fade_task.spawn();
         StartedConnectedRuntime {
-            lv1: self.lv1,
-            fade: self.fade,
+            runtime: self.runtime,
             #[cfg(test)]
             before_connection_metadata: None,
         }
@@ -82,8 +58,7 @@ impl BuiltConnectedRuntime {
 }
 
 struct StartedConnectedRuntime {
-    lv1: Lv1ActorHandle,
-    fade: FadeEngineHandle,
+    runtime: InstalledRuntime,
     #[cfg(test)]
     before_connection_metadata: Option<BeforeConnectionMetadataHook>,
 }
@@ -107,9 +82,12 @@ fn build_connected_runtime(
         lv1.clone(),
     );
     BuiltConnectedRuntime {
-        lv1,
+        runtime: InstalledRuntime {
+            generation,
+            lv1,
+            fade,
+        },
         lv1_task,
-        fade,
         fade_task,
     }
 }
@@ -120,20 +98,11 @@ struct RuntimeClearTransaction {
     active_generation: u64,
 }
 
-impl RuntimeInstallRejection {
-    pub fn into_handles(self) -> RuntimeHandles {
-        match self {
-            Self::StaleGeneration { handles } | Self::MissingRuntimeTargets { handles } => handles,
-        }
-    }
-}
-
 struct LifecycleInner {
     generation: RuntimeGeneration,
     connecting: bool,
     frontend_ready: bool,
-    handles: RuntimeHandles,
-    runtime_handles_generation: Option<u64>,
+    runtime: Option<InstalledRuntime>,
     projector: Option<JoinHandle<()>>,
 }
 
@@ -147,10 +116,11 @@ impl RuntimeSnapshotSource {
     pub async fn connected_lv1(&self) -> Option<(u64, Lv1ActorHandle)> {
         let inner = self.inner.lock().await;
         let generation = inner.generation.current().await;
-        if inner.runtime_handles_generation != Some(generation) {
-            return None;
-        }
-        inner.handles.lv1.clone().map(|lv1| (generation, lv1))
+        let runtime = inner
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.generation == generation)?;
+        Some((generation, runtime.lv1.clone()))
     }
 
     pub async fn current_generation(&self) -> u64 {
@@ -206,8 +176,7 @@ impl AppLifecycle {
                 generation: runtime_generation,
                 connecting: false,
                 frontend_ready: false,
-                handles: RuntimeHandles::default(),
-                runtime_handles_generation: None,
+                runtime: None,
                 projector: None,
             })),
             event_bus,
@@ -274,24 +243,18 @@ impl AppLifecycle {
         self.inner.lock().await.generation.current().await
     }
 
-    pub async fn install_runtime_transaction(
+    async fn install_runtime_transaction(
         &self,
-        generation: u64,
-        handles: RuntimeHandles,
-    ) -> Result<(), RuntimeInstallRejection> {
+        runtime: InstalledRuntime,
+    ) -> Result<(), InstalledRuntime> {
         let mut inner = self.inner.lock().await;
-        if inner.generation.current().await != generation {
-            return Err(RuntimeInstallRejection::StaleGeneration { handles });
+        if inner.generation.current().await != runtime.generation {
+            return Err(runtime);
         }
 
-        if handles.lv1.is_none() || handles.fade.is_none() {
-            return Err(RuntimeInstallRejection::MissingRuntimeTargets { handles });
-        }
-
-        let lv1 = handles.lv1.clone().expect("validated LV1 handle");
-        inner.handles = handles;
-        inner.runtime_handles_generation = Some(generation);
-        self.show_peers.set_lv1(generation, lv1);
+        self.show_peers
+            .set_lv1(runtime.generation, runtime.lv1.clone());
+        inner.runtime = Some(runtime);
         inner.connecting = false;
         Ok(())
     }
@@ -307,20 +270,21 @@ impl AppLifecycle {
 
     async fn install_accepted_scene_peers(&self, generation: u64) -> bool {
         let inner = self.inner.lock().await;
-        if inner.generation.current().await != generation
-            || inner.runtime_handles_generation != Some(generation)
-        {
+        if inner.generation.current().await != generation {
             return false;
         }
-
-        let Some(lv1) = inner.handles.lv1.clone() else {
+        let Some(runtime) = inner
+            .runtime
+            .as_ref()
+            .filter(|runtime| runtime.generation == generation)
+        else {
             return false;
         };
-        let Some(fade) = inner.handles.fade.clone() else {
-            return false;
-        };
-        self.scenes_peers
-            .set_peers_for_generation(generation, lv1, fade);
+        self.scenes_peers.set_peers_for_generation(
+            generation,
+            runtime.lv1.clone(),
+            runtime.fade.clone(),
+        );
         true
     }
 
@@ -334,8 +298,7 @@ impl AppLifecycle {
             .advance_if_current(expected_generation)
             .await?;
 
-        inner.handles.abort_all();
-        inner.runtime_handles_generation = None;
+        inner.runtime = None;
         inner.connecting = false;
         self.show_peers.clear_lv1(expected_generation);
         self.scenes_peers
@@ -359,16 +322,12 @@ impl AppLifecycle {
         self.clear_runtime_transaction(generation).await;
     }
 
-    async fn abort_rejected_connection_transaction(
-        &self,
-        generation: u64,
-        mut candidate_handles: RuntimeHandles,
-    ) {
-        candidate_handles.abort_all();
+    async fn abort_rejected_connection_transaction(&self, candidate: InstalledRuntime) {
+        let generation = candidate.generation;
+        drop(candidate);
         let mut inner = self.inner.lock().await;
-        if inner.runtime_handles_generation == Some(generation) {
-            inner.handles.abort_all();
-            inner.runtime_handles_generation = None;
+        if inner.runtime.as_ref().map(|runtime| runtime.generation) == Some(generation) {
+            inner.runtime = None;
             self.scenes_peers.clear_peers_for_generation(generation);
         }
         drop(inner);
@@ -390,16 +349,17 @@ impl AppLifecycle {
             &identity,
             self.event_bus.clone(),
         );
-        let handles = built_runtime.runtime_targets();
-        if let Err(rejection) = self.install_runtime_transaction(generation, handles).await {
-            self.abort_rejected_connection_transaction(generation, rejection.into_handles())
-                .await;
+        if let Err(runtime) = self
+            .install_runtime_transaction(built_runtime.runtime.clone())
+            .await
+        {
+            self.abort_rejected_connection_transaction(runtime).await;
             return Err("generation is stale".to_string());
         }
         let started_runtime = built_runtime.spawn_lv1_and_fade();
 
         let _ = app;
-        let result = self.spawn_finish_connect_transaction(identity, generation, started_runtime);
+        let result = self.spawn_finish_connect_transaction(identity, started_runtime);
         result
             .await
             .map_err(|_| "LV1 connection finalizer task was cancelled".to_string())?
@@ -408,7 +368,6 @@ impl AppLifecycle {
     fn spawn_finish_connect_transaction(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
-        generation: u64,
         started_runtime: StartedConnectedRuntime,
     ) -> oneshot::Receiver<Result<ConnectCommandResult, String>> {
         let (reply, result) = oneshot::channel();
@@ -417,7 +376,7 @@ impl AppLifecycle {
         tauri::async_runtime::spawn(
             async move {
                 let outcome = lifecycle
-                    .finish_connect_transaction(identity, generation, started_runtime)
+                    .finish_connect_transaction(identity, started_runtime)
                     .await;
                 let _ = reply.send(outcome);
             }
@@ -429,18 +388,17 @@ impl AppLifecycle {
     async fn finish_connect_transaction(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
-        generation: u64,
         started_runtime: StartedConnectedRuntime,
     ) -> Result<ConnectCommandResult, String> {
         let StartedConnectedRuntime {
-            lv1,
-            fade,
+            runtime,
             #[cfg(test)]
             before_connection_metadata,
         } = started_runtime;
+        let generation = runtime.generation;
 
         let (reply, rx) = oneshot::channel();
-        if let Err(error) = lv1.send(Lv1Command::GetState { reply }).await {
+        if let Err(error) = runtime.lv1.send(Lv1Command::GetState { reply }).await {
             return self
                 .finalize_failed_connection(
                     generation,
@@ -494,10 +452,8 @@ impl AppLifecycle {
             async move {
                 lifecycle
                     .finalize_connection_metadata(
-                        generation,
                         identity,
-                        lv1,
-                        fade,
+                        runtime,
                         initial_snapshot,
                         #[cfg(test)]
                         before_connection_metadata,
@@ -514,13 +470,12 @@ impl AppLifecycle {
     #[allow(clippy::too_many_arguments)]
     async fn finalize_connection_metadata(
         &self,
-        generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
-        lv1: Lv1ActorHandle,
-        fade: FadeEngineHandle,
+        runtime: InstalledRuntime,
         _initial_snapshot: crate::lv1::Lv1StateSnapshot,
         #[cfg(test)] before_connection_metadata: Option<BeforeConnectionMetadataHook>,
     ) -> Result<ConnectCommandResult, String> {
+        let generation = runtime.generation;
         #[cfg(test)]
         if let Some(before_connection_metadata) = before_connection_metadata {
             before_connection_metadata(self.current_runtime_generation().await).await;
@@ -531,26 +486,12 @@ impl AppLifecycle {
             .await
             .map_err(|error| error.to_string())?;
         if !completion.accepted {
-            self.abort_rejected_connection_transaction(
-                generation,
-                RuntimeHandles {
-                    lv1: Some(lv1),
-                    fade: Some(fade),
-                },
-            )
-            .await;
+            self.abort_rejected_connection_transaction(runtime).await;
             return Err("LV1 connection was superseded".to_string());
         }
 
         if !self.install_accepted_scene_peers(generation).await {
-            self.abort_rejected_connection_transaction(
-                generation,
-                RuntimeHandles {
-                    lv1: Some(lv1),
-                    fade: Some(fade),
-                },
-            )
-            .await;
+            self.abort_rejected_connection_transaction(runtime).await;
             return Err("generation is stale".to_string());
         }
         let (peers_ready_reply, peers_ready_result) = tokio::sync::oneshot::channel();
@@ -565,14 +506,7 @@ impl AppLifecycle {
         let peers_ready_succeeded =
             matches!(peers_ready, Ok(()) if matches!(peers_ready_result.await, Ok(Ok(()))));
         if !peers_ready_succeeded {
-            self.abort_rejected_connection_transaction(
-                generation,
-                RuntimeHandles {
-                    lv1: Some(lv1),
-                    fade: Some(fade),
-                },
-            )
-            .await;
+            self.abort_rejected_connection_transaction(runtime).await;
             return Err("scene actor is unavailable".to_string());
         }
 
@@ -702,11 +636,21 @@ impl AppLifecycle {
 
     #[cfg(any(test, debug_assertions))]
     pub async fn current_lv1(&self) -> Option<Lv1ActorHandle> {
-        self.inner.lock().await.handles.lv1.clone()
+        self.inner
+            .lock()
+            .await
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.lv1.clone())
     }
 
     pub async fn current_fade(&self) -> Option<FadeEngineHandle> {
-        self.inner.lock().await.handles.fade.clone()
+        self.inner
+            .lock()
+            .await
+            .runtime
+            .as_ref()
+            .map(|runtime| runtime.fade.clone())
     }
 
     pub fn scenes_handle(&self) -> ScenesHandle {
@@ -1051,6 +995,18 @@ mod tests {
         }
     }
 
+    fn installed_runtime(
+        generation: u64,
+        lv1: Lv1ActorHandle,
+        fade: FadeEngineHandle,
+    ) -> InstalledRuntime {
+        InstalledRuntime {
+            generation,
+            lv1,
+            fade,
+        }
+    }
+
     async fn started_runtime_for_test(
         lifecycle: &AppLifecycle,
         generation: u64,
@@ -1062,10 +1018,11 @@ mod tests {
     ) -> StartedConnectedRuntime {
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     generation,
-                    RuntimeHandles::with_runtime_targets(lv1.clone(), fade.clone()),
-                )
+                    lv1.clone(),
+                    fade.clone(),
+                ))
                 .await
                 .is_ok(),
             "test runtime targets should install"
@@ -1073,8 +1030,7 @@ mod tests {
         let initial_settings = lifecycle.settings_snapshot().await.unwrap();
         let _ = (runtime_generation, event_bus, initial_settings);
         StartedConnectedRuntime {
-            lv1,
-            fade,
+            runtime: installed_runtime(generation, lv1, fade),
             before_connection_metadata,
         }
     }
@@ -1105,13 +1061,11 @@ mod tests {
         let (lv1_tx, _lv1_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(lv1_tx),
-                        mpsc::channel(1).0,
-                    ),
-                )
+                    test_actor_handle(lv1_tx),
+                    mpsc::channel(1).0,
+                ),)
                 .await
                 .is_ok()
         );
@@ -1313,7 +1267,7 @@ mod tests {
         .await;
 
         let connect_result = lifecycle
-            .finish_connect_transaction(identity, generation, started_runtime)
+            .finish_connect_transaction(identity, started_runtime)
             .await;
 
         assert!(connect_result.is_ok());
@@ -1363,13 +1317,11 @@ mod tests {
                     let (fade_tx, _fade_rx) = mpsc::channel(1);
                     assert!(
                         lifecycle_for_hook
-                            .install_runtime_transaction(
+                            .install_runtime_transaction(installed_runtime(
                                 newer_generation,
-                                RuntimeHandles::with_runtime_targets(
-                                    test_actor_handle(lv1_tx),
-                                    fade_tx,
-                                ),
-                            )
+                                test_actor_handle(lv1_tx),
+                                fade_tx,
+                            ),)
                             .await
                             .is_ok()
                     );
@@ -1407,7 +1359,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
-                generation,
                 started_runtime,
             )
             .await;
@@ -1495,7 +1446,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-stale"), Some("LV1-FOH"), "192.168.1.36"),
-                generation,
                 started_runtime,
             )
             .await;
@@ -1586,7 +1536,7 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .finish_connect_transaction(identity, generation, started_runtime)
+            .finish_connect_transaction(identity, started_runtime)
             .await;
 
         assert!(matches!(result, Err(message) if message == "LV1 did not connect"));
@@ -1637,7 +1587,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-stale"), Some("LV1-FOH"), "192.168.1.36"),
-                generation,
                 started_runtime,
             )
             .await;
@@ -1690,7 +1639,6 @@ mod tests {
             lifecycle_for_task
                 .finish_connect_transaction(
                     identity(Some("uuid-failed"), Some("LV1-FOH"), "192.168.1.35"),
-                    generation,
                     started_runtime,
                 )
                 .await
@@ -1747,7 +1695,6 @@ mod tests {
         let result = lifecycle
             .spawn_finish_connect_transaction(
                 identity(Some("old"), Some("LV1-FOH"), "192.0.2.20"),
-                generation,
                 started_runtime,
             )
             .await
@@ -1805,7 +1752,6 @@ mod tests {
         let result = lifecycle
             .spawn_finish_connect_transaction(
                 identity(Some("old"), Some("LV1-FOH"), "192.0.2.20"),
-                generation,
                 started_runtime,
             )
             .await
@@ -1849,7 +1795,6 @@ mod tests {
 
         let result_rx = lifecycle.spawn_finish_connect_transaction(
             identity(Some("old"), Some("LV1-FOH"), "192.0.2.10"),
-            generation,
             started_runtime,
         );
         let outer = tokio::spawn(result_rx);
@@ -1866,13 +1811,11 @@ mod tests {
         let (newer_lv1_tx, _newer_lv1_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     newer_generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(newer_lv1_tx),
-                        mpsc::channel(1).0,
-                    ),
-                )
+                    test_actor_handle(newer_lv1_tx),
+                    mpsc::channel(1).0,
+                ),)
                 .await
                 .is_ok(),
             "newer runtime should install"
@@ -1944,7 +1887,7 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .finish_connect_transaction(identity, generation, started_runtime)
+            .finish_connect_transaction(identity, started_runtime)
             .await;
 
         assert!(result.is_ok());
@@ -1981,7 +1924,6 @@ mod tests {
                     address: "192.168.1.35".to_string(),
                     port: 50000,
                 },
-                generation,
                 started_runtime,
             )
             .await;
@@ -2163,7 +2105,7 @@ mod tests {
         .await;
 
         let result = lifecycle
-            .finish_connect_transaction(identity.clone(), generation, started_runtime)
+            .finish_connect_transaction(identity.clone(), started_runtime)
             .await;
 
         assert!(result.is_ok());
@@ -2201,7 +2143,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
-                generation,
                 started_runtime,
             )
             .await;
@@ -2250,7 +2191,6 @@ mod tests {
         let result = lifecycle
             .finish_connect_transaction(
                 identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36"),
-                generation,
                 started_runtime,
             )
             .await;
@@ -2299,7 +2239,7 @@ mod tests {
 
         let connect = tokio::spawn(async move {
             lifecycle_for_connect
-                .finish_connect_transaction(identity, generation, started_runtime)
+                .finish_connect_transaction(identity, started_runtime)
                 .await
         });
 
@@ -2331,17 +2271,12 @@ mod tests {
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
-        let handles = RuntimeHandles::with_runtime_targets(lv1, fade);
+        let runtime = installed_runtime(1, lv1, fade);
 
-        let rejection = lifecycle
-            .install_runtime_transaction(1, handles)
+        let _rejection = lifecycle
+            .install_runtime_transaction(runtime)
             .await
             .expect_err("stale generation should reject the runtime install");
-
-        assert!(matches!(
-            rejection,
-            RuntimeInstallRejection::StaleGeneration { .. }
-        ));
         assert!(
             lifecycle
                 .runtime_snapshot_source()
@@ -2361,10 +2296,7 @@ mod tests {
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
 
         let install = lifecycle
-            .install_runtime_transaction(
-                generation,
-                RuntimeHandles::with_runtime_targets(lv1, fade_tx),
-            )
+            .install_runtime_transaction(installed_runtime(generation, lv1, fade_tx))
             .await;
         assert!(install.is_ok());
 
@@ -2417,13 +2349,11 @@ mod tests {
         let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     accepted_generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(newer_lv1_tx),
-                        newer_fade_tx,
-                    ),
-                )
+                    test_actor_handle(newer_lv1_tx),
+                    newer_fade_tx,
+                ),)
                 .await
                 .is_ok(),
             "newer runtime should install"
@@ -2448,8 +2378,14 @@ mod tests {
             .expect("scene readiness reply should arrive")
             .expect("newer scene peers should become ready");
 
+        let (rejected_lv1_tx, _rejected_lv1_rx) = mpsc::channel(1);
+        let (rejected_fade_tx, _rejected_fade_rx) = mpsc::channel(1);
         lifecycle
-            .abort_rejected_connection_transaction(rejected_generation, RuntimeHandles::default())
+            .abort_rejected_connection_transaction(installed_runtime(
+                rejected_generation,
+                test_actor_handle(rejected_lv1_tx),
+                rejected_fade_tx,
+            ))
             .await;
 
         let (snapshot_generation, snapshot_lv1) = lifecycle
@@ -2512,10 +2448,7 @@ mod tests {
         let newer_lv1 = crate::lv1::test_actor_handle(newer_tx);
         let (fade_tx, _fade_rx) = mpsc::channel(1);
         let install = lifecycle
-            .install_runtime_transaction(
-                accepted_generation,
-                RuntimeHandles::with_runtime_targets(newer_lv1, fade_tx),
-            )
+            .install_runtime_transaction(installed_runtime(accepted_generation, newer_lv1, fade_tx))
             .await;
         assert!(install.is_ok());
 
@@ -2526,13 +2459,13 @@ mod tests {
             event_bus.clone(),
         );
         let Err(rejection) = lifecycle
-            .install_runtime_transaction(stale_generation, stale_runtime.runtime_targets())
+            .install_runtime_transaction(stale_runtime.runtime.clone())
             .await
         else {
             panic!("stale runtime install should be rejected");
         };
         lifecycle
-            .abort_rejected_connection_transaction(stale_generation, rejection.into_handles())
+            .abort_rejected_connection_transaction(rejection)
             .await;
         drop(stale_runtime);
 
@@ -2579,13 +2512,11 @@ mod tests {
         let (old_fade_tx, _old_fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     original_generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(old_lv1_tx),
-                        old_fade_tx,
-                    ),
-                )
+                    test_actor_handle(old_lv1_tx),
+                    old_fade_tx,
+                ),)
                 .await
                 .is_ok()
         );
@@ -2616,13 +2547,11 @@ mod tests {
         let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     newer_generation,
-                    RuntimeHandles::with_runtime_targets(
-                        test_actor_handle(newer_lv1_tx),
-                        newer_fade_tx,
-                    ),
-                )
+                    test_actor_handle(newer_lv1_tx),
+                    newer_fade_tx,
+                ),)
                 .await
                 .is_ok()
         );
@@ -2676,10 +2605,11 @@ mod tests {
         let (fade_tx, _fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     generation,
-                    RuntimeHandles::with_runtime_targets(test_actor_handle(lv1_tx), fade_tx,),
-                )
+                    test_actor_handle(lv1_tx),
+                    fade_tx,
+                ),)
                 .await
                 .is_ok()
         );
@@ -2755,10 +2685,11 @@ mod tests {
         let (newer_fade_tx, mut newer_fade_rx) = mpsc::channel(1);
         assert!(
             lifecycle
-                .install_runtime_transaction(
+                .install_runtime_transaction(installed_runtime(
                     newer_generation,
-                    RuntimeHandles::with_runtime_targets(newer_lv1, newer_fade_tx,),
-                )
+                    newer_lv1,
+                    newer_fade_tx,
+                ),)
                 .await
                 .is_ok(),
             "newer runtime should install"

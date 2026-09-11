@@ -46,7 +46,9 @@ LV1 and Fade facts are generation-bound and consumers ignore stale generations. 
 
 ## Lifecycle, Connections, and Peers
 
-`AppLifecycle` advances `RuntimeGeneration` for every explicit connect, disconnect, and teardown transaction. A connect transaction:
+`AppLifecycle` advances `RuntimeGeneration` for every explicit connect, disconnect, and teardown transaction. Its installed runtime is one optional `InstalledRuntime` containing a generation and both LV1/Fade endpoints; partial endpoint pairs cannot be installed. The same complete value travels with setup/finalization, which cannot independently retag its generation. Installation does not imply transport connectivity or scene readiness.
+
+A connect transaction:
 
 1. advances and publishes the active generation;
 2. constructs LV1 and Fade for that generation and installs their handles only if still current;
