@@ -4,9 +4,9 @@ use tokio::sync::mpsc;
 
 use crate::runtime::events::{AppEvent, AppEventBus};
 
+use super::SettingsHandle;
 use super::commands::{SettingsCommand, SettingsCommandResult};
 use super::events::SettingsEvent;
-use super::handle::SettingsHandle;
 use super::state::SettingsState;
 use super::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
@@ -30,6 +30,21 @@ impl SettingsActorTask {
     }
 
     #[cfg(test)]
+    fn spawn_with_dispatch(self, dispatch: tracing::Dispatch) {
+        use tracing::instrument::WithSubscriber;
+
+        tauri::async_runtime::spawn(
+            run_settings_actor(
+                self.rx,
+                self.event_bus,
+                self.state,
+                self.set_last_connected_lv1_gate,
+            )
+            .with_subscriber(dispatch),
+        );
+    }
+
+    #[cfg(test)]
     pub(crate) fn pause_set_last_connected_lv1(
         mut self,
         received: tokio::sync::oneshot::Sender<()>,
@@ -46,6 +61,10 @@ struct SetLastConnectedLv1Gate {
     release: tokio::sync::oneshot::Receiver<()>,
 }
 
+/// @cc [owner:mixxorz,label:privacy] initial-settings-projection-excludes-identity
+/// Actor construction MUST seed retained settings state and its returned initial value from public
+/// `AppSettings` only; the persisted remembered LV1 identity MUST remain available exclusively via
+/// the dedicated settings commands and MUST NOT enter `SettingsEvent` projection data.
 pub fn build_settings_actor(
     settings_dir: PathBuf,
     event_bus: AppEventBus,
@@ -53,6 +72,9 @@ pub fn build_settings_actor(
     let (tx, rx) = mpsc::channel(32);
     let state = SettingsState::load(settings_dir);
     let initial_settings = state.settings();
+    event_bus.retain(&AppEvent::Settings(SettingsEvent::StateChanged {
+        settings: initial_settings.clone(),
+    }));
     let task = SettingsActorTask {
         rx,
         event_bus,
@@ -60,7 +82,7 @@ pub fn build_settings_actor(
         #[cfg(test)]
         set_last_connected_lv1_gate: None,
     };
-    (SettingsHandle::new(tx), task, initial_settings)
+    (tx, task, initial_settings)
 }
 
 async fn run_settings_actor(
@@ -82,6 +104,19 @@ async fn run_settings_actor(
     tracing::debug!(event = "settings_actor_stopped", "Settings actor stopped");
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] settings-replacement-observable-result
+ * After a successful changed `ReplaceSettings`, the actor MUST publish
+ * `SettingsEvent::StateChanged` and emit the `settings_updated` tracing event. Normalized no-ops
+ * MUST report `changed: false` without either emission, and persistence failures MUST return the
+ * underlying explanatory error without publishing or logging success.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety] remembered-identity-generation-gate
+ * `SetLastConnectedLv1` MUST publish a changed identity only while `expected_generation` is current,
+ * checking both before staging and atomically around publication. Stale work MUST return success as
+ * a no-op, leave memory and `settings.json` unchanged, and clean up its unpublished staged file.
+ */
 async fn handle_command(
     command: SettingsCommand,
     event_bus: &AppEventBus,
@@ -128,22 +163,34 @@ async fn handle_command(
             expected_generation,
             reply,
         } => {
-            #[cfg(test)]
-            if let Some(gate) = set_last_connected_lv1_gate.take() {
-                let _ = gate.received.send(());
-                let _ = gate.release.await;
+            if runtime_generation.current().await != expected_generation {
+                let _ = reply.send(Ok(()));
+                return;
             }
-            let result = runtime_generation
-                .if_current(expected_generation, || {
-                    state.set_last_connected_lv1(identity).map(|_changed| ())
-                })
-                .await
-                .unwrap_or(Ok(()));
+
+            let result = match state.stage_last_connected_lv1(identity) {
+                Ok(Some(staged)) => {
+                    #[cfg(test)]
+                    if let Some(gate) = set_last_connected_lv1_gate.take() {
+                        let _ = gate.received.send(());
+                        let _ = gate.release.await;
+                    }
+                    runtime_generation
+                        .if_current(expected_generation, || state.publish_staged(staged))
+                        .await
+                        .unwrap_or(Ok(()))
+                }
+                Ok(None) => Ok(()),
+                Err(error) => Err(error),
+            };
             let _ = reply.send(result);
         }
     }
 }
 
+/// @cc [owner:mixxorz,label:privacy] settings-update-log-excludes-private-identity
+/// Settings update logs MUST describe only projected public settings and MUST NOT include the
+/// remembered LV1 identity or serialized settings document.
 fn log_settings_updated(settings: &AppSettings) {
     tracing::info!(
         event = "settings_updated",
@@ -194,6 +241,7 @@ mod tests {
     use crate::test_support::TracingCapture;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tokio::sync::oneshot;
+    use tracing_subscriber::prelude::*;
 
     fn temp_settings_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
@@ -225,6 +273,25 @@ mod tests {
         rx.await.unwrap()
     }
 
+    async fn get_last_connected_lv1(handle: &SettingsHandle) -> Option<Lv1SystemIdentity> {
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::GetLastConnectedLv1 { reply })
+            .await
+            .unwrap();
+        rx.await.unwrap()
+    }
+
+    fn staged_settings_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| path.file_name().is_some_and(|name| name != "settings.json"))
+            .collect()
+    }
+
     #[tokio::test]
     async fn actor_loads_defaults_when_file_is_missing() {
         let event_bus = AppEventBus::default();
@@ -240,11 +307,12 @@ mod tests {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("invalid");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("settings.json"), "not json").unwrap();
+        std::fs::write(dir.join("settings.json"), r#"{"lastConnectedLv1":42}"#).unwrap();
         let (handle, task, _initial_settings) = build_settings_actor(dir, event_bus);
         task.spawn();
 
         assert_eq!(get_settings(&handle).await, AppSettings::default());
+        assert_eq!(get_last_connected_lv1(&handle).await, None);
     }
 
     #[tokio::test]
@@ -273,7 +341,10 @@ mod tests {
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("replace");
         let (handle, task, _initial_settings) = build_settings_actor(dir.clone(), event_bus);
-        task.spawn();
+        let captured = TracingCapture::new();
+        let dispatch =
+            tracing::Dispatch::new(tracing_subscriber::registry().with(captured.clone()));
+        task.spawn_with_dispatch(dispatch);
 
         let (reply, rx) = oneshot::channel();
         handle
@@ -293,10 +364,12 @@ mod tests {
             rx.await.unwrap().unwrap(),
             SettingsCommandResult { changed: true }
         );
-        let saved = std::fs::read_to_string(dir.join("settings.json")).unwrap();
-        assert!(saved.contains("autoSaveSessions"));
-        assert!(saved.contains("\"faderOverrideSensitivity\": 10"));
-        assert!(saved.contains("\"sameSceneRecallThresholdMs\": 5000"));
+        let saved: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["autoSaveSessions"], true);
+        assert_eq!(saved["faderOverrideSensitivity"], 10);
+        assert_eq!(saved["sameSceneRecallThresholdMs"], 5_000);
 
         let received = events.recv().await.unwrap();
         assert!(matches!(
@@ -306,6 +379,20 @@ mod tests {
                     && settings.fader_override_sensitivity == 10
                     && settings.same_scene_recall_threshold_ms == 5_000
         ));
+        let logs = captured.matching("settings_updated", tracing::Level::INFO);
+        assert!(logs.iter().any(|event| {
+            event.fields.get("auto_save_sessions").map(String::as_str) == Some("true")
+                && event
+                    .fields
+                    .get("fader_override_sensitivity")
+                    .map(String::as_str)
+                    == Some("10")
+                && event
+                    .fields
+                    .get("same_scene_recall_threshold_ms")
+                    .map(String::as_str)
+                    == Some("5000")
+        }));
     }
 
     #[tokio::test]
@@ -338,23 +425,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_stores_and_returns_last_connected_lv1() {
+    async fn actor_preserves_public_settings_when_publication_fails_and_cleans_staging() {
+        let event_bus = AppEventBus::default();
+        let dir = temp_settings_dir("failed-publication");
+        std::fs::create_dir_all(dir.join("settings.json")).unwrap();
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        task.spawn();
+
+        let (reply, rx) = oneshot::channel();
+        handle
+            .send(SettingsCommand::ReplaceSettings {
+                settings: AppSettings {
+                    auto_save_sessions: true,
+                    ..Default::default()
+                },
+                reply,
+            })
+            .await
+            .unwrap();
+
+        assert!(rx.await.unwrap().is_err());
+        assert_eq!(get_settings(&handle).await, AppSettings::default());
+        assert!(staged_settings_files(&dir).is_empty());
+    }
+
+    #[tokio::test]
+    async fn actor_publishes_staged_last_connected_lv1_for_current_generation() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("connected-identity");
         let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
-        task.spawn();
+        let (staged_tx, staged_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        task.pause_set_last_connected_lv1(staged_tx, release_rx)
+            .spawn();
         let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
+        let runtime_generation = runtime_generation();
 
         let (reply, rx) = oneshot::channel();
         handle
             .send(SettingsCommand::SetLastConnectedLv1 {
                 identity: identity.clone(),
-                runtime_generation: runtime_generation(),
+                runtime_generation: runtime_generation.clone(),
                 expected_generation: 0,
                 reply,
             })
             .await
             .unwrap();
+        staged_rx.await.expect("settings update should be staged");
+        assert_eq!(staged_settings_files(&dir).len(), 1);
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                runtime_generation.current()
+            )
+            .await,
+            Ok(0)
+        );
+        release_tx.send(()).unwrap();
         assert_eq!(rx.await.unwrap(), Ok(()));
 
         let (reply, rx) = oneshot::channel();
@@ -363,7 +490,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(identity));
-        assert!(dir.join("settings.json").exists());
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(dir.join("settings.json")).unwrap())
+                .unwrap();
+        assert_eq!(document["lastConnectedLv1"]["uuid"], "uuid-1");
+        assert!(document.get("settings").is_none());
+        assert!(staged_settings_files(&dir).is_empty());
     }
 
     #[tokio::test]
@@ -371,7 +503,7 @@ mod tests {
         let event_bus = AppEventBus::default();
         let mut events = event_bus.subscribe();
         let dir = temp_settings_dir("remembered-identity-private");
-        let (handle, task, _) = build_settings_actor(dir, event_bus);
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
         task.spawn();
         let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
 
@@ -417,27 +549,58 @@ mod tests {
             .send(SettingsCommand::GetLastConnectedLv1 { reply })
             .await
             .unwrap();
-        assert_eq!(rx.await.unwrap(), Some(identity));
+        assert_eq!(rx.await.unwrap(), Some(identity.clone()));
+
+        let reloaded_bus = AppEventBus::default();
+        let (reloaded, reloaded_task, reloaded_settings) = build_settings_actor(dir, reloaded_bus);
+        reloaded_task.spawn();
+        assert!(reloaded_settings.auto_save_sessions);
+        assert_eq!(get_last_connected_lv1(&reloaded).await, Some(identity));
     }
 
     #[tokio::test]
-    async fn actor_treats_stale_remembered_identity_update_as_successful_noop() {
+    async fn actor_discards_staged_identity_when_generation_advances() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("stale-remembered-identity");
-        let (handle, task, _) = build_settings_actor(dir, event_bus);
-        task.spawn();
+        std::fs::create_dir_all(&dir).unwrap();
+        let original_contents = r#"{
+  "autoSaveSessions": true,
+  "lastConnectedLv1": {
+    "uuid": "uuid-old",
+    "host": "LV1-FOH",
+    "address": "192.168.1.35",
+    "port": 50000
+  }
+}"#;
+        std::fs::write(dir.join("settings.json"), original_contents).unwrap();
+        let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
+        let (staged_tx, staged_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        task.pause_set_last_connected_lv1(staged_tx, release_rx)
+            .spawn();
         let runtime_generation = crate::runtime::generation::RuntimeGeneration::default();
-        runtime_generation.advance().await;
+
         let (reply, rx) = oneshot::channel();
         handle
             .send(SettingsCommand::SetLastConnectedLv1 {
                 identity: identity("uuid-new", "LV1-FOH", "192.168.1.36"),
-                runtime_generation,
+                runtime_generation: runtime_generation.clone(),
                 expected_generation: 0,
                 reply,
             })
             .await
-            .expect("stale identity command should send");
+            .expect("identity command should send");
+        staged_rx.await.expect("settings update should be staged");
+        assert_eq!(staged_settings_files(&dir).len(), 1);
+        assert_eq!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                runtime_generation.advance()
+            )
+            .await,
+            Ok(1)
+        );
+        release_tx.send(()).unwrap();
         assert_eq!(
             rx.await.expect("stale identity reply should arrive"),
             Ok(())
@@ -448,11 +611,19 @@ mod tests {
             .send(SettingsCommand::GetLastConnectedLv1 { reply })
             .await
             .unwrap();
-        assert_eq!(rx.await.unwrap(), None);
+        assert_eq!(
+            rx.await.unwrap(),
+            Some(identity("uuid-old", "LV1-FOH", "192.168.1.35"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("settings.json")).unwrap(),
+            original_contents
+        );
+        assert!(staged_settings_files(&dir).is_empty());
     }
 
     #[tokio::test]
-    async fn actor_preserves_remembered_identity_when_replacement_write_fails() {
+    async fn actor_preserves_remembered_identity_when_staged_publication_fails() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("failed-remembered-identity-write");
         let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
@@ -473,8 +644,7 @@ mod tests {
         assert_eq!(rx.await.unwrap(), Ok(()));
 
         std::fs::remove_file(dir.join("settings.json")).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
-        std::fs::write(&dir, "not a directory").unwrap();
+        std::fs::create_dir(dir.join("settings.json")).unwrap();
 
         let (reply, rx) = oneshot::channel();
         handle
@@ -494,37 +664,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rx.await.unwrap(), Some(original));
-    }
-
-    #[tokio::test]
-    async fn actor_logs_settings_update_fields() {
-        let captured = TracingCapture::new();
-        let _guard = captured.install();
-
-        super::log_settings_updated(&AppSettings {
-            enable_extensive_diagnostics: true,
-            same_scene_recall_enabled: false,
-            same_scene_recall_threshold_ms: 1_200,
-            ..Default::default()
-        });
-
-        let events = captured.matching("settings_updated", tracing::Level::INFO);
-        assert!(events.iter().any(|event| {
-            event
-                .fields
-                .get("enable_extensive_diagnostics")
-                .map(String::as_str)
-                == Some("true")
-                && event
-                    .fields
-                    .get("same_scene_recall_enabled")
-                    .map(String::as_str)
-                    == Some("false")
-                && event
-                    .fields
-                    .get("same_scene_recall_threshold_ms")
-                    .map(String::as_str)
-                    == Some("1200")
-        }));
+        assert!(staged_settings_files(&dir).is_empty());
     }
 }

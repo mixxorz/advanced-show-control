@@ -1,48 +1,43 @@
 # Scene Tracking
 
-The app tracks LV1 scenes for the current active show by listening to LV1 scene-list updates. LV1 remains the source of truth for scene creation, order, naming, and recall. The app only updates its stored scene locators so existing fade configuration follows deterministic LV1 scene edits.
+LV1 remains authoritative for scene creation, ordering, names, and current recall state. ASC stores a separate app-lifetime scene document and reconciles its LV1 links only when the current generation's scene library is available.
 
-## Current Model
+## Identity and Reconciliation
 
-Scene configs currently use the existing locator shape:
+Each ASC config has a durable internal UUID. A linked config stores its current LV1 `scene_index` and `scene_name`; an unlinked config has no index. The UUID is the ASC and cue-list identity. The index/name locator is used only to follow and validate the linked LV1 scene.
 
-```text
-scene_id = "{index}::{name}"
-```
+Reconciliation preserves a config UUID and fade data only for an unambiguous association:
 
-There is no separate durable app-owned scene ID in this design. `scene_id`, `scene_index`, and `scene_name` are updated together when a scene-list change can be classified deterministically.
+- exact current index and name;
+- a name unique in both remaining old configs and the new LV1 list; or
+- exactly one same-index rename in an otherwise matching list.
 
-## Event Ownership
+New LV1 scenes receive default linked configs. Deleted or ambiguous old links become unlinked and retain their data and order; existing unlinked configs are never automatically relinked. ASC deliberately does **not** FIFO-guess duplicate names, multi-renames, or other ambiguous changes. Exact matches remain linked; uncertain new entries get fresh defaults and uncertain old configs become unlinked.
 
-`Lv1Actor` emits `SceneListChanged(Vec<SceneListEntry>)` as a fact from LV1. It does not infer renames, moves, inserts, or deletes.
+Selection and the settings clipboard survive reconnect. The LV1-derived library does not: `AwaitingPeers`, `AwaitingSceneList`, and `Ready` gate live operations. Link, capture/store, and recall require `Ready`; document-only edits do not.
 
-`ShowState` owns reconciliation. It compares the previously stored scene config order with the new LV1 scene list and applies the matching single-operation transform.
+## Cue-List Coordination
 
-## Tracked Edits
+Cue entries reference scene config UUIDs, never LV1 locators. For ordinary scene-document updates, Cue Lists reconciles against the current valid UUID set and retains entries while clearing invalid active/cued references. For `FileReplacement`, Show coordinates the transaction: it passes the replacement Cue List document and valid scene UUID set directly to Cue Lists, because Cue Lists intentionally ignores the replacement Scenes event for reconciliation.
 
-The app expects one LV1 scene-list edit per scene-list event. A single edit cannot both move and rename a scene.
+## Recall Paths
 
-Supported deterministic edits:
+An **explicit ASC recall** queues a requested config, dispatches LV1 recall only after validation, and holds its caller reply until dispatch. The resulting later matching LV1 scene observation provides the post-dispatch boundary before Fade readiness and the next queued request.
 
-- Rename one scene at the same index.
-- Move one scene earlier or later in the list.
-- Insert one scene.
-- Delete one scene.
+An **event-driven fade** starts from an LV1 `SceneChanged` observation, including an operator recall performed outside ASC. It does not send an LV1 recall command. After settle and policy gates, it obtains fresh LV1 state and must validate generation, connection, lockout, exact index/name, linked config, scope/targets, and live topology before Fade admission.
 
-When a transform is deterministic, existing fade settings, scoped channels, and stored fader targets are preserved and only the scene locator fields are updated.
+Both paths use the same safety validation. A blocked, skipped, disabled, or ambiguous event before admission does not abort an active fade. A validated/admitted recall—including zero-duration or no-target cases—enters post-recall readiness; its timeout aborts paused fades.
 
-## Recall Timing Windows
+## Timing and Correlation
 
-Scene recall timing includes a short settle delay before policy runs, so the app can wait for the scene change to stabilize before it validates and dispatches fades. While that window is open, arming-baseline suppression can hold off a recall when the recalled scene is still part of the recent baseline state. Repeat suppression can skip a recall when the same scene is recalled again within the configured suppression window. Scene-list edit suppression can also block automation briefly after list churn so the app does not react to intermediate ordering noise. The recall actor then polls `get_lv1_state()` for up to 2 seconds until it sees a fresh snapshot that matches the recalled scene notification; if no matching fresh snapshot arrives in that window, recall is blocked. These are timing gates, not retry guarantees.
+The recall actor applies these concrete safety windows:
 
-## Ambiguous Edits
+- **25 ms settle delay:** lets current-scene frames stabilize before policy evaluation.
+- **2 s arming window:** observations establish the reconnect baseline rather than triggering a fade.
+- **500 ms scene-list-edit suppression:** avoids intermediate list-edit state.
+- **Configurable same-scene repeat suppression:** 500 ms by default; it suppresses repeated exact observations, not explicit queue entries.
+- **5 s queue deadline:** spans the exact post-dispatch observation and Fade readiness.
 
-For changes other than same-index renames, reconciliation matches existing configs to the new LV1 scene list by scene name using FIFO matching. The new LV1 scene list controls final order and indexes. Existing configs with matching names keep their fade settings and receive updated locator fields. New scene names get default configs. Old scene names absent from the new list are dropped.
+`SceneObservation.sequence` is connection-local. An explicit queued recall requires an observation with a sequence later than its dispatch sequence and the exact requested index/name. Fade readiness then requires two newer same-generation LV1 pings. Canceled in-flight requests leave bounded five-second late-observation suppression records; overflow uses a five-second fail-closed suppression fallback rather than guessing correlation.
 
-Duplicate scene names use the same FIFO matching policy: the first new occurrence receives the first old config with that name, the second receives the second, and so on. This is deterministic and avoids silently deleting settings, but it cannot know whether two identically named scenes swapped places. The Scene tab should show a persistent warning when the current list has duplicate names or another known hard-to-track condition. The warning is advisory; recall automation still validates exact current scene index and name before sending fader commands.
-
-## Safety
-
-Scene tracking never starts fades. It only updates stored scene locators.
-
-Before automation sends any fader commands, `SceneRecallFader` validates exact current scene index and name, lockout, connection state, stored scene config, scoped targets, stored fader values, live topology, and generation. Exact scene matching is one safety check, not the whole boundary.
+These gates are not retries. The recall actor uses fresh LV1 state where subscriber ordering could otherwise create a stale decision, and exact scene matching remains mandatory before any fader command.

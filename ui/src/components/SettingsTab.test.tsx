@@ -1,8 +1,15 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithAppProviders } from "../test/render";
 import { disconnectedAppViewState } from "../types";
 import { MockAppProviders } from "../storybook/MockAppProviders";
+import { createDeferred } from "../test/deferred";
 import { SettingsTab } from "./SettingsTab";
 
 const replaceAppSettings = vi.fn();
@@ -17,7 +24,7 @@ describe("SettingsTab", () => {
     replaceAppSettings.mockReset();
   });
 
-  it("renders projected settings and replaces the full object on toggle", () => {
+  it("updates auto-save by replacing the full settings object", () => {
     const state = {
       ...disconnectedAppViewState,
       settings: {
@@ -60,82 +67,42 @@ describe("SettingsTab", () => {
     });
   });
 
-  it("sends sensitivity updates as a bounded number", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
+  it.each([
+    {
+      control: "Increase Fader override sensitivity",
+      expected: { faderOverrideSensitivity: 10 },
+    },
+    {
+      control: "Auto load last show file",
+      expected: { autoLoadLastShowFile: true },
+    },
+    {
+      control: "Extensive diagnostics",
+      expected: { enableExtensiveDiagnostics: true },
+    },
+    {
+      control: "Same scene recall finishing",
+      expected: { sameSceneRecallEnabled: false },
+    },
+    {
+      control: "Increase Same scene recall threshold",
+      expected: { sameSceneRecallThresholdMs: 600 },
+    },
+  ])(
+    "replaces the full settings object when using $control",
+    ({ control, expected }) => {
+      renderWithAppProviders(<SettingsTab />, {
+        appState: disconnectedAppViewState,
+      });
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Increase Fader override sensitivity",
-      }),
-    );
+      fireEvent.click(screen.getByRole("button", { name: control }));
 
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      faderOverrideSensitivity:
-        disconnectedAppViewState.settings.faderOverrideSensitivity + 1,
-    });
-  });
-
-  it("updates auto-load while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Auto load last show file"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      autoLoadLastShowFile: true,
-    });
-  });
-
-  it("updates extensive diagnostics while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Extensive diagnostics"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      enableExtensiveDiagnostics: true,
-    });
-  });
-
-  it("updates same-scene finishing while replacing the full settings object", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    fireEvent.click(screen.getByLabelText("Same scene recall finishing"));
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      sameSceneRecallEnabled: false,
-    });
-  });
-
-  it("updates the same-scene threshold in 100ms increments", () => {
-    renderWithAppProviders(<SettingsTab />, {
-      appState: disconnectedAppViewState,
-    });
-
-    expect(screen.getByLabelText("Same scene recall threshold")).toHaveValue(
-      "500 ms",
-    );
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Increase Same scene recall threshold",
-      }),
-    );
-
-    expect(replaceAppSettings).toHaveBeenCalledWith({
-      ...disconnectedAppViewState.settings,
-      sameSceneRecallThresholdMs: 600,
-    });
-  });
+      expect(replaceAppSettings).toHaveBeenCalledWith({
+        ...disconnectedAppViewState.settings,
+        ...expected,
+      });
+    },
+  );
 
   it.each([
     [0, "Decrease Same scene recall threshold"],
@@ -163,7 +130,7 @@ describe("SettingsTab", () => {
     },
   );
 
-  it("composes rapid full-object setting updates before projection refreshes", () => {
+  it("composes rapid full-object setting updates before projection refreshes", async () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
     });
@@ -171,14 +138,16 @@ describe("SettingsTab", () => {
     fireEvent.click(screen.getByLabelText("Auto load last show file"));
     fireEvent.click(screen.getByLabelText("Auto save sessions"));
 
-    expect(replaceAppSettings).toHaveBeenLastCalledWith({
-      ...disconnectedAppViewState.settings,
-      autoLoadLastShowFile: true,
-      autoSaveSessions: true,
-    });
+    await waitFor(() =>
+      expect(replaceAppSettings).toHaveBeenLastCalledWith({
+        ...disconnectedAppViewState.settings,
+        autoLoadLastShowFile: true,
+        autoSaveSessions: true,
+      }),
+    );
   });
 
-  it("keeps composing draft settings across unrelated projection updates", () => {
+  it("keeps composing draft settings across unrelated projection updates", async () => {
     const { rerender } = render(
       <MockAppProviders appState={disconnectedAppViewState}>
         <SettingsTab />
@@ -200,11 +169,13 @@ describe("SettingsTab", () => {
 
     fireEvent.click(screen.getByLabelText("Auto save sessions"));
 
-    expect(replaceAppSettings).toHaveBeenLastCalledWith({
-      ...disconnectedAppViewState.settings,
-      autoLoadLastShowFile: true,
-      autoSaveSessions: true,
-    });
+    await waitFor(() =>
+      expect(replaceAppSettings).toHaveBeenLastCalledWith({
+        ...disconnectedAppViewState.settings,
+        autoLoadLastShowFile: true,
+        autoSaveSessions: true,
+      }),
+    );
   });
 
   it("keeps the latest draft visible across intermediate settings projections", () => {
@@ -240,6 +211,131 @@ describe("SettingsTab", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  it("does not restore an acknowledged draft after a later authoritative update", () => {
+    const { rerender } = render(
+      <MockAppProviders appState={disconnectedAppViewState}>
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...disconnectedAppViewState,
+          stateVersion: disconnectedAppViewState.stateVersion + 1,
+          settings: {
+            sameSceneRecallThresholdMs:
+              disconnectedAppViewState.settings.sameSceneRecallThresholdMs,
+            sameSceneRecallEnabled:
+              disconnectedAppViewState.settings.sameSceneRecallEnabled,
+            enableExtensiveDiagnostics:
+              disconnectedAppViewState.settings.enableExtensiveDiagnostics,
+            faderOverrideSensitivity:
+              disconnectedAppViewState.settings.faderOverrideSensitivity,
+            timeDisplay: disconnectedAppViewState.settings.timeDisplay,
+            keyboardShortcuts: {
+              cue: disconnectedAppViewState.settings.keyboardShortcuts.cue,
+              go: disconnectedAppViewState.settings.keyboardShortcuts.go,
+            },
+            autoSaveSessions:
+              disconnectedAppViewState.settings.autoSaveSessions,
+            autoLoadLastShowFile: true,
+          },
+        }}
+      >
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
+    rerender(
+      <MockAppProviders
+        appState={{
+          ...disconnectedAppViewState,
+          stateVersion: disconnectedAppViewState.stateVersion + 2,
+        }}
+      >
+        <SettingsTab />
+      </MockAppProviders>,
+    );
+
+    expect(screen.getByLabelText("Auto load last show file")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("catches a synchronous replacement failure and clears the latest draft", async () => {
+    renderWithAppProviders(
+      <SettingsTab
+        onReplaceSettings={() => {
+          throw new Error("synchronous settings failure");
+        }}
+      />,
+      { appState: disconnectedAppViewState },
+    );
+
+    const autoLoad = screen.getByLabelText("Auto load last show file");
+    fireEvent.click(autoLoad);
+
+    expect(
+      await screen.findByText("Error: synchronous settings failure"),
+    ).toBeInTheDocument();
+    expect(autoLoad).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("serializes rapid replacements while composing the latest draft immediately", async () => {
+    const first = createDeferred<void>();
+    const second = createDeferred<void>();
+    const onReplaceSettings = vi
+      .fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    renderWithAppProviders(
+      <SettingsTab onReplaceSettings={onReplaceSettings} />,
+      { appState: disconnectedAppViewState },
+    );
+
+    fireEvent.click(screen.getByLabelText("Auto load last show file"));
+    fireEvent.click(screen.getByLabelText("Auto save sessions"));
+
+    expect(screen.getByLabelText("Auto load last show file")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("Auto save sessions")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(onReplaceSettings).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first.reject(new Error("superseded failure"));
+      await first.promise.catch(() => undefined);
+    });
+
+    await waitFor(() => expect(onReplaceSettings).toHaveBeenCalledTimes(2));
+    expect(onReplaceSettings).toHaveBeenLastCalledWith({
+      ...disconnectedAppViewState.settings,
+      autoLoadLastShowFile: true,
+      autoSaveSessions: true,
+    });
+    expect(
+      screen.queryByText("Error: superseded failure"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Auto save sessions")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+
+    await act(async () => {
+      second.resolve();
+      await second.promise;
+    });
   });
 
   it("shows a settings save error when replacement fails", async () => {
@@ -376,6 +472,27 @@ describe("SettingsTab", () => {
     expect(screen.queryByText("...")).not.toBeInTheDocument();
   });
 
+  it("releases shortcut capture when navigating away from Settings", () => {
+    const { rerender } = renderWithAppProviders(<SettingsTab />, {
+      appState: disconnectedAppViewState,
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    );
+    rerender(<div>Navigated away</div>);
+
+    const keydown = new KeyboardEvent("keydown", {
+      key: "Enter",
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(keydown);
+
+    expect(keydown.defaultPrevented).toBe(false);
+    expect(replaceAppSettings).not.toHaveBeenCalled();
+  });
+
   it("captures Tab as a shortcut", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
@@ -403,7 +520,7 @@ describe("SettingsTab", () => {
     });
   });
 
-  it("rejects a captured shortcut already assigned to the other configurable action", () => {
+  it("rejects and accessibly describes a shortcut assigned to the other action", () => {
     renderWithAppProviders(<SettingsTab />, {
       appState: disconnectedAppViewState,
     });
@@ -414,7 +531,11 @@ describe("SettingsTab", () => {
     fireEvent.keyDown(window, { key: "c", code: "KeyC" });
 
     expect(replaceAppSettings).not.toHaveBeenCalled();
-    expect(screen.getByText("Already assigned to Cue")).toBeInTheDocument();
+    const conflict = screen.getByRole("alert");
+    expect(conflict).toHaveTextContent("Already assigned to Cue");
+    expect(
+      screen.getByRole("button", { name: "Change GO keyboard shortcut" }),
+    ).toHaveAttribute("aria-describedby", conflict.id);
   });
 
   it("rejects a captured shortcut that differs from Cue only by key case", () => {

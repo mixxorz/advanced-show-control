@@ -23,8 +23,6 @@ pub const PAN_OVERRIDE_CONFIRMATION_COUNT: u8 = 2;
 pub(crate) struct ActiveTarget {
     pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
-    pub(crate) group: i32,
-    pub(crate) channel: i32,
     pub(crate) start_value: f64,
     pub(crate) target_value: f64,
     /// Last value sent — for override detection and min-delta suppression.
@@ -34,20 +32,17 @@ pub(crate) struct ActiveTarget {
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
     paused_since: Option<Instant>,
-    pub(crate) expected_generation: Option<u64>,
+    finish_requested: bool,
 }
 
 pub(crate) struct ActiveTargetInit {
     pub(crate) scene: FadeSceneIdentity,
     pub(crate) key: FadeTargetKey,
-    pub(crate) group: i32,
-    pub(crate) channel: i32,
     pub(crate) start_value: f64,
     pub(crate) target_value: f64,
     pub(crate) curve: FadeCurve,
     pub(crate) duration: Duration,
     pub(crate) started_at: Instant,
-    pub(crate) expected_generation: Option<u64>,
 }
 
 impl ActiveTarget {
@@ -55,8 +50,6 @@ impl ActiveTarget {
         Self {
             scene: init.scene,
             key: init.key,
-            group: init.group,
-            channel: init.channel,
             start_value: init.start_value,
             target_value: init.target_value,
             expected_value: init.start_value,
@@ -65,7 +58,7 @@ impl ActiveTarget {
             duration: init.duration,
             started_at: init.started_at,
             paused_since: None,
-            expected_generation: init.expected_generation,
+            finish_requested: false,
         }
     }
 
@@ -82,7 +75,7 @@ impl ActiveTarget {
     }
 
     pub(crate) fn finish_on_next_tick(&mut self) {
-        self.duration = Duration::ZERO;
+        self.finish_requested = true;
     }
 
     #[cfg(test)]
@@ -102,8 +95,15 @@ impl ActiveTarget {
         }
     }
 
-    /// Returns the interpolated value at `now`.
+    /// @cc [owner:mixxorz,label:product] parameter-interpolation
+    /// `value_at` MUST clamp normalized elapsed progress to `[0, 1]`, return the finite exact target
+    /// for zero duration, interpolate faders in measured fader-position space, and interpolate Pan,
+    /// Balance, and Width linearly in their native value space.
     pub(crate) fn value_at(&self, now: Instant) -> f64 {
+        if self.duration.is_zero() {
+            return self.target_value;
+        }
+
         let elapsed = now.duration_since(self.started_at).as_secs_f64();
         let t = elapsed / self.duration.as_secs_f64();
         if self.is_fader() {
@@ -116,12 +116,13 @@ impl ActiveTarget {
 
     /// Returns true if the fade has completed (t >= 1.0).
     pub(crate) fn is_done(&self, now: Instant) -> bool {
-        now.duration_since(self.started_at) >= self.duration
+        self.finish_requested || now.duration_since(self.started_at) >= self.duration
     }
 
-    /// Returns true if the current parameter value indicates a manual override.
-    /// Faders are compared in position space. Pan uses a direct threshold. Balance
-    /// and width do not participate in override cancellation.
+    /// @cc [owner:mixxorz,label:safety;product] override-thresholds
+    /// Fader override detection MUST compare reported and expected values in measured position
+    /// space, Pan MUST compare native values, and Balance and Width MUST never independently declare
+    /// an override.
     pub(crate) fn is_override(&self, reported_value: f64) -> bool {
         if self.is_fader() {
             let reported_pos = db_to_pos(reported_value);
@@ -134,7 +135,9 @@ impl ActiveTarget {
         }
     }
 
-    /// Records an override report and returns true when override is confirmed.
+    /// @cc [owner:mixxorz,label:safety;product] pan-override-confirmation
+    /// Pan MUST require two consecutive out-of-threshold reports to confirm override and MUST reset
+    /// that evidence on an in-threshold report; fader override confirmation MUST remain immediate.
     pub(crate) fn record_override_report(&mut self, reported_value: f64) -> bool {
         if self.key.parameter != FadeParameter::Pan {
             return self.is_override(reported_value);
@@ -149,7 +152,10 @@ impl ActiveTarget {
         }
     }
 
-    /// Returns Some(new_value) if the target has moved enough to warrant sending.
+    /// @cc [owner:mixxorz,label:product] parameter-send-delta-suppression
+    /// `next_send` MUST suppress values whose change from `expected_value` is below the parameter's
+    /// minimum delta, comparing faders in measured position space and Pan, Balance, and Width in
+    /// native value space. It MUST update `expected_value` exactly when it returns a value.
     pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
         let new_value = if self.is_done(now) {
             self.target_value
@@ -179,6 +185,9 @@ impl ActiveTarget {
         (new_value - self.expected_value).abs() >= delta_threshold
     }
 
+    /// @cc [owner:mixxorz,label:product;safety] exact-final-value
+    /// `exact_final_send` MUST bypass minimum-delta suppression, return the configured target
+    /// exactly, and update the expected value used by feedback comparison to that same target.
     pub(crate) fn exact_final_send(&mut self) -> f64 {
         self.expected_value = self.target_value;
         self.target_value
@@ -205,15 +214,22 @@ mod tests {
                 channel: 0,
                 parameter: FadeParameter::FaderDb,
             },
-            group: 0,
-            channel: 0,
             start_value: start_db,
             target_value: target_db,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(duration_ms),
             started_at: Instant::now(),
-            expected_generation: Some(4),
         })
+    }
+
+    #[test]
+    fn zero_duration_value_at_is_finite_target() {
+        let target = make_channel(-20.0, -10.0, 0);
+
+        let value = target.value_at(target.started_at);
+
+        assert!(value.is_finite());
+        assert_eq!(value, -10.0);
     }
 
     #[test]
@@ -240,14 +256,11 @@ mod tests {
                 channel: 0,
                 parameter: FadeParameter::Pan,
             },
-            group: 0,
-            channel: 0,
             start_value: -45.0,
             target_value: 45.0,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
-            expected_generation: None,
         });
 
         let mid = ch.started_at + Duration::from_millis(2000);
@@ -274,7 +287,6 @@ mod tests {
         let mut target = make_channel(-20.0, -10.0, 4_000);
         let owner = target.scene.clone();
         let key = target.key.clone();
-        let generation = target.expected_generation;
 
         target.finish_on_next_tick();
 
@@ -282,7 +294,6 @@ mod tests {
         assert_eq!(target.exact_final_send(), -10.0);
         assert_eq!(target.scene, owner);
         assert_eq!(target.key, key);
-        assert_eq!(target.expected_generation, generation);
     }
 
     #[test]
@@ -374,14 +385,11 @@ mod tests {
                 channel: 0,
                 parameter,
             },
-            group: 0,
-            channel: 0,
             start_value: 0.0,
             target_value: 10.0,
             curve: FadeCurve::Linear,
             duration: Duration::from_millis(4000),
             started_at: Instant::now(),
-            expected_generation: None,
         })
     }
 

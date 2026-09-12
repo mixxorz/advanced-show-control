@@ -8,6 +8,11 @@ import { KeyboardProvider } from "../keyboard";
 import { disconnectedAppViewState, type AppViewState } from "../types";
 import { mockAppCommands } from "./mockAppCommands";
 
+/**
+ * @cc [owner:mixxorz,label:testing] story-command-overrides-are-local
+ * The provider MUST use deterministic default commands and replace only keys explicitly supplied
+ * by the caller; omitted overrides MUST NOT reach real Tauri commands or inherit prior renders.
+ */
 export function MockAppProviders(props: {
   appState?: AppViewState;
   commandError?: string | null;

@@ -50,13 +50,11 @@ pub enum FadeCommand {
     RecallSceneFade {
         config: FadeConfig,
         same_scene_behavior: SameSceneRecallBehavior,
-        expected_generation: Option<u64>,
         readiness: RecallReadinessRequest,
         reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
     },
     WaitForRecallReadiness {
         scene: crate::fade::types::FadeSceneIdentity,
-        expected_generation: u64,
         readiness: RecallReadinessRequest,
         reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
     },

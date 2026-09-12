@@ -9,6 +9,12 @@ use tauri::Manager;
 
 pub(crate) mod commands;
 
+/// @cc [owner:mixxorz,label:debug] debug-builder-preserves-production-boundaries
+/// The debug app MUST use the production Show, Settings, Lifecycle, event-bus, and logging owner
+/// types with their production wiring, and MUST register the production adapters for workflows the
+/// smoke suite exercises. Additional registrations MUST remain smoke reporting, process exit, or
+/// deterministic LV1/session setup and observation unavailable through production commands; they
+/// MUST NOT be added to `build_app`.
 pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
@@ -26,6 +32,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
                 show_peers,
                 lockout,
                 settings.clone(),
+                initial_settings,
             );
             show_task.spawn();
             settings_task.spawn();
@@ -34,7 +41,7 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             app.manage(settings);
             app.manage(logging_runtime.guard);
             app.manage(logging_runtime.ui_logs);
-            app.manage(commands::SmokeReport::new());
+            app.manage(commands::SmokeReport::new()?);
             tracing::info!(
                 event = "app_started",
                 "Starting Advanced Show Control debug smoke"
@@ -58,10 +65,8 @@ pub fn build_debug_app() -> tauri::Builder<tauri::Wry> {
             crate::ui::commands::scenes::set_scene_scope_pan_enabled,
             crate::ui::commands::scenes::store_scene_config,
             crate::ui::commands::lifecycle::connect_lv1_system,
-            crate::ui::commands::lifecycle::attempt_reconnect_lv1,
             crate::ui::commands::lifecycle::startup_auto_connect_lv1,
             crate::ui::commands::lifecycle::disconnect_lv1,
-            crate::ui::commands::lifecycle::reconnect_timed_out,
             crate::ui::commands::fade::abort_all_fades,
             crate::ui::commands::settings::replace_app_settings,
             crate::ui::commands::show::set_lockout,

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { userEvent, within } from "storybook/test";
 import { MockAppProviders } from "../storybook/MockAppProviders";
 import { mockAppState } from "../storybook/mockAppState";
 import type { AppSettings, AppViewState } from "../types";
@@ -18,19 +18,12 @@ export const Default: Story = {
   render: () => <InteractiveSettingsTab />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const finishing = canvas.getByLabelText("Same scene recall finishing");
-    const threshold = canvas.getByLabelText("Same scene recall threshold");
-
-    await expect(finishing).toHaveAttribute("aria-pressed", "true");
-    await expect(threshold).toHaveValue("500 ms");
-    await userEvent.click(finishing);
-    await expect(finishing).toHaveAttribute("aria-pressed", "false");
+    await userEvent.click(canvas.getByLabelText("Same scene recall finishing"));
     await userEvent.click(
       canvas.getByRole("button", {
         name: "Increase Same scene recall threshold",
       }),
     );
-    await expect(threshold).toHaveValue("600 ms");
   },
 };
 

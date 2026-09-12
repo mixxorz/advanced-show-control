@@ -8,7 +8,7 @@ If the console does not appear in **Connect to LV1**, you cannot connect or reca
 
 ## Connection fails or reconnects
 
-If the full-screen **Reconnecting...** overlay is visible, a scene fade cannot start. Wait for it to clear and for the top bar to show **Connected**. The top bar itself shows only **Connected**, **Connecting**, or **Offline**. If the connection does not return, use the [Top Bar](application-shell.md#top-bar) to open the connection window, select the intended available console, and confirm **Current**.
+A scene fade cannot start while LV1 is disconnected or connecting. The top bar shows **Connected**, **Connecting**, or **Offline**. Use the [Top Bar](application-shell.md#top-bar) to open **Connect to LV1**, select the intended available console, then confirm **Current** after the status shows **Connected**.
 
 ## Scene is unlinked
 

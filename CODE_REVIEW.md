@@ -1,4 +1,6 @@
-Code Maintainability Review
+# Code Maintainability Review
+
+> **Historical review (point in time):** This document records findings against commit `6972b54` on 2026-06-10. Its findings may have been resolved, superseded, or no longer apply. It is retained as historical context; do not treat it as a statement of the current architecture.
 
 Executive Summary
 

@@ -2,6 +2,12 @@ import type { KeyboardShortcut } from "./types";
 
 export type ShortcutPlatform = "mac" | "windows" | "linux";
 
+/**
+ * @cc [owner:mixxorz,label:keyboard;formatting] shortcut-platform-fallback
+ * Platform detection MUST prefer `navigator.userAgentData.platform`, fall back to
+ * `navigator.platform`, classify Apple and Windows identifiers case-insensitively, and otherwise
+ * use Linux-style labels.
+ */
 export function detectShortcutPlatform(): ShortcutPlatform {
   const userAgentData = navigator as Navigator & {
     userAgentData?: { platform?: string };
@@ -12,6 +18,16 @@ export function detectShortcutPlatform(): ShortcutPlatform {
   return "linux";
 }
 
+/**
+ * @cc [owner:mixxorz,label:keyboard;formatting] shortcut-display-order
+ * Modifiers MUST render in Shift, Control, Alt, Meta order; macOS uses joined symbols, Windows and
+ * Linux use ` + ` labels, and Meta MUST render as `Win` only on Windows.
+ */
+/**
+ * @cc [owner:mixxorz,label:formatting] shortcut-key-labels
+ * Space aliases and arrow keys MUST render as readable labels, single characters MUST uppercase,
+ * and unknown multi-character keys MUST be preserved unchanged.
+ */
 export function formatShortcut(
   shortcut: KeyboardShortcut,
   platform: ShortcutPlatform = detectShortcutPlatform(),

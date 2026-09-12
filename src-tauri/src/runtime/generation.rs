@@ -2,6 +2,10 @@ use std::sync::Arc;
 
 use tokio::sync::Mutex;
 
+/// @cc [owner:mixxorz,label:safety] production-generation-monotonic
+/// Production-visible mutation of `RuntimeGeneration` MUST leave the current value unchanged or
+/// increase it. It MUST NOT assign an older value or wrap on overflow; arbitrary assignment is
+/// test-only.
 #[derive(Clone, Debug, Default)]
 pub struct RuntimeGeneration {
     current: Arc<Mutex<u64>>,
@@ -16,16 +20,33 @@ impl RuntimeGeneration {
         *self.current.lock().await
     }
 
+    #[cfg(test)]
     pub(crate) async fn set(&self, generation: u64) {
         *self.current.lock().await = generation;
     }
 
     pub(crate) async fn advance(&self) -> u64 {
         let mut current = self.current.lock().await;
-        *current = current.saturating_add(1);
+        *current = current.checked_add(1).expect("runtime generation overflow");
         *current
     }
 
+    /// @cc [owner:mixxorz,label:safety] compare-and-advance-atomic
+    /// The generation MUST advance exactly once only when its current value equals `expected`;
+    /// mismatch MUST return `None` without mutation, and comparison plus mutation MUST be atomic
+    /// with respect to all other generation operations.
+    pub(crate) async fn advance_if_current(&self, expected: u64) -> Option<u64> {
+        let mut current = self.current.lock().await;
+        if *current != expected {
+            return None;
+        }
+        *current = current.checked_add(1).expect("runtime generation overflow");
+        Some(*current)
+    }
+
+    /// @cc [owner:mixxorz,label:safety] current-generation-operation-fence
+    /// `operation` MUST execute exactly once while the generation lock establishes that
+    /// `expected` is current; on mismatch it MUST NOT execute and the method MUST return `None`.
     pub(crate) async fn if_current<T>(
         &self,
         expected: u64,
@@ -33,5 +54,43 @@ impl RuntimeGeneration {
     ) -> Option<T> {
         let current = self.current.lock().await;
         (*current == expected).then(operation)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn hold_for_test(&self) -> impl Drop {
+        self.current.clone().lock_owned().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeGeneration;
+
+    #[tokio::test]
+    async fn advance_if_current_advances_only_the_matching_generation() {
+        let generation = RuntimeGeneration::new();
+        let first = generation.advance().await;
+
+        assert_eq!(generation.advance_if_current(first).await, Some(first + 1));
+        assert_eq!(generation.advance_if_current(first).await, None);
+        assert_eq!(generation.current().await, first + 1);
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "runtime generation overflow")]
+    async fn advance_fails_explicitly_at_u64_max() {
+        let generation = RuntimeGeneration::new();
+        generation.set(u64::MAX).await;
+
+        generation.advance().await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "runtime generation overflow")]
+    async fn advance_if_current_fails_explicitly_at_u64_max() {
+        let generation = RuntimeGeneration::new();
+        generation.set(u64::MAX).await;
+
+        generation.advance_if_current(u64::MAX).await;
     }
 }

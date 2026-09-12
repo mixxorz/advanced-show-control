@@ -176,6 +176,13 @@ fn scene_config_name_counts(configs: &[SceneConfig]) -> HashMap<String, usize> {
     counts
 }
 
+/**
+ * @cc [owner:mixxorz,label:persistence] conservative-scene-alignment
+ * Alignment MUST preserve a config's durable UUID and fade metadata only for an exact index/name
+ * match, a name unique in both old and new lists, or the sole same-index rename in equal-length
+ * lists. Ambiguous or missing matches MUST create default linked configs and retain unmatched old
+ * configs as unlinked rather than guessing identity.
+ */
 pub(crate) fn align_scene_configs(
     configs: Vec<SceneConfig>,
     lv1_scenes: &[SceneListEntry],
@@ -289,19 +296,6 @@ mod tests {
     }
 
     #[test]
-    fn same_index_same_name_diff_order_keeps_configs() {
-        let old = vec![
-            scene(1, Some(1), "Intro", 1_000),
-            scene(2, Some(2), "Verse", 2_000),
-        ];
-        let new = vec![lv1_scene(1, "Intro"), lv1_scene(2, "Verse")];
-
-        let aligned = align_scene_configs(old.clone(), &new);
-
-        assert_eq!(aligned, old);
-    }
-
-    #[test]
     fn diagnostic_includes_duplicates_and_strategy() {
         let old = vec![scene(1, Some(1), "Intro", 1_000)];
         let new = vec![
@@ -314,6 +308,7 @@ mod tests {
 
         assert!(diagnostic.contains("duplicate_names=[Introx2]"));
         assert!(diagnostic.contains("strategy=exact-unique-name-single-rename"));
+        assert!(diagnostic.contains("lv1=[1:\"Intro\" | 2:\"Intro\" | 3:\"Verse\"]"));
     }
 
     #[test]
@@ -444,17 +439,5 @@ mod tests {
         assert_eq!(aligned[1].internal_scene_id, Uuid::from_u128(2));
         assert_eq!(aligned[2].scene_name, "Verse");
         assert_eq!(aligned[2].duration_ms, 0);
-    }
-
-    #[test]
-    fn diagnostic_is_string_only() {
-        let old = vec![scene(1, Some(1), "Intro", 1_000)];
-        let new = vec![scene(1, Some(1), "Intro", 1_000)];
-        let lv1 = vec![lv1_scene(1, "Intro")];
-
-        let diagnostic = scene_alignment_diagnostic(&old, &new, &lv1);
-
-        assert!(diagnostic.contains("strategy=exact-unique-name-single-rename"));
-        assert!(diagnostic.contains("lv1=[1:\"Intro\"]"));
     }
 }

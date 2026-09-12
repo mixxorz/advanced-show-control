@@ -21,78 +21,93 @@ import {
 
 export type AppStatusListener = (appState: AppViewState) => void;
 
+/**
+ * @cc [owner:mixxorz,label:architecture] runtime-service-boundary
+ * `listenForAppStatus` MUST be the only state-bearing service callback; mutation services MUST
+ * report request completion or failure without returning replacement `AppViewState` values.
+ */
+/**
+ * @cc [owner:mixxorz,label:lifecycle] frontend-request-backend-lifecycle-ownership
+ * Services MAY request discovery, startup auto-connect, explicit connect, and explicit disconnect.
+ * They MUST NOT expose frontend control of transport reconnect attempts, connection generations,
+ * or runtime peer installation, which remain backend-owned.
+ */
 export type AppRuntimeServices = {
   frontendReady: () => Promise<void>;
-  abortAll: () => Promise<void> | void;
-  attemptReconnectLv1: () => Promise<unknown>;
-  connectLv1System: (identity: Lv1SystemIdentity) => Promise<unknown>;
-  copySceneSettings: (internalSceneId: string) => Promise<unknown>;
-  disconnectLv1: () => Promise<unknown>;
+  abortAll: () => Promise<void>;
+  connectLv1System: (identity: Lv1SystemIdentity) => Promise<void>;
+  copySceneSettings: (internalSceneId: string) => Promise<void>;
+  disconnectLv1: () => Promise<void>;
   addSceneToActiveCueList: (
     sceneInternalId: string,
     insertIndex: number,
-  ) => Promise<unknown>;
-  createCueList: (name: string) => Promise<unknown>;
-  cueEntry: (cueEntryId: string | null) => Promise<unknown>;
-  deleteCueList: (cueListId: string) => Promise<unknown>;
+  ) => Promise<void>;
+  createCueList: (name: string) => Promise<void>;
+  cueEntry: (cueEntryId: string | null) => Promise<void>;
+  deleteCueList: (cueListId: string) => Promise<void>;
   listenForAppStatus: (listener: AppStatusListener) => Promise<() => void>;
-  newShowFile: () => Promise<unknown>;
-  openShowFile: () => Promise<unknown>;
-  pasteSceneSettings: (internalSceneId: string) => Promise<unknown>;
-  removeCueEntry: (cueEntryId: string) => Promise<unknown>;
-  recallCuedCue: () => Promise<unknown>;
-  reconnectTimedOut: (attempt: number) => Promise<unknown>;
-  renameCueList: (cueListId: string, name: string) => Promise<unknown>;
-  reorderCueEntries: (orderedEntryIds: string[]) => Promise<unknown>;
-  reorderCueLists: (orderedIds: string[]) => Promise<unknown>;
-  refreshLv1Discovery: () => Promise<unknown>;
-  saveShowFile: () => Promise<unknown>;
-  saveShowFileAs: () => Promise<unknown>;
-  recallScene: (internalSceneId: string) => Promise<unknown>;
+  newShowFile: () => Promise<void>;
+  openShowFile: () => Promise<void>;
+  pasteSceneSettings: (internalSceneId: string) => Promise<void>;
+  removeCueEntry: (cueEntryId: string) => Promise<void>;
+  recallCuedCue: () => Promise<void>;
+  renameCueList: (cueListId: string, name: string) => Promise<void>;
+  reorderCueEntries: (orderedEntryIds: string[]) => Promise<void>;
+  reorderCueLists: (orderedIds: string[]) => Promise<void>;
+  refreshLv1Discovery: () => Promise<void>;
+  saveShowFile: () => Promise<void>;
+  saveShowFileAs: () => Promise<void>;
+  recallScene: (internalSceneId: string) => Promise<void>;
   probeLv1TcpConnectLatency: (
     identity: Lv1SystemIdentity,
     timeoutMs?: number,
   ) => Promise<TcpConnectLatencyResult>;
-  selectSceneConfig: (internalSceneId: string) => Promise<unknown>;
+  selectSceneConfig: (internalSceneId: string) => Promise<void>;
   setAllChannelsScoped: (
     internalSceneId: string,
     scoped: boolean,
-  ) => Promise<unknown>;
-  setActiveCueList: (cueListId: string | null) => Promise<unknown>;
+  ) => Promise<void>;
+  setActiveCueList: (cueListId: string | null) => Promise<void>;
   setChannelScoped: (
     internalSceneId: string,
     group: number,
     channel: number,
     scoped: boolean,
-  ) => Promise<unknown>;
-  setLockout: (enabled: boolean) => Promise<unknown>;
+  ) => Promise<void>;
+  setLockout: (enabled: boolean) => Promise<void>;
   setSceneDurationMs: (
     internalSceneId: string,
     durationMs: number,
-  ) => Promise<unknown>;
+  ) => Promise<void>;
   setSceneScopeFadersEnabled: (
     internalSceneId: string,
     enabled: boolean,
-  ) => Promise<unknown>;
+  ) => Promise<void>;
   setSceneScopePanEnabled: (
     internalSceneId: string,
     enabled: boolean,
-  ) => Promise<unknown>;
-  setWindowTitle?: (title: string) => Promise<unknown> | void;
-  startupAutoConnectLv1: () => Promise<unknown>;
-  storeSceneConfig: (internalSceneId: string) => Promise<unknown>;
+  ) => Promise<void>;
+  setWindowTitle: (title: string) => Promise<void>;
+  startupAutoConnectLv1: () => Promise<void>;
+  storeSceneConfig: (internalSceneId: string) => Promise<void>;
   linkSceneConfig: (
     sourceInternalSceneId: string,
     targetSceneIndex: number,
     overwriteExisting: boolean,
-  ) => Promise<unknown>;
-  deleteSceneConfig: (internalSceneId: string) => Promise<unknown>;
+  ) => Promise<void>;
+  deleteSceneConfig: (internalSceneId: string) => Promise<void>;
 };
 
 type ConnectionModalMode = "startup" | "manual" | null;
 
 const GO_SHORTCUT_PRIORITY = 100;
 
+/**
+ * @cc [owner:mixxorz,label:safety;keyboard] go-shortcut-routing
+ * A matching GO keydown MUST be consumed, but MUST dispatch at most one recall while a prior GO
+ * recall is unsettled and MUST dispatch only when the projected active cue resolves to a projected
+ * scene config. Repeats and blocked interaction targets MUST NOT dispatch.
+ */
 function AppShortcutHandler(props: {
   appState: AppViewState;
   commands: AppCommands;
@@ -143,6 +158,23 @@ function AppShortcutHandler(props: {
   return null;
 }
 
+/**
+ * @cc [owner:mixxorz,label:architecture] snapshot-version-ordering
+ * The first received snapshot MAY have any version; afterward `AppRuntime` MUST apply only a
+ * snapshot whose `stateVersion` is strictly greater than the latest accepted version. Equal or
+ * lower versions MUST NOT change projected UI state or snapshot-driven modal state.
+ */
+/**
+ * @cc [owner:mixxorz,label:lifecycle] listener-before-ready
+ * Startup MUST establish the status listener before signaling frontend readiness or requesting
+ * auto-connect, and unmount MUST prevent late callbacks and release an established listener.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] latest-user-command-error
+ * Among overlapping user commands routed through `runCheckedCommand`, only the latest-started
+ * request MAY clear or set `commandError`; an older late failure MUST NOT overwrite a newer outcome.
+ * Startup, discovery, and window-title errors remain outside this ordering rule.
+ */
 export function AppRuntime(props: { services: AppRuntimeServices }) {
   const { services } = props;
   const [activeTab, setActiveTab] = useState<MainTab>("scenes");
@@ -154,6 +186,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
   );
   const latestAppState = useRef(disconnectedAppViewState);
   const hasAppliedSnapshot = useRef(false);
+  const checkedCommandRequestId = useRef(0);
   const showConnection = connectionModalMode !== null;
 
   // Async service calls and status events can resolve out of order. Only newer
@@ -178,16 +211,30 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     }
   }, []);
 
-  const runCommand = useCallback(async (command: () => Promise<unknown>) => {
-    setCommandError(null);
-    try {
-      await command();
-      return true;
-    } catch (error) {
-      setCommandError(String(error));
-      return false;
-    }
-  }, []);
+  const runCheckedCommand = useCallback(
+    async (command: () => Promise<void>) => {
+      const requestId = checkedCommandRequestId.current + 1;
+      checkedCommandRequestId.current = requestId;
+      setCommandError(null);
+      try {
+        await command();
+        return true;
+      } catch (error) {
+        if (checkedCommandRequestId.current === requestId) {
+          setCommandError(String(error));
+        }
+        return false;
+      }
+    },
+    [],
+  );
+
+  const runCommand = useCallback(
+    async (command: () => Promise<void>) => {
+      await runCheckedCommand(command);
+    },
+    [runCheckedCommand],
+  );
 
   // Kick off startup auto-connect while also subscribing to backend status
   // updates. Either path may provide the first fresh connected snapshot.
@@ -250,59 +297,8 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     };
   }, [showConnection, services]);
 
-  // During backend-managed reconnect, keep retrying briefly before handing the
-  // engineer back to the connection modal.
-  useEffect(() => {
-    if (!appState.reconnect.active) return;
-    const attempt = appState.reconnect.attempt;
-    let cancelled = false;
-    let reconnectInFlight = false;
-
-    async function attemptReconnect() {
-      if (reconnectInFlight) return;
-      reconnectInFlight = true;
-      try {
-        await services.attemptReconnectLv1();
-        if (cancelled) return;
-        setCommandError(null);
-      } catch (error) {
-        if (!cancelled) setCommandError(String(error));
-      } finally {
-        reconnectInFlight = false;
-      }
-    }
-
-    void attemptReconnect();
-    const interval = window.setInterval(() => {
-      void attemptReconnect();
-    }, 2000);
-
-    const timer = window.setTimeout(async () => {
-      try {
-        await services.reconnectTimedOut(attempt);
-        if (cancelled) return;
-      } catch (error) {
-        if (!cancelled) {
-          setCommandError(String(error));
-          setConnectionModalMode("startup");
-        }
-      }
-    }, 15000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-      window.clearTimeout(timer);
-    };
-  }, [appState.reconnect.active, appState.reconnect.attempt, services]);
-
   const commands: AppCommands = {
-    abortAll: () => {
-      setCommandError(null);
-      void Promise.resolve(services.abortAll()).catch((error) => {
-        setCommandError(String(error));
-      });
-    },
+    abortAll: () => runCommand(() => services.abortAll()),
     disconnect: async () => {
       await runCommand(() => services.disconnectLv1());
       // Disconnect is an explicit connection-management action; keep the modal
@@ -310,34 +306,30 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       setConnectionModalMode("manual");
     },
     addSceneToActiveCueList: (sceneInternalId, insertIndex) =>
-      void runCommand(() =>
+      runCommand(() =>
         services.addSceneToActiveCueList(sceneInternalId, insertIndex),
       ),
-    createCueList: (name) =>
-      void runCommand(() => services.createCueList(name)),
+    createCueList: (name) => runCommand(() => services.createCueList(name)),
     copySceneSettings: (internalSceneId) =>
-      void runCommand(() => services.copySceneSettings(internalSceneId)),
-    cueEntry: (cueEntryId) =>
-      void runCommand(() => services.cueEntry(cueEntryId)),
+      runCommand(() => services.copySceneSettings(internalSceneId)),
+    cueEntry: (cueEntryId) => runCommand(() => services.cueEntry(cueEntryId)),
     deleteCueList: (cueListId) =>
-      void runCommand(() => services.deleteCueList(cueListId)),
+      runCommand(() => services.deleteCueList(cueListId)),
     newShowFile: () => runCommand(() => services.newShowFile()),
     openShowFile: () => runCommand(() => services.openShowFile()),
     pasteSceneSettings: (internalSceneId) =>
-      void runCommand(() => services.pasteSceneSettings(internalSceneId)),
+      runCommand(() => services.pasteSceneSettings(internalSceneId)),
     removeCueEntry: (cueEntryId) =>
-      void runCommand(() => services.removeCueEntry(cueEntryId)),
-    recallCuedCue: async () => {
-      await runCommand(() => services.recallCuedCue());
-    },
+      runCommand(() => services.removeCueEntry(cueEntryId)),
+    recallCuedCue: () => runCommand(() => services.recallCuedCue()),
     renameCueList: (cueListId, name) =>
-      void runCommand(() => services.renameCueList(cueListId, name)),
+      runCommand(() => services.renameCueList(cueListId, name)),
     reorderCueEntries: (orderedEntryIds) =>
-      void runCommand(() => services.reorderCueEntries(orderedEntryIds)),
+      runCommand(() => services.reorderCueEntries(orderedEntryIds)),
     reorderCueLists: (orderedIds) =>
-      void runCommand(() => services.reorderCueLists(orderedIds)),
+      runCommand(() => services.reorderCueLists(orderedIds)),
     linkSceneConfig: (sourceInternalSceneId, targetSceneIndex, overwrite) =>
-      void runCommand(() =>
+      runCommand(() =>
         services.linkSceneConfig(
           sourceInternalSceneId,
           targetSceneIndex,
@@ -345,7 +337,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         ),
       ),
     deleteSceneConfig: (internalSceneId) =>
-      void runCommand(() => services.deleteSceneConfig(internalSceneId)),
+      runCommand(() => services.deleteSceneConfig(internalSceneId)),
     recallScene: (internalSceneId) =>
       runCommand(() => services.recallScene(internalSceneId)),
     probeLv1TcpConnectLatency: (identity, timeoutMs) =>
@@ -355,15 +347,9 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
     selectScene: (internalSceneId: string) =>
       runCommand(() => services.selectSceneConfig(internalSceneId)),
     setActiveCueList: (cueListId) =>
-      void runCommand(() => services.setActiveCueList(cueListId)),
-    selectSystem: async (identity) => {
-      setCommandError(null);
-      try {
-        await services.connectLv1System(identity);
-      } catch (error) {
-        setCommandError(String(error));
-      }
-    },
+      runCommand(() => services.setActiveCueList(cueListId)),
+    selectSystem: (identity) =>
+      runCommand(() => services.connectLv1System(identity)),
     setAllChannelsScoped: (internalSceneId: string, scoped: boolean) =>
       runCommand(() => services.setAllChannelsScoped(internalSceneId, scoped)),
     setChannelScoped: (internalSceneId, group, channel, scoped) =>
@@ -371,7 +357,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         services.setChannelScoped(internalSceneId, group, channel, scoped),
       ),
     setSceneDurationMs: (internalSceneId, durationMs) =>
-      runCommand(() =>
+      runCheckedCommand(() =>
         services.setSceneDurationMs(internalSceneId, durationMs),
       ),
     setSceneScopeFadersEnabled: (internalSceneId, enabled) =>
@@ -383,7 +369,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
         services.setSceneScopePanEnabled(internalSceneId, enabled),
       ),
     storeSceneConfig: (internalSceneId) =>
-      runCommand(() => services.storeSceneConfig(internalSceneId)),
+      runCheckedCommand(() => services.storeSceneConfig(internalSceneId)),
     toggleLockout: () =>
       runCommand(() => services.setLockout(!appState.lockout)),
   };
@@ -393,7 +379,7 @@ export function AppRuntime(props: { services: AppRuntimeServices }) {
       appState.showFileName,
       appState.showFileDirty,
     );
-    void Promise.resolve(services.setWindowTitle?.(title)).catch((error) => {
+    void services.setWindowTitle(title).catch((error) => {
       setCommandError(String(error));
     });
   }, [appState.showFileDirty, appState.showFileName, services]);

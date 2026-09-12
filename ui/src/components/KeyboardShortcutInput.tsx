@@ -1,9 +1,16 @@
+import { useId } from "react";
 import { formatShortcut, type ShortcutPlatform } from "../shortcutFormat";
 import type { KeyboardShortcut } from "../types";
 
 const settingControlText = "font-mono text-sm uppercase";
 const settingControlSize = "h-9 w-48";
 
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] shortcut-capture-presentation
+ * The controlled input MUST invoke `onStartCapture` when activated and display `...` instead of the
+ * assigned shortcut while capturing. Any conflict MUST leave the shortcut unchanged, be announced
+ * as an alert, and be associated with the capture button through `aria-describedby`.
+ */
 export function KeyboardShortcutInput(props: {
   label: string;
   shortcut: KeyboardShortcut;
@@ -12,6 +19,7 @@ export function KeyboardShortcutInput(props: {
   platform?: ShortcutPlatform;
   conflictMessage?: string;
 }) {
+  const conflictId = useId();
   const displayValue = props.isCapturing
     ? "..."
     : formatShortcut(props.shortcut, props.platform);
@@ -19,6 +27,7 @@ export function KeyboardShortcutInput(props: {
   return (
     <div className="flex items-center gap-3">
       <button
+        aria-describedby={props.conflictMessage ? conflictId : undefined}
         aria-label={`Change ${props.label}`}
         className={`${settingControlSize} ${settingControlText} truncate rounded-console-control border px-3 py-1.5 text-center outline-none transition-colors hover:border-console-line-strong hover:text-accent-orange-hover active:border-accent-orange active:bg-accent-orange-active active:text-white focus:border-console-line-strong ${
           props.isCapturing
@@ -32,7 +41,12 @@ export function KeyboardShortcutInput(props: {
         {displayValue}
       </button>
       {props.conflictMessage ? (
-        <span className="text-sm text-status-danger">
+        <span
+          aria-live="assertive"
+          className="text-sm text-status-danger"
+          id={conflictId}
+          role="alert"
+        >
           {props.conflictMessage}
         </span>
       ) : null}

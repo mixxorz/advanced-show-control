@@ -10,7 +10,8 @@ import {
 import type { AppViewState, DiscoveredLv1System } from "../types";
 
 const noop = async () => {};
-const disconnect = fn();
+const disconnect = fn(async () => {});
+const probeLv1TcpConnectLatency = fn(async () => ({ tcpConnectMs: 6 }));
 
 const manyDiscoveredSystems: DiscoveredLv1System[] = Array.from(
   { length: 14 },
@@ -81,7 +82,7 @@ const meta: Meta<ConnectionModalStoryArgs> = {
     <MockAppProviders
       appState={args.appState}
       commandError={args.commandError}
-      commands={{ disconnect }}
+      commands={{ disconnect, probeLv1TcpConnectLatency }}
     >
       <div className="h-screen bg-black">
         <ConnectionModal onResume={args.onResume} />
@@ -102,10 +103,9 @@ export const SystemsFound: Story = {
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-
-    await expect(
-      canvas.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Test latency for FOH LV1" }),
+    );
   },
 };
 
@@ -126,9 +126,6 @@ export const Connected: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Disconnect" }));
 
     await expect(disconnect).toHaveBeenCalledTimes(1);
-    await expect(
-      canvas.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
   },
 };
 

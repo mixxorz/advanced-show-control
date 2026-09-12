@@ -1,11 +1,17 @@
 use serde::{Deserialize, Serialize};
 
 use crate::cue_lists::{CueList, CueListDocument};
-use crate::lv1::{Lv1StateSnapshot, PanMode};
+use crate::lv1::Lv1StateSnapshot;
 use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneDocument, SceneScopeToggles};
 
 pub const SHOW_FILE_SCHEMA_VERSION: u32 = 2;
 
+/// @cc [owner:mixxorz,label:persistence;compatibility] persisted-show-file-shape
+/// The persisted DTO MUST use camelCase field names and MUST deserialize omitted cue lists, active
+/// cue-list identity, and cued-entry identity as empty or absent so schema-1 files remain readable.
+/// Explicit values for those fields MUST survive deserialization. Semantic import MUST preserve them
+/// for schema 2, while schema 1 MUST follow `import-schema-and-identity-policy` and clear legacy cue
+/// fields.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowFile {
@@ -28,6 +34,10 @@ pub struct ShowFileSafety {
     pub lockout: bool,
 }
 
+/// @cc [owner:mixxorz,label:persistence;compatibility] persisted-scene-config-defaults
+/// The persisted scene DTO MUST use camelCase field names and MUST deserialize an omitted durable
+/// scene ID as absent and omitted scope toggles as all-disabled defaults. Explicit IDs, channel
+/// targets, channel references, and scope-toggle values MUST be preserved for semantic import.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ShowFileSceneConfig {
@@ -36,48 +46,10 @@ pub struct ShowFileSceneConfig {
     pub scene_index: Option<i32>,
     pub scene_name: String,
     pub duration_ms: u64,
-    pub channel_configs: Vec<ShowFileChannelConfig>,
-    pub scoped_channels: Vec<ShowFileChannelRef>,
+    pub channel_configs: Vec<ChannelConfig>,
+    pub scoped_channels: Vec<ChannelRef>,
     #[serde(default)]
-    pub scope_toggles: ShowFileSceneScopeToggles,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-#[serde(default)]
-pub struct ShowFileSceneScopeToggles {
-    pub faders: bool,
-    pub pan: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelConfig {
-    pub group: i32,
-    pub channel: i32,
-    pub fader_db: Option<f64>,
-    pub pan: Option<f64>,
-    pub balance: Option<f64>,
-    pub width: Option<f64>,
-    pub pan_mode: Option<PanMode>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct ShowFileChannelRef {
-    pub group: i32,
-    pub channel: i32,
-}
-
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct LoadValidationReport {
-    pub removed_scenes: Vec<String>,
-}
-
-impl LoadValidationReport {
-    pub fn removed_anything(&self) -> bool {
-        !self.removed_scenes.is_empty()
-    }
+    pub scope_toggles: SceneScopeToggles,
 }
 
 pub struct ImportedShowFile {
@@ -85,10 +57,14 @@ pub struct ImportedShowFile {
     pub cue_list_snapshot: CueListDocument,
     pub lockout: bool,
     pub selected_scene_internal_id: Option<String>,
-    pub report: LoadValidationReport,
     pub generated_internal_scene_ids: bool,
 }
 
+/// @cc [owner:mixxorz,label:persistence] export-complete-session-document
+/// Export MUST construct a `ShowFile` from the supplied scene and cue-list documents together with
+/// current lockout, schema version, application version, and saved timestamp. It MUST preserve
+/// channel targets, channel references, scope toggles, and durable scene IDs without a duplicate
+/// conversion model.
 pub fn export_show_file(
     snapshot: SceneDocument,
     cue_list_snapshot: CueListDocument,
@@ -111,6 +87,11 @@ pub fn export_show_file(
     }
 }
 
+/// @cc [owner:mixxorz,label:persistence] import-schema-and-identity-policy
+/// Import MUST reject an empty LV1 scene list and unsupported schemas. Schema 1 MUST import with an
+/// empty cue document; supported files MUST preserve scene configuration content and existing durable
+/// IDs, generate IDs only when absent, and report whether generation occurred so load can stay dirty.
+/// Missing or unlinked scenes MUST NOT be discarded at this DTO boundary.
 pub fn import_show_file(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
@@ -153,7 +134,6 @@ pub fn import_show_file(
         snapshot,
         lockout: file.safety.lockout,
         selected_scene_internal_id,
-        report: LoadValidationReport::default(),
         generated_internal_scene_ids,
         cue_list_snapshot: CueListDocument {
             cue_lists: std::mem::take(&mut file.cue_lists),
@@ -169,31 +149,9 @@ fn show_scene_to_file_scene(config: SceneConfig) -> ShowFileSceneConfig {
         scene_index: config.scene_index,
         scene_name: config.scene_name,
         duration_ms: config.duration_ms,
-        channel_configs: config
-            .channel_configs
-            .into_iter()
-            .map(|target| ShowFileChannelConfig {
-                group: target.group,
-                channel: target.channel,
-                fader_db: target.fader_db,
-                pan: target.pan,
-                balance: target.balance,
-                width: target.width,
-                pan_mode: target.pan_mode,
-            })
-            .collect(),
-        scoped_channels: config
-            .scoped_channels
-            .into_iter()
-            .map(|channel| ShowFileChannelRef {
-                group: channel.group,
-                channel: channel.channel,
-            })
-            .collect(),
-        scope_toggles: ShowFileSceneScopeToggles {
-            faders: config.scope_toggles.faders,
-            pan: config.scope_toggles.pan,
-        },
+        channel_configs: config.channel_configs,
+        scoped_channels: config.scoped_channels,
+        scope_toggles: config.scope_toggles,
     }
 }
 
@@ -203,31 +161,9 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
         scene_index: config.scene_index,
         scene_name: config.scene_name.clone(),
         duration_ms: config.duration_ms,
-        channel_configs: config
-            .channel_configs
-            .iter()
-            .map(|target| ChannelConfig {
-                group: target.group,
-                channel: target.channel,
-                fader_db: target.fader_db,
-                pan: target.pan,
-                balance: target.balance,
-                width: target.width,
-                pan_mode: target.pan_mode.clone(),
-            })
-            .collect(),
-        scoped_channels: config
-            .scoped_channels
-            .iter()
-            .map(|channel| ChannelRef {
-                group: channel.group,
-                channel: channel.channel,
-            })
-            .collect(),
-        scope_toggles: SceneScopeToggles {
-            faders: config.scope_toggles.faders,
-            pan: config.scope_toggles.pan,
-        },
+        channel_configs: config.channel_configs.clone(),
+        scoped_channels: config.scoped_channels.clone(),
+        scope_toggles: config.scope_toggles.clone(),
     }
 }
 
@@ -235,7 +171,7 @@ fn file_scene_to_show_scene(config: &ShowFileSceneConfig) -> SceneConfig {
 mod tests {
     use super::*;
     use crate::cue_lists::{CueEntry, CueList, CueListDocument};
-    use crate::lv1::{ConnectionStatus, SceneListEntry};
+    use crate::lv1::{ConnectionStatus, PanMode, SceneListEntry};
 
     #[test]
     fn export_show_file_contains_current_configs() {
@@ -316,7 +252,6 @@ mod tests {
         )
         .unwrap();
 
-        assert!(!imported.report.removed_anything());
         assert!(imported.cue_list_snapshot.cue_lists.is_empty());
     }
 
@@ -340,7 +275,7 @@ mod tests {
                     duration_ms: 5_000,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
-                    scope_toggles: ShowFileSceneScopeToggles::default(),
+                    scope_toggles: SceneScopeToggles::default(),
                 },
                 ShowFileSceneConfig {
                     internal_scene_id: Some(missing_internal_scene_id),
@@ -349,7 +284,7 @@ mod tests {
                     duration_ms: 5_000,
                     channel_configs: Vec::new(),
                     scoped_channels: Vec::new(),
-                    scope_toggles: ShowFileSceneScopeToggles::default(),
+                    scope_toggles: SceneScopeToggles::default(),
                 },
             ],
         };
@@ -366,7 +301,6 @@ mod tests {
 
         let imported = import_show_file(&mut file, &lv1).unwrap();
 
-        assert!(!imported.report.removed_anything());
         assert_eq!(imported.snapshot.scene_configs.len(), 2);
         assert_eq!(imported.snapshot.scene_configs[0].scene_index, Some(1));
         assert_eq!(imported.snapshot.scene_configs[0].scene_name, "Intro");
@@ -389,7 +323,7 @@ mod tests {
                 duration_ms: 0,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: ShowFileSceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles::default(),
             }],
             cue_lists: Vec::new(),
             active_cue_list_id: None,
@@ -434,7 +368,7 @@ mod tests {
                 duration_ms: 1_000,
                 channel_configs: Vec::new(),
                 scoped_channels: Vec::new(),
-                scope_toggles: ShowFileSceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles::default(),
             }],
         };
         let lv1 = Lv1StateSnapshot {

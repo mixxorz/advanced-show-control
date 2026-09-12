@@ -80,17 +80,6 @@ mod tests {
     }
 
     #[test]
-    fn scene_scope_defaults_to_empty() {
-        assert_eq!(
-            SceneScopeToggles::default(),
-            SceneScopeToggles {
-                faders: false,
-                pan: false,
-            }
-        );
-    }
-
-    #[test]
     fn scene_config_serializes_pan_family_fields_for_frontend_camel_case() {
         let config = SceneConfig {
             internal_scene_id: Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap(),

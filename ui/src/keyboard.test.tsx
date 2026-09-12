@@ -48,6 +48,37 @@ describe("KeyboardProvider", () => {
     },
   );
 
+  it("blocks action shortcuts when an aria-modal dialog is open outside the event target", () => {
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    modal.setAttribute("role", "dialog");
+    const button = document.createElement("button");
+    document.body.append(modal, button);
+    let blocked = false;
+    const listener = (originalEvent: KeyboardEvent) => {
+      blocked = isActionShortcutBlocked({
+        code: originalEvent.code,
+        key: originalEvent.key,
+        modifiers: {
+          shift: originalEvent.shiftKey,
+          control: originalEvent.ctrlKey,
+          alt: originalEvent.altKey,
+          meta: originalEvent.metaKey,
+        },
+        repeat: originalEvent.repeat,
+        originalEvent,
+      });
+    };
+    window.addEventListener("keydown", listener);
+
+    fireEvent.keyDown(button, { key: "c", code: "KeyC" });
+
+    window.removeEventListener("keydown", listener);
+    modal.remove();
+    button.remove();
+    expect(blocked).toBe(true);
+  });
+
   it("dispatches enabled handlers by priority and stops after handled", () => {
     const low = vi.fn(() => "handled" as const);
     const high = vi.fn(() => "handled" as const);
@@ -124,6 +155,43 @@ describe("KeyboardProvider", () => {
     fireKeyDown("k", { repeat: true });
 
     expect(repeats).toEqual([true]);
+  });
+
+  it("routes capture before an external handler with a higher numeric priority", () => {
+    const onCapture = vi.fn();
+    const externalHandler = vi.fn(() => "handled" as const);
+
+    function Harness() {
+      const capture = useShortcutCapture();
+      useKeyboardHandler({
+        id: "external-high-priority",
+        priority: Number.MAX_SAFE_INTEGER,
+        handleKeyDown: externalHandler,
+      });
+      return (
+        <button
+          type="button"
+          onClick={() => capture.startCapture({ id: "go", onCapture })}
+        >
+          capture
+        </button>
+      );
+    }
+
+    render(
+      <KeyboardProvider>
+        <Harness />
+      </KeyboardProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button"));
+    fireKeyDown("Enter");
+
+    expect(onCapture).toHaveBeenCalledWith({
+      key: "Enter",
+      modifiers: { shift: false, control: false, alt: false, meta: false },
+    });
+    expect(externalHandler).not.toHaveBeenCalled();
   });
 
   it("captures a non-modifier key with modifiers and exits capture mode", () => {
@@ -217,6 +285,68 @@ describe("KeyboardProvider", () => {
     expect(onCapture).not.toHaveBeenCalled();
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(screen.getByText("idle")).toBeInTheDocument();
+  });
+
+  it("does not cancel another owner's capture when an owner unmounts", () => {
+    const onSecondCapture = vi.fn();
+
+    function CaptureButton(props: {
+      ownerId: string;
+      id: string;
+      onCapture: (shortcut: { key: string }) => void;
+    }) {
+      const capture = useShortcutCapture(props.ownerId);
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            capture.startCapture({ id: props.id, onCapture: props.onCapture })
+          }
+        >
+          {props.id}
+        </button>
+      );
+    }
+
+    function Harness(props: { showFirst: boolean }) {
+      return (
+        <>
+          {props.showFirst ? (
+            <CaptureButton
+              ownerId="first-owner"
+              id="first"
+              onCapture={vi.fn()}
+            />
+          ) : null}
+          <CaptureButton
+            ownerId="second-owner"
+            id="second"
+            onCapture={onSecondCapture}
+          />
+        </>
+      );
+    }
+
+    const { rerender } = render(
+      <KeyboardProvider>
+        <Harness showFirst />
+      </KeyboardProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "first" }));
+    fireEvent.click(screen.getByRole("button", { name: "second" }));
+    rerender(
+      <KeyboardProvider>
+        <Harness showFirst={false} />
+      </KeyboardProvider>,
+    );
+
+    fireKeyDown("Enter");
+
+    expect(onSecondCapture).toHaveBeenCalledWith({
+      key: "Enter",
+      modifiers: { shift: false, control: false, alt: false, meta: false },
+    });
   });
 
   it("captures Tab while capture mode is active", () => {

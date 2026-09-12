@@ -1,6 +1,19 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ConsoleButton } from "./ConsoleButton";
 
+/**
+ * @cc [owner:mixxorz,label:product] cue-list-name-validation-boundary
+ * Submission MUST pass the current input string unchanged, including whitespace or an empty value,
+ * to `onSubmit`; this modal MUST NOT trim, reject, or otherwise perform authoritative name
+ * validation.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] cue-list-name-single-flight
+ * At most one `onSubmit` call MAY be pending. While it is pending, repeat submission and cancellation
+ * by button or Escape MUST be disabled. Rejection MUST keep the modal open and restore its actions;
+ * when idle, Cancel or Escape MUST invoke `onCancel` without submitting. Successful dismissal MUST
+ * remain the parent's responsibility after its `onSubmit` work succeeds.
+ */
 export function CueListNameModal(props: {
   title: string;
   initialName?: string;
@@ -9,15 +22,28 @@ export function CueListNameModal(props: {
   onCancel: () => void;
 }) {
   const [name, setName] = useState(props.initialName ?? "");
+  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
   const { onCancel } = props;
 
-  function submitName() {
-    void props.onSubmit(name);
+  async function submitName() {
+    if (submittingRef.current) return;
+
+    submittingRef.current = true;
+    setSubmitting(true);
+    try {
+      await props.onSubmit(name);
+    } catch {
+      // Keep the modal available for retry.
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   }
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key === "Escape" && !submittingRef.current) {
         onCancel();
       }
     };
@@ -55,6 +81,7 @@ export function CueListNameModal(props: {
           </label>
           <div className="mt-6 flex justify-end gap-3">
             <ConsoleButton
+              disabled={submitting}
               onClick={props.onCancel}
               size="small"
               type="button"
@@ -62,7 +89,12 @@ export function CueListNameModal(props: {
             >
               Cancel
             </ConsoleButton>
-            <ConsoleButton size="small" type="submit" variant="primary">
+            <ConsoleButton
+              disabled={submitting}
+              size="small"
+              type="submit"
+              variant="primary"
+            >
               {props.submitLabel}
             </ConsoleButton>
           </div>

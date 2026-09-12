@@ -56,6 +56,20 @@ describe("TopTabBar", () => {
     expect(screen.getByRole("button", { name: "SAFE" })).toBeInTheDocument();
   });
 
+  it("exposes only the active navigation button as the current page", () => {
+    renderTopBar(connectedAppState);
+
+    expect(screen.getByRole("button", { name: "Scenes" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    for (const name of ["Cue Lists", "Events", "Logs", "Settings"]) {
+      expect(screen.getByRole("button", { name })).not.toHaveAttribute(
+        "aria-current",
+      );
+    }
+  });
+
   it("does not render a Sessions tab", () => {
     renderTopBar(connectedAppState);
 

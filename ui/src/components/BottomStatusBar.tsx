@@ -12,6 +12,11 @@ function formatClock(date: Date) {
   }).format(date);
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] cued-scene-resolution
+ * A cued scene MUST resolve through the active cue list, then the cued entry, then its referenced
+ * scene config; any missing link MUST produce no scene rather than falling back to selection.
+ */
 function resolveCuedScene(appState: AppViewState) {
   const activeCueList = appState.cueLists.find(
     (cueList) => cueList.id === appState.activeCueListId,
@@ -26,6 +31,11 @@ function resolveCuedScene(appState: AppViewState) {
     : null;
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] status-mode-precedence
+ * Mode MUST display Offline when disconnected, otherwise Safe during lockout, otherwise Fading
+ * while a fade runs, and Ready only when none of those higher-priority states applies.
+ */
 function modeDisplay(appState: AppViewState): {
   className?: string;
   tone: "default" | "cued" | "warning";
@@ -46,6 +56,11 @@ function modeDisplay(appState: AppViewState): {
   return { tone: "cued", value: "Ready" };
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;product] go-single-flight
+ * GO MUST be disabled without a resolvable cued scene and while a recall is pending, MUST submit at
+ * most one recall concurrently, and MUST clear its pending guard after either success or failure.
+ */
 export function BottomStatusBar(props: { appState: AppViewState }) {
   const commands = useAppCommands();
   const [now, setNow] = useState(() => new Date());

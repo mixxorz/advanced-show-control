@@ -32,23 +32,22 @@ test("all Storybook stories match visual baselines", async ({ page }) => {
   const failures: string[] = [];
 
   for (const story of stories) {
-    await test.step(`${story.title}: ${story.name}`, async () => {
-      await page.goto(`/iframe.html?id=${story.id}&viewMode=story`);
-      await page.locator("#storybook-root").waitFor({ state: "visible" });
-
-      try {
+    try {
+      await test.step(`${story.title}: ${story.name}`, async () => {
+        await page.goto(`/iframe.html?id=${story.id}&viewMode=story`);
+        await page.locator("#storybook-root").waitFor({ state: "visible" });
         await expect(page).toHaveScreenshot(`${story.id}.png`, {
           fullPage: true,
           ...(settingsVisualStoryIds.has(story.id)
             ? { maxDiffPixelRatio: 0 }
             : {}),
         });
-      } catch (error) {
-        failures.push(
-          `${story.title}: ${story.name}\n${error instanceof Error ? error.message : String(error)}`,
-        );
-      }
-    });
+      });
+    } catch (error) {
+      failures.push(
+        `${story.title}: ${story.name}\n${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   expect(failures, failures.join("\n\n")).toHaveLength(0);

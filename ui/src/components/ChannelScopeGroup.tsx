@@ -1,6 +1,11 @@
 import type { ChannelConfig } from "../types";
 import { ChannelScopeButton } from "./ChannelScopeButton";
 
+/**
+ * @cc [owner:mixxorz,label:product] scope-group-channel-identity
+ * `configs` MUST belong to the displayed group. Rows MUST be ordered by channel index and each
+ * button's active state MUST be derived from exact `(group, channel)` membership in `scoped`.
+ */
 export function ChannelScopeGroup(props: {
   configs: ChannelConfig[];
   groupName: string;

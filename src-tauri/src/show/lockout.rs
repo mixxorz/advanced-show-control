@@ -1,5 +1,8 @@
 use tokio::sync::watch;
 
+/// @cc [owner:mixxorz,label:safety] lockout-reader-is-latest-value
+/// The lockout reader MUST expose Show's latest accepted lockout value without a reverse mailbox
+/// dependency; clones MUST observe subsequent changes through the shared watch channel.
 #[derive(Clone)]
 pub struct ShowLockoutReader {
     receiver: watch::Receiver<bool>,

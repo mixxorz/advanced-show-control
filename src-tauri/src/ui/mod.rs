@@ -18,6 +18,11 @@ pub mod menu;
 
 pub type UiLogReceiverState = broadcast::Sender<logging::UiLogEvent>;
 
+/// @cc [owner:mixxorz,label:architecture] production-setup-owns-shared-runtime
+/// Production setup MUST create one shared event bus, build and spawn the app-lifetime Show and
+/// Settings owners from it, construct Lifecycle from their handles and initial settings, and manage
+/// those shared handles plus logging state before commands run. Projector startup MUST remain
+/// deferred to `frontend_ready`; setup MUST NOT create a competing projection owner.
 pub fn build_app() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default()
         .setup(|app| {
@@ -35,6 +40,7 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
                 show_peers,
                 lockout,
                 settings.clone(),
+                initial_settings,
             );
             show_task.spawn();
             settings_task.spawn();
@@ -77,11 +83,9 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
             commands::scenes::set_scene_scope_pan_enabled,
             commands::scenes::store_scene_config,
             commands::lifecycle::connect_lv1_system,
-            commands::lifecycle::attempt_reconnect_lv1,
             commands::lifecycle::probe_lv1_tcp_connect_latency,
             commands::lifecycle::startup_auto_connect_lv1,
             commands::lifecycle::disconnect_lv1,
-            commands::lifecycle::reconnect_timed_out,
             commands::fade::abort_all_fades,
             commands::settings::replace_app_settings,
             commands::show::set_lockout,
@@ -89,40 +93,4 @@ pub fn build_app() -> tauri::Builder<tauri::Wry> {
         .on_menu_event(|app, event| {
             menu::handle_session_menu_event(app, event);
         })
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn build_app_constructs_builder() {
-        let _builder = super::build_app();
-    }
-
-    #[test]
-    fn command_adapter_exports_existing_command_names() {
-        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
-        let _ = super::commands::lifecycle::disconnect_lv1;
-        let _ = super::commands::lifecycle::probe_lv1_tcp_connect_latency;
-        let _ = super::commands::cue_lists::create_cue_list;
-        let _ = super::commands::cue_lists::recall_cued_cue;
-        let _ = super::commands::scenes::recall_scene;
-        let _ = super::commands::scenes::copy_scene_settings;
-        let _ = super::commands::scenes::delete_scene_config;
-        let _ = super::commands::scenes::link_scene_config;
-        let _ = super::commands::scenes::paste_scene_settings;
-        let _ = super::commands::scenes::select_scene_config;
-        let _ = super::commands::scenes::set_all_channels_scoped;
-        let _ = super::commands::scenes::set_channel_scoped;
-        let _ = super::commands::scenes::set_scene_duration_ms;
-        let _ = super::commands::scenes::set_scene_scope_faders_enabled;
-        let _ = super::commands::scenes::set_scene_scope_pan_enabled;
-        let _ = super::commands::scenes::store_scene_config;
-        let _ = super::commands::settings::replace_app_settings;
-        let _ = super::commands::show::set_lockout;
-    }
-
-    #[test]
-    fn invoke_handler_includes_frontend_ready() {
-        let _ = super::commands::lifecycle::frontend_ready::<tauri::Wry>;
-    }
 }

@@ -11,20 +11,10 @@ use tokio::task::spawn_blocking;
 
 #[tauri::command]
 pub async fn refresh_lv1_discovery(
-    show: State<'_, ShowStateHandle>,
+    lifecycle: State<'_, crate::lifecycle::AppLifecycle>,
     timeout_ms: Option<u64>,
 ) -> Result<ShowCommandResult, String> {
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::RefreshLv1Discovery {
-        timeout_ms,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    lifecycle.refresh_lv1_discovery(timeout_ms).await
 }
 
 #[tauri::command]
@@ -39,6 +29,10 @@ pub async fn new_show_file(show: State<'_, ShowStateHandle>) -> Result<NewShowFi
         .map_err(map_app_command_error)?
 }
 
+/// @cc [owner:mixxorz,label:product] open-dialog-dispatches-selected-path-only
+/// The native open dialog MUST run off the async runtime, dispatch `LoadShowFileFromPath` only for
+/// a selected path, and report cancellation or dialog-task failure without sending a Show command;
+/// file validation and replacement policy MUST remain in Show.
 #[tauri::command]
 pub async fn open_show_file_dialog(
     show: State<'_, ShowStateHandle>,
@@ -66,6 +60,10 @@ pub async fn open_show_file_dialog(
         .map_err(map_app_command_error)?
 }
 
+/// @cc [owner:mixxorz,label:product] save-reuses-current-path
+/// Save MUST query Show for the current path and dispatch directly to that path when present; it
+/// MUST open the native save dialog only when no path exists, and cancellation MUST NOT dispatch a
+/// save. Persistence policy and error decisions remain in Show.
 #[tauri::command]
 pub async fn save_show_file(show: State<'_, ShowStateHandle>) -> Result<ShowCommandResult, String> {
     let (reply, rx) = oneshot::channel();
@@ -104,6 +102,10 @@ pub async fn save_show_file(show: State<'_, ShowStateHandle>) -> Result<ShowComm
         .map_err(map_app_command_error)?
 }
 
+/// @cc [owner:mixxorz,label:product] save-as-requires-selection
+/// Save As MUST always obtain a path from the off-runtime native dialog before dispatching
+/// `SaveShowFileAs`; cancellation or dialog-task failure MUST return without sending a save, while
+/// persistence policy remains in Show.
 #[tauri::command]
 pub async fn save_show_file_as_dialog(
     show: State<'_, ShowStateHandle>,

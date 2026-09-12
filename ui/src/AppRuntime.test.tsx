@@ -22,49 +22,50 @@ function pressGoShortcut(init: KeyboardEventInit = {}) {
 function makeServices(
   overrides: Partial<AppRuntimeServices> = {},
 ): AppRuntimeServices {
-  return {
-    frontendReady: vi.fn(async () => undefined),
-    abortAll: vi.fn(async () => undefined),
-    attemptReconnectLv1: vi.fn(async () => undefined),
-    connectLv1System: vi.fn(async () => undefined),
-    copySceneSettings: vi.fn(async () => undefined),
-    disconnectLv1: vi.fn(async () => undefined),
-    addSceneToActiveCueList: vi.fn(async () => undefined),
-    createCueList: vi.fn(async () => undefined),
-    cueEntry: vi.fn(async () => undefined),
-    deleteCueList: vi.fn(async () => undefined),
-    listenForAppStatus: vi.fn(async (listener) => {
-      listener(connectedAppState);
-      return () => {};
-    }),
-    newShowFile: vi.fn(async () => undefined),
-    openShowFile: vi.fn(async () => undefined),
-    pasteSceneSettings: vi.fn(async () => undefined),
-    removeCueEntry: vi.fn(async () => undefined),
-    recallCuedCue: vi.fn(async () => undefined),
-    recallScene: vi.fn(async () => undefined),
-    renameCueList: vi.fn(async () => undefined),
-    reorderCueEntries: vi.fn(async () => undefined),
-    reorderCueLists: vi.fn(async () => undefined),
-    probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
-    reconnectTimedOut: vi.fn(async () => undefined),
-    refreshLv1Discovery: vi.fn(async () => undefined),
-    saveShowFile: vi.fn(async () => undefined),
-    saveShowFileAs: vi.fn(async () => undefined),
-    selectSceneConfig: vi.fn(async () => undefined),
-    setActiveCueList: vi.fn(async () => undefined),
-    setAllChannelsScoped: vi.fn(async () => undefined),
-    setChannelScoped: vi.fn(async () => undefined),
-    setLockout: vi.fn(async () => undefined),
-    setSceneDurationMs: vi.fn(async () => undefined),
-    setSceneScopeFadersEnabled: vi.fn(async () => undefined),
-    setSceneScopePanEnabled: vi.fn(async () => undefined),
-    linkSceneConfig: vi.fn(async () => undefined),
-    deleteSceneConfig: vi.fn(async () => undefined),
-    storeSceneConfig: vi.fn(async () => undefined),
-    startupAutoConnectLv1: vi.fn(async () => undefined),
-    ...overrides,
-  };
+  return Object.assign(
+    {
+      frontendReady: vi.fn(async () => undefined),
+      abortAll: vi.fn(async () => undefined),
+      connectLv1System: vi.fn(async () => undefined),
+      copySceneSettings: vi.fn(async () => undefined),
+      disconnectLv1: vi.fn(async () => undefined),
+      addSceneToActiveCueList: vi.fn(async () => undefined),
+      createCueList: vi.fn(async () => undefined),
+      cueEntry: vi.fn(async () => undefined),
+      deleteCueList: vi.fn(async () => undefined),
+      listenForAppStatus: vi.fn(async (listener) => {
+        listener(connectedAppState);
+        return () => {};
+      }),
+      newShowFile: vi.fn(async () => undefined),
+      openShowFile: vi.fn(async () => undefined),
+      pasteSceneSettings: vi.fn(async () => undefined),
+      removeCueEntry: vi.fn(async () => undefined),
+      recallCuedCue: vi.fn(async () => undefined),
+      recallScene: vi.fn(async () => undefined),
+      renameCueList: vi.fn(async () => undefined),
+      reorderCueEntries: vi.fn(async () => undefined),
+      reorderCueLists: vi.fn(async () => undefined),
+      probeLv1TcpConnectLatency: vi.fn(async () => ({ tcpConnectMs: 3 })),
+      refreshLv1Discovery: vi.fn(async () => undefined),
+      saveShowFile: vi.fn(async () => undefined),
+      saveShowFileAs: vi.fn(async () => undefined),
+      selectSceneConfig: vi.fn(async () => undefined),
+      setActiveCueList: vi.fn(async () => undefined),
+      setAllChannelsScoped: vi.fn(async () => undefined),
+      setChannelScoped: vi.fn(async () => undefined),
+      setLockout: vi.fn(async () => undefined),
+      setSceneDurationMs: vi.fn(async () => undefined),
+      setSceneScopeFadersEnabled: vi.fn(async () => undefined),
+      setSceneScopePanEnabled: vi.fn(async () => undefined),
+      setWindowTitle: vi.fn(async () => undefined),
+      linkSceneConfig: vi.fn(async () => undefined),
+      deleteSceneConfig: vi.fn(async () => undefined),
+      storeSceneConfig: vi.fn(async () => undefined),
+      startupAutoConnectLv1: vi.fn(async () => undefined),
+    },
+    overrides,
+  );
 }
 
 describe("AppRuntime connection lifecycle", () => {
@@ -105,6 +106,23 @@ describe("AppRuntime connection lifecycle", () => {
         screen.queryByRole("heading", { name: "Connect to LV1" }),
       ).not.toBeInTheDocument();
     });
+  });
+
+  it("does not recall GO while a modal is open outside the event target", async () => {
+    const user = userEvent.setup();
+    const services = makeServices();
+    render(<AppRuntime services={services} />);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("heading", { name: "Connect to LV1" }),
+      ).not.toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: "FOH LV1" }));
+
+    pressGoShortcut();
+
+    expect(services.recallCuedCue).not.toHaveBeenCalled();
   });
 
   it("keeps the modal open and displays startup auto-connect errors", async () => {
@@ -181,7 +199,7 @@ describe("AppRuntime connection lifecycle", () => {
     expect(screen.queryByText("Offline")).not.toBeInTheDocument();
   });
 
-  it("keeps the modal closed when a stale startup snapshot resolves after a newer connected status", async () => {
+  it("ignores a lower-version disconnected snapshot after a newer connected status", async () => {
     let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
     const services = makeServices({
       listenForAppStatus: vi.fn(async (listener) => {
@@ -201,15 +219,21 @@ describe("AppRuntime connection lifecycle", () => {
     });
 
     await waitFor(() => {
-      expect(
-        screen.queryByRole("heading", { name: "Connect to LV1" }),
-      ).not.toBeInTheDocument();
+      expect(screen.getByText("Connected")).toBeInTheDocument();
     });
+
+    await act(async () => {
+      appStatusListener?.({
+        ...disconnectedAppViewState,
+        stateVersion: connectedAppState.stateVersion - 1,
+      });
+    });
+
+    expect(screen.getByText("Connected")).toBeInTheDocument();
+    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
     expect(
       screen.queryByRole("heading", { name: "Connect to LV1" }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("Connected")).toBeInTheDocument();
-    expect(screen.queryByText("Offline")).not.toBeInTheDocument();
   });
 
   it("keeps the modal open when the engineer opens it while connected", async () => {
@@ -229,23 +253,15 @@ describe("AppRuntime connection lifecycle", () => {
     ).toBeInTheDocument();
   });
 
-  it("keeps a manually opened modal open when reconnect succeeds", async () => {
+  it("does not let an older command failure overwrite a newer command outcome", async () => {
     const user = userEvent.setup();
-    const reconnect = createDeferred<AppViewState>();
-    let appStatusListener: ((snapshot: AppViewState) => void) | null = null;
-    const services = makeServices({
-      startupAutoConnectLv1: vi.fn(async () => undefined),
-      listenForAppStatus: vi.fn(async (listener) => {
-        appStatusListener = listener;
-        return () => {};
-      }),
-      attemptReconnectLv1: vi.fn(() => reconnect.promise),
-    });
-    render(<AppRuntime services={services} />);
-
-    await act(async () => {
-      appStatusListener?.(connectedAppState);
-    });
+    const olderStore = createDeferred<void>();
+    const newerStore = createDeferred<void>();
+    const storeSceneConfig = vi
+      .fn<() => Promise<void>>()
+      .mockImplementationOnce(() => olderStore.promise)
+      .mockImplementationOnce(() => newerStore.promise);
+    render(<AppRuntime services={makeServices({ storeSceneConfig })} />);
 
     await waitFor(() => {
       expect(
@@ -253,28 +269,22 @@ describe("AppRuntime connection lifecycle", () => {
       ).not.toBeInTheDocument();
     });
 
+    const store = screen.getByRole("button", { name: "Store" });
+    await user.click(store);
+    await user.click(store);
+
     await act(async () => {
-      appStatusListener?.({
-        ...connectedAppState,
-        reconnect: { active: true, attempt: 1 },
-        stateVersion: connectedAppState.stateVersion + 1,
-      });
+      newerStore.resolve();
+      await newerStore.promise;
+      olderStore.reject(new Error("older store failed"));
+      await olderStore.promise.catch(() => undefined);
     });
 
     await user.click(screen.getByRole("button", { name: /FOH LV1/i }));
 
-    await act(async () => {
-      reconnect.resolve({
-        ...connectedAppState,
-        reconnect: { active: false, attempt: 1 },
-        stateVersion: connectedAppState.stateVersion + 2,
-      });
-      await reconnect.promise;
-    });
-
     expect(
-      screen.getByRole("heading", { name: "Connect to LV1" }),
-    ).toBeInTheDocument();
+      screen.queryByText("Error: older store failed"),
+    ).not.toBeInTheDocument();
   });
 
   it("wires cue recall and go buttons to runtime services", async () => {
@@ -514,36 +524,6 @@ describe("AppRuntime connection lifecycle", () => {
     );
 
     await waitFor(() => expect(calls).toEqual(["listen", "ready"]));
-  });
-
-  it("does not apply command return values as app state", async () => {
-    let listener: ((snapshot: AppViewState) => void) | null = null;
-    const sentinel: AppViewState = {
-      ...disconnectedAppViewState,
-      showFileName: "COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs",
-      stateVersion: disconnectedAppViewState.stateVersion + 1,
-    };
-    const services = makeServices({
-      listenForAppStatus: vi.fn(async (next) => {
-        listener = next;
-        return () => {};
-      }),
-      frontendReady: vi.fn(async () => undefined),
-      newShowFile: vi.fn(async () => sentinel),
-    });
-    render(<AppRuntime services={services} />);
-
-    expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
-    ).not.toBeInTheDocument();
-
-    await act(async () => {
-      listener?.(sentinel);
-    });
-
-    expect(
-      screen.queryByText("COMMAND_RESULT_SENTINEL_SHOULD_NOT_RENDER.ascs"),
-    ).not.toBeInTheDocument();
   });
 
   it("updates the window title from projected session state", async () => {

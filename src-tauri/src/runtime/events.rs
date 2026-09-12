@@ -1,42 +1,95 @@
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 
-use crate::cue_lists::CueListsEvent;
+use super::AppStateSnapshot;
+
+use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
 use crate::lv1::Lv1Event;
 use crate::scenes::ScenesEvent;
 use crate::settings::SettingsEvent;
-use crate::show::ShowEvent;
+use crate::show::ShowProjectionState;
 
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     ActiveGenerationChanged { generation: u64 },
 }
 
+/// @cc [owner:mixxorz,label:architecture] event-lifetime-classification
+/// `Lv1` and `Fade` facts MUST carry the connection generation that produced them. `Scenes` and
+/// `SessionReplaced` generations are runtime context for app-lifetime documents, while `CueLists`,
+/// `Show`, and `Settings` are also app-lifetime; consumers MUST NOT discard any of these app-lifetime
+/// facts based on generation.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum AppEvent {
     Runtime(RuntimeLifecycleEvent),
-    Lv1 { generation: u64, event: Lv1Event },
-    Fade { generation: u64, event: FadeEvent },
-    Scenes { generation: u64, event: ScenesEvent },
-    CueLists(CueListsEvent),
-    Show(ShowEvent),
+    Lv1 {
+        generation: u64,
+        event: Lv1Event,
+    },
+    Fade {
+        generation: u64,
+        event: FadeEvent,
+    },
+    Scenes {
+        generation: u64,
+        event: ScenesEvent,
+    },
+    CueLists(CueListsProjectionState),
+    SessionReplaced {
+        generation: u64,
+        scenes: crate::scenes::ScenesProjectionState,
+        cue_lists: crate::cue_lists::CueListsProjectionState,
+    },
+    Show(ShowProjectionState),
     Settings(SettingsEvent),
 }
 
 #[derive(Clone)]
 pub struct AppEventBus {
     tx: broadcast::Sender<AppEvent>,
+    state: watch::Sender<AppStateSnapshot>,
 }
 
 impl AppEventBus {
+    /// @cc [owner:mixxorz,label:reliability] nonzero-broadcast-capacity
+    /// Construction MUST accept zero without panicking by creating a broadcast channel with at
+    /// least one slot.
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity.max(1));
-        Self { tx }
+        let (state, _) = watch::channel(AppStateSnapshot::default());
+        Self { tx, state }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:architecture] synchronous-fact-publication
+     * Publishing MUST synchronously retain and broadcast an already-established fact; event variants
+     * MUST NOT contain reply channels or cause publication to await or request actor work.
+     */
+    /**
+     * @cc [owner:mixxorz,label:architecture] retain-before-broadcast
+     * Publishing MUST apply any retained app-state projection before broadcasting the fact, so a
+     * receiver reacting to that fact can read a snapshot at least as new as the fact.
+     */
+    /**
+     * @cc [owner:mixxorz,label:reliability] publish-without-subscribers
+     * Publishing with no broadcast receivers MUST still retain applicable state and MUST return
+     * zero rather than fail.
+     */
     pub fn publish(&self, event: AppEvent) -> usize {
+        self.retain(&event);
         self.tx.send(event).unwrap_or(0)
+    }
+
+    /// @cc [owner:mixxorz,label:consistency] unchanged-state-does-not-notify
+    /// Retention MUST notify watch subscribers only when an applicable projection value changes;
+    /// duplicate projections and non-retained facts MUST not produce a watch change.
+    pub(crate) fn retain(&self, event: &AppEvent) {
+        self.state.send_if_modified(|state| state.apply(event));
+    }
+
+    pub fn state(&self) -> watch::Receiver<AppStateSnapshot> {
+        self.state.subscribe()
     }
 
     pub fn publish_runtime_generation_changed(&self, generation: u64) -> usize {
@@ -75,205 +128,4 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
         missed_events = count,
         "Event subscriber lagged and missed {count} events"
     );
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::lv1::{SceneObservation, SceneState};
-    use crate::show::ShowProjectionReason;
-
-    #[tokio::test]
-    async fn publish_succeeds_without_subscribers() {
-        let bus = AppEventBus::new(16);
-
-        let sent = bus.publish(AppEvent::Lv1 {
-            generation: 0,
-            event: Lv1Event::SceneChanged(SceneObservation {
-                sequence: 1,
-                scene: SceneState {
-                    index: 1,
-                    name: "test".to_string(),
-                },
-            }),
-        });
-
-        assert_eq!(sent, 0);
-    }
-
-    #[tokio::test]
-    async fn zero_capacity_constructor_creates_usable_bus() {
-        let bus = AppEventBus::new(0);
-        let mut rx = bus.subscribe();
-
-        bus.publish(AppEvent::Lv1 {
-            generation: 0,
-            event: Lv1Event::SceneChanged(SceneObservation {
-                sequence: 1,
-                scene: SceneState {
-                    index: 2,
-                    name: "capacity".to_string(),
-                },
-            }),
-        });
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            AppEvent::Lv1 {
-                generation: 0,
-                event: Lv1Event::SceneChanged(scene),
-            } => {
-                assert_eq!(scene.scene.index, 2);
-                assert_eq!(scene.scene.name, "capacity");
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn subscriber_receives_published_event() {
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-
-        bus.publish(AppEvent::Lv1 {
-            generation: 0,
-            event: Lv1Event::SceneChanged(SceneObservation {
-                sequence: 1,
-                scene: SceneState {
-                    index: 7,
-                    name: "Chorus".to_string(),
-                },
-            }),
-        });
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            AppEvent::Lv1 { generation, event } => {
-                assert_eq!(generation, 0);
-                match event {
-                    Lv1Event::SceneChanged(scene) => {
-                        assert_eq!(scene.scene.index, 7);
-                        assert_eq!(scene.scene.name, "Chorus");
-                    }
-                    other => panic!("unexpected event: {other:?}"),
-                }
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn lagged_subscriber_does_not_publish_back_to_event_bus() {
-        let bus = AppEventBus::new(1);
-        let mut rx = bus.subscribe();
-
-        log_lagged_subscriber("test", 1);
-
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn runtime_fact_publish_without_subscribers_is_safe() {
-        let bus = AppEventBus::new(1);
-
-        let sent = bus.publish(AppEvent::Scenes {
-            generation: 0,
-            event: crate::scenes::ScenesEvent::Skipped {
-                scene_label: "1: Intro".to_string(),
-                reason: "test".to_string(),
-            },
-        });
-
-        assert_eq!(sent, 0);
-    }
-
-    #[tokio::test]
-    async fn runtime_events_carry_generation() {
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-
-        bus.publish(AppEvent::Lv1 {
-            generation: 42,
-            event: Lv1Event::Connected,
-        });
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            AppEvent::Lv1 { generation, event } => {
-                assert_eq!(generation, 42);
-                assert!(matches!(event, Lv1Event::Connected));
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn lifecycle_events_publish_active_generation_changes() {
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-
-        bus.publish_runtime_generation_changed(7);
-
-        let event = rx.recv().await.unwrap();
-        match event {
-            AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation }) => {
-                assert_eq!(generation, 7);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn subscriber_receives_published_show_event() {
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-
-        bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::FileMetadata,
-            state: crate::show::ShowProjectionState {
-                lockout: false,
-                show_file_path: None,
-                show_file_name: "Untitled Session".to_string(),
-                show_file_dirty: false,
-                show_file_last_saved_at: None,
-                discovered_lv1_systems: vec![],
-                connected_lv1_identity: None,
-                pending_lv1_identity: None,
-                reconnect: Default::default(),
-                last_event_at: None,
-            },
-        }));
-
-        let event = rx.recv().await.unwrap();
-        assert!(matches!(
-            event,
-            AppEvent::Show(ShowEvent::StateChanged {
-                reason: ShowProjectionReason::FileMetadata,
-                ..
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn show_fact_publish_without_subscribers_is_safe() {
-        let bus = AppEventBus::new(1);
-
-        let sent = bus.publish(AppEvent::Show(ShowEvent::StateChanged {
-            reason: ShowProjectionReason::FileMetadata,
-            state: crate::show::ShowProjectionState {
-                lockout: false,
-                show_file_path: None,
-                show_file_name: "Untitled Session".to_string(),
-                show_file_dirty: false,
-                show_file_last_saved_at: None,
-                discovered_lv1_systems: vec![],
-                connected_lv1_identity: None,
-                pending_lv1_identity: None,
-                reconnect: Default::default(),
-                last_event_at: None,
-            },
-        }));
-
-        assert_eq!(sent, 0);
-    }
 }

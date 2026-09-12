@@ -2,7 +2,6 @@
 
 use std::time::Instant;
 
-use crate::lv1::osc::OscArg;
 use crate::runtime::events::AppEventBus;
 
 use super::events::Lv1Event;
@@ -11,11 +10,9 @@ use super::types::{
     ChannelInfo, ConnectionStatus, Lv1StateSnapshot, SceneListEntry, SceneObservation, SceneState,
 };
 
-/// Pairs `/Notify/CurSceneIndex` and `/Notify/Scene/Name` OSC messages into a
-/// complete `SceneState`. LV1 sends these as two separate messages that always
-/// arrive close together but in either order. Call `apply_index` and `apply_name`
-/// as messages arrive; the buffer emits `Some(SceneState)` once both have been
-/// received, then clears itself.
+/// @cc [owner:mixxorz,label:protocol;state] exact-scene-pairing
+/// A scene observation MUST contain one index and one name, accept either arrival order, use the
+/// latest value when one side repeats before completion, and consume both fields after emission.
 #[derive(Default)]
 pub(super) struct SceneBuffer {
     pending_index: Option<i32>,
@@ -49,13 +46,15 @@ pub(super) fn apply_fader_update(
     group: i32,
     channel: i32,
     gain_db: f64,
-) {
+) -> bool {
     if let Some(ch) = channels
         .iter_mut()
         .find(|c| c.group == group && c.channel == channel)
     {
         ch.gain_db = gain_db;
+        return true;
     }
+    false
 }
 
 pub(super) fn apply_mute_update(
@@ -69,6 +68,30 @@ pub(super) fn apply_mute_update(
         .find(|c| c.group == group && c.channel == channel)
     {
         ch.muted = muted;
+    }
+}
+
+fn numeric_arg_to_f64(arg: &crate::lv1::osc::OscArg) -> Option<f64> {
+    match arg {
+        crate::lv1::osc::OscArg::Float(value) => Some(f64::from(*value)),
+        crate::lv1::osc::OscArg::Double(value) => Some(*value),
+        crate::lv1::osc::OscArg::Int(value) => Some(f64::from(*value)),
+        _ => None,
+    }
+}
+
+fn binary_int_arg_to_bool(arg: &crate::lv1::osc::OscArg) -> Option<bool> {
+    match arg {
+        crate::lv1::osc::OscArg::Int(0) => Some(false),
+        crate::lv1::osc::OscArg::Int(1) => Some(true),
+        _ => None,
+    }
+}
+
+fn mute_arg_to_bool(arg: &crate::lv1::osc::OscArg) -> Option<bool> {
+    match arg {
+        crate::lv1::osc::OscArg::Bool(value) => Some(*value),
+        _ => binary_int_arg_to_bool(arg),
     }
 }
 
@@ -121,17 +144,6 @@ pub(super) fn apply_width_update(
     false
 }
 
-pub(super) fn osc_arg_to_bool(arg: &OscArg) -> Option<bool> {
-    match arg {
-        OscArg::Bool(value) => Some(*value),
-        OscArg::True => Some(true),
-        OscArg::False => Some(false),
-        OscArg::Int(0) => Some(false),
-        OscArg::Int(1) => Some(true),
-        _ => None,
-    }
-}
-
 pub(super) struct ActorState {
     generation: u64,
     pub(super) connection: ConnectionStatus,
@@ -180,6 +192,9 @@ impl ActorState {
     }
 }
 
+/// @cc [owner:mixxorz,label:state;generation] connection-local-scene-sequence
+/// Each complete scene observation MUST advance the saturating connection-local sequence before
+/// updating the mirror and publishing the observation with that same sequence.
 fn observe_scene(state: &mut ActorState, scene: SceneState) {
     state.scene_observation_sequence = state.scene_observation_sequence.saturating_add(1);
     state.scene = Some(scene.clone());
@@ -189,6 +204,24 @@ fn observe_scene(state: &mut ActorState, scene: SceneState) {
     }));
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;state;parsing] batch-parse-failure-preserves-mirror
+ * A channel or scene-list batch that fails parsing MUST preserve the last valid corresponding
+ * mirror and MUST NOT publish a topology or scene-list change event.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety;state;protocol] pan-family-applicability
+ * Pan-family notifications MUST update and publish only for known channels; balance additionally
+ * requires stereo pan mode. Width MUST update and publish only for active flag `i:1`; `i:0` and
+ * integers outside the documented binary domain MUST preserve mirrored width and publish nothing.
+ */
+/**
+ * @cc [owner:mixxorz,label:state;protocol] gain-notification-numeric-normalization
+ * For a known channel, `/Notify/Track/Out/Gain` MUST accept documented OSC Float, Double, and Int
+ * gain values, normalize each to `f64`, and use that same normalized value for the channel mirror
+ * and published `FaderChanged` fact. Unknown channels and other value types MUST be ignored without
+ * mutating the mirror or publishing `FaderChanged`.
+ */
 pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscMessage) {
     if is_diagnostic_address(&msg.address) {
         state.diagnose(format!(
@@ -236,14 +269,15 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
             if let (
                 Some(crate::lv1::osc::OscArg::Int(group)),
                 Some(crate::lv1::osc::OscArg::Int(channel)),
-                Some(crate::lv1::osc::OscArg::Double(gain_db)),
+                Some(gain_arg),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
+                && let Some(gain_db) = numeric_arg_to_f64(gain_arg)
+                && apply_fader_update(&mut state.channels, *group, *channel, gain_db)
             {
-                apply_fader_update(&mut state.channels, *group, *channel, *gain_db);
                 state.fan_out(Lv1Event::FaderChanged {
                     group: *group,
                     channel: *channel,
-                    gain_db: *gain_db,
+                    gain_db,
                 });
             }
         }
@@ -253,7 +287,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
                 Some(crate::lv1::osc::OscArg::Int(channel)),
                 Some(mute_arg),
             ) = (msg.args.first(), msg.args.get(1), msg.args.get(2))
-                && let Some(muted) = osc_arg_to_bool(mute_arg)
+                && let Some(muted) = mute_arg_to_bool(mute_arg)
             {
                 apply_mute_update(&mut state.channels, *group, *channel, muted);
                 state.fan_out(Lv1Event::MuteChanged {
@@ -298,13 +332,13 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
                 Some(crate::lv1::osc::OscArg::Int(group)),
                 Some(crate::lv1::osc::OscArg::Int(channel)),
                 Some(crate::lv1::osc::OscArg::Double(width)),
-                Some(crate::lv1::osc::OscArg::Int(active)),
+                Some(active_arg),
             ) = (
                 msg.args.first(),
                 msg.args.get(1),
                 msg.args.get(2),
                 msg.args.get(3),
-            ) && *active != 0
+            ) && binary_int_arg_to_bool(active_arg) == Some(true)
                 && apply_width_update(&mut state.channels, *group, *channel, *width)
             {
                 state.fan_out(Lv1Event::WidthChanged {
@@ -326,227 +360,36 @@ fn is_diagnostic_address(address: &str) -> bool {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn channels_parse_failure_logs_diagnostic_without_event_bus_fact() {
-        use crate::runtime::events::AppEventBus;
-
-        let bus = AppEventBus::new(16);
-        let mut rx = bus.subscribe();
-        let mut state = ActorState::new(bus.clone(), 0);
-
-        // Declares one channel record but carries none.
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Channels".to_string(),
-                args: vec![crate::lv1::osc::OscArg::Int(1)],
-            },
-        );
-
-        assert!(state.channels.is_empty());
-
-        assert!(rx.try_recv().is_err());
-    }
-
-    #[test]
-    fn scene_buffer_emits_when_name_arrives_first() {
-        let mut buf = SceneBuffer::default();
-        assert!(buf.apply_name("Scene A".to_string()).is_none());
-        let scene = buf.apply_index(0).unwrap();
-        assert_eq!(
-            scene,
-            SceneState {
-                index: 0,
-                name: "Scene A".to_string()
-            }
-        );
-        assert!(buf.apply_index(0).is_none());
-    }
-
-    #[test]
-    fn balance_message_does_not_change_mono_channel_balance() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
+    fn channel(channel: i32) -> ChannelInfo {
+        ChannelInfo {
             group: 0,
-            channel: 0,
-            name: "Mono 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Mono),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Balance".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(0.75),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].balance, None);
-    }
-
-    #[tokio::test]
-    async fn scene_list_message_emits_tracing_diagnostic() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/SceneList".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(1),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::String("Intro".to_string()),
-                ],
-            },
-        );
-
-        assert!(!state.scene_list.is_empty());
-    }
-
-    #[test]
-    fn track_pan_message_updates_matching_channel() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
+            channel,
+            name: format!("Ch {}", channel + 1),
             gain_db: -9.0,
             muted: false,
             pan: None,
             balance: None,
             width: None,
             pan_mode: None,
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Track/Pan".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(-15.0),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].pan, Some(-15.0));
+        }
     }
 
     #[test]
-    fn balance_message_updates_matching_channel() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Stereo 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/Balance".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(0.25),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].balance, Some(0.25));
-    }
-
-    #[test]
-    fn inactive_pan_arc_width_is_ignored() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Stereo 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/PanArcWidth".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(0.6),
-                    crate::lv1::osc::OscArg::Int(0),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].width, None);
-    }
-
-    #[test]
-    fn active_pan_arc_width_updates_matching_channel() {
-        let bus = AppEventBus::new(16);
-        let mut state = ActorState::new(bus, 0);
-        state.channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Stereo 1".to_string(),
-            gain_db: -6.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: Some(crate::lv1::types::PanMode::Stereo),
-        }];
-
-        handle_message(
-            &mut state,
-            &crate::lv1::osc::OscMessage {
-                address: "/Notify/PanArcWidth".to_string(),
-                args: vec![
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Int(0),
-                    crate::lv1::osc::OscArg::Double(1.2),
-                    crate::lv1::osc::OscArg::Int(1),
-                ],
-            },
-        );
-
-        assert_eq!(state.channels[0].width, Some(1.2));
-    }
-
-    #[test]
-    fn scene_buffer_emits_when_index_arrives_first() {
-        let mut buf = SceneBuffer::default();
-        assert!(buf.apply_index(1).is_none());
-        let scene = buf.apply_name("Scene B".to_string()).unwrap();
+    fn scene_buffer_emits_in_either_arrival_order() {
+        let mut name_first = SceneBuffer::default();
+        assert!(name_first.apply_name("Scene A".to_string()).is_none());
         assert_eq!(
-            scene,
+            name_first.apply_index(0).unwrap(),
+            SceneState {
+                index: 0,
+                name: "Scene A".to_string()
+            }
+        );
+
+        let mut index_first = SceneBuffer::default();
+        assert!(index_first.apply_index(1).is_none());
+        assert_eq!(
+            index_first.apply_name("Scene B".to_string()).unwrap(),
             SceneState {
                 index: 1,
                 name: "Scene B".to_string()
@@ -555,88 +398,126 @@ mod tests {
     }
 
     #[test]
-    fn scene_buffer_overwrites_pending_with_new_name() {
-        let mut buf = SceneBuffer::default();
-        buf.apply_name("Old".to_string());
-        buf.apply_name("New".to_string());
-        let scene = buf.apply_index(2).unwrap();
-        assert_eq!(scene.name, "New");
+    fn scene_buffer_overwrites_pending_name() {
+        let mut buffer = SceneBuffer::default();
+        buffer.apply_name("Old".to_string());
+        buffer.apply_name("New".to_string());
+        assert_eq!(buffer.apply_index(2).unwrap().name, "New");
     }
 
     #[test]
-    fn apply_fader_update_changes_matching_channel() {
-        let mut channels = vec![
-            ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Ch 1".to_string(),
-                gain_db: -9.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-            ChannelInfo {
-                group: 0,
-                channel: 1,
-                name: "Ch 2".to_string(),
-                gain_db: -12.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-        ];
-        apply_fader_update(&mut channels, 0, 0, -6.0);
+    fn apply_fader_update_changes_only_matching_channel() {
+        let mut channels = vec![channel(0), channel(1)];
+        assert!(apply_fader_update(&mut channels, 0, 0, -6.0));
         assert_eq!(channels[0].gain_db, -6.0);
-        assert_eq!(channels[1].gain_db, -12.0);
+        assert_eq!(channels[1].gain_db, -9.0);
     }
 
     #[test]
     fn apply_fader_update_ignores_unknown_channel() {
-        let mut channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
-            gain_db: -9.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }];
-        apply_fader_update(&mut channels, 0, 99, -3.0);
+        let mut channels = vec![channel(0)];
+        assert!(!apply_fader_update(&mut channels, 0, 99, -3.0));
         assert_eq!(channels[0].gain_db, -9.0);
     }
 
     #[test]
-    fn apply_mute_update_changes_matching_channel() {
-        let mut channels = vec![
-            ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Ch 1".to_string(),
-                gain_db: -9.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
-            ChannelInfo {
-                group: 0,
-                channel: 1,
-                name: "Ch 2".to_string(),
-                gain_db: -12.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            },
+    fn gain_notifications_normalize_float_double_and_int_values() {
+        let cases = [
+            (crate::lv1::osc::OscArg::Float(-6.25), -6.25),
+            (crate::lv1::osc::OscArg::Double(-6.25), -6.25),
+            (crate::lv1::osc::OscArg::Int(-6), -6.0),
         ];
+
+        for (gain_arg, expected) in cases {
+            let event_bus = AppEventBus::default();
+            let mut events = event_bus.subscribe();
+            let mut state = ActorState::new(event_bus, 7);
+            state.channels = vec![channel(0)];
+
+            handle_message(
+                &mut state,
+                &crate::lv1::osc::OscMessage {
+                    address: "/Notify/Track/Out/Gain".to_string(),
+                    args: vec![
+                        crate::lv1::osc::OscArg::Int(0),
+                        crate::lv1::osc::OscArg::Int(0),
+                        gain_arg,
+                    ],
+                },
+            );
+
+            assert_eq!(state.channels[0].gain_db, expected);
+            assert!(matches!(
+                events.try_recv(),
+                Ok(crate::runtime::events::AppEvent::Lv1 {
+                    generation: 7,
+                    event: Lv1Event::FaderChanged {
+                        group: 0,
+                        channel: 0,
+                        gain_db,
+                    },
+                }) if gain_db == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn gain_notification_for_unknown_channel_does_not_mutate_or_publish() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = ActorState::new(event_bus, 7);
+        state.channels = vec![channel(0)];
+
+        handle_message(
+            &mut state,
+            &crate::lv1::osc::OscMessage {
+                address: "/Notify/Track/Out/Gain".to_string(),
+                args: vec![
+                    crate::lv1::osc::OscArg::Int(0),
+                    crate::lv1::osc::OscArg::Int(99),
+                    crate::lv1::osc::OscArg::Float(-6.25),
+                ],
+            },
+        );
+
+        assert_eq!(state.channels[0].gain_db, -9.0);
+        assert!(events.try_recv().is_err());
+    }
+
+    #[test]
+    fn width_active_accepts_only_zero_or_one_without_promoting_malformed_values() {
+        for (active, expected_width, expects_event) in [
+            (0, None, false),
+            (1, Some(0.75), true),
+            (-1, None, false),
+            (2, None, false),
+        ] {
+            let event_bus = AppEventBus::default();
+            let mut events = event_bus.subscribe();
+            let mut state = ActorState::new(event_bus, 9);
+            state.channels = vec![channel(0)];
+
+            handle_message(
+                &mut state,
+                &crate::lv1::osc::OscMessage {
+                    address: "/Notify/PanArcWidth".to_string(),
+                    args: vec![
+                        crate::lv1::osc::OscArg::Int(0),
+                        crate::lv1::osc::OscArg::Int(0),
+                        crate::lv1::osc::OscArg::Double(0.75),
+                        crate::lv1::osc::OscArg::Int(active),
+                    ],
+                },
+            );
+
+            assert_eq!(state.channels[0].width, expected_width);
+            assert_eq!(events.try_recv().is_ok(), expects_event);
+        }
+    }
+
+    #[test]
+    fn apply_mute_update_changes_only_matching_channel() {
+        let mut channels = vec![channel(0), channel(1)];
         apply_mute_update(&mut channels, 0, 0, true);
         assert!(channels[0].muted);
         assert!(!channels[1].muted);
@@ -644,27 +525,8 @@ mod tests {
 
     #[test]
     fn apply_mute_update_ignores_unknown_channel() {
-        let mut channels = vec![ChannelInfo {
-            group: 0,
-            channel: 0,
-            name: "Ch 1".to_string(),
-            gain_db: -9.0,
-            muted: false,
-            pan: None,
-            balance: None,
-            width: None,
-            pan_mode: None,
-        }];
+        let mut channels = vec![channel(0)];
         apply_mute_update(&mut channels, 0, 99, true);
         assert!(!channels[0].muted);
-    }
-
-    #[test]
-    fn osc_bool_values_map_to_mute_state() {
-        assert_eq!(osc_arg_to_bool(&OscArg::Bool(true)), Some(true));
-        assert_eq!(osc_arg_to_bool(&OscArg::Bool(false)), Some(false));
-        assert_eq!(osc_arg_to_bool(&OscArg::Int(1)), Some(true));
-        assert_eq!(osc_arg_to_bool(&OscArg::Int(0)), Some(false));
-        assert_eq!(osc_arg_to_bool(&OscArg::Int(2)), None);
     }
 }

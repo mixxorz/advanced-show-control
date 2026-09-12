@@ -1,5 +1,10 @@
 const settingControlText = "font-mono text-sm uppercase";
 
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] bounded-stepper-output
+ * Each increase or decrease activation MUST emit `value +/- step` clamped inclusively to `[min,
+ * max]`, using a default step of 1; the displayed value MUST remain read-only and caller-controlled.
+ */
 export function StepperControl(props: {
   label: string;
   min: number;

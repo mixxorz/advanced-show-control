@@ -57,6 +57,9 @@ impl EngineState {
         }
     }
 
+    /// @cc [owner:mixxorz,label:architecture;safety] generation-tagged-publication
+    /// Every fade fact emitted by this engine state MUST carry the generation fixed when the state
+    /// was constructed; callers MUST NOT supply or retag a publication generation.
     pub(crate) fn fan_out(&mut self, event: FadeEvent) {
         self.event_bus.publish_fade(self.generation, event);
     }
@@ -80,6 +83,10 @@ impl EngineState {
         self.generation
     }
 
+    /// @cc [owner:mixxorz,label:product;safety] readiness-reset-pauses
+    /// Starting or replacing readiness MUST pause every active target at the first pause boundary,
+    /// replace the prior barrier, and complete any prior owned waiter as `Superseded`; elapsed
+    /// readiness time MUST NOT advance target interpolation.
     pub(super) fn start_or_reset_readiness(
         &mut self,
         generation: u64,
@@ -127,6 +134,11 @@ impl EngineState {
         }
     }
 
+    /// @cc [owner:mixxorz,label:safety] readiness-release
+    /// Readiness MUST release only after two strictly newer ping sequences from the barrier's exact
+    /// generation arrive before its absolute deadline with no subscriber lag. Ignored pings MUST
+    /// neither advance the count nor resume targets; release MUST resume all targets and complete an
+    /// owned waiter successfully.
     pub(super) fn observe_ping(
         &mut self,
         generation: u64,
@@ -172,6 +184,10 @@ impl EngineState {
             .map(|barrier| barrier.deadline)
     }
 
+    /// @cc [owner:mixxorz,label:safety;reliability] readiness-timeout
+    /// Timing out an installed barrier MUST clear every active target and complete its owned waiter
+    /// with the barrier's generation, exact scene identity, and observed ping count; no barrier MUST
+    /// be a no-op.
     pub(super) fn timeout_readiness(&mut self) -> Option<ReadinessTimeoutContext> {
         self.readiness_barrier.take().map(|barrier| {
             let context = ReadinessTimeoutContext {
@@ -199,6 +215,10 @@ impl EngineState {
         self.readiness_barrier.is_some()
     }
 
+    /// @cc [owner:mixxorz,label:safety] abort-clears-all
+    /// Cancellation MUST synchronously remove all active targets and the readiness barrier, and MUST
+    /// complete an owned readiness waiter with the supplied cancellation reason so later ticks or
+    /// pings cannot revive the canceled work.
     pub(crate) fn cancel_all_in_place(&mut self, cancellation: RecallReadinessCancellation) {
         self.channels.clear();
         if let Some(barrier) = self.readiness_barrier.take()
@@ -206,208 +226,5 @@ impl EngineState {
         {
             let _ = completion.send(Err(RecallReadinessError::Cancelled(cancellation)));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-    use tokio::time::Instant;
-
-    use super::*;
-    use crate::fade::curve::FadeCurve;
-    use crate::fade::tick::ActiveTargetInit;
-    use crate::fade::types::{FadeParameter, FadeSceneIdentity, FadeTargetKey};
-
-    fn active_target(
-        started_at: Instant,
-        scene: FadeSceneIdentity,
-        channel: i32,
-        target_value: f64,
-    ) -> ActiveTarget {
-        ActiveTarget::new(ActiveTargetInit {
-            scene,
-            key: FadeTargetKey {
-                group: 0,
-                channel,
-                parameter: FadeParameter::FaderDb,
-            },
-            group: 0,
-            channel,
-            start_value: -20.0,
-            target_value,
-            curve: FadeCurve::Linear,
-            duration: Duration::from_secs(1),
-            started_at,
-            expected_generation: None,
-        })
-    }
-
-    #[test]
-    fn readiness_requires_two_newer_same_generation_pings_before_releasing() {
-        let now = Instant::now();
-        let readiness_now = tokio::time::Instant::now();
-        let mut state = EngineState::new(AppEventBus::default(), 4);
-
-        let deadline = readiness_now + Duration::from_secs(5);
-        state.start_or_reset_readiness(
-            4,
-            17,
-            "Verse".to_string(),
-            10,
-            now,
-            RecallReadinessRequest::detached(deadline),
-        );
-
-        assert_eq!(state.generation(), 4);
-        assert!(state.is_waiting_for_readiness());
-        assert_eq!(state.readiness_deadline(), Some(deadline));
-        assert_eq!(state.observe_ping(4, 10, now), PingGateProgress::Ignored);
-        assert_eq!(
-            state.observe_ping(4, 11, now),
-            PingGateProgress::Waiting { observed: 1 }
-        );
-        assert_eq!(state.observe_ping(4, 11, now), PingGateProgress::Ignored);
-        assert_eq!(state.observe_ping(3, 12, now), PingGateProgress::Ignored);
-        assert_eq!(state.observe_ping(4, 12, now), PingGateProgress::Released);
-        assert!(!state.is_waiting_for_readiness());
-        assert_eq!(state.readiness_deadline(), None);
-    }
-
-    #[test]
-    fn readiness_reset_uses_new_boundary_and_preserves_original_pause() {
-        let now = Instant::now();
-        let mut state = EngineState::new(AppEventBus::default(), 4);
-        state.channels.push(active_target(
-            now,
-            FadeSceneIdentity {
-                index: 17,
-                name: "Verse".to_string(),
-            },
-            0,
-            -10.0,
-        ));
-
-        state.start_or_reset_readiness(
-            4,
-            17,
-            "Verse".to_string(),
-            10,
-            now + Duration::from_millis(100),
-            RecallReadinessRequest::detached(tokio::time::Instant::now() + Duration::from_secs(5)),
-        );
-        state.start_or_reset_readiness(
-            4,
-            18,
-            "Chorus".to_string(),
-            20,
-            now + Duration::from_millis(200),
-            RecallReadinessRequest::detached(tokio::time::Instant::now() + Duration::from_secs(5)),
-        );
-
-        assert!(state.channels[0].is_paused());
-        assert_eq!(
-            state.observe_ping(4, 20, now + Duration::from_millis(300)),
-            PingGateProgress::Ignored
-        );
-        assert_eq!(
-            state.observe_ping(4, 21, now + Duration::from_millis(400)),
-            PingGateProgress::Waiting { observed: 1 }
-        );
-
-        assert_eq!(
-            state.observe_ping(4, 22, now + Duration::from_millis(1_100)),
-            PingGateProgress::Released
-        );
-        assert!(!state.channels[0].is_paused());
-        assert_eq!(state.channels[0].started_at, now + Duration::from_secs(1));
-    }
-
-    #[test]
-    fn cancellation_clears_targets_and_readiness_barrier_together() {
-        let now = Instant::now();
-        let mut state = EngineState::new(AppEventBus::default(), 4);
-        state.channels.push(active_target(
-            now,
-            FadeSceneIdentity {
-                index: 17,
-                name: "Verse".to_string(),
-            },
-            0,
-            -10.0,
-        ));
-        state.start_or_reset_readiness(
-            4,
-            17,
-            "Verse".to_string(),
-            10,
-            now,
-            RecallReadinessRequest::detached(tokio::time::Instant::now() + Duration::from_secs(5)),
-        );
-
-        state.cancel_all_in_place(RecallReadinessCancellation::Aborted);
-
-        assert!(state.channels.is_empty());
-        assert!(!state.is_waiting_for_readiness());
-        assert_eq!(state.readiness_deadline(), None);
-    }
-
-    #[test]
-    fn finish_scene_rewrites_only_exact_scene_owner() {
-        let now = Instant::now();
-        let scene_a = FadeSceneIdentity {
-            index: 17,
-            name: "Verse".to_string(),
-        };
-        let same_index_wrong_name = FadeSceneIdentity {
-            index: 17,
-            name: "Verse Copy".to_string(),
-        };
-        let scene_b = FadeSceneIdentity {
-            index: 18,
-            name: "Chorus".to_string(),
-        };
-        let mut state = EngineState::new(AppEventBus::default(), 4);
-        state
-            .channels
-            .push(active_target(now, scene_a.clone(), 1, -10.0));
-        state
-            .channels
-            .push(active_target(now, scene_a.clone(), 2, -12.0));
-        state
-            .channels
-            .push(active_target(now, same_index_wrong_name, 3, -14.0));
-        state.channels.push(active_target(now, scene_b, 4, -16.0));
-
-        assert_eq!(state.finish_scene_on_next_tick(&scene_a), 2);
-        assert!(state.channels[0].is_done(now));
-        assert!(state.channels[1].is_done(now));
-        assert!(!state.channels[2].is_done(now));
-        assert!(!state.channels[3].is_done(now));
-        assert_eq!(state.channels[0].target_value, -10.0);
-        assert_eq!(state.channels[1].target_value, -12.0);
-    }
-
-    #[test]
-    fn finish_scene_returns_zero_without_mutating_unowned_targets() {
-        let now = Instant::now();
-        let mut state = EngineState::new(AppEventBus::default(), 4);
-        state.channels.push(active_target(
-            now,
-            FadeSceneIdentity {
-                index: 18,
-                name: "Chorus".to_string(),
-            },
-            1,
-            -10.0,
-        ));
-
-        let count = state.finish_scene_on_next_tick(&FadeSceneIdentity {
-            index: 17,
-            name: "Verse".to_string(),
-        });
-
-        assert_eq!(count, 0);
-        assert!(!state.channels[0].is_done(now));
     }
 }

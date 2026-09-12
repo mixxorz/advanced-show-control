@@ -4,7 +4,7 @@ import { connectedAppState } from "../storybook/mockAppState";
 import { SceneListRow } from "./SceneListRow";
 
 describe("SceneListRow", () => {
-  it("renders unlinked scene rows with warning styling", () => {
+  it("shows a placeholder number for an unlinked scene", () => {
     render(
       <SceneListRow
         currentScene={null}
@@ -19,57 +19,50 @@ describe("SceneListRow", () => {
     );
 
     expect(screen.getByText("---")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Unlinked scene")).not.toBeInTheDocument();
   });
 
-  it.each([
-    {
-      name: "idle",
-      borderClass: "border-l-accent-orange",
-      arrowClass: "text-accent-orange",
-    },
-    {
-      name: "current",
-      current: true,
-      borderClass: "border-l-status-current",
-      arrowClass: "text-status-current",
-    },
-    {
-      name: "unlinked",
-      unlinked: true,
-      borderClass: "border-l-status-warning",
-      arrowClass: "text-status-warning",
-    },
-  ])(
-    "uses matching arrow and left stripe colors for selected $name rows",
-    ({ arrowClass, borderClass, current, unlinked }) => {
-      const scene = {
-        ...connectedAppState.sceneConfigs[0],
-        sceneIndex: unlinked
-          ? null
-          : connectedAppState.sceneConfigs[0].sceneIndex,
-      };
+  it("keeps the left border transparent when a current row is not selected", () => {
+    const scene = connectedAppState.sceneConfigs[0];
+    render(
+      <SceneListRow
+        currentScene={{ index: scene.sceneIndex!, name: scene.sceneName }}
+        cued
+        onSelect={vi.fn()}
+        scene={scene}
+        selected={false}
+      />,
+    );
 
-      const { container } = render(
-        <SceneListRow
-          currentScene={
-            current
-              ? { index: scene.sceneIndex ?? 0, name: scene.sceneName }
-              : null
-          }
-          cued={false}
-          onSelect={vi.fn()}
-          scene={scene}
-          selected={true}
-        />,
-      );
+    expect(screen.getByRole("button")).toHaveClass("border-l-transparent");
+    expect(screen.getByRole("button")).not.toHaveClass(
+      "border-l-status-current",
+    );
+  });
 
-      const row = screen.getByRole("button");
-      const arrow = container.querySelector("svg");
+  it("uses current then cued precedence for selected-row border chrome", () => {
+    const scene = connectedAppState.sceneConfigs[0];
+    const { rerender } = render(
+      <SceneListRow
+        currentScene={{ index: scene.sceneIndex!, name: scene.sceneName }}
+        cued
+        onSelect={vi.fn()}
+        scene={scene}
+        selected
+      />,
+    );
 
-      expect(row).toHaveClass("bg-accent-orange-soft");
-      expect(row).toHaveClass(borderClass);
-      expect(arrow).toHaveClass(arrowClass);
-    },
-  );
+    expect(screen.getByRole("button")).toHaveClass("border-l-status-current");
+
+    rerender(
+      <SceneListRow
+        currentScene={null}
+        cued
+        onSelect={vi.fn()}
+        scene={scene}
+        selected
+      />,
+    );
+
+    expect(screen.getByRole("button")).toHaveClass("border-l-status-cued");
+  });
 });

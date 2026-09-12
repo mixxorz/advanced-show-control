@@ -2,6 +2,12 @@ import type { SceneConfig } from "../types";
 import { useAppCommands, useAppState } from "../appHooks";
 import { ConsoleButton } from "./ConsoleButton";
 
+/**
+ * @cc [owner:mixxorz,label:product;safety] selected-scene-action-gating
+ * Store MUST be disabled for an unlinked scene. Copy MUST remain available for linked and unlinked
+ * scenes. Paste MUST be disabled unless the projected clipboard is available and the destination
+ * scene is linked; each enabled action MUST dispatch only the supplied scene's internal ID.
+ */
 export function SelectedSceneActions(props: { scene: SceneConfig }) {
   const commands = useAppCommands();
   const {

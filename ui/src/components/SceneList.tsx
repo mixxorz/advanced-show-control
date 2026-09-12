@@ -13,6 +13,17 @@ function duplicateSceneNames(scenes: SceneConfig[]): string[] {
     .sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] scene-list-selection-and-fallbacks
+ * Each rendered scene MUST remain a named selectable button whose callback receives that scene's
+ * exact internal ID. An empty collection MUST show `No scenes loaded.`, and an omitted title MUST
+ * fall back to `Scene library`.
+ */
+/**
+ * @cc [owner:mixxorz,label:product] scene-list-duplicate-warning
+ * The duplicate warning MUST list each case-sensitive scene name occurring more than once exactly
+ * once, sorted by locale, and MUST be absent when all names are unique.
+ */
 export function SceneListView(props: {
   currentScene: SceneSummary | null;
   cuedSceneInternalId?: string | null;
@@ -77,6 +88,12 @@ export function SceneListView(props: {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:architecture] projected-scene-list-command-boundary
+ * The production list MUST render projected scene configs, current scene, and selected internal ID,
+ * and selection MUST be requested through `commands.selectScene`; it MUST NOT mutate local scene
+ * selection state.
+ */
 export function SceneList() {
   const { appState } = useAppState();
   const commands = useAppCommands();

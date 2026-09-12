@@ -1,5 +1,10 @@
 const settingControlText = "font-mono text-sm uppercase";
 
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] controlled-toggle-output
+ * The toggle MUST expose `checked` through `aria-pressed` and its ON/OFF display, and activation MUST
+ * emit the inverse value without mutating or retaining independent checked state.
+ */
 export function ToggleControl(props: {
   label: string;
   checked: boolean;

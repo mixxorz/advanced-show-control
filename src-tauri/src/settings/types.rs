@@ -13,12 +13,6 @@ mod tests {
         assert_eq!(settings.time_display, TimeDisplayFormat::TwentyFourHour);
         assert_eq!(settings.fader_override_sensitivity, 9);
         assert!(!settings.enable_extensive_diagnostics);
-    }
-
-    #[test]
-    fn default_settings_enable_same_scene_finishing_with_500ms_threshold() {
-        let settings = AppSettings::default();
-
         assert!(settings.same_scene_recall_enabled);
         assert_eq!(settings.same_scene_recall_threshold_ms, 500);
     }
@@ -147,6 +141,10 @@ pub struct AppSettings {
     pub same_scene_recall_threshold_ms: u64,
 }
 
+/// @cc [owner:mixxorz,label:product] stable-settings-defaults
+/// Missing or newly introduced persisted fields MUST default to conservative application behavior:
+/// automatic loading/saving and extensive diagnostics off, 24-hour time, sensitivity 9,
+/// same-scene recall on with a 500 ms threshold, and Space/C for Go/Cue.
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -163,6 +161,11 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
+    /// @cc [owner:mixxorz,label:data-integrity] normalize-settings-boundaries
+    /// Normalization MUST clamp fader sensitivity to 1..=10 and same-scene threshold to
+    /// 0..=5000 ms, canonicalize supported key labels, uppercase single-scalar keys, and replace
+    /// blank Go/Cue shortcuts with their respective defaults while preserving their modifiers only
+    /// when the key remains valid.
     pub fn normalized(mut self) -> Self {
         self.fader_override_sensitivity = self.fader_override_sensitivity.clamp(1, 10);
         self.same_scene_recall_threshold_ms = self.same_scene_recall_threshold_ms.clamp(0, 5_000);

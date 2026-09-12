@@ -26,6 +26,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber",
  "uuid",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -34,6 +35,7 @@ version = "0.1.0"
 dependencies = [
  "advanced-show-control",
  "clap",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",

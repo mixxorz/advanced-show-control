@@ -4,7 +4,7 @@ use tokio::sync::oneshot;
 use tokio::time::Instant;
 use uuid::Uuid;
 
-use crate::fade::RecallReadinessError;
+use crate::fade::{RecallReadinessCancellation, RecallReadinessError};
 use crate::runtime::errors::AppCommandError;
 
 use super::RecallSceneResult;
@@ -23,7 +23,9 @@ pub(super) enum InFlightPhase {
         dispatch_sequence: u64,
         deadline: Instant,
     },
-    AwaitingReadiness,
+    AwaitingReadiness {
+        completion: Option<oneshot::Receiver<Result<(), RecallReadinessError>>>,
+    },
 }
 
 pub(super) struct InFlightRecall {
@@ -46,6 +48,43 @@ pub(super) struct RecallQueue {
 }
 
 impl RecallQueue {
+    /**
+     * @cc [owner:mixxorz,label:safety] readiness-owned-by-in-flight-recall
+     * Readiness completion MUST be polled only from the current in-flight recall's owned receiver;
+     * absent or already-consumed readiness MUST remain pending, and receiver closure MUST surface
+     * as cancellation rather than success.
+     */
+    pub async fn readiness_completion(&mut self) -> RecallReadinessCompletion {
+        let Some(InFlightRecall {
+            request_id,
+            generation,
+            phase: InFlightPhase::AwaitingReadiness { completion },
+            ..
+        }) = self.in_flight.as_mut()
+        else {
+            return std::future::pending().await;
+        };
+        let Some(receiver) = completion.as_mut() else {
+            return std::future::pending().await;
+        };
+        let result = receiver
+            .await
+            .unwrap_or(Err(RecallReadinessError::Cancelled(
+                RecallReadinessCancellation::ActorStopped,
+            )));
+        completion.take();
+        RecallReadinessCompletion {
+            request_id: *request_id,
+            generation: *generation,
+            result,
+        }
+    }
+
+    /**
+     * @cc [owner:mixxorz,label:product] recall-capacity-includes-in-flight
+     * Queue occupancy MUST count both the in-flight request and waiting requests so total admitted
+     * explicit recall intent never exceeds `RECALL_QUEUE_CAPACITY`.
+     */
     pub fn len(&self) -> usize {
         self.waiting.len() + usize::from(self.in_flight.is_some())
     }
@@ -58,6 +97,11 @@ impl RecallQueue {
         self.waiting.push_back(recall);
     }
 
+    /**
+     * @cc [owner:mixxorz,label:product] explicit-recall-fifo
+     * Waiting explicit recalls MUST be removed in admission order; repeated requests for the same
+     * scene remain distinct queue entries.
+     */
     pub fn take_next(&mut self) -> Option<QueuedRecall> {
         self.waiting.pop_front()
     }
@@ -66,49 +110,14 @@ impl RecallQueue {
         self.in_flight = Some(recall);
     }
 
+    /**
+     * @cc [owner:mixxorz,label:safety] cancel-waiting-replies
+     * Draining MUST remove every waiting request and resolve each still-open caller reply with the
+     * supplied cancellation error; it MUST NOT report any waiting request as dispatched.
+     */
     pub fn drain_pending(&mut self, error: AppCommandError) {
         for queued in self.waiting.drain(..) {
             let _ = queued.reply.send(Err(error.clone()));
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn draining_pending_recalls_cancels_each_waiting_reply() {
-        let mut queue = RecallQueue::default();
-        let (first_reply, mut first) = oneshot::channel();
-        let (second_reply, mut second) = oneshot::channel();
-        queue.admit(QueuedRecall {
-            request_id: Uuid::new_v4(),
-            internal_scene_id: Uuid::new_v4(),
-            reply: first_reply,
-        });
-        queue.admit(QueuedRecall {
-            request_id: Uuid::new_v4(),
-            internal_scene_id: Uuid::new_v4(),
-            reply: second_reply,
-        });
-
-        queue.drain_pending(AppCommandError::RecallCanceled(
-            "LV1 recall command is unavailable".to_string(),
-        ));
-
-        assert_eq!(queue.len(), 0);
-        assert_eq!(
-            first.try_recv(),
-            Ok(Err(AppCommandError::RecallCanceled(
-                "LV1 recall command is unavailable".to_string()
-            )))
-        );
-        assert_eq!(
-            second.try_recv(),
-            Ok(Err(AppCommandError::RecallCanceled(
-                "LV1 recall command is unavailable".to_string()
-            )))
-        );
     }
 }

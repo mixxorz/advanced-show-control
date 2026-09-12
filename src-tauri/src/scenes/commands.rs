@@ -5,12 +5,20 @@ use crate::runtime::errors::AppCommandError;
 use crate::scenes::{SceneConfig, SceneDocument};
 use uuid::Uuid;
 
-use super::events::ScenesProjectionReason;
-
 #[derive(Debug)]
 pub enum ScenesCommand {
-    GetSceneDocument {
-        reply: oneshot::Sender<SceneDocument>,
+    GetSessionDocument {
+        reply: oneshot::Sender<crate::session::SessionDocument>,
+    },
+    /// @cc [owner:mixxorz,label:persistence] session-replacement-single-owner-turn
+    /// Session replacement MUST commit scene and cue documents in one owner turn under the
+    /// replacement ticket and expected-generation check, cancel queued recall and cue-advance
+    /// intent without aborting an active fade, and publish one combined `SessionReplaced`
+    /// projection.
+    ReplaceSessionDocument {
+        replacement: crate::session::SessionReplacement,
+        expected_generation: u64,
+        reply: oneshot::Sender<Result<crate::session::SessionDocument, String>>,
     },
     GetSceneConfig {
         internal_scene_id: Uuid,
@@ -18,6 +26,15 @@ pub enum ScenesCommand {
     },
     InitialProjectionState {
         reply: oneshot::Sender<crate::scenes::ScenesProjectionState>,
+    },
+    /// @cc [owner:mixxorz,label:safety] runtime-readiness-handoff
+    /// Readiness MUST be accepted only when the supplied generation is still authoritative and a
+    /// complete peer pair for that generation is installed; a same-generation scene list cached
+    /// before handoff MUST supersede the initial list supplied by lifecycle.
+    RuntimePeersReady {
+        generation: u64,
+        initial_scene_list: Vec<crate::lv1::SceneListEntry>,
+        reply: oneshot::Sender<Result<(), AppCommandError>>,
     },
     SetSceneDuration {
         internal_scene_id: Uuid,
@@ -72,12 +89,6 @@ pub enum ScenesCommand {
         internal_scene_id: Uuid,
         reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
     },
-    ReplaceSceneDocument {
-        document: SceneDocument,
-        reason: ScenesProjectionReason,
-        persisted_scene_edit: bool,
-        reply: Option<oneshot::Sender<ScenesCommandResult>>,
-    },
     RecallScene {
         internal_scene_id: Uuid,
         reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
@@ -104,6 +115,10 @@ pub struct RecallSceneResult {
     pub lv1_scene_index: i32,
 }
 
+/// @cc [owner:mixxorz,label:safety] explicit-recall-exact-identity
+/// A recall request MUST be rejected unless its durable UUID resolves to a linked config and the
+/// connected LV1 scene list contains the config's exact index-and-name identity; lockout MUST also
+/// reject the request.
 pub fn validate_recall_scene_request(
     lockout: bool,
     scene_document: &SceneDocument,

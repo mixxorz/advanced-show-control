@@ -1,5 +1,10 @@
 const settingControlText = "font-mono text-sm uppercase";
 
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] controlled-option-selection
+ * The select MUST reflect the caller-provided `value`, render exactly the supplied options, and
+ * report only the selected option value through `onChange` without mutating caller state itself.
+ */
 export function SelectControl(props: {
   label: string;
   value: string;

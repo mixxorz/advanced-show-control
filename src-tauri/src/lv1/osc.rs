@@ -9,8 +9,6 @@ pub enum OscArg {
     String(String),
     Blob(Vec<u8>),
     Bool(bool),
-    True,
-    False,
     Nil,
     Impulse,
 }
@@ -97,6 +95,9 @@ fn take<const N: usize>(
     Ok(out)
 }
 
+/// @cc [owner:mixxorz,label:protocol;parsing] canonical-osc-encoding
+/// Encoded OSC strings and blobs MUST use four-byte alignment with zero padding, booleans/Nil/
+/// Impulse MUST be payload-free type tags, and embedded NUL strings or oversized blobs MUST fail.
 pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscError> {
     if address.contains('\0') {
         return Err(OscError::EmbeddedNul);
@@ -120,8 +121,6 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
                     'F'
                 }
             }
-            OscArg::True => 'T',
-            OscArg::False => 'F',
             OscArg::Nil => 'N',
             OscArg::Impulse => 'I',
         });
@@ -148,13 +147,16 @@ pub fn encode_message(address: &str, args: &[OscArg]) -> Result<Vec<u8>, OscErro
                 out.extend_from_slice(value);
                 out.extend(std::iter::repeat_n(0, pad_to_4(value.len())));
             }
-            OscArg::Bool(_) | OscArg::True | OscArg::False | OscArg::Nil | OscArg::Impulse => {}
+            OscArg::Bool(_) | OscArg::Nil | OscArg::Impulse => {}
         }
     }
 
     Ok(out)
 }
 
+/// @cc [owner:mixxorz,label:protocol;parsing] strict-osc-decoding
+/// Decoding MUST reject non-four-byte packet lengths, malformed or unterminated strings, nonzero
+/// padding, unsupported tags, truncated values, invalid blob lengths, and trailing bytes.
 pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
     if !bytes.len().is_multiple_of(4) {
         return Err(OscError::InvalidPaddedLength(bytes.len()));
@@ -201,8 +203,8 @@ pub fn decode_packet(bytes: &[u8]) -> Result<OscMessage, OscError> {
                 offset += padded_len;
                 OscArg::Blob(value)
             }
-            'T' => OscArg::True,
-            'F' => OscArg::False,
+            'T' => OscArg::Bool(true),
+            'F' => OscArg::Bool(false),
             'N' => OscArg::Nil,
             'I' => OscArg::Impulse,
             other => return Err(OscError::UnsupportedType(other)),
@@ -243,8 +245,8 @@ mod tests {
                 OscArg::Double(-3.25),
                 OscArg::String("lv1".to_string()),
                 OscArg::Blob(vec![1, 2, 3]),
-                OscArg::True,
-                OscArg::False,
+                OscArg::Bool(true),
+                OscArg::Bool(false),
                 OscArg::Nil,
                 OscArg::Impulse,
             ],
@@ -252,6 +254,14 @@ mod tests {
 
         let bytes = encode_message(&msg.address, &msg.args).unwrap();
         assert_eq!(decode_packet(&bytes).unwrap(), msg);
+    }
+
+    #[test]
+    fn encodes_bools_as_payload_free_canonical_type_tags() {
+        assert_eq!(
+            encode_message("/bool", &[OscArg::Bool(true), OscArg::Bool(false)]).unwrap(),
+            b"/bool\0\0\0,TF\0"
+        );
     }
 
     #[test]
@@ -348,8 +358,7 @@ mod tests {
 
     #[test]
     fn decoder_rejects_truncated_blob() {
-        // claims 5 bytes of data but only 2 follow; total length is not a multiple of 4
-        let packet = [b'/', b'b', 0, 0, b',', b'b', 0, 0, 0, 0, 0, 5, 1, 2];
-        assert!(decode_packet(&packet).is_err());
+        let packet = [b'/', b'b', 0, 0, b',', b'b', 0, 0, 0, 0, 0, 5, 1, 2, 0, 0];
+        assert_eq!(decode_packet(&packet), Err(OscError::UnexpectedEof("blob")));
     }
 }

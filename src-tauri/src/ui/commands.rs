@@ -13,8 +13,8 @@ pub use cue_lists::{
 };
 pub use fade::abort_all_fades;
 pub use lifecycle::{
-    attempt_reconnect_lv1, connect_lv1_system, disconnect_lv1, frontend_ready,
-    probe_lv1_tcp_connect_latency, reconnect_timed_out, startup_auto_connect_lv1,
+    connect_lv1_system, disconnect_lv1, frontend_ready, probe_lv1_tcp_connect_latency,
+    startup_auto_connect_lv1,
 };
 pub use scenes::{
     copy_scene_settings, delete_scene_config, link_scene_config, paste_scene_settings,
@@ -28,6 +28,9 @@ pub use show::{
     save_show_file_as_dialog, set_lockout,
 };
 
+/// @cc [owner:mixxorz,label:product] preserve-command-failure-message
+/// `CommandFailed` MUST return its contained frontend-safe message without adding the generic
+/// variant prefix; every other `AppCommandError` MUST use the variant's complete display text.
 pub(super) fn map_app_command_error(error: crate::runtime::errors::AppCommandError) -> String {
     match error {
         crate::runtime::errors::AppCommandError::CommandFailed(message) => message,

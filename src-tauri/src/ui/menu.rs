@@ -1,15 +1,10 @@
-use crate::runtime::errors::AppCommandError;
-use crate::show::{
-    LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult, ShowStateHandle,
+use super::commands::{
+    new_show_file, open_show_file_dialog, save_show_file, save_show_file_as_dialog,
 };
-use crate::show_file::default_show_folder;
-use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use tauri::menu::PredefinedMenuItem;
 use tauri::menu::{Menu, MenuEvent, MenuItem, Submenu};
 use tauri::{App, AppHandle, Manager};
-use tokio::sync::oneshot;
-use tokio::task::spawn_blocking;
 
 pub const MENU_NEW_SESSION: &str = "session:new";
 pub const MENU_OPEN_SESSION: &str = "session:open";
@@ -93,154 +88,34 @@ pub fn install_session_menu(app: &mut App<tauri::Wry>) -> tauri::Result<()> {
     Ok(())
 }
 
+/// @cc [owner:mixxorz,label:architecture] session-menu-reuses-command-adapters
+/// Each recognized session menu ID MUST asynchronously invoke the same show command adapter used
+/// by the frontend and log a complete warning on failure; unknown IDs MUST cause no task or side
+/// effect, and menu routing MUST NOT duplicate dialog, mailbox, or persistence policy.
 pub fn handle_session_menu_event(app: &AppHandle<tauri::Wry>, event: MenuEvent) {
     let id = event.id().as_ref();
     let app = app.clone();
     match id {
         MENU_NEW_SESSION => tauri::async_runtime::spawn(async move {
-            if let Err(err) = new_session_from_menu(app).await {
-                tracing::warn!(error = %err, "New Session menu command failed");
+            if let Err(err) = new_show_file(app.state()).await {
+                tracing::warn!(event = "session_menu_command_failed", error = %err, "New Session menu command failed: {err}");
             }
         }),
         MENU_OPEN_SESSION => tauri::async_runtime::spawn(async move {
-            if let Err(err) = open_session_from_menu(app).await {
-                tracing::warn!(error = %err, "Open Session menu command failed");
+            if let Err(err) = open_show_file_dialog(app.state()).await {
+                tracing::warn!(event = "session_menu_command_failed", error = %err, "Open Session menu command failed: {err}");
             }
         }),
         MENU_SAVE_SESSION => tauri::async_runtime::spawn(async move {
-            if let Err(err) = save_session_from_menu(app).await {
-                tracing::warn!(error = %err, "Save Session menu command failed");
+            if let Err(err) = save_show_file(app.state()).await {
+                tracing::warn!(event = "session_menu_command_failed", error = %err, "Save Session menu command failed: {err}");
             }
         }),
         MENU_SAVE_SESSION_AS => tauri::async_runtime::spawn(async move {
-            if let Err(err) = save_session_as_from_menu(app).await {
-                tracing::warn!(error = %err, "Save As menu command failed");
+            if let Err(err) = save_show_file_as_dialog(app.state()).await {
+                tracing::warn!(event = "session_menu_command_failed", error = %err, "Save As menu command failed: {err}");
             }
         }),
         _ => return,
     };
-}
-
-async fn new_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<NewShowFileResult, String> {
-    let show = app.state::<ShowStateHandle>().inner().clone();
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
-        .await
-        .map_err(|_| AppCommandError::ShowUnavailable)
-        .map_err(super::commands::map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(super::commands::map_app_command_error)?
-}
-
-async fn open_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<LoadShowFileResult, String> {
-    let path = spawn_blocking(|| -> Result<Option<PathBuf>, String> {
-        let folder = default_show_folder();
-        Ok(rfd::FileDialog::new()
-            .set_directory(folder)
-            .add_filter("Advanced Show Control Session", &["ascs"])
-            .pick_file())
-    })
-    .await
-    .map_err(|err| format!("Failed to open file dialog: {err}"))??
-    .ok_or_else(|| "Open session cancelled".to_string())?;
-    let show = app.state::<ShowStateHandle>().inner().clone();
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::LoadShowFileFromPath {
-        path,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(super::commands::map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(super::commands::map_app_command_error)?
-}
-
-async fn save_session_from_menu(app: AppHandle<tauri::Wry>) -> Result<ShowCommandResult, String> {
-    let show = app.state::<ShowStateHandle>().inner().clone();
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::CurrentShowFilePath { reply })
-        .await
-        .map_err(|_| AppCommandError::ShowUnavailable)
-        .map_err(super::commands::map_app_command_error)?;
-    let path = match rx
-        .await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(super::commands::map_app_command_error)?
-    {
-        Some(path) => path,
-        None => spawn_blocking(|| -> Result<Option<PathBuf>, String> {
-            let folder = default_show_folder();
-            Ok(rfd::FileDialog::new()
-                .set_directory(folder)
-                .set_file_name("Untitled.ascs")
-                .add_filter("Advanced Show Control Session", &["ascs"])
-                .save_file())
-        })
-        .await
-        .map_err(|err| format!("Failed to open save dialog: {err}"))??
-        .ok_or_else(|| "Save session cancelled".to_string())?,
-    };
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::SaveShowFileAs {
-        path,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(super::commands::map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(super::commands::map_app_command_error)?
-}
-
-async fn save_session_as_from_menu(
-    app: AppHandle<tauri::Wry>,
-) -> Result<ShowCommandResult, String> {
-    let path = spawn_blocking(|| -> Result<Option<PathBuf>, String> {
-        let folder = default_show_folder();
-        Ok(rfd::FileDialog::new()
-            .set_directory(folder)
-            .set_file_name("Untitled.ascs")
-            .add_filter("Advanced Show Control Session", &["ascs"])
-            .save_file())
-    })
-    .await
-    .map_err(|err| format!("Failed to open save dialog: {err}"))??
-    .ok_or_else(|| "Save session cancelled".to_string())?;
-    let show = app.state::<ShowStateHandle>().inner().clone();
-    let (reply, rx) = oneshot::channel();
-    show.send(ShowCommand::SaveShowFileAs {
-        path,
-        reply: Some(reply),
-    })
-    .await
-    .map_err(|_| AppCommandError::ShowUnavailable)
-    .map_err(super::commands::map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(super::commands::map_app_command_error)?
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn menu_ids_are_stable() {
-        assert_eq!(MENU_NEW_SESSION, "session:new");
-        assert_eq!(MENU_OPEN_SESSION, "session:open");
-        assert_eq!(MENU_SAVE_SESSION, "session:save");
-        assert_eq!(MENU_SAVE_SESSION_AS, "session:save-as");
-    }
-
-    #[test]
-    fn file_menu_accelerators_are_standard() {
-        assert_eq!(MENU_NEW_SESSION_ACCELERATOR, "CmdOrCtrl+N");
-        assert_eq!(MENU_OPEN_SESSION_ACCELERATOR, "CmdOrCtrl+O");
-        assert_eq!(MENU_SAVE_SESSION_ACCELERATOR, "CmdOrCtrl+S");
-        assert_eq!(MENU_SAVE_SESSION_AS_ACCELERATOR, "CmdOrCtrl+Shift+S");
-    }
 }

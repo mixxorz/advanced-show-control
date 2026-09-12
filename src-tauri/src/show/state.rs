@@ -1,5 +1,15 @@
-use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompleteConnectionOutcome {
+    pub accepted: bool,
+    pub changed: bool,
+}
+
+/// @cc [owner:mixxorz,label:architecture] show-state-owns-session-metadata-only
+/// `ShowState` MUST own only lockout, show-file metadata/dirty state, discovery results, and
+/// connected-LV1 metadata; scene configurations, selection, clipboard, and cue documents MUST remain
+/// owned by the Scenes domain.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ShowState {
     lockout: bool,
@@ -8,12 +18,13 @@ pub struct ShowState {
     show_file_last_saved_at: Option<String>,
     discovered_lv1_systems: Vec<DiscoveredLv1System>,
     connected_lv1_identity: Option<Lv1SystemIdentity>,
-    pending_lv1_identity: Option<Lv1SystemIdentity>,
-    reconnect: ReconnectState,
     last_event_at: Option<String>,
 }
 
 impl ShowState {
+    /// @cc [owner:mixxorz,label:persistence] new-show-metadata-reset
+    /// After documents for a new show have committed, resetting metadata MUST clear lockout, path,
+    /// saved timestamp, and dirty state without altering discovery or connected-LV1 metadata.
     pub(crate) fn reset_for_new_show(&mut self) {
         self.clear();
         self.show_file_path = None;
@@ -21,6 +32,10 @@ impl ShowState {
         self.show_file_last_saved_at = None;
     }
 
+    /// @cc [owner:mixxorz,label:persistence] saved-metadata-is-clean
+    /// Recording a successful save or load MUST atomically adopt its path and saved timestamp and
+    /// clear dirty state; callers MUST re-mark dirty afterward when import normalization changed the
+    /// persisted document.
     pub(crate) fn mark_saved(&mut self, path: std::path::PathBuf, saved_at: String) {
         self.show_file_path = Some(path);
         self.show_file_last_saved_at = Some(saved_at);
@@ -31,6 +46,9 @@ impl ShowState {
         self.show_file_dirty = true;
     }
 
+    /// @cc [owner:mixxorz,label:product] discovery-is-whole-list-state
+    /// A discovery update MUST replace the complete discovered-system list and report `changed`
+    /// exactly when the ordered list differs; it MUST NOT modify connection identity or file state.
     pub(crate) fn set_discovered_lv1_systems(&mut self, systems: Vec<DiscoveredLv1System>) -> bool {
         if self.discovered_lv1_systems == systems {
             false
@@ -40,73 +58,16 @@ impl ShowState {
         }
     }
 
-    pub(crate) fn complete_lv1_connection(&mut self, identity: Lv1SystemIdentity) -> bool {
-        let reconnect = ReconnectState::default();
-        let changed = self.connected_lv1_identity.as_ref() != Some(&identity)
-            || self.pending_lv1_identity.is_some()
-            || self.reconnect != reconnect;
-        self.connected_lv1_identity = Some(identity);
-        self.pending_lv1_identity = None;
-        self.reconnect = reconnect;
-        changed
-    }
-
-    pub(crate) fn fail_lv1_connection(&mut self) -> bool {
-        let reconnect = ReconnectState::default();
-        let changed = self.connected_lv1_identity.is_some()
-            || self.pending_lv1_identity.is_some()
-            || self.reconnect != reconnect;
-        self.connected_lv1_identity = None;
-        self.pending_lv1_identity = None;
-        self.reconnect = reconnect;
-        changed
-    }
-
-    pub(crate) fn fail_lv1_reconnect(&mut self) -> bool {
-        let reconnect = ReconnectState::default();
-        let changed = self.pending_lv1_identity.is_some() || self.reconnect != reconnect;
-        self.pending_lv1_identity = None;
-        self.reconnect = reconnect;
-        changed
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_connection_metadata_for_test(
-        connected_lv1_identity: Lv1SystemIdentity,
-        pending_lv1_identity: Option<Lv1SystemIdentity>,
-        reconnect: ReconnectState,
-        last_event_at: Option<String>,
-    ) -> Self {
-        Self {
-            connected_lv1_identity: Some(connected_lv1_identity),
-            pending_lv1_identity,
-            reconnect,
-            last_event_at,
-            ..Default::default()
+    /// @cc [owner:mixxorz,label:product] connection-metadata-transition
+    /// Setting connection metadata MUST report whether identity changed. A transition to no identity
+    /// MUST timestamp `last_event_at`; an accepted no-op or transition to an identity MUST NOT
+    /// overwrite that timestamp.
+    pub(crate) fn set_lv1_connection(&mut self, identity: Option<Lv1SystemIdentity>) -> bool {
+        let changed = self.connected_lv1_identity != identity;
+        if changed && identity.is_none() {
+            self.last_event_at = Some(crate::time::current_timestamp_millis());
         }
-    }
-
-    pub(crate) fn handle_runtime_disconnected(&mut self, _reason: String) -> bool {
-        let mut changed = false;
-        if self.connected_lv1_identity.take().is_some() {
-            changed = true;
-        }
-        if self.pending_lv1_identity.take().is_some() {
-            changed = true;
-        }
-        let next = ReconnectState {
-            active: false,
-            attempt: 0,
-        };
-        if self.reconnect != next {
-            self.reconnect = next;
-            changed = true;
-        }
-        let timestamp = crate::time::current_timestamp_millis();
-        if self.last_event_at.as_ref() != Some(&timestamp) {
-            self.last_event_at = Some(timestamp);
-            changed = true;
-        }
+        self.connected_lv1_identity = identity;
         changed
     }
 
@@ -135,8 +96,6 @@ impl ShowState {
             show_file_last_saved_at: self.show_file_last_saved_at.clone(),
             discovered_lv1_systems: self.discovered_lv1_systems.clone(),
             connected_lv1_identity: self.connected_lv1_identity.clone(),
-            pending_lv1_identity: self.pending_lv1_identity.clone(),
-            reconnect: self.reconnect.clone(),
             last_event_at: self.last_event_at.clone(),
         }
     }
@@ -145,6 +104,9 @@ impl ShowState {
         self.lockout = false;
     }
 
+    /// @cc [owner:mixxorz,label:safety] lockout-change-outcome
+    /// Lockout updates MUST report `true` only when the stored safety value changes; repeated values
+    /// MUST remain no-ops so callers do not publish misleading state changes.
     pub fn set_lockout(&mut self, enabled: bool) -> bool {
         if self.lockout == enabled {
             false
@@ -169,69 +131,24 @@ mod tests {
     }
 
     #[test]
-    fn complete_connection_sets_identity_and_clears_transient_metadata_atomically() {
+    fn unconditional_completion_sets_identity_and_reports_changes() {
         let next = identity("new");
-        let mut state = ShowState {
-            connected_lv1_identity: Some(identity("old")),
-            pending_lv1_identity: Some(next.clone()),
-            reconnect: ReconnectState {
-                active: true,
-                attempt: 3,
-            },
-            ..Default::default()
-        };
+        let mut state = ShowState::default();
 
-        assert!(state.complete_lv1_connection(next.clone()));
-        let projection = state.projection_state();
-        assert_eq!(projection.connected_lv1_identity, Some(next.clone()));
-        assert_eq!(projection.pending_lv1_identity, None);
-        assert_eq!(projection.reconnect, ReconnectState::default());
-        assert!(!state.complete_lv1_connection(next));
+        assert!(state.set_lv1_connection(Some(next.clone())));
+        assert_eq!(state.projection_state().connected_lv1_identity, Some(next));
+        assert!(!state.set_lv1_connection(Some(identity("new"))));
     }
 
     #[test]
-    fn failed_connection_clears_all_connection_metadata() {
+    fn failed_connection_clears_identity() {
         let mut state = ShowState {
             connected_lv1_identity: Some(identity("old")),
-            pending_lv1_identity: Some(identity("new")),
-            reconnect: ReconnectState {
-                active: true,
-                attempt: 2,
-            },
             ..Default::default()
         };
 
-        assert!(state.fail_lv1_connection());
-        let projection = state.projection_state();
-        assert_eq!(projection.connected_lv1_identity, None);
-        assert_eq!(projection.pending_lv1_identity, None);
-        assert_eq!(projection.reconnect, ReconnectState::default());
-        assert!(!state.fail_lv1_connection());
-    }
-
-    #[test]
-    fn failed_reconnect_preserves_connected_identity_and_clears_transient_metadata() {
-        let connected = identity("old");
-        let mut state = ShowState {
-            connected_lv1_identity: Some(connected.clone()),
-            pending_lv1_identity: Some(identity("new")),
-            reconnect: ReconnectState {
-                active: true,
-                attempt: 4,
-            },
-            last_event_at: Some("2026-07-19T12:00:00.000Z".to_string()),
-            ..Default::default()
-        };
-
-        assert!(state.fail_lv1_reconnect());
-        let projection = state.projection_state();
-        assert_eq!(projection.connected_lv1_identity, Some(connected));
-        assert_eq!(projection.pending_lv1_identity, None);
-        assert_eq!(projection.reconnect, ReconnectState::default());
-        assert_eq!(
-            projection.last_event_at.as_deref(),
-            Some("2026-07-19T12:00:00.000Z")
-        );
-        assert!(!state.fail_lv1_reconnect());
+        assert!(state.set_lv1_connection(None));
+        assert_eq!(state.projection_state().connected_lv1_identity, None);
+        assert!(!state.set_lv1_connection(None));
     }
 }

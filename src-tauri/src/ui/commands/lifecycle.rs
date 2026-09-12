@@ -4,6 +4,10 @@ use crate::show::{ConnectCommandResult, ShowCommandResult};
 use crate::ui::UiLogReceiverState;
 use tauri::{AppHandle, Manager, Runtime, State};
 
+/// @cc [owner:mixxorz,label:architecture] frontend-ready-supplies-log-subscription
+/// The frontend-ready adapter MUST obtain a fresh UI-log receiver from managed logging state and
+/// delegate projector startup and idempotence to Lifecycle; it MUST NOT emit snapshots or start a
+/// projector itself.
 #[tauri::command]
 pub async fn frontend_ready<R: Runtime>(
     app: AppHandle<R>,
@@ -20,14 +24,6 @@ pub async fn connect_lv1_system(
     identity: Lv1SystemIdentity,
 ) -> Result<ConnectCommandResult, String> {
     lifecycle.connect_lv1_system(app, identity).await
-}
-
-#[tauri::command]
-pub async fn attempt_reconnect_lv1(
-    app: AppHandle<impl Runtime>,
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<ConnectCommandResult, String> {
-    lifecycle.attempt_reconnect_lv1(app).await
 }
 
 #[tauri::command]
@@ -48,13 +44,6 @@ pub async fn probe_lv1_tcp_connect_latency(
 
 #[tauri::command]
 pub async fn disconnect_lv1(
-    lifecycle: State<'_, AppLifecycle>,
-) -> Result<ShowCommandResult, String> {
-    lifecycle.disconnect_current_runtime().await
-}
-
-#[tauri::command]
-pub async fn reconnect_timed_out(
     lifecycle: State<'_, AppLifecycle>,
 ) -> Result<ShowCommandResult, String> {
     lifecycle.disconnect_current_runtime().await

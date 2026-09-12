@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { AppSettings, AppViewState, Lv1SystemIdentity } from "../types";
+import { executeSmokeLifecycle } from "./smokeLifecycle";
 import { findSmokeSceneConfigs } from "./smokeScenes";
 import "../index.css";
 
@@ -28,11 +29,12 @@ const tests = [
   "fade-completes",
   "same-scene-finish",
   "same-scene-override",
-  "decreasing-xfade",
+  "decreasing-duration-final-targets",
   "link-unlinked-scene",
   "lockout-blocks-recall",
 ].map((name) => ({ name, status: "pending", detail: "" }));
 let state: AppViewState | undefined;
+let discoveredIdentity: Lv1SystemIdentity | undefined;
 let connectedIdentity: Lv1SystemIdentity | undefined;
 let suiteStatus = "Running";
 let closeIn: number | undefined;
@@ -47,425 +49,440 @@ document.addEventListener("click", (event) => {
 
 void start();
 
+/**
+ * @cc [owner:mixxorz,label:verification] smoke-report-is-authoritative
+ * Completion MUST append `SUITE PASS` or `SUITE FAIL` through `debug_smoke_log` only after cleanup
+ * has affected the final result. The rendered status, terminal output, and process exit MUST NOT be
+ * treated as the suite result when that report write fails.
+ */
 async function start() {
-  void listen<AppViewState>("app-status-changed", (event) => {
-    state = event.payload;
+  await executeSmokeLifecycle<AppViewState, AppSettings>({
+    listen: (receiveState) =>
+      listen<AppViewState>("app-status-changed", (event) => {
+        receiveState(event.payload);
+      }),
+    frontendReady: async () => {
+      await log("START");
+      await invoke("frontend_ready");
+    },
+    readSettings: (nextState) => nextState.settings,
+    receiveState: (nextState) => {
+      state = nextState;
+    },
+    runSuite: run,
+    releaseLockout: () => invoke("set_lockout", { enabled: false }),
+    restoreSettings: (settings) => invoke("replace_app_settings", { settings }),
+    report: async (ok, error) => {
+      suiteStatus = ok ? "PASS" : "FAIL";
+      render();
+      if (!ok) {
+        await log(`ERROR ${String(error)}`).catch(console.error);
+      }
+      await log(`SUITE ${ok ? "PASS" : "FAIL"}`);
+    },
+    complete: startCloseCountdown,
   });
-  await sleep(250);
-  const ok = await run();
-  startCloseCountdown(ok);
 }
 
+/**
+ * @cc [owner:mixxorz,label:architecture] smoke-production-command-boundary
+ * Frontend smoke workflows MUST invoke production Tauri commands when exercising application
+ * behavior. They MUST invoke a `debug_smoke_*` command only for smoke reporting, process exit, or
+ * setup and observation that no production command exposes.
+ */
 async function run() {
-  let ok = true;
-  await log("START");
-  await invoke("frontend_ready");
-  try {
-    await waitFor(() => state, "initial app state");
-    await test("cue-list-create", async () => {
-      const result = await invoke<{ cueList?: { id: string; name: string } }>(
-        "create_cue_list",
-        { name: "Smoke Cue List" },
-      );
-      const cueListId = result.cueList?.id;
-      if (!cueListId)
-        throw new Error("create_cue_list did not return a cue list");
-      await waitFor(
-        () =>
-          state?.cueLists.some(
-            (list) =>
-              list.id === cueListId &&
-              list.name === "Smoke Cue List" &&
-              state?.activeCueListId === cueListId,
-          ),
-        "projected smoke cue list",
-      );
-      await log(`CUE_LIST_CREATED ${cueListId}`);
+  await waitFor(() => state, "initial app state");
+  await test("cue-list-create", async () => {
+    const result = await invoke<{ cueList?: { id: string; name: string } }>(
+      "create_cue_list",
+      { name: "Smoke Cue List" },
+    );
+    const cueListId = result.cueList?.id;
+    if (!cueListId)
+      throw new Error("create_cue_list did not return a cue list");
+    await waitFor(
+      () =>
+        state?.cueLists.some(
+          (list) =>
+            list.id === cueListId &&
+            list.name === "Smoke Cue List" &&
+            state?.activeCueListId === cueListId,
+        ),
+      "projected smoke cue list",
+    );
+    await log(`CUE_LIST_CREATED ${cueListId}`);
+  });
+  await test("connection", async () => {
+    await invoke("refresh_lv1_discovery", { timeoutMs: 5000 });
+    discoveredIdentity = await waitFor(
+      () => state?.discoveredLv1Systems[0]?.identity,
+      "LV1 discovery",
+    );
+    await invoke("connect_lv1_system", { identity: discoveredIdentity });
+    connectedIdentity = await waitFor(
+      () =>
+        state?.connection === "connected" &&
+        sameValue(state.connectedLv1Identity, discoveredIdentity)
+          ? state.connectedLv1Identity
+          : undefined,
+      "LV1 connected to discovered identity",
+    );
+    if (!connectedIdentity.uuid) {
+      throw new Error("startup auto-connect smoke requires an LV1 UUID");
+    }
+    const scenes = await waitFor(() => {
+      return resolveSmokeSceneIds();
+    }, "smoke scene configs");
+    sceneA = scenes.sceneA;
+    sceneB = scenes.sceneB;
+    await log(`CONNECTED ${label(discoveredIdentity)}`);
+  });
+  await test("startup-auto-connect", async () => {
+    const expectedIdentity = discoveredIdentity;
+    if (!expectedIdentity?.uuid) {
+      throw new Error("discovered LV1 identity is unavailable");
+    }
+
+    await invoke("disconnect_lv1");
+    await waitFor(
+      () => state?.connection === "disconnected",
+      "LV1 disconnected",
+    );
+
+    await invoke("startup_auto_connect_lv1");
+    const reconnected = await waitFor(
+      () =>
+        state?.connection === "connected" &&
+        sameValue(state.connectedLv1Identity, expectedIdentity)
+          ? state.connectedLv1Identity
+          : undefined,
+      "startup auto-connected LV1 identity",
+    );
+    await log(`AUTO_CONNECTED ${label(reconnected)}`);
+  });
+
+  await test("empty-scene-settings-defaults", async () => {
+    await newSceneSettingsSession();
+    await assertEmptySceneSettings(sceneA, "Smoke A");
+    await assertEmptySceneSettings(sceneB, "Smoke B");
+  });
+  await test("scene-settings-copy-paste", async () => {
+    await loadSceneSettingsSmokeSession();
+    await invoke("store_scene_config", { internalSceneId: sceneA });
+    await invoke("set_scene_scope_faders_enabled", {
+      internalSceneId: sceneA,
+      enabled: true,
     });
-    await test("connection", async () => {
-      await invoke("refresh_lv1_discovery", { timeoutMs: 5000 });
-      const identity = await waitFor(
-        () => state?.discoveredLv1Systems[0]?.identity,
-        "LV1 discovery",
-      );
-      await invoke("connect_lv1_system", { identity });
-      await waitFor(() => state?.connection === "connected", "LV1 connected");
-      connectedIdentity = await waitFor(
-        () => state?.connectedLv1Identity,
-        "projected connected LV1 identity",
-      );
-      if (!connectedIdentity.uuid) {
-        throw new Error("startup auto-connect smoke requires an LV1 UUID");
-      }
-      const scenes = await waitFor(() => {
-        return resolveSmokeSceneIds();
-      }, "smoke scene configs");
-      sceneA = scenes.sceneA;
-      sceneB = scenes.sceneB;
-      await log(`CONNECTED ${label(identity)}`);
+    await invoke("set_scene_scope_pan_enabled", {
+      internalSceneId: sceneA,
+      enabled: true,
     });
-    await test("startup-auto-connect", async () => {
-      const expectedUuid = connectedIdentity?.uuid;
-      if (!expectedUuid) {
-        throw new Error("connected LV1 UUID is unavailable");
-      }
-
-      await invoke("disconnect_lv1");
-      await waitFor(
-        () => state?.connection === "disconnected",
-        "LV1 disconnected",
-      );
-
-      await invoke("startup_auto_connect_lv1");
-      const reconnected = await waitFor(
-        () =>
-          state?.connection === "connected" &&
-          state.connectedLv1Identity?.uuid === expectedUuid
-            ? state.connectedLv1Identity
-            : undefined,
-        "startup auto-connected LV1 identity",
-      );
-      await log(`AUTO_CONNECTED ${label(reconnected)}`);
+    await invoke("set_channel_scoped", {
+      internalSceneId: sceneA,
+      group,
+      channel,
+      scoped: true,
+    });
+    await invoke("set_scene_duration_ms", {
+      internalSceneId: sceneA,
+      durationMs: 1234,
     });
 
-    await test("empty-scene-settings-defaults", async () => {
-      await newSceneSettingsSession();
-      await assertEmptySceneSettings(sceneA, "Smoke A");
-      await assertEmptySceneSettings(sceneB, "Smoke B");
-    });
-    await test("scene-settings-copy-paste", async () => {
-      await loadSceneSettingsSmokeSession();
-      await invoke("store_scene_config", { internalSceneId: sceneA });
-      await invoke("set_scene_scope_faders_enabled", {
-        internalSceneId: sceneA,
-        enabled: true,
-      });
-      await invoke("set_scene_scope_pan_enabled", {
-        internalSceneId: sceneA,
-        enabled: true,
-      });
-      await invoke("set_channel_scoped", {
-        internalSceneId: sceneA,
-        group,
-        channel,
-        scoped: true,
-      });
-      await invoke("set_scene_duration_ms", {
-        internalSceneId: sceneA,
-        durationMs: 1234,
-      });
-
-      const sourceBeforePaste = structuredClone(
-        await waitFor(() => {
-          const source = sceneConfig(sceneA);
-          if (
-            !source ||
-            source.durationMs !== 1234 ||
-            !source.scopeToggles.faders ||
-            !source.scopeToggles.pan ||
-            source.channelConfigs.length === 0 ||
-            source.scopedChannels.length === 0
-          ) {
-            return undefined;
-          }
-          return source;
-        }, "projected configured Smoke A scene settings"),
-      );
-      const destinationBeforePaste = await waitFor(
-        () => sceneConfig(sceneB),
-        "projected Smoke B scene settings",
-      );
-      await invoke("copy_scene_settings", { internalSceneId: sceneA });
-      await waitFor(
-        () => state?.sceneSettingsClipboardAvailable,
-        "projected scene settings clipboard",
-      );
-      await invoke("save_show_file");
-      await waitFor(
-        () => state && !state.showFileDirty,
-        "clean projected show file before paste",
-      );
-      await invoke("paste_scene_settings", { internalSceneId: sceneB });
-
-      const destination = await waitFor(() => {
-        const next = sceneConfig(sceneB);
-        if (!next || !state?.showFileDirty) return undefined;
+    const sourceBeforePaste = structuredClone(
+      await waitFor(() => {
+        const source = sceneConfig(sceneA);
         if (
-          next.durationMs !== sourceBeforePaste.durationMs ||
-          !sameValue(next.scopeToggles, sourceBeforePaste.scopeToggles) ||
-          !sameValue(next.channelConfigs, sourceBeforePaste.channelConfigs) ||
-          !sameValue(next.scopedChannels, sourceBeforePaste.scopedChannels)
+          !source ||
+          source.durationMs !== 1234 ||
+          !source.scopeToggles.faders ||
+          !source.scopeToggles.pan ||
+          source.channelConfigs.length === 0 ||
+          source.scopedChannels.length === 0
         ) {
           return undefined;
         }
-        return next;
-      }, "projected pasted Smoke B scene settings");
-      const sourceAfterPaste = await waitFor(
-        () => sceneConfig(sceneA),
-        "projected Smoke A scene settings after paste",
-      );
+        return source;
+      }, "projected configured Smoke A scene settings"),
+    );
+    const destinationBeforePaste = await waitFor(
+      () => sceneConfig(sceneB),
+      "projected Smoke B scene settings",
+    );
+    await invoke("copy_scene_settings", { internalSceneId: sceneA });
+    await waitFor(
+      () => state?.sceneSettingsClipboardAvailable,
+      "projected scene settings clipboard",
+    );
+    await invoke("save_show_file");
+    await waitFor(
+      () => state && !state.showFileDirty,
+      "clean projected show file before paste",
+    );
+    await invoke("paste_scene_settings", { internalSceneId: sceneB });
 
+    const destination = await waitFor(() => {
+      const next = sceneConfig(sceneB);
+      if (!next || !state?.showFileDirty) return undefined;
       if (
-        destination.internalSceneId !== destinationBeforePaste.internalSceneId
+        next.durationMs !== sourceBeforePaste.durationMs ||
+        !sameValue(next.scopeToggles, sourceBeforePaste.scopeToggles) ||
+        !sameValue(next.channelConfigs, sourceBeforePaste.channelConfigs) ||
+        !sameValue(next.scopedChannels, sourceBeforePaste.scopedChannels)
       ) {
-        throw new Error("paste changed Smoke B internal scene ID");
+        return undefined;
       }
-      if (destination.sceneIndex !== destinationBeforePaste.sceneIndex) {
-        throw new Error("paste changed Smoke B scene index");
-      }
-      if (destination.sceneName !== destinationBeforePaste.sceneName) {
-        throw new Error("paste changed Smoke B scene name");
-      }
-      if (destination.durationMs !== sourceBeforePaste.durationMs) {
-        throw new Error("paste did not copy Smoke A duration");
-      }
-      if (
-        !sameValue(destination.scopeToggles, sourceBeforePaste.scopeToggles)
-      ) {
-        throw new Error("paste did not copy Smoke A scope toggles");
-      }
-      if (
-        !sameValue(destination.channelConfigs, sourceBeforePaste.channelConfigs)
-      ) {
-        throw new Error("paste did not copy Smoke A channel configs");
-      }
-      if (
-        !sameValue(destination.scopedChannels, sourceBeforePaste.scopedChannels)
-      ) {
-        throw new Error("paste did not copy Smoke A scoped channels");
-      }
-      if (!sameValue(sourceAfterPaste, sourceBeforePaste)) {
-        throw new Error("paste changed Smoke A scene settings");
-      }
-      if (!state?.showFileDirty) {
-        throw new Error("paste did not mark the show file dirty");
-      }
-    });
-    await test("new-session-clears-scene-settings-clipboard", async () => {
-      await newSceneSettingsSession();
-      await waitFor(
-        () => state && !state.sceneSettingsClipboardAvailable,
-        "cleared projected scene settings clipboard",
-      );
-    });
+      return next;
+    }, "projected pasted Smoke B scene settings");
+    const sourceAfterPaste = await waitFor(
+      () => sceneConfig(sceneA),
+      "projected Smoke A scene settings after paste",
+    );
 
-    await setup();
-    await sleep(2500);
-    await test("scene-recall", async () => {
-      await invoke("recall_scene", { internalSceneId: sceneA });
-      await waitScene("Smoke A");
-    });
-    await test("rapid-scene-recall-queue", async () => {
-      try {
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneA,
-          durationMs: 0,
-        });
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneB,
-          durationMs: 0,
-        });
+    if (
+      destination.internalSceneId !== destinationBeforePaste.internalSceneId
+    ) {
+      throw new Error("paste changed Smoke B internal scene ID");
+    }
+    if (destination.sceneIndex !== destinationBeforePaste.sceneIndex) {
+      throw new Error("paste changed Smoke B scene index");
+    }
+    if (destination.sceneName !== destinationBeforePaste.sceneName) {
+      throw new Error("paste changed Smoke B scene name");
+    }
+    if (destination.durationMs !== sourceBeforePaste.durationMs) {
+      throw new Error("paste did not copy Smoke A duration");
+    }
+    if (!sameValue(destination.scopeToggles, sourceBeforePaste.scopeToggles)) {
+      throw new Error("paste did not copy Smoke A scope toggles");
+    }
+    if (
+      !sameValue(destination.channelConfigs, sourceBeforePaste.channelConfigs)
+    ) {
+      throw new Error("paste did not copy Smoke A channel configs");
+    }
+    if (
+      !sameValue(destination.scopedChannels, sourceBeforePaste.scopedChannels)
+    ) {
+      throw new Error("paste did not copy Smoke A scoped channels");
+    }
+    if (!sameValue(sourceAfterPaste, sourceBeforePaste)) {
+      throw new Error("paste changed Smoke A scene settings");
+    }
+    if (!state?.showFileDirty) {
+      throw new Error("paste did not mark the show file dirty");
+    }
+  });
+  await test("new-session-clears-scene-settings-clipboard", async () => {
+    await newSceneSettingsSession();
+    await waitFor(
+      () => state && !state.sceneSettingsClipboardAvailable,
+      "cleared projected scene settings clipboard",
+    );
+  });
 
-        await invoke("recall_scene", { internalSceneId: sceneB });
-        const dispatchOrder: string[] = [];
-        const second = invoke("recall_scene", { internalSceneId: sceneA }).then(
-          () => {
-            dispatchOrder.push("Smoke A");
-          },
-        );
-        await sleep(10);
-        const third = invoke("recall_scene", { internalSceneId: sceneB }).then(
-          () => {
-            dispatchOrder.push("Smoke B");
-          },
-        );
-
-        await Promise.all([second, third]);
-        if (dispatchOrder.join(",") !== "Smoke A,Smoke B") {
-          throw new Error(
-            `recall dispatch order was ${dispatchOrder.join(",")}`,
-          );
-        }
-        await waitScene("Smoke B");
-      } finally {
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneA,
-          durationMs: 1_000,
-        });
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneB,
-          durationMs: 1_000,
-        });
-      }
-    });
-    await test("fade-starts", async () => {
-      await reset(sceneA, targetA);
-      await invoke("recall_scene", { internalSceneId: sceneB });
-      await waitFor(async () => (await gain()) > targetA + 3, "fade movement");
-    });
-    await test("fade-completes", async () => {
-      await reset(sceneA, targetA);
-      await invoke("recall_scene", { internalSceneId: sceneB });
-      await waitGain(targetB);
-    });
-    await test("same-scene-finish", async () => {
-      try {
-        await setSameSceneSettings(true, 500);
-        await reset(sceneA, targetA);
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneB,
-          durationMs: sameSceneDurationMs,
-        });
-        await invoke("recall_scene", { internalSceneId: sceneB });
-        await waitFor(async () => {
-          const liveGain = await gain();
-          return (
-            liveGain >= targetA + sameSceneMovementThresholdDb &&
-            liveGain < targetB - tolerance
-          );
-        }, "same-scene fade movement before target");
-
-        const repeatedAt = Date.now();
-        await invoke("recall_scene", { internalSceneId: sceneB });
-        await waitFor(
-          async () => Math.abs((await gain()) - targetB) <= tolerance,
-          "same-scene exact finish",
-          sameSceneFinishTimeoutMs,
-        );
-        await waitFor(
-          () => state?.fadeState === "idle",
-          "same-scene projected fade completion",
-          sameSceneFinishTimeoutMs,
-        );
-        if (Date.now() - repeatedAt >= sameSceneDurationMs) {
-          throw new Error("same-scene recall restarted the full fade duration");
-        }
-      } finally {
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneB,
-          durationMs: 1_000,
-        });
-        await setSameSceneSettings(true, 500);
-      }
-    });
-    await test("same-scene-override", async () => {
-      try {
-        await setSameSceneSettings(false, 500);
-        await reset(sceneA, targetA);
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneB,
-          durationMs: sameSceneDurationMs,
-        });
-        await invoke("recall_scene", { internalSceneId: sceneB });
-        await waitFor(async () => {
-          const liveGain = await gain();
-          return (
-            liveGain >= targetA + sameSceneMovementThresholdDb &&
-            liveGain < targetB - tolerance
-          );
-        }, "same-scene override movement before repeat");
-
-        const repeatedAt = Date.now();
-        await invoke("recall_scene", { internalSceneId: sceneB });
-        await sleep(1_000);
-        if (Math.abs((await gain()) - targetB) <= tolerance) {
-          throw new Error(
-            "disabled same-scene finishing completed immediately",
-          );
-        }
-        await waitFor(
-          async () => Math.abs((await gain()) - targetB) <= tolerance,
-          "same-scene override completion",
-          sameSceneDurationMs + 5_000,
-        );
-        if (Date.now() - repeatedAt < sameSceneDurationMs) {
-          throw new Error(
-            "same-scene override did not use the full configured duration",
-          );
-        }
-      } finally {
-        await invoke("set_scene_duration_ms", {
-          internalSceneId: sceneB,
-          durationMs: 1_000,
-        });
-        await setSameSceneSettings(true, 500);
-      }
-    });
-    await test("decreasing-xfade", async () => {
-      await reset(sceneA, targetA);
-      for (const [durationMs, internalSceneId, target] of [
-        [5000, sceneB, targetB],
-        [3000, sceneA, targetA],
-        [1000, sceneB, targetB],
-        [500, sceneA, targetA],
-      ] as const) {
-        await invoke("set_scene_duration_ms", {
-          internalSceneId,
-          durationMs,
-        });
-        await invoke("recall_scene", { internalSceneId });
-        await waitGain(target);
-      }
-    });
-    await test("link-unlinked-scene", async () => {
-      const sourceInternalSceneId = await invoke<string>(
-        "debug_smoke_load_unlinked_scene_session",
-      );
-      await waitFor(
-        () =>
-          state?.sceneConfigs.some(
-            (scene) =>
-              scene.internalSceneId === sourceInternalSceneId &&
-              scene.sceneIndex === null,
-          ),
-        "unlinked smoke scene config",
-      );
-      await invoke("link_scene_config", {
-        sourceInternalSceneId,
-        targetSceneIndex: 0,
-        overwriteExisting: true,
+  await setup();
+  await sleep(2500);
+  await test("scene-recall", async () => {
+    await invoke("recall_scene", { internalSceneId: sceneA });
+    await waitScene("Smoke A");
+  });
+  await test("rapid-scene-recall-queue", async () => {
+    try {
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneA,
+        durationMs: 0,
       });
-      await waitFor(
-        () =>
-          state?.sceneConfigs.some(
-            (scene) =>
-              scene.internalSceneId === sourceInternalSceneId &&
-              scene.sceneIndex === 0 &&
-              scene.sceneName === "Smoke A",
-          ),
-        "linked smoke scene config",
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneB,
+        durationMs: 0,
+      });
+
+      await invoke("recall_scene", { internalSceneId: sceneB });
+      const dispatchOrder: string[] = [];
+      const second = invoke("recall_scene", { internalSceneId: sceneA }).then(
+        () => {
+          dispatchOrder.push("Smoke A");
+        },
       );
-      const smokeScenes = findSmokeSceneConfigs(state?.sceneConfigs ?? []);
-      if (smokeScenes.sceneA?.internalSceneId !== sourceInternalSceneId) {
-        throw new Error("linked smoke scene did not replace Smoke A config");
+      await sleep(10);
+      const third = invoke("recall_scene", { internalSceneId: sceneB }).then(
+        () => {
+          dispatchOrder.push("Smoke B");
+        },
+      );
+
+      await Promise.all([second, third]);
+      if (dispatchOrder.join(",") !== "Smoke A,Smoke B") {
+        throw new Error(`recall dispatch order was ${dispatchOrder.join(",")}`);
       }
-      sceneA = sourceInternalSceneId;
-    });
-    await test("lockout-blocks-recall", async () => {
+      await waitScene("Smoke B");
+    } finally {
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneA,
+        durationMs: 1_000,
+      });
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneB,
+        durationMs: 1_000,
+      });
+    }
+  });
+  await test("fade-starts", async () => {
+    await reset(sceneA, targetA);
+    await invoke("recall_scene", { internalSceneId: sceneB });
+    await waitFor(async () => (await gain()) > targetA + 3, "fade movement");
+  });
+  await test("fade-completes", async () => {
+    await reset(sceneA, targetA);
+    await invoke("recall_scene", { internalSceneId: sceneB });
+    await waitGain(targetB);
+  });
+  await test("same-scene-finish", async () => {
+    try {
+      await setSameSceneSettings(true, 500);
       await reset(sceneA, targetA);
-      await invoke("set_lockout", { enabled: true });
-      let blocked = false;
-      try {
-        await invoke("recall_scene", { internalSceneId: sceneB });
-      } catch (error) {
-        blocked = String(error).includes("blocked");
-        if (!blocked) throw error;
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneB,
+        durationMs: sameSceneDurationMs,
+      });
+      await invoke("recall_scene", { internalSceneId: sceneB });
+      await waitFor(async () => {
+        const liveGain = await gain();
+        return (
+          liveGain >= targetA + sameSceneMovementThresholdDb &&
+          liveGain < targetB - tolerance
+        );
+      }, "same-scene fade movement before target");
+
+      const repeatedAt = Date.now();
+      await invoke("recall_scene", { internalSceneId: sceneB });
+      await waitFor(
+        async () => Math.abs((await gain()) - targetB) <= tolerance,
+        "same-scene exact finish",
+        sameSceneFinishTimeoutMs,
+      );
+      await waitFor(
+        () => state?.fadeState === "idle",
+        "same-scene projected fade completion",
+        sameSceneFinishTimeoutMs,
+      );
+      if (Date.now() - repeatedAt >= sameSceneDurationMs) {
+        throw new Error("same-scene recall restarted the full fade duration");
       }
-      if (!blocked) throw new Error("recall was not blocked");
-      await sleep(1000);
-      await waitGain(targetA);
-      await invoke("set_lockout", { enabled: false });
+    } finally {
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneB,
+        durationMs: 1_000,
+      });
+      await setSameSceneSettings(true, 500);
+    }
+  });
+  await test("same-scene-override", async () => {
+    try {
+      await setSameSceneSettings(false, 500);
+      await reset(sceneA, targetA);
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneB,
+        durationMs: sameSceneDurationMs,
+      });
+      await invoke("recall_scene", { internalSceneId: sceneB });
+      await waitFor(async () => {
+        const liveGain = await gain();
+        return (
+          liveGain >= targetA + sameSceneMovementThresholdDb &&
+          liveGain < targetB - tolerance
+        );
+      }, "same-scene override movement before repeat");
+
+      const repeatedAt = Date.now();
+      await invoke("recall_scene", { internalSceneId: sceneB });
+      await sleep(1_000);
+      if (Math.abs((await gain()) - targetB) <= tolerance) {
+        throw new Error("disabled same-scene finishing completed immediately");
+      }
+      await waitFor(
+        async () => Math.abs((await gain()) - targetB) <= tolerance,
+        "same-scene override completion",
+        sameSceneDurationMs + 5_000,
+      );
+      if (Date.now() - repeatedAt < sameSceneDurationMs) {
+        throw new Error(
+          "same-scene override did not use the full configured duration",
+        );
+      }
+    } finally {
+      await invoke("set_scene_duration_ms", {
+        internalSceneId: sceneB,
+        durationMs: 1_000,
+      });
+      await setSameSceneSettings(true, 500);
+    }
+  });
+  await test("decreasing-duration-final-targets", async () => {
+    await reset(sceneA, targetA);
+    for (const [durationMs, internalSceneId, target] of [
+      [5000, sceneB, targetB],
+      [3000, sceneA, targetA],
+      [1000, sceneB, targetB],
+      [500, sceneA, targetA],
+    ] as const) {
+      await invoke("set_scene_duration_ms", {
+        internalSceneId,
+        durationMs,
+      });
+      await invoke("recall_scene", { internalSceneId });
+      await waitGain(target);
+    }
+  });
+  await test("link-unlinked-scene", async () => {
+    const sourceInternalSceneId = await invoke<string>(
+      "debug_smoke_load_unlinked_scene_session",
+    );
+    await waitFor(
+      () =>
+        state?.sceneConfigs.some(
+          (scene) =>
+            scene.internalSceneId === sourceInternalSceneId &&
+            scene.sceneIndex === null,
+        ),
+      "unlinked smoke scene config",
+    );
+    await invoke("link_scene_config", {
+      sourceInternalSceneId,
+      targetSceneIndex: 0,
+      overwriteExisting: true,
     });
-  } catch (error) {
-    ok = false;
-    await log(`ERROR ${String(error)}`);
-  } finally {
-    await invoke("set_lockout", { enabled: false }).catch(() => undefined);
-    await log(`SUITE ${ok ? "PASS" : "FAIL"}`);
-    suiteStatus = ok ? "PASS" : "FAIL";
-    render();
-  }
-  return ok;
+    await waitFor(
+      () =>
+        state?.sceneConfigs.some(
+          (scene) =>
+            scene.internalSceneId === sourceInternalSceneId &&
+            scene.sceneIndex === 0 &&
+            scene.sceneName === "Smoke A",
+        ),
+      "linked smoke scene config",
+    );
+    const smokeScenes = findSmokeSceneConfigs(state?.sceneConfigs ?? []);
+    if (smokeScenes.sceneA?.internalSceneId !== sourceInternalSceneId) {
+      throw new Error("linked smoke scene did not replace Smoke A config");
+    }
+    sceneA = sourceInternalSceneId;
+  });
+  await test("lockout-blocks-recall", async () => {
+    await reset(sceneA, targetA);
+    await invoke("set_lockout", { enabled: true });
+    let blocked = false;
+    try {
+      await invoke("recall_scene", { internalSceneId: sceneB });
+    } catch (error) {
+      blocked = String(error).includes("blocked");
+      if (!blocked) throw error;
+    }
+    if (!blocked) throw new Error("recall was not blocked");
+    await sleep(1000);
+    await waitGain(targetA);
+    await invoke("set_lockout", { enabled: false });
+  });
 
   async function test(name: string, body: () => Promise<void>) {
     const started = Date.now();
@@ -476,7 +493,6 @@ async function run() {
       setTest(name, "pass", detail);
       await log(`TEST ${name} PASS ${detail}`);
     } catch (error) {
-      ok = false;
       setTest(name, "fail", String(error));
       await log(`TEST ${name} FAIL ${String(error)}`);
       throw error;
@@ -690,6 +706,7 @@ async function assertEmptySceneSettings(internalSceneId: string, name: string) {
     `projected ${name} scene settings`,
   );
   if (
+    scene.durationMs !== 0 ||
     scene.scopeToggles.faders ||
     scene.scopeToggles.pan ||
     scene.channelConfigs.length !== 0 ||
@@ -703,6 +720,11 @@ function sameValue(left: unknown, right: unknown) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+/**
+ * @cc [owner:mixxorz,label:errors] smoke-waits-fail-explicitly
+ * When a smoke wait reaches its deadline without a truthy result, it MUST reject with an error
+ * naming the awaited condition; deadline expiration MUST NOT become a skipped or passing assertion.
+ */
 async function waitFor<T>(
   check: () => T | Promise<T>,
   labelText: string,

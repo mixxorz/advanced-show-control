@@ -2,6 +2,11 @@ import { useEffect } from "react";
 import type { ReactNode } from "react";
 import { ConsoleButton } from "./ConsoleButton";
 
+/**
+ * @cc [owner:mixxorz,label:product] explicit-confirmation-outcomes
+ * Escape and the cancel action MUST invoke only `onCancel`; the confirm action MUST invoke only
+ * `onConfirm`. The modal MUST NOT infer completion or dismiss itself after either callback.
+ */
 export function ConfirmModal(props: {
   title: string;
   message: ReactNode;

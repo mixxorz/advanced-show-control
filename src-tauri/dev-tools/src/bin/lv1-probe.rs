@@ -3,12 +3,12 @@ use advanced_show_control::fade::{
     FadeSceneIdentity, FadeTarget, RecallReadinessRequest, SameSceneRecallBehavior, build_engine,
 };
 use advanced_show_control::lv1::osc::OscArg;
-use advanced_show_control::lv1::probe::{JsonlLogger, MessageKind, entry_for_message};
 use advanced_show_control::lv1::{
     ChannelInfo, DiscoverOptions, Lv1ActorHandle, Lv1Command, Lv1Event, Lv1TcpClient, build_actor,
     decode_frame_payload, discover, pong_for_ping, resolve_target,
 };
 use advanced_show_control::runtime::events::{AppEvent, AppEventBus, log_lagged_subscriber};
+use advanced_show_control_dev_tools::probe::{JsonlLogger, MessageKind, entry_for_message};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -272,6 +272,9 @@ async fn main() -> AppResult<()> {
     }
 }
 
+/// @cc [owner:mixxorz,label:compatibility] probe-cli-name-is-stable
+/// Parsing MUST present `lv1-probe` as the executable name regardless of the caller's argv[0], so
+/// help and parse errors do not identify the production or debug application binary.
 fn parse_cli_from<I, T>(args: I) -> Result<Cli, clap::Error>
 where
     I: IntoIterator<Item = T>,
@@ -709,9 +712,7 @@ async fn run_fade_test(
     let mut lv1_events = event_bus.subscribe();
     let (lv1, lv1_task) = build_actor(host.clone(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, engine_task, engine_peers) =
-        build_engine(runtime_generation, event_bus.clone(), 0);
-    engine_peers.set_lv1(lv1.clone());
+    let (engine, engine_task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1.clone());
     lv1_task.spawn();
     engine_task.spawn();
     let mut fade_events = event_bus.subscribe();
@@ -780,7 +781,6 @@ async fn run_fade_test(
                 curve: fade_curve,
             },
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + Duration::from_secs(5),
             ),
@@ -1004,9 +1004,7 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
     let mut lv1_events = event_bus.subscribe();
     let (lv1, lv1_task) = build_actor(host.clone(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, engine_task, engine_peers) =
-        build_engine(runtime_generation, event_bus.clone(), 0);
-    engine_peers.set_lv1(lv1.clone());
+    let (engine, engine_task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1.clone());
     lv1_task.spawn();
     engine_task.spawn();
     let mut fade_events = event_bus.subscribe();
@@ -1177,7 +1175,6 @@ async fn run_pan_family_smoke_step(
         .send(FadeCommand::RecallSceneFade {
             config,
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + Duration::from_secs(5),
             ),
@@ -1504,74 +1501,87 @@ fn summarize_vegas_restore_failures(failures: &[String]) -> String {
     format!("failed to restore Vegas snapshot: {}", failures.join("; "))
 }
 
-async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) -> AppResult<()> {
+trait VegasLv1 {
+    async fn send_vegas_command(
+        &self,
+        command: Lv1Command,
+    ) -> Result<(), advanced_show_control::lv1::Lv1ActorError>;
+}
+
+impl VegasLv1 for Lv1ActorHandle {
+    async fn send_vegas_command(
+        &self,
+        command: Lv1Command,
+    ) -> Result<(), advanced_show_control::lv1::Lv1ActorError> {
+        self.send(command).await
+    }
+}
+
+async fn vegas_command_result(
+    send_result: Result<(), advanced_show_control::lv1::Lv1ActorError>,
+    reply: oneshot::Receiver<Result<(), advanced_show_control::lv1::Lv1ActorError>>,
+) -> Result<(), String> {
+    send_result.map_err(|err| err.to_string())?;
+    reply
+        .await
+        .map_err(|_| "reply dropped".to_string())?
+        .map_err(|err| err.to_string())
+}
+
+/// @cc [owner:mixxorz,label:safety] vegas-restore-attempts-complete-snapshot
+/// Restoration MUST attempt gain and mute recovery for every captured channel, flush each family,
+/// continue after individual command failures, and return an error containing every observed
+/// restoration failure.
+async fn restore_vegas_snapshot(lv1: &impl VegasLv1, original: &[ChannelInfo]) -> AppResult<()> {
     let mut failures = Vec::new();
 
     for ch in original {
         let (reply, rx) = oneshot::channel();
-        if let Err(err) = lv1
-            .send(Lv1Command::SetGain {
+        let result = lv1
+            .send_vegas_command(Lv1Command::SetGain {
                 group: ch.group,
                 channel: ch.channel,
                 gain_db: ch.gain_db,
                 reply: Some(reply),
             })
-            .await
-        {
+            .await;
+        if let Err(err) = vegas_command_result(result, rx).await {
             failures.push(format!(
-                "gain restore failed for {}:{} ({err})",
-                ch.group, ch.channel
-            ));
-            continue;
-        }
-        if let Err(err) = rx.await? {
-            failures.push(format!(
-                "gain restore failed for {}:{} ({err})",
+                "gain restore {err} for {}:{}",
                 ch.group, ch.channel
             ));
         }
     }
     let (reply, rx) = oneshot::channel();
-    if let Err(err) = lv1.send(Lv1Command::Flush { reply: Some(reply) }).await {
-        failures.push(format!("gain flush failed ({err})"));
-    }
-    if let Ok(result) = rx.await
-        && let Err(err) = result
-    {
+    let result = lv1
+        .send_vegas_command(Lv1Command::Flush { reply: Some(reply) })
+        .await;
+    if let Err(err) = vegas_command_result(result, rx).await {
         failures.push(format!("gain flush failed ({err})"));
     }
 
     for ch in original {
         let (reply, rx) = oneshot::channel();
-        if let Err(err) = lv1
-            .send(Lv1Command::SetMute {
+        let result = lv1
+            .send_vegas_command(Lv1Command::SetMute {
                 group: ch.group,
                 channel: ch.channel,
                 muted: ch.muted,
                 reply: Some(reply),
             })
-            .await
-        {
+            .await;
+        if let Err(err) = vegas_command_result(result, rx).await {
             failures.push(format!(
-                "mute restore failed for {}:{} ({err})",
-                ch.group, ch.channel
-            ));
-            continue;
-        }
-        if let Err(err) = rx.await? {
-            failures.push(format!(
-                "mute restore failed for {}:{} ({err})",
+                "mute restore {err} for {}:{}",
                 ch.group, ch.channel
             ));
         }
     }
     let (reply, rx) = oneshot::channel();
-    if let Err(err) = lv1.send(Lv1Command::Flush { reply: Some(reply) }).await {
-        failures.push(format!("mute flush failed ({err})"));
-    }
-    if let Ok(result) = rx.await
-        && let Err(err) = result
-    {
+    let result = lv1
+        .send_vegas_command(Lv1Command::Flush { reply: Some(reply) })
+        .await;
+    if let Err(err) = vegas_command_result(result, rx).await {
         failures.push(format!("mute flush failed ({err})"));
     }
 
@@ -1582,6 +1592,132 @@ async fn restore_vegas_snapshot(lv1: &Lv1ActorHandle, original: &[ChannelInfo]) 
     }
 }
 
+async fn fail_vegas_with_restoration(
+    lv1: &impl VegasLv1,
+    original: &[ChannelInfo],
+    failure: String,
+) -> AppResult<()> {
+    match restore_vegas_snapshot(lv1, original).await {
+        Ok(()) => Err(failure.into()),
+        Err(restore_error) => Err(format!("{failure}; {restore_error}").into()),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VegasSetupOutcome {
+    ReadyForAnimation,
+    CancelledBeforeAnimation,
+}
+
+async fn vegas_command_until_cancelled<F>(
+    lv1: &impl VegasLv1,
+    command: Lv1Command,
+    reply: oneshot::Receiver<Result<(), advanced_show_control::lv1::Lv1ActorError>>,
+    mut cancellation: std::pin::Pin<&mut F>,
+) -> Result<bool, String>
+where
+    F: std::future::Future<Output = ()>,
+{
+    let send_result = tokio::select! {
+        biased;
+        _ = cancellation.as_mut() => return Ok(true),
+        result = lv1.send_vegas_command(command) => result,
+    };
+    send_result.map_err(|err| err.to_string())?;
+    let mut reply = reply;
+
+    tokio::select! {
+        biased;
+        _ = cancellation.as_mut() => {
+            reply
+                .await
+                .map_err(|_| "reply dropped".to_string())?
+                .map_err(|err| err.to_string())?;
+            Ok(true)
+        }
+        result = &mut reply => {
+            result
+                .map_err(|_| "reply dropped".to_string())?
+                .map_err(|err| err.to_string())?;
+            Ok(false)
+        }
+    }
+}
+
+async fn mute_vegas_channels_until_cancelled<F>(
+    lv1: &impl VegasLv1,
+    original: &[ChannelInfo],
+    mut cancellation: std::pin::Pin<&mut F>,
+) -> AppResult<VegasSetupOutcome>
+where
+    F: std::future::Future<Output = ()>,
+{
+    for ch in original {
+        let (reply, rx) = oneshot::channel();
+        let result = vegas_command_until_cancelled(
+            lv1,
+            Lv1Command::SetMute {
+                group: ch.group,
+                channel: ch.channel,
+                muted: true,
+                reply: Some(reply),
+            },
+            rx,
+            cancellation.as_mut(),
+        )
+        .await;
+        match result {
+            Ok(false) => {}
+            Ok(true) => {
+                restore_vegas_snapshot(lv1, original).await?;
+                return Ok(VegasSetupOutcome::CancelledBeforeAnimation);
+            }
+            Err(err) => {
+                fail_vegas_with_restoration(
+                    lv1,
+                    original,
+                    format!(
+                        "initial mute failed for {}:{} ({err})",
+                        ch.group, ch.channel
+                    ),
+                )
+                .await?;
+                unreachable!("failed Vegas setup cannot return success")
+            }
+        }
+    }
+
+    let (reply, rx) = oneshot::channel();
+    match vegas_command_until_cancelled(
+        lv1,
+        Lv1Command::Flush { reply: Some(reply) },
+        rx,
+        cancellation.as_mut(),
+    )
+    .await
+    {
+        Ok(false) => Ok(VegasSetupOutcome::ReadyForAnimation),
+        Ok(true) => {
+            restore_vegas_snapshot(lv1, original).await?;
+            Ok(VegasSetupOutcome::CancelledBeforeAnimation)
+        }
+        Err(err) => {
+            fail_vegas_with_restoration(
+                lv1,
+                original,
+                format!("initial mute flush failed ({err})"),
+            )
+            .await?;
+            unreachable!("failed Vegas setup cannot return success")
+        }
+    }
+}
+
+/// @cc [owner:mixxorz,label:safety] vegas-restores-after-animation-starts
+/// After Vegas captures its baseline, every handled return path after initial muting begins MUST
+/// attempt restoration of every captured gain and mute state, explicitly including Ctrl-C during
+/// setup or animation and setup or animation failures. An admitted setup mutation MUST resolve
+/// before restoration begins. Arbitrary Tokio task abort or process termination is not covered.
 async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> AppResult<()> {
     use advanced_show_control::vegas::gain_db_at;
 
@@ -1623,20 +1759,15 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
     original.sort_by_key(|ch| (ch.group, ch.channel));
     println!("[vegas] captured {} faders", original.len());
 
-    for ch in &original {
-        let (reply, rx) = oneshot::channel();
-        lv1.send(Lv1Command::SetMute {
-            group: ch.group,
-            channel: ch.channel,
-            muted: true,
-            reply: Some(reply),
-        })
-        .await?;
-        rx.await??;
+    let mut cancellation = Box::pin(async {
+        let _ = tokio::signal::ctrl_c().await;
+    });
+    if mute_vegas_channels_until_cancelled(&lv1, &original, cancellation.as_mut()).await?
+        == VegasSetupOutcome::CancelledBeforeAnimation
+    {
+        println!("[vegas] stopped during initial mute; captured faders restored");
+        return Ok(());
     }
-    let (reply, rx) = oneshot::channel();
-    lv1.send(Lv1Command::Flush { reply: Some(reply) }).await?;
-    rx.await??;
     println!("[vegas] muted captured faders; press Ctrl-C to stop and restore");
 
     let mut interval = tokio::time::interval(Duration::from_millis(1000 / VEGAS_TICK_HZ));
@@ -1645,7 +1776,7 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
 
     loop {
         tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
+            _ = cancellation.as_mut() => {
                 println!("[vegas] stopping; restoring captured faders");
                 break;
             }
@@ -1665,12 +1796,12 @@ async fn run_vegas(host: Option<String>, port: Option<u16>, timeout_ms: u64) -> 
                         Err(err) => Err(err.into()),
                     };
                     if let Err(err) = result {
-                        let animation_error = format!("[vegas] animation failed for {}:{} ({err})", ch.group, ch.channel);
-                        let restore_error = restore_vegas_snapshot(&lv1, &original).await.err();
-                        return match restore_error {
-                            Some(restore_error) => Err(format!("{animation_error}; {restore_error}").into()),
-                            None => Err(animation_error.into()),
-                        };
+                        return fail_vegas_with_restoration(
+                            &lv1,
+                            &original,
+                            format!("[vegas] animation failed for {}:{} ({err})", ch.group, ch.channel),
+                        )
+                        .await;
                     }
                 }
                 tick = tick.wrapping_add(1);
@@ -1790,25 +1921,6 @@ mod tests {
                 assert_eq!(gain_db, -12.5);
             }
             other => panic!("expected set-gain command, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn parses_discover_command_for_probe_binary() {
-        let cli = parse_cli_from(["lv1-probe", "discover", "--timeout-ms", "100", "--json"])
-            .expect("discover command should parse");
-
-        match cli.command {
-            Command::Discover {
-                timeout_ms,
-                filter_host,
-                json,
-            } => {
-                assert_eq!(timeout_ms, 100);
-                assert_eq!(filter_host, None);
-                assert!(json);
-            }
-            other => panic!("expected discover command, got {other:?}"),
         }
     }
 
@@ -2154,6 +2266,214 @@ mod tests {
         assert!(!snapshot[0].muted);
 
         server.await.unwrap();
+    }
+
+    #[derive(Default)]
+    struct FakeVegasLv1 {
+        commands: tokio::sync::Mutex<Vec<(String, i32, i32)>>,
+        drop_gain_replies: std::collections::HashSet<(i32, i32)>,
+        drop_mute_replies: std::collections::HashSet<(i32, i32)>,
+        fail_setup_mute: Option<(i32, i32)>,
+        cancel_after_setup_mute: Option<(i32, i32)>,
+        cancel_tx: tokio::sync::Mutex<Option<oneshot::Sender<()>>>,
+        mute_attempts: tokio::sync::Mutex<usize>,
+    }
+
+    impl VegasLv1 for FakeVegasLv1 {
+        async fn send_vegas_command(
+            &self,
+            command: Lv1Command,
+        ) -> Result<(), advanced_show_control::lv1::Lv1ActorError> {
+            match command {
+                Lv1Command::SetGain {
+                    group,
+                    channel,
+                    reply,
+                    ..
+                } => {
+                    self.commands
+                        .lock()
+                        .await
+                        .push(("gain".to_string(), group, channel));
+                    if !self.drop_gain_replies.contains(&(group, channel)) {
+                        reply.unwrap().send(Ok(())).unwrap();
+                    }
+                }
+                Lv1Command::SetMute {
+                    group,
+                    channel,
+                    reply,
+                    ..
+                } => {
+                    self.commands
+                        .lock()
+                        .await
+                        .push(("mute".to_string(), group, channel));
+                    let mut mute_attempts = self.mute_attempts.lock().await;
+                    *mute_attempts += 1;
+                    let is_setup_failure =
+                        self.fail_setup_mute == Some((group, channel)) && *mute_attempts <= 2;
+                    if is_setup_failure {
+                        reply
+                            .unwrap()
+                            .send(Err(advanced_show_control::lv1::Lv1ActorError::NotConnected))
+                            .unwrap();
+                    } else if self.cancel_after_setup_mute == Some((group, channel))
+                        && let Some(cancel_tx) = self.cancel_tx.lock().await.take()
+                    {
+                        let reply = reply.unwrap();
+                        tokio::spawn(async move {
+                            let _ = cancel_tx.send(());
+                            tokio::task::yield_now().await;
+                            let _ = reply.send(Ok(()));
+                        });
+                    } else if !self.drop_mute_replies.contains(&(group, channel)) {
+                        reply.unwrap().send(Ok(())).unwrap();
+                    }
+                }
+                Lv1Command::Flush { reply } => {
+                    reply.unwrap().send(Ok(())).unwrap();
+                }
+                _ => panic!("unexpected Vegas command"),
+            }
+            Ok(())
+        }
+    }
+
+    fn vegas_channels() -> Vec<ChannelInfo> {
+        vec![
+            ChannelInfo {
+                group: 0,
+                channel: 1,
+                name: "One".to_string(),
+                gain_db: -10.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            },
+            ChannelInfo {
+                group: 0,
+                channel: 2,
+                name: "Two".to_string(),
+                gain_db: -20.0,
+                muted: true,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            },
+            ChannelInfo {
+                group: 1,
+                channel: 1,
+                name: "Three".to_string(),
+                gain_db: -30.0,
+                muted: false,
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            },
+        ]
+    }
+
+    #[tokio::test]
+    async fn vegas_restore_continues_after_dropped_replies_and_reports_every_failure() {
+        let lv1 = FakeVegasLv1 {
+            drop_gain_replies: [(0, 1), (1, 1)].into_iter().collect(),
+            drop_mute_replies: [(0, 2)].into_iter().collect(),
+            ..Default::default()
+        };
+
+        let error = restore_vegas_snapshot(&lv1, &vegas_channels())
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("gain restore reply dropped for 0:1"));
+        assert!(error.contains("gain restore reply dropped for 1:1"));
+        assert!(error.contains("mute restore reply dropped for 0:2"));
+        let commands = lv1.commands.lock().await;
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|(kind, _, _)| kind == "gain")
+                .count(),
+            3
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|(kind, _, _)| kind == "mute")
+                .count(),
+            3
+        );
+    }
+
+    #[tokio::test]
+    async fn vegas_ctrl_c_during_initial_mute_resolves_admitted_write_then_restores_without_animation()
+     {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        let lv1 = FakeVegasLv1 {
+            cancel_after_setup_mute: Some((0, 1)),
+            cancel_tx: tokio::sync::Mutex::new(Some(cancel_tx)),
+            ..Default::default()
+        };
+        let mut cancellation = Box::pin(async move {
+            let _ = cancel_rx.await;
+        });
+
+        let outcome =
+            mute_vegas_channels_until_cancelled(&lv1, &vegas_channels(), cancellation.as_mut())
+                .await
+                .unwrap();
+
+        assert_eq!(outcome, VegasSetupOutcome::CancelledBeforeAnimation);
+        let commands = lv1.commands.lock().await;
+        assert_eq!(
+            commands.as_slice(),
+            [
+                ("mute".to_string(), 0, 1),
+                ("gain".to_string(), 0, 1),
+                ("gain".to_string(), 0, 2),
+                ("gain".to_string(), 1, 1),
+                ("mute".to_string(), 0, 1),
+                ("mute".to_string(), 0, 2),
+                ("mute".to_string(), 1, 1),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn vegas_initial_mute_failure_restores_every_captured_channel() {
+        let lv1 = FakeVegasLv1 {
+            fail_setup_mute: Some((0, 2)),
+            ..Default::default()
+        };
+
+        let mut never_cancelled = Box::pin(std::future::pending());
+        let error =
+            mute_vegas_channels_until_cancelled(&lv1, &vegas_channels(), never_cancelled.as_mut())
+                .await
+                .unwrap_err()
+                .to_string();
+
+        assert!(error.contains("initial mute failed for 0:2"));
+        let commands = lv1.commands.lock().await;
+        assert_eq!(
+            commands.as_slice(),
+            [
+                ("mute".to_string(), 0, 1),
+                ("mute".to_string(), 0, 2),
+                ("gain".to_string(), 0, 1),
+                ("gain".to_string(), 0, 2),
+                ("gain".to_string(), 1, 1),
+                ("mute".to_string(), 0, 1),
+                ("mute".to_string(), 0, 2),
+                ("mute".to_string(), 1, 1),
+            ]
+        );
     }
 
     #[test]

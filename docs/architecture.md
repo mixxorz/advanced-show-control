@@ -1,542 +1,142 @@
-# Backend Architecture Description
+# Backend Architecture
 
-## 1.0 Purpose
+## Purpose and Scope
 
-This document defines the backend architecture for the Advanced Show Control application. The document identifies the runtime components, ownership boundaries, actor interfaces, event distribution model, lifecycle model, projection model, file organization conventions, and safety requirements.
+Advanced Show Control is a Rust/Tauri fader-fade overlay for LV1. LV1 remains authoritative for scene creation, scene recall, and normal console state. ASC owns fade metadata and moves only configured fader and pan-family controls. Because it controls live faders, ownership, generation guards, lockout, and exact-scene validation are safety boundaries.
 
-The backend controls live mixer parameters. Therefore, this architecture treats state ownership, command routing, generation validation, lockout enforcement, and scene identity validation as safety-critical design constraints.
+The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
 
-## 2.0 Scope
+## Runtime Ownership
 
-This document applies to the Rust backend located under `src-tauri/src/` in the `advanced-show-control` crate. It also defines the backend-to-frontend boundary used by the React and TypeScript user interface located under `ui/`.
+| Component   | Lifetime and responsibility                                                                                                                     |
+| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lv1`       | Generation-scoped actor. Owns TCP transport/reconnect, OSC, and the LV1 live-state mirror.                                                      |
+| `fade`      | Generation-scoped actor. Owns fade timing, interpolation, readiness, override, abort, overlap, and writes.                                      |
+| `scenes`    | One app-lifetime actor/document. Owns configs, selection, clipboard, scene-library reconciliation, capture/link/edit, recall policy, and queue. |
+| `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents and active/cued entries; has no task, peers, or event subscription. |
+| `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
+| `settings`  | App-lifetime actor. Owns app settings and private remembered LV1 identity in app-config `settings.json`.                                        |
+| `lifecycle` | Owns connection-generation transitions and generation-scoped peer installation/removal.                                                         |
+| `projector` | App-lifetime `AppViewState` cache and the sole `app-status-changed` emitter.                                                                    |
+| `runtime`   | Owns `AppEventBus`, lifecycle facts, generation guards, and frontend-safe command errors.                                                       |
+| `ui`        | Tauri setup and thin command adapters.                                                                                                          |
 
-This document does not define LV1 protocol semantics, user interface design requirements, show-file schema details, or mixer operating procedures except where those subjects affect backend architecture.
+## Commands and Facts
 
-## 3.0 System Overview
+Native File menu actions call the same Tauri command functions used by the frontend. Dialog behavior, mailbox dispatch, and error mapping have one implementation in `ui/commands/show.rs`.
 
-The backend is an actor-oriented Rust and Tauri runtime. Each core domain owns its state within a module boundary. Other domains request work by sending explicit mailbox commands to the actor that owns the affected state or behavior.
+Actors receive explicit mailbox command enums. Show, Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
 
-The backend distributes state facts through `AppEventBus`. The backend sends command requests directly to the owning actor handle.
-
-LV1 is the authoritative source for live console state. The application stores and executes application-managed scene fade behavior as an overlay on top of LV1 scene workflows.
-
-The runtime consists of the following primary components:
-
-| Component   | Responsibility                                                                                                                            |
-| ----------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `lv1`       | Maintains the LV1 TCP connection and raw LV1 state mirror.                                                                                |
-| `fade`      | Executes active fade timing, overlap behavior, and LV1 parameter writes.                                                                  |
-| `settings`  | Maintains app-level preferences, loads/saves app-config `settings.json`, validates normalized settings replacements, and publishes settings projection facts. |
-| `scenes`    | Performs scene recall automation, recall policy enforcement, and bounded ASC recall queue ownership.                                    |
-| `show`      | Maintains show document state, show-file input/output, discovery state, lockout state, and application-managed scene configuration state. |
-| `lifecycle` | Constructs the connected runtime, wires actor peers, installs handles, tears down runtime state, and owns generation changes.             |
-| `projector` | Maintains the backend-to-frontend projection cache and emits `app-status-changed`.                                                        |
-| `ui`        | Performs Tauri setup and provides thin frontend command adapters.                                                                         |
-| `runtime`   | Provides shared runtime events, error types, event bus primitives, and generation guards.                                                 |
-
-## 4.0 Architectural Requirements
-
-The backend architecture shall satisfy the requirements in this section.
-
-### 4.1 State Ownership
-
-1. Each module shall own the state for its domain.
-2. A module shall not mutate state owned by another module.
-3. A module shall expose only its intentional public interface through `mod.rs`.
-4. Submodules shall remain private unless an external interface is required.
-5. External modules shall import public items from the owner module root, not from private submodules.
-
-### 4.2 Actor Boundary
-
-1. Each actor module shall receive work through an explicit mailbox command enum.
-2. Each actor handle shall be a cloneable mailbox sender.
-3. Actor handles shall not hide domain operations behind convenience methods.
-4. Call sites shall construct command enum variants explicitly.
-5. A command caller shall include a `oneshot` reply channel when the caller requires a result.
-6. Business logic shall reside in the owning actor or owning module.
-7. Business logic shall not reside in Tauri command adapters or actor handles.
-
-### 4.3 Event Distribution
-
-1. The backend shall publish runtime facts through `AppEventBus`.
-2. The backend shall send command requests to the actor that owns the requested behavior.
-3. The backend shall not use broadcast events as requests.
-4. Log-only diagnostics shall use `tracing`, not `AppEventBus`.
-5. Consumers shall ignore generation-bearing events that do not match the active runtime generation.
-
-### 4.4 Frontend Projection
-
-1. The frontend shall receive backend application state only through projector-owned `app-status-changed` events.
-2. Tauri command adapters shall not emit `app-status-changed`.
-3. Tauri command adapters shall not construct partial `AppViewState` snapshots.
-4. The projector shall be the only backend component that owns frontend state projection.
-
-### 4.5 Coding Conventions
-
-Detailed implementation conventions, including logging levels, user-facing log message rules, test styles, frontend conventions, verification expectations, and commit practices, live in `docs/coding-conventions.md`.
-
-Architecture documents own system shape and boundaries. Coding conventions own day-to-day implementation practice inside those boundaries.
-
-## 5.0 Actor Model
-
-An actor module normally defines four interface concepts:
-
-1. A command enum, such as `Lv1Command`, `FadeCommand`, `ScenesCommand`, or `ShowCommand`.
-2. A handle, such as `Lv1ActorHandle`, `FadeEngineHandle`, `ScenesHandle`, or `ShowStateHandle`.
-3. A task object, such as `Lv1ActorTask`, `FadeEngineTask`, `ScenesTask`, or `ShowActorTask`.
-4. A peer-wiring object, when the actor requires direct access to other actors after construction.
-
-`SettingsActor` is an app-lifetime actor. It is not tied to LV1 connection generation. It owns `AppSettings` and private remembered LV1 identity metadata in `settings.json`, loads them from the Tauri app config directory during startup, accepts full-object replacement through `SettingsCommand::ReplaceSettings`, saves changed settings immediately, and publishes `SettingsEvent::StateChanged` through `AppEventBus` for projector consumption. Remembered identity is not projected as public settings; lifecycle accesses it through explicit settings commands.
-
-The actor handle owns a Tokio sender. The handle shall remain dumb. It shall not provide domain-specific helpers that hide mailbox command construction.
-
-The actor task owns the event loop and the state mutation path. The task receives commands, validates requests, updates owned state, publishes facts, and sends command replies.
-
-## 6.0 Mailbox Command Model
-
-Mailbox commands are acknowledged requests to one owning actor. A command variant may include a `oneshot::Sender` when the caller requires a response.
-
-The standard command sequence is:
+`AppEventBus` broadcasts ephemeral facts, never requests. Alongside the broadcast channel it retains the latest full Show, Scenes, Cue Lists, and Settings projections in one watch snapshot. Publishing replaces the corresponding projection before broadcasting; unchanged projections do not notify watch subscribers. This is in-memory state, not event replay or durable storage. Its fact families are:
 
 ```text
-caller
-  -> construct command enum variant
-  -> attach oneshot reply channel, when required
-  -> send command through actor handle mailbox
-  -> actor validates request
-  -> actor performs work
-  -> actor updates owned state, when required
-  -> actor publishes facts, when state changes
-  -> actor sends reply, when required
-```
-
-Mailbox commands shall not be broadcast.
-
-A caller that requires LV1 state, fade state, show state, or scene recall behavior shall send a command to the actor that owns the required state or behavior.
-
-Command failures that cross the user interface boundary shall map through `runtime::errors::AppCommandError`. Tauri commands shall return frontend-safe string errors.
-
-## 7.0 Application Event Bus
-
-`AppEventBus` is a Tokio broadcast bus for runtime facts. It carries `AppEvent` values from `runtime::events`.
-
-`AppEvent` includes the following event families:
-
-```rust
-Runtime(RuntimeLifecycleEvent)
+Runtime(ActiveGenerationChanged)
 Lv1 { generation, event }
 Fade { generation, event }
 Scenes { generation, event }
-CueLists { generation, event }
-Show(ShowEvent)
+CueLists(state)
+SessionReplaced { generation, scenes, cue_lists }
+Show(state)
+Settings(event)
 ```
 
-`Lv1Event::PingReceived` is a generation-tagged fact containing the monotonically
-increasing sequence of an accepted LV1 keepalive ping. It is an operational fact
-for runtime consumers and does not produce frontend log traffic.
+LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime.
 
-LV1 scene observations carry a connection-local sequence used only for post-dispatch
-boundaries. The sequence lets `scenes` distinguish an observation caused after an ASC
-recall dispatch from one already present before that dispatch; it is not frontend state
-or a general ordering contract.
+`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not frontend state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee.
 
-`AppEventBus` shall satisfy the following rules:
+## Lifecycle, Connections, and Peers
 
-1. Events shall represent facts, not requests.
-2. Event publication shall be non-blocking.
-3. Subscribers shall operate independently.
-4. The event bus shall not provide replay.
-5. The event bus shall not provide durable event storage.
-6. A lagged subscriber shall log lag and continue from the newest available event.
-7. A consumer shall ignore generation-bearing events when the event generation does not match the active runtime generation.
+`AppLifecycle` advances `RuntimeGeneration` for every explicit connect, disconnect, and teardown transaction. Its installed runtime is one optional `InstalledRuntime` containing a generation and both LV1/Fade endpoints; partial endpoint pairs cannot be installed. The same complete value travels with setup/finalization, which cannot independently retag its generation. Installation does not imply transport connectivity or scene readiness.
 
-## 8.0 Direct Peer Wiring
+A connect transaction:
 
-Actors that must call other actors receive peer handles through peer-wiring structures before actor tasks are spawned.
+1. advances and publishes the active generation;
+2. constructs LV1 and Fade for that generation and installs their handles only if still current;
+3. starts LV1/Fade, confirms a connected initial LV1 snapshot, and updates connected-LV1 metadata;
+4. installs Scenes' accepted generation peers; then
+5. sends `ScenesCommand::RuntimePeersReady` with the initial scene list.
 
-Peer installation is runtime construction work. It is not a mailbox command.
+`Scenes` is created once at app startup with an event subscription, `SettingsHandle`, initial settings, and `ShowLockoutReader`. The lockout reader is a latest-value dependency, avoiding a reverse Show mailbox dependency. Scene recall refreshes settings at settled observation boundaries and fails closed if settings are unavailable.
 
-Peer installation is generation-safe: `lifecycle` only installs peers into the still-current runtime generation, so stale connect work cannot wire an older actor graph into a newer one.
+Direct peers are intentional:
 
-`lifecycle` performs peer installation while it owns the unspawned actor tasks.
+- `FadeEngine` binds its LV1 handle and generation authority once at construction in an `Lv1Connection`. The client fences mailbox admission after capacity waits and rechecks replies before returning them. It never retargets itself; there is no optional peer slot, installation step, or peer mutex.
+- `Scenes` receives the active generation's LV1 and Fade endpoints after lifecycle acceptance. Its existing peer installer binds LV1 to an `Lv1Connection`; connection-specific operations derive their generation from that client.
+- `Show` holds the app-lifetime document-owner endpoint and a current `Lv1Connection` bound by its existing peer installer; it has no Cue Lists peer. Snapshot reads retain separate send/reply timeouts and revalidate generation after either wait.
+- Scenes and Cue Lists have separate bounded command endpoints, processed by the same app-lifetime owner. Neither sends mailbox requests to the other.
 
-The following peer relationships are defined:
+`Lv1Connection::request_checked` combines fenced admission and reply freshness. Scenes supplies its lockout validation to run after mailbox capacity is available, inside the generation fence. Readiness completion remains app-lifetime queue policy and is processed even when peers have been removed; only dispatching the next recall requires a peer.
 
-| Actor    | Peer Handles Received                                                             | Purpose                                                                                                         |
-| -------- | --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `fade`   | `Lv1ActorHandle` through `FadeEnginePeers`                                        | Allows active fades to write parameters to LV1.                                                                 |
-| `scenes` | `Lv1ActorHandle` and `FadeEngineHandle` through `ScenesPeers`; `ShowLockoutReader` at construction | Allows recall automation to validate LV1 state, send LV1 recall commands, start fades, and read the latest lockout state. |
-| `show`   | `ScenesHandle` and `Lv1ActorHandle` through `ShowActorPeers`                      | Allows show-owned workflows to coordinate scene persistence and obtain fresh LV1 state.                         |
+Connection completion, failure, and disconnect use one `SetLv1ConnectionIfCurrent` command with an optional identity. Show checks its own shared generation authority during the synchronous metadata update; callers cannot supply a different generation guard.
 
-## 9.0 Runtime Lifecycle and Generations
+Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and frontend discovery share this path.
 
-`AppLifecycle` owns connected-runtime setup and teardown.
+`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The frontend requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
 
-The connected-runtime startup sequence is:
+## Scenes Library and Recall
 
-```text
-begin connecting
-  -> increment active generation
-  -> publish active generation changed
-  -> build LV1 actor
-  -> build fade engine
-  -> build scenes actor
-  -> wire actor peers
-  -> install runtime handles, if generation is still current
-  -> spawn actor tasks
-  -> spawn projector, when frontend is ready
-```
+Scenes preserves its document—durable config UUIDs, selection, and settings clipboard—across disconnects and generations. Its LV1-derived runtime library is explicitly:
 
-The generation model prevents stale asynchronous work from affecting a newer connection. Disconnect and reconnect operations advance the active generation.
+1. `AwaitingPeers`: no accepted LV1/Fade peers for the active generation.
+2. `AwaitingSceneList`: peers exist but no authoritative scene list exists.
+3. `Ready`: accepted peers and the active generation's scene list exist.
 
-Actors and projector consumers compare event generations against the active generation before they mutate current state or emit user-interface-visible state.
+Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available.
 
-`RuntimeGeneration` is the shared asynchronous guard used by generation-sensitive tasks before they dispatch safety-critical work.
+Scenes owns an eight-request FIFO for ASC-originated explicit recalls. Each caller reply remains held until that request actually dispatches, rather than merely entering the queue. After an LV1 recall dispatch, the queue requires an exact matching scene observation with a later `SceneObservation.sequence`, then Fade readiness: two newer `PingReceived` facts in the same generation. One five-second deadline spans observation and readiness. Timeout, disconnect, lockout, generation change, or unsafe recovery cancels queued intent; a bounded late-canceled-observation record suppresses late matching observations, with a five-second fail-closed suppression fallback on overflow.
 
-## 10.0 Tauri Command Adapters
+The in-flight recall owns its Fade readiness receiver directly. The Scenes event loop polls that receiver alongside commands and LV1 facts; canceling the recall drops the receiver. No detached completion-forwarding task or intermediate completion queue survives cancellation. Skipped and blocked observations share the same readiness handoff while retaining distinct diagnostic outcomes.
 
-Tauri commands reside under `src-tauri/src/ui/commands/`.
+A recall is validated with fresh LV1 state, generation, lockout, exact scene index/name, linked config, live topology, scopes, and stored targets before Fade is admitted. A genuinely blocked, skipped, or disabled pre-admission recall does not abort an active fade. Once a recall is validated and admitted—including no-target, disabled-scope, or zero-duration cases—it enters the readiness protocol; a readiness timeout aborts paused fades and cancels queued recall intent.
 
-Tauri command modules are adapters. They are not business logic modules.
+Each Fade engine belongs to exactly one connection generation. Commands and targets carry no independent generation, so a tick produces one checked write batch rather than grouping targets by generation. Rejected writes cancel all its targets without reporting successful completion. Successful start/completion publication is also generation-fenced after awaited requests or writes.
 
-A Tauri command adapter shall perform the following functions:
+A repeated exact-scene recall is identified by the exact LV1 index/name retained with active targets. With same-scene finishing enabled, matching active targets finish after readiness. With it disabled, matching targets restart from their current interpolated or live values for the configured full duration. Both modes use the same generation-wide two-ping readiness barrier.
 
-1. Deserialize frontend arguments.
-2. Obtain the required actor handle or lifecycle handle from Tauri state.
-3. Construct the explicit command enum variant.
-4. Create a `oneshot` reply channel when a reply is required.
-5. Send the command through the actor mailbox.
-6. Await the actor reply.
-7. Map the reply into a frontend-safe result.
+Fade feedback remains active during readiness. A manual fader override beyond the fader-law position threshold cancels that fader target; pan requires confirmed consecutive deviations, while balance and width feedback do not cancel targets. A final manual cancellation produces a terminal fade completion. Disconnect, explicit Abort All, and generation change cancel active or paused fades.
 
-A Tauri command adapter shall not perform the following functions:
+## Show, Cue Lists, and Persistence
 
-1. Mutate domain state directly.
-2. Validate business rules that belong to an actor.
-3. Emit `app-status-changed`.
-4. Construct partial `AppViewState` snapshots.
+`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show subscribes during construction, so edits cannot fall into a gap before its task starts. It observes these app-lifetime facts without generation filtering, marks dirty, and publishes its full projection without redundant reason tags. On Show event-bus lag it conservatively marks the file dirty.
 
-The projector is the sole backend owner of `app-status-changed`.
+Persistence shares the scene domain's channel targets, channel references, and scope toggles directly; there is no duplicate file-only model or conversion for those values. The file scene wrapper remains distinct because legacy files may omit the durable scene UUID.
 
-## 11.0 Debug Smoke Test
+New and load require a currently connected LV1 snapshot to initialize or align scenes against the live scene list. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
 
-The repository includes a development-only Tauri debug binary for LV1 hardware smoke testing.
+Replacement commits both documents and returns the reconciled result in one owner turn. Generation validation surrounds only this synchronous commit, never mailbox waits or file I/O. A `SessionReplacement` ticket serializes timeout cancellation with commit: a canceled request cannot apply later, and a committed request remains successful even if its acknowledgement arrives late. There are no old-document snapshots, compensating replacements, or rollback protocol. Replacement cancels queued recall intent and pending cue advancement without aborting an active fade.
 
-The debug smoke test shall satisfy the following boundary requirements:
+Scenes reconciles configs and directly reconciles cue references when the owned scene identities change. Cue entries survive missing scenes; invalid active/cued references are cleared. Projected scene facts cannot mutate the cue document, and there is no cue subscriber, generation cache, or lag-recovery query. A replacement emits one `SessionReplaced` fact, so the projector applies both documents together rather than presenting a mixed replacement.
 
-1. The debug smoke binary shall not be part of the release production binary.
-2. The smoke runner shall reside in `ui/src/debug/main.tsx`.
-3. The smoke runner shall drive the workflow from JavaScript.
-4. The smoke runner shall use production Tauri commands for discovery, connection, show creation, scene configuration storage, channel scoping, duration changes, scene recall, and lockout.
-5. Debug-only Tauri commands shall be limited to setup and observation that production commands do not expose.
-6. Debug-only Tauri commands shall not replace production commands for the application workflow under test.
-7. The smoke report shall be written under `logs/`.
+Cue recall enters the existing recall queue locally. The owner polls its dispatch reply without a forwarding task, advances only after successful LV1 dispatch, and keeps subsequent cue commands bounded in their mailbox until completion. Scene commands and runtime safety events continue to be processed while a cue awaits queued dispatch.
 
-Debug-only commands may perform the following functions:
+Settings and session saves share `StagedFile`: it reserves and syncs a temporary file beside the destination, publishes through the platform-specific atomic replacement, and cleans unpublished files on drop. Settings keeps generation validation around publication; session backup naming and retention remain separate policy.
 
-1. Append smoke report lines.
-2. Exit the debug application after suite completion.
-3. Recall a raw LV1 scene before application scene configurations exist.
-4. Set the test-channel gain for deterministic setup.
-5. Read the live test-channel gain for assertions.
+Settings loads normalized defaults or persisted values from `settings.json`, saves changed full-object replacements immediately, and publishes `SettingsEvent::StateChanged`. Remembered LV1 identity is private metadata in the same file and is accessed by lifecycle through dedicated commands, not projected as public settings.
 
-The smoke suite shall assert behavior through production command results, `app-status-changed` snapshots, and live LV1 fader values.
+## Projection and Frontend Boundary
 
-The smoke suite shall validate the following paths:
+`ProjectionCache` owns only generation-bound LV1/Fade state, bounded logs, and the snapshot version. The projector combines this cache with the latest retained app-state snapshot and emits changed views at most every 100 ms. It neither duplicates app-owned projections nor queries their actors at startup. Show and Settings seed retained state during construction; session replacement updates scenes and cues in one watch update. Serialized document reads for saving still use the owner mailbox, not this display snapshot.
 
-1. LV1 discovery and connection.
-2. Same-process startup auto-connect after a production-command disconnect, validated against the projected connected LV1 identity.
-3. New show creation from the connected LV1.
-4. Capture of Smoke A and Smoke B scene configurations from LV1.
-5. Test-channel scope and duration configuration for both app-managed scenes.
-6. Production scene recall updates projected current scene state.
-7. Recall from Smoke A to Smoke B starts live fader movement.
-8. Recall fade reaches the stored target within tolerance.
-9. Alternating scene recalls with decreasing fade durations complete at the expected targets.
-10. Lockout blocks recall and prevents fader movement.
+The projector accepts LV1/Fade facts only for its active generation. It receives UI log input from the tracing UI sink; `INFO`, `WARN`, and `ERROR` become bounded frontend log entries, while runtime modules use `tracing` rather than facts solely for logging.
 
-## 12.0 Projector Cache and Frontend Emission
+Every emitted `AppViewState` has a monotonically increasing `state_version`. The frontend applies a snapshot only when its version is newer than the latest accepted version; command responses, polling, and event delivery may arrive out of order and must not overwrite newer UI state.
 
-The projector converts backend facts into `AppViewState` for the React frontend. It subscribes to `AppEventBus` and to user-interface log events emitted by the tracing UI sink. It maintains a `ProjectionCache` and emits `app-status-changed` through Tauri.
+On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded and falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
 
-The projector interval is defined as:
+## Debug Smoke Boundary
 
-```rust
-PROJECTOR_INTERVAL = 100 ms
-```
+The debug Tauri app is development-only. Its JavaScript runner uses production Tauri commands for discovery, connection, show creation, scene configuration, scope/duration, recall, lockout, settings, and cue-list workflows; it validates projected snapshots and live LV1 fader values. Debug-only commands are limited to smoke report/exit and deterministic setup or observation unavailable to production commands, such as raw LV1 recall and test-channel gain access.
 
-This interval caps user-interface projection at 10 hertz.
+`make smoke` requires LV1-compatible hardware. Its terminal output is not authoritative: always inspect `logs/debug-smoke-report.txt` for the suite result.
 
-Incoming facts mark the projection cache dirty. On each interval tick, the projector emits a new `AppViewState` only when the cache is dirty. After emission, the projector clears the dirty flag.
+## Safety Requirements
 
-The projection cache applies facts incrementally as follows:
+- Never send fader commands when LV1 state is unavailable, disconnected, stale, or unsafe.
+- Never bypass generation guards, lockout, fresh-state validation, or exact scene identity.
+- Validate before Fade admission; preserve the pre-admission no-abort rule and the admitted-recall readiness timeout behavior.
+- Preserve manual override, abort, overlap, exact same-scene, and disconnect behavior.
+- Make blocked or unsafe outcomes visible through facts, projected state, or complete `tracing` messages.
 
-| Fact Source               | Projection Effect                                                                                                                   |
-| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| LV1 facts                 | Update connection status, current scene, scene list, channels, faders, mutes, and pan-family values.                                |
-| Fade facts                | Update frontend fade state.                                                                                                         |
-| Show projection facts     | Update show-file state, discovery metadata, connection metadata, lockout state, and application-managed scene configuration fields. |
-| User-interface log events | Append bounded frontend log entries.                                                                                                |
-| Runtime generation facts  | Update the active generation used for event filtering.                                                                              |
+## Module Layout
 
-The frontend shall listen only to `app-status-changed`. The frontend shall not subscribe directly to actor events or backend logs.
-
-## 13.0 Module Responsibilities
-
-### 13.1 `lv1`
-
-The `lv1` module owns the LV1 TCP connection lifecycle and the raw LV1 mirror.
-
-The module owns the following responsibilities:
-
-1. TCP connect, read, and write behavior.
-2. OSC frame encoding and decoding.
-3. Raw channel topology.
-4. Live parameter values.
-5. Raw current scene state.
-6. Raw LV1 scene list state.
-7. LV1 write commands.
-8. LV1 discovery helpers.
-
-The module publishes `Lv1Event` facts and accepts `Lv1Command` requests.
-
-### 13.2 `fade`
-
-The `fade` module owns active fade execution.
-
-The module owns the following responsibilities:
-
-1. Fade timing.
-2. Fade tick scheduling.
-3. Fade target interpolation.
-4. Fader-law conversion for fader targets.
-5. Linear interpolation for pan-family targets.
-6. Overlap behavior.
-7. Same-scene behavior.
-8. Manual override cancellation.
-9. Fade abort behavior.
-10. Disconnect safety behavior.
-
-The module publishes `FadeEvent` facts and accepts `FadeCommand` requests.
-
-#### Post-Recall Fade Readiness
-
-Every validated timed scene recall pauses all active fade writes for the current
-runtime generation. `FadeEngine` resumes and rebases those targets only after two
-later LV1 keepalive ping facts. A newer validated recall resets the count. Five
-seconds without readiness aborts all paused fades. This relies on an unconfirmed
-real-hardware assumption; the simulator does not exhibit ping delay during recall.
-
-The barrier pauses ASC parameter writes only. It does not ignore LV1 parameter
-feedback, and normal manual override detection remains active while the barrier is
-waiting. Same-scene finishing behavior is tracked separately in #42.
-
-For an ASC recall queue item, one five-second deadline transfers from the `scenes`
-observation wait to `FadeEngine` readiness. The queue advances only after the exact
-post-dispatch observation and Fade readiness complete; this applies to every ASC
-recall, including no-fade and zero-duration recalls. A deadline expiry fails closed
-and clears queued recall intent rather than releasing another request.
-
-#### Scene-Owned Repeated Recall
-
-Every timed active target retains the exact LV1 scene index and scene name that created it. The application-wide same-scene recall threshold controls only suppression of repeated identical scene observations and defaults to 500 ms. The 25 ms settle delay, connection-generation arming window, scene-list-edit suppression, and fresh-state timeout remain independent.
-
-After normal recall validation, enabled same-scene finishing rewrites active targets owned by the exact scene for completion after readiness. When finishing is disabled, matching target keys are replaced with full-duration timelines from their current interpolated or live values, using the same overlap path as a different-scene recall. Both paths reset and obey the connection-wide two-ping readiness barrier.
-
-### 13.3 `scenes`
-
-The `scenes` module owns scene recall automation.
-
-The module owns the following responsibilities:
-
-1. Recall policy decisions.
-2. Recall-trigger handling from LV1 scene facts.
-3. Recall request validation using fresh LV1 state and show state.
-4. Dispatch of validated LV1 recall commands through wired peers.
-5. Dispatch of validated fade-start commands through wired peers.
-6. Recall status facts for skipped, blocked, and started recall outcomes.
-7. Fresh app-settings acquisition at each settled scene-observation boundary before recall validation and fade dispatch.
-8. A bounded eight-request FIFO for ASC-originated recalls. `scenes` retains each
-   caller reply until its request has actually dispatched, so cue-list auto-next
-   remains tied to dispatch rather than queue admission.
-
-`show` exposes lockout through a latest-value `ShowLockoutReader`; `scenes` has no
-reverse mailbox dependency on `show`. It revalidates with that reader and fresh LV1
-state immediately before dispatch, so queued intent cannot bypass a later lockout.
-
-Abort All clears queued recall intent through `scenes` and active target state through
-`FadeEngine`. It does not release queued requests or permit deferred fader writes.
-
-Late-canceled observation correlation is runtime-only, capped at eight five-second records, and uses a five-second fail-closed suppression fallback on overflow.
-
-The module publishes `ScenesEvent` facts and accepts `ScenesCommand` requests.
-
-### 13.4 `cue_lists`
-
-The `cue_lists` module owns cue-list state and cue-list workflow behavior.
-
-The module owns the following responsibilities:
-
-1. Cue-list documents and ordering.
-2. Cue-list entry creation, deletion, and reordering.
-3. Active cue-list selection.
-4. Cued cue-entry tracking.
-5. Cue-list reconciliation against the active runtime generation so missing entries can be preserved, surfaced, and resolved without inventing frontend-only state.
-6. Cue-list recall status projection.
-7. Cue-list persistence hooks within the show document.
-
-The module publishes `CueListsEvent` facts and accepts `CueListsCommand` requests.
-
-### 13.5 `show`
-
-The `show` module owns show-level application state and persistence.
-
-The module owns the following responsibilities:
-
-1. Show document state.
-2. Application-managed scene configuration data.
-3. Selected scene state.
-4. Cued scene state.
-5. Scene scope toggles.
-6. Scoped channel configuration.
-7. Scene capture from current LV1 state.
-8. Show-file import and export.
-9. Show-file path metadata.
-10. Show-file dirty state.
-11. Show-file save timestamps.
-12. Lockout state.
-13. LV1 discovery metadata projected to the user interface.
-14. LV1 connection metadata projected to the user interface.
-
-The module publishes `ShowEvent` facts and accepts `ShowCommand` requests.
-
-### 13.6 `lifecycle`
-
-The `lifecycle` module owns runtime lifetime.
-
-The module owns the following responsibilities:
-
-1. Active generation tracking.
-2. Connection startup transactions.
-3. Teardown transactions.
-4. Actor construction.
-5. Actor peer wiring.
-6. Runtime handle installation.
-7. Runtime handle cleanup.
-8. Reconnect state changes that cross actor boundaries.
-
-### 13.7 `projector`
-
-The `projector` module owns frontend state projection.
-
-The module owns the following responsibilities:
-
-1. `ProjectionCache`.
-2. `AppViewState` construction.
-3. `app-status-changed` emission.
-4. 10 hertz dirty-cache throttling.
-5. User-interface log cache entries.
-
-### 13.8 `ui`
-
-The `ui` module owns Tauri setup and frontend command boundaries.
-
-The module owns the following responsibilities:
-
-1. Tauri command registration.
-2. Dialog integration.
-3. Frontend serialization boundaries.
-4. Thin command adapter modules.
-
-### 13.9 `runtime`
-
-The `runtime` module owns shared runtime primitives.
-
-The module owns the following responsibilities:
-
-1. `AppEventBus`.
-2. `AppEvent`.
-3. Runtime lifecycle events.
-4. Runtime generation guard state.
-5. User-interface-facing command error types.
-
-## 14.0 Module File Conventions
-
-Actor and domain modules shall use consistent file names.
-
-| File                | Required Content                                                                                                |
-| ------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `mod.rs`            | Declares private submodules and re-exports only the intentional public facade.                                  |
-| `actor.rs`          | Defines actor construction, task type, runtime loop, command handling, and peer dependency use.                 |
-| `commands.rs`       | Defines the mailbox command enum and command-specific reply or result data transfer objects.                    |
-| `handle.rs`         | Defines the dumb cloneable mailbox sender. This file shall not contain hidden business methods.                 |
-| `events.rs`         | Defines facts published on `AppEventBus`.                                                                       |
-| `state.rs`          | Defines actor-owned state and pure state-change functions.                                                      |
-| `types.rs`          | Defines domain types that are not commands, events, or actor state.                                             |
-| `policy.rs`         | Defines named decision logic for modules that contain non-trivial policy rules.                                 |
-| Narrow helper files | Define focused subdomains owned by the module, such as `capture.rs`, `show_file.rs`, `tcp.rs`, or `parsers.rs`. |
-
-The backend shall observe the following boundary conventions:
-
-1. Submodules shall remain private unless a concrete external need exists.
-2. Other modules shall import from the owner module root.
-3. Other modules shall not import from private submodules.
-4. Test-only constructors and raw internals should be protected with `#[cfg(test)]` when practical.
-5. Re-export bridges shall not weaken module boundaries.
-6. Domain logic shall not be placed in `ui/commands/*`.
-7. Convenience helpers shall not hide the command enum and reply channel pattern.
-
-## 15.0 Safety Requirements
-
-The application controls live mixer faders. The backend shall implement the following safety requirements.
-
-1. The backend shall not send fader commands when LV1 state is unavailable.
-2. The backend shall not send fader commands when LV1 is disconnected.
-3. The backend shall not send fader commands when LV1 state is stale.
-4. The backend shall not send fader commands when LV1 state is unsafe.
-5. The backend shall not bypass generation guards.
-6. The backend shall not bypass lockout checks.
-7. The backend shall not bypass exact scene identity validation.
-8. Scene recall automation shall validate the recall request before it aborts an existing fade.
-9. A blocked recall shall not abort an existing fade.
-10. A skipped recall shall not abort an existing fade.
-11. A disabled recall shall not abort an existing fade.
-12. Recall automation shall use fresh LV1 state when event subscriber ordering could otherwise produce stale decisions.
-13. The backend shall make safety blocks visible through logs, facts, or projected user-interface state.
-14. The backend shall preserve manual override behavior.
-15. The backend shall preserve fade abort behavior.
-16. The backend shall preserve overlap behavior.
-17. The backend shall preserve same-scene behavior.
-18. The backend shall preserve disconnect behavior.
-19. Supported LV1 scene recall scope shall not move faders or pan-family controls
-    managed by ASC; ASC is the sole owner of those movements. Normal manual override
-    remains active during the post-recall ping barrier. If an LV1 scene is configured
-    to move those controls during recall, ASC behavior is unsupported and undefined.
-
-## 16.0 Backend File Structure
-
-Rust backend code resides under `src-tauri/src/` in the `advanced-show-control` crate.
-
-Important directories are defined as follows:
-
-| Directory                  | Contents                                                                                                                        |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `src-tauri/src/lv1/`       | LV1 protocol, TCP actor, discovery, mirror state, and LV1 commands.                                                             |
-| `src-tauri/src/fade/`      | Fade engine actor, fade state, interpolation, fader law, and fade events.                                                       |
-| `src-tauri/src/cue_lists/`  | Cue-list actor, cue-list commands, cue-list events, and cue-list workflow policy.                                               |
-| `src-tauri/src/scenes/`    | Scene recall actor, recall commands, recall events, and recall policy.                                                          |
-| `src-tauri/src/show/`      | Show actor, show document state, scene configuration state, show-file input/output, discovery state, and show projection facts. |
-| `src-tauri/src/lifecycle/` | Runtime connection lifecycle and actor graph wiring.                                                                            |
-| `src-tauri/src/projector/` | Projection cache, application view model, and 10 hertz frontend emission loop.                                                  |
-| `src-tauri/src/ui/`        | Tauri setup and command adapters.                                                                                               |
-| `src-tauri/src/runtime/`   | Event bus, runtime errors, and generation guards.                                                                               |
-| `ui/`                      | React and TypeScript frontend.                                                                                                  |
-
-## 17.0 Explicit Non-Goals
-
-The backend architecture does not provide the following capabilities:
-
-1. Durable event storage.
-2. Event replay.
-3. A distributed event bus.
-4. Frontend-owned backend state projection.
+Public facades live in each `mod.rs`; submodules remain private unless externally required. Import public items from the owner module root. Typical actor modules use `actor.rs`, `commands.rs`, `handle.rs`, `events.rs`, `state.rs`, and `types.rs`, plus focused helpers such as `scene_alignment.rs` and `tcp.rs`.

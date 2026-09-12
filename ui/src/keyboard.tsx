@@ -39,16 +39,40 @@ export type ShortcutCaptureApi = {
   isCapturing: (id: string) => boolean;
 };
 
+type ActiveShortcutCaptureRequest = ShortcutCaptureRequest & {
+  ownerId?: string;
+};
+
+type ShortcutCaptureContextApi = ShortcutCaptureApi & {
+  startCaptureForOwner: (
+    ownerId: string,
+    request: ShortcutCaptureRequest,
+  ) => void;
+  cancelCaptureForOwner: (ownerId: string) => void;
+};
+
 type KeyboardContextValue = {
   registerHandler: (handler: KeyboardHandler) => () => void;
-  shortcutCapture: ShortcutCaptureApi;
+  shortcutCapture: ShortcutCaptureContextApi;
 };
 
 const KeyboardContext = createContext<KeyboardContextValue | null>(null);
 
+/**
+ * @cc [owner:mixxorz,label:keyboard] prioritized-key-routing
+ * Each enabled handler MUST receive a normalized keydown in descending priority until one returns
+ * `handled`; then native default behavior and propagation MUST be stopped and lower handlers MUST
+ * not run. Disabled handlers MUST not receive the event.
+ */
+/**
+ * @cc [owner:mixxorz,label:keyboard] capture-preempts-actions
+ * Active shortcut capture MUST be routed before every externally registered handler regardless of
+ * numeric priority, consume modifier-only keys without ending capture, cancel on Escape, and
+ * capture exactly one non-modifier key before clearing itself.
+ */
 export function KeyboardProvider(props: { children: ReactNode }) {
   const handlers = useRef(new Map<string, KeyboardHandler>());
-  const activeCapture = useRef<ShortcutCaptureRequest | null>(null);
+  const activeCapture = useRef<ActiveShortcutCaptureRequest | null>(null);
   const [activeCaptureId, setActiveCaptureId] = useState<string | null>(null);
 
   const registerHandler = useCallback((handler: KeyboardHandler) => {
@@ -75,39 +99,46 @@ export function KeyboardProvider(props: { children: ReactNode }) {
     [clearCapture],
   );
 
-  const startCapture = useCallback((request: ShortcutCaptureRequest) => {
+  const startCapture = useCallback((request: ActiveShortcutCaptureRequest) => {
     activeCapture.current = request;
     setActiveCaptureId(request.id);
   }, []);
 
-  useEffect(() => {
-    return registerHandler({
-      id: CAPTURE_HANDLER_ID,
-      priority: CAPTURE_PRIORITY,
-      handleKeyDown(event) {
-        const current = activeCapture.current;
-        if (!current) return "ignored";
-        if (event.key === "Escape") {
-          cancelCapture(current.id);
-          return "handled";
-        }
-        if (isModifierKey(event.key)) {
-          return "handled";
-        }
+  const startCaptureForOwner = useCallback(
+    (ownerId: string, request: ShortcutCaptureRequest) => {
+      startCapture({ ...request, ownerId });
+    },
+    [startCapture],
+  );
 
-        clearCapture();
-        current.onCapture({
-          key: shortcutKeyFromEvent(event),
-          modifiers: event.modifiers,
-        });
-        return "handled";
-      },
-    });
-  }, [cancelCapture, clearCapture, registerHandler]);
+  const cancelCaptureForOwner = useCallback(
+    (ownerId: string) => {
+      if (activeCapture.current?.ownerId === ownerId) {
+        cancelCapture();
+      }
+    },
+    [cancelCapture],
+  );
 
   useEffect(() => {
     function handleKeyDown(originalEvent: KeyboardEvent) {
       const appEvent = normalizeKeyboardEvent(originalEvent);
+      const capture = activeCapture.current;
+      if (capture) {
+        if (appEvent.key === "Escape") {
+          cancelCapture(capture.id);
+        } else if (!isModifierKey(appEvent.key)) {
+          clearCapture();
+          capture.onCapture({
+            key: shortcutKeyFromEvent(appEvent),
+            modifiers: appEvent.modifiers,
+          });
+        }
+        originalEvent.preventDefault();
+        originalEvent.stopPropagation();
+        return;
+      }
+
       const sortedHandlers = [...handlers.current.values()]
         .filter((handler) => handler.enabled !== false)
         .sort((a, b) => b.priority - a.priority);
@@ -123,16 +154,24 @@ export function KeyboardProvider(props: { children: ReactNode }) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+  }, [cancelCapture, clearCapture]);
 
-  const shortcutCapture = useMemo<ShortcutCaptureApi>(
+  const shortcutCapture = useMemo<ShortcutCaptureContextApi>(
     () => ({
       activeCaptureId,
       startCapture,
+      startCaptureForOwner,
       cancelCapture,
+      cancelCaptureForOwner,
       isCapturing: (id) => activeCaptureId === id,
     }),
-    [activeCaptureId, cancelCapture, startCapture],
+    [
+      activeCaptureId,
+      cancelCapture,
+      cancelCaptureForOwner,
+      startCapture,
+      startCaptureForOwner,
+    ],
   );
 
   const value = useMemo(
@@ -147,13 +186,38 @@ export function KeyboardProvider(props: { children: ReactNode }) {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:keyboard] handler-registration-lifetime
+ * A handler MUST be registered only while its hook instance is mounted, and replacing or unmounting
+ * that instance MUST NOT unregister a newer handler that reused the same ID.
+ */
 export function useKeyboardHandler(handler: KeyboardHandler) {
   const context = useKeyboardContext();
   useEffect(() => context.registerHandler(handler), [context, handler]);
 }
 
-export function useShortcutCapture() {
-  return useKeyboardContext().shortcutCapture;
+/**
+ * @cc [owner:mixxorz,label:keyboard] capture-owner-cleanup
+ * When an owner ID is supplied, unmount MUST cancel only that owner's active capture and MUST NOT
+ * cancel a capture that has since been replaced by another owner.
+ */
+export function useShortcutCapture(ownerId?: string) {
+  const shortcutCapture = useKeyboardContext().shortcutCapture;
+  const { cancelCaptureForOwner } = shortcutCapture;
+
+  useEffect(() => {
+    if (!ownerId) return;
+    return () => cancelCaptureForOwner(ownerId);
+  }, [cancelCaptureForOwner, ownerId]);
+
+  return useMemo<ShortcutCaptureApi>(() => {
+    if (!ownerId) return shortcutCapture;
+    return {
+      ...shortcutCapture,
+      startCapture: (request) =>
+        shortcutCapture.startCaptureForOwner(ownerId, request),
+    };
+  }, [ownerId, shortcutCapture]);
 }
 
 function useKeyboardContext() {
@@ -179,6 +243,12 @@ function normalizeKeyboardEvent(event: KeyboardEvent): AppKeyboardEvent {
   };
 }
 
+/**
+ * @cc [owner:mixxorz,label:keyboard] shortcut-key-normalization
+ * Letter and digit physical codes MUST normalize independently of keyboard layout or Shift glyph;
+ * mapped punctuation uses its stable label, unknown printable physical keys use `code`, and only
+ * then may `key` be used. Single-character results MUST be uppercased.
+ */
 export function shortcutKeyFromEvent(event: AppKeyboardEvent) {
   const key =
     keyFromCode(event.code) ?? printableCodeFallback(event) ?? event.key;
@@ -189,6 +259,11 @@ export function shortcutKeysEqual(left: string, right: string) {
   return left.toUpperCase() === right.toUpperCase();
 }
 
+/**
+ * @cc [owner:mixxorz,label:keyboard] shortcut-exact-modifiers
+ * Matching MUST be case-insensitive for the normalized physical key or persisted character key and
+ * MUST require exact equality of all four modifier flags.
+ */
 export function shortcutMatchesEvent(
   shortcut: KeyboardShortcut,
   event: AppKeyboardEvent,
@@ -203,7 +278,17 @@ export function shortcutMatchesEvent(
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;keyboard] action-shortcut-interaction-block
+ * Action shortcuts MUST be blocked whenever any ARIA modal is open or the event target is within an
+ * editable control, select, contenteditable region, or dialog; ordinary non-dialog controls remain
+ * eligible for routing.
+ */
 export function isActionShortcutBlocked(event: AppKeyboardEvent) {
+  if (document.querySelector('[aria-modal="true"]') !== null) {
+    return true;
+  }
+
   const target = event.originalEvent.target;
   return (
     target instanceof Element &&
@@ -235,9 +320,6 @@ function isModifierKey(key: string) {
     key === "Shift" || key === "Control" || key === "Alt" || key === "Meta"
   );
 }
-
-const CAPTURE_HANDLER_ID = "shortcut-capture";
-const CAPTURE_PRIORITY = 1000;
 
 const CODE_KEY_LABELS: Record<string, string> = {
   Backquote: "`",

@@ -3,6 +3,12 @@ import type { SceneConfig } from "../types";
 import { ConsoleButton } from "./ConsoleButton";
 import { ScopeToggleGroup } from "./ScopeToggleGroup";
 
+/**
+ * @cc [owner:mixxorz,label:product] scope-toolbar-command-mapping
+ * Fader and pan controls MUST request the inverse of their corresponding projected toggle for the
+ * supplied scene. `All` and `None` MUST request `setAllChannelsScoped` with `true` and `false`
+ * respectively, and their active states MUST come only from the aggregate props.
+ */
 export function ChannelScopeToolbar(props: {
   allChannelsScoped: boolean;
   noChannelsScoped: boolean;

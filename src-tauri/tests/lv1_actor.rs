@@ -53,20 +53,22 @@ impl TestFrameDecoder {
 
 async fn wait_for_connected(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Ok(event) = events.recv().await {
-            if matches!(
-                event,
-                AppEvent::Lv1 {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1 {
                     event: Lv1Event::Connected,
                     ..
+                }) => return,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed before Connected")
                 }
-            ) {
-                return;
             }
         }
     })
     .await
-    .unwrap();
+    .expect("timed out waiting for Connected");
 }
 
 async fn recv_scene_observation(
@@ -189,6 +191,26 @@ async fn actor_publishes_monotonic_scene_observations_and_recall_dispatch_bounda
         send_second_scene_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap();
+
+        use std::io::Read;
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .unwrap();
+        let mut decoder = TestFrameDecoder::default();
+        let mut buffer = [0_u8; 1024];
+        loop {
+            let count = stream.read(&mut buffer).unwrap();
+            let recall = decoder
+                .push(&buffer[..count])
+                .into_iter()
+                .map(|frame| decode_frame_payload(&frame).unwrap())
+                .find(|message| message.address == "/Set/CurSceneIndex");
+            if let Some(recall) = recall {
+                assert_eq!(recall.args, vec![OscArg::Int(1)]);
+                break;
+            }
+        }
+
         stream
             .write_all(&make_lv1_frame(
                 "/Notify/Scene/Name",
@@ -344,25 +366,107 @@ async fn get_state_returns_snapshot_with_current_values() {
         stream
             .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        let mut channel = vec![
+            OscArg::Int(1),
+            OscArg::String("Stereo 1".to_string()),
+            OscArg::Int(0),
+            OscArg::Int(0),
+            OscArg::Double(-8.0),
+            OscArg::Double(0.0),
+        ];
+        channel.extend((0..11).map(|_| OscArg::Int(0)));
+        channel.push(OscArg::Int(2));
+        channel.push(OscArg::Int64(0));
+        channel.push(OscArg::Double(0.0));
+        for (address, args) in [
+            ("/Channels", channel),
+            (
+                "/Notify/SceneList",
+                vec![
+                    OscArg::Int(1),
+                    OscArg::Int(4),
+                    OscArg::String("Outro".to_string()),
+                ],
+            ),
+            (
+                "/Notify/Track/Out/Gain",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Double(-6.0)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Bool(true)],
+            ),
+            (
+                "/Notify/Track/Pan",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Double(-15.0)],
+            ),
+            (
+                "/Notify/Balance",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Double(0.25)],
+            ),
+            (
+                "/Notify/PanArcWidth",
+                vec![
+                    OscArg::Int(0),
+                    OscArg::Int(0),
+                    OscArg::Double(1.2),
+                    OscArg::Int(1),
+                ],
+            ),
+            ("/Notify/CurSceneIndex", vec![OscArg::Int(4)]),
+            (
+                "/Notify/Scene/Name",
+                vec![OscArg::String("Outro".to_string())],
+            ),
+        ] {
+            stream.write_all(&make_lv1_frame(address, &args)).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
     });
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
     let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
 
-    wait_for_connected(&mut events).await;
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    event: Lv1Event::SceneChanged(_),
+                    ..
+                }
+            ) {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
 
     let (reply, rx) = oneshot::channel();
     handle.send(Lv1Command::GetState { reply }).await.unwrap();
     let snapshot = rx.await.unwrap();
     assert_eq!(snapshot.connection, ConnectionStatus::Connected);
+    assert_eq!(
+        snapshot.scene,
+        Some(SceneState {
+            index: 4,
+            name: "Outro".to_string()
+        })
+    );
+    assert_eq!(snapshot.scene_list.len(), 1);
+    assert_eq!(snapshot.channels.len(), 1);
+    let channel = &snapshot.channels[0];
+    assert_eq!((channel.gain_db, channel.muted), (-6.0, true));
+    assert_eq!(
+        (channel.pan, channel.balance, channel.width),
+        (Some(-15.0), Some(0.25), Some(1.2))
+    );
 }
 
 #[tokio::test]
-async fn actor_handles_set_gain_command() {
-    use std::io::Read;
-
+async fn actor_ignores_invalid_or_inapplicable_channel_updates() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
 
@@ -371,36 +475,140 @@ async fn actor_handles_set_gain_command() {
         stream
             .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
             .unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(50));
 
-        let mut buf = [0u8; 4096];
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
-            .unwrap();
-        let _ = stream.read(&mut buf);
+        let mut channels = vec![OscArg::Int(2)];
+        for (name, channel, pan_mode) in [("Stereo", 0, 2), ("Mono", 1, 1)] {
+            channels.extend([
+                OscArg::String(name.to_string()),
+                OscArg::Int(0),
+                OscArg::Int(channel),
+                OscArg::Double(-8.0),
+                OscArg::Double(0.0),
+            ]);
+            channels.extend((0..11).map(|_| OscArg::Int(0)));
+            channels.extend([OscArg::Int(pan_mode), OscArg::Int64(0), OscArg::Double(0.0)]);
+        }
 
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        let script = [
+            ("/Channels", channels),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Int(0)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Int(1)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Bool(true)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Bool(false)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Int(2)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(0), OscArg::Int(-1)],
+            ),
+            (
+                "/Notify/PanArcWidth",
+                vec![
+                    OscArg::Int(0),
+                    OscArg::Int(0),
+                    OscArg::Double(1.2),
+                    OscArg::Int(0),
+                ],
+            ),
+            (
+                "/Notify/Balance",
+                vec![OscArg::Int(0), OscArg::Int(1), OscArg::Double(0.75)],
+            ),
+            (
+                "/Notify/Track/Out/Gain",
+                vec![OscArg::Int(0), OscArg::Int(99), OscArg::Double(-3.0)],
+            ),
+            (
+                "/Notify/Track/Out/Mute",
+                vec![OscArg::Int(0), OscArg::Int(99), OscArg::Bool(true)],
+            ),
+            (
+                "/Notify/Track/Pan",
+                vec![OscArg::Int(0), OscArg::Int(99), OscArg::Double(30.0)],
+            ),
+            (
+                "/Notify/Scene/Name",
+                vec![OscArg::String("Updates complete".to_string())],
+            ),
+            ("/Notify/CurSceneIndex", vec![OscArg::Int(9)]),
+        ];
+        for (address, args) in script {
+            stream.write_all(&make_lv1_frame(address, &args)).unwrap();
+        }
+        std::thread::sleep(std::time::Duration::from_secs(3));
     });
 
     let event_bus = AppEventBus::default();
     let mut events = event_bus.subscribe();
     let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
-
-    wait_for_connected(&mut events).await;
-
-    let (reply, rx) = oneshot::channel();
-    assert!(
-        handle
-            .send(Lv1Command::SetGain {
-                group: 0,
-                channel: 0,
-                gain_db: -20.0,
-                reply: Some(reply),
-            })
-            .await
-            .is_ok()
+    let mute_facts = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        let mut mute_facts = Vec::new();
+        loop {
+            match events.recv().await.unwrap() {
+                AppEvent::Lv1 {
+                    event:
+                        Lv1Event::MuteChanged {
+                            group: 0,
+                            channel: 0,
+                            muted,
+                        },
+                    ..
+                } => mute_facts.push(muted),
+                AppEvent::Lv1 {
+                    event: Lv1Event::SceneChanged(_),
+                    ..
+                } => break mute_facts,
+                _ => {}
+            }
+        }
+    })
+    .await
+    .expect("actor did not finish the ordered update script");
+    assert_eq!(
+        mute_facts,
+        vec![false, true, true, false],
+        "invalid integer mute reports must publish no facts"
     );
-    assert!(rx.await.unwrap().is_ok());
+
+    let (reply, snapshot) = oneshot::channel();
+    handle.send(Lv1Command::GetState { reply }).await.unwrap();
+    let snapshot = snapshot.await.unwrap();
+    assert_eq!(snapshot.channels.len(), 2);
+    assert!(
+        !snapshot.channels[0].muted,
+        "invalid integer mute reports must not change the final valid false value"
+    );
+    assert_eq!(
+        snapshot.channels[0].width, None,
+        "inactive width must be ignored"
+    );
+    assert_eq!(
+        snapshot.channels[1].balance, None,
+        "mono balance must be ignored"
+    );
+    assert_eq!(
+        snapshot.channels[0].gain_db, -8.0,
+        "unknown-channel gain must not affect known channels"
+    );
+    assert_eq!(
+        snapshot.channels[0].pan,
+        Some(0.0),
+        "unknown-channel pan must not affect known channels"
+    );
 }
 
 #[tokio::test]
@@ -471,135 +679,6 @@ async fn actor_sends_set_gain_while_waiting_for_input() {
     })
     .await
     .unwrap();
-}
-
-#[tokio::test]
-async fn actor_sends_set_mute_while_waiting_for_input() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (address_tx, address_rx) = std::sync::mpsc::channel();
-
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-            .unwrap();
-
-        let mut buf = [0_u8; 1024];
-        let mut decoder = TestFrameDecoder::default();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    for frame in decoder.push(&buf[..n]) {
-                        let msg = decode_frame_payload(&frame).unwrap();
-                        let _ = address_tx.send(msg.address);
-                    }
-                }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(err) => panic!("server read failed: {err}"),
-            }
-        }
-    });
-
-    let event_bus = AppEventBus::default();
-    let mut events = event_bus.subscribe();
-    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
-
-    wait_for_connected(&mut events).await;
-
-    let sent_at = std::time::Instant::now();
-    let (reply, rx) = oneshot::channel();
-    assert!(
-        handle
-            .send(Lv1Command::SetMute {
-                group: 0,
-                channel: 1,
-                muted: true,
-                reply: Some(reply),
-            })
-            .await
-            .is_ok()
-    );
-    assert!(rx.await.unwrap().is_ok());
-
-    tokio::task::spawn_blocking(move || {
-        loop {
-            let address = address_rx
-                .recv_timeout(std::time::Duration::from_millis(150))
-                .expect("SetMute frame was not sent promptly while actor was waiting for input");
-            if address == "/Set/Track/Out/Mute" {
-                assert!(sent_at.elapsed() < std::time::Duration::from_millis(150));
-                break;
-            }
-        }
-    })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn actor_routes_pong_without_blocking_read_loop() {
-    use std::io::Read;
-
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (pong_tx, pong_rx) = std::sync::mpsc::channel();
-
-    tokio::task::spawn_blocking(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-            .unwrap();
-        stream
-            .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
-            .unwrap();
-        stream
-            .write_all(&make_lv1_frame("/ping", &[OscArg::Int64(42)]))
-            .unwrap();
-
-        let mut buf = [0_u8; 1024];
-        let mut decoder = TestFrameDecoder::default();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    for frame in decoder.push(&buf[..n]) {
-                        let msg = decode_frame_payload(&frame).unwrap();
-                        if msg.address == "/pong" {
-                            pong_tx.send(msg.args).unwrap();
-                            return;
-                        }
-                    }
-                }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(err) => panic!("server read failed: {err}"),
-            }
-        }
-    });
-
-    let event_bus = AppEventBus::default();
-    let mut events = event_bus.subscribe();
-    let _handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
-    wait_for_connected(&mut events).await;
-
-    let args = tokio::task::spawn_blocking(move || {
-        pong_rx
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .unwrap()
-    })
-    .await
-    .unwrap();
-
-    assert_eq!(args, vec![OscArg::Int64(42)]);
 }
 
 #[tokio::test]
@@ -809,29 +888,43 @@ async fn actor_resets_ping_sequence_after_reconnecting() {
 }
 
 #[tokio::test]
-async fn actor_set_mute_returns_error_when_actor_is_unavailable() {
+async fn disconnected_flush_and_recall_scene_return_errors() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
 
     let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default(), 0);
 
-    let result = tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        let (reply, rx) = oneshot::channel();
-        handle
-            .send(Lv1Command::SetMute {
-                group: 0,
-                channel: 1,
-                muted: true,
-                reply: Some(reply),
-            })
-            .await?;
-        rx.await.unwrap()
-    })
-    .await
-    .unwrap();
+    let (flush_reply, flush_result) = oneshot::channel();
+    handle
+        .send(Lv1Command::Flush {
+            reply: Some(flush_reply),
+        })
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), flush_result)
+            .await
+            .expect("disconnected Flush reply timed out")
+            .unwrap()
+            .is_err()
+    );
 
-    assert!(result.is_err());
+    let (recall_reply, recall_result) = oneshot::channel();
+    handle
+        .send(Lv1Command::RecallScene {
+            scene_index: 4,
+            reply: Some(recall_reply),
+        })
+        .await
+        .unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), recall_result)
+            .await
+            .expect("disconnected RecallScene reply timed out")
+            .unwrap()
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -855,20 +948,22 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
     wait_for_connected(&mut events).await;
 
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while let Ok(event) = events.recv().await {
-            if matches!(
-                event,
-                AppEvent::Lv1 {
+        loop {
+            match events.recv().await {
+                Ok(AppEvent::Lv1 {
                     event: Lv1Event::Disconnected { .. },
                     ..
+                }) => return,
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed before Disconnected")
                 }
-            ) {
-                break;
             }
         }
     })
     .await
-    .unwrap();
+    .expect("timed out waiting for Disconnected");
 
     let (reply, rx) = oneshot::channel();
     let send_result = handle
@@ -885,146 +980,113 @@ async fn actor_set_mute_returns_error_when_connection_drops_before_ack() {
 }
 
 #[tokio::test]
-async fn actor_flush_waits_for_prior_set_mute_command() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (address_tx, address_rx) = std::sync::mpsc::channel();
-
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-            .unwrap();
-
-        let mut buf = [0_u8; 1024];
-        let mut decoder = TestFrameDecoder::default();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    for frame in decoder.push(&buf[..n]) {
-                        let msg = decode_frame_payload(&frame).unwrap();
-                        let _ = address_tx.send(msg.address);
-                    }
-                }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(err) => panic!("server read failed: {err}"),
-            }
-        }
-    });
-
-    let event_bus = AppEventBus::default();
-    let mut events = event_bus.subscribe();
-    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
-
-    wait_for_connected(&mut events).await;
-
-    let (reply, rx) = oneshot::channel();
-    assert!(
-        handle
-            .send(Lv1Command::SetMute {
-                group: 0,
-                channel: 1,
-                muted: true,
-                reply: Some(reply),
-            })
-            .await
-            .is_ok()
-    );
-    assert!(rx.await.unwrap().is_ok());
-    let (reply, rx) = oneshot::channel();
-    assert!(
-        handle
-            .send(Lv1Command::Flush { reply: Some(reply) })
-            .await
-            .is_ok()
-    );
-    assert!(rx.await.unwrap().is_ok());
-
-    loop {
-        let address = address_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("SetMute frame was not sent before flush returned");
-        if address == "/Set/Track/Out/Mute" {
-            break;
-        }
+async fn actor_flush_waits_for_successful_gain_and_mute_writes() {
+    enum WriteCase {
+        Gain { value: f64 },
+        Mute { value: bool },
     }
-}
 
-#[tokio::test]
-async fn actor_flush_waits_for_prior_set_gain_command() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let (address_tx, address_rx) = std::sync::mpsc::channel();
+    for case in [
+        WriteCase::Gain { value: -9.5 },
+        WriteCase::Mute { value: true },
+    ] {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (message_tx, message_rx) = std::sync::mpsc::channel();
 
-    tokio::task::spawn_blocking(move || {
-        use std::io::Read;
-
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_millis(50)))
-            .unwrap();
-
-        let mut buf = [0_u8; 1024];
-        let mut decoder = TestFrameDecoder::default();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while std::time::Instant::now() < deadline {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    for frame in decoder.push(&buf[..n]) {
-                        let msg = decode_frame_payload(&frame).unwrap();
-                        let _ = address_tx.send(msg.address);
+        tokio::task::spawn_blocking(move || {
+            use std::io::Read;
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_millis(50)))
+                .unwrap();
+            let mut buffer = [0_u8; 1024];
+            let mut decoder = TestFrameDecoder::default();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                match stream.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        for frame in decoder.push(&buffer[..count]) {
+                            let message = decode_frame_payload(&frame).unwrap();
+                            if matches!(
+                                message.address.as_str(),
+                                "/Set/Track/Out/Gain" | "/Set/Track/Out/Mute"
+                            ) {
+                                message_tx.send(message).unwrap();
+                                return;
+                            }
+                        }
                     }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                        ) => {}
+                    Err(error) => panic!("server read failed: {error}"),
                 }
-                Err(err)
-                    if err.kind() == std::io::ErrorKind::WouldBlock
-                        || err.kind() == std::io::ErrorKind::TimedOut => {}
-                Err(err) => panic!("server read failed: {err}"),
             }
-        }
-    });
+            panic!("parameter write was not received");
+        });
 
-    let event_bus = AppEventBus::default();
-    let mut events = event_bus.subscribe();
-    let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 0);
+        wait_for_connected(&mut events).await;
 
-    wait_for_connected(&mut events).await;
+        let (write_reply, write_result) = oneshot::channel();
+        let (expected_address, expected_args) = match case {
+            WriteCase::Gain { value } => {
+                handle
+                    .send(Lv1Command::SetGain {
+                        group: 0,
+                        channel: 1,
+                        gain_db: value,
+                        reply: Some(write_reply),
+                    })
+                    .await
+                    .unwrap();
+                (
+                    "/Set/Track/Out/Gain",
+                    vec![OscArg::Int(0), OscArg::Int(1), OscArg::Double(value)],
+                )
+            }
+            WriteCase::Mute { value } => {
+                handle
+                    .send(Lv1Command::SetMute {
+                        group: 0,
+                        channel: 1,
+                        muted: value,
+                        reply: Some(write_reply),
+                    })
+                    .await
+                    .unwrap();
+                (
+                    "/Set/Track/Out/Mute",
+                    vec![OscArg::Int(0), OscArg::Int(1), OscArg::Bool(value)],
+                )
+            }
+        };
+        assert_eq!(write_result.await.unwrap(), Ok(()));
 
-    let (reply, rx) = oneshot::channel();
-    assert!(
+        let (flush_reply, flush_result) = oneshot::channel();
         handle
-            .send(Lv1Command::SetGain {
-                group: 0,
-                channel: 1,
-                gain_db: -9.5,
-                reply: Some(reply),
+            .send(Lv1Command::Flush {
+                reply: Some(flush_reply),
             })
             .await
-            .is_ok()
-    );
-    assert!(rx.await.unwrap().is_ok());
-    let (reply, rx) = oneshot::channel();
-    assert!(
-        handle
-            .send(Lv1Command::Flush { reply: Some(reply) })
-            .await
-            .is_ok()
-    );
-    assert!(rx.await.unwrap().is_ok());
+            .unwrap();
+        assert_eq!(flush_result.await.unwrap(), Ok(()));
 
-    loop {
-        let address = address_rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("SetGain frame was not sent before flush returned");
-        if address == "/Set/Track/Out/Gain" {
-            break;
-        }
+        let message = tokio::task::spawn_blocking(move || {
+            message_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .expect("write frame was not received before flush returned")
+        })
+        .await
+        .unwrap();
+        assert_eq!(message.address, expected_address);
+        assert_eq!(message.args, expected_args);
     }
 }
 

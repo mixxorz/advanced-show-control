@@ -8,6 +8,17 @@ import {
 } from "../format";
 import { ScopeButton } from "./ScopeButton";
 
+/**
+ * @cc [owner:mixxorz,label:product] channel-scope-toggle-command
+ * Activating the button MUST request the opposite of `scoped` for exactly the supplied scene,
+ * channel group, and channel; visual active state MUST continue to reflect `scoped`.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] channel-scope-label-and-summary
+ * `config` MUST identify a stored channel config. The visible label MUST use LV1's channel-family
+ * numbering. The native `title` MUST include the projected channel-name fallback, a `0.0 dB`
+ * fallback when stored fader data is absent, and the available pan-family values.
+ */
 export function ChannelScopeButton(props: {
   config: ChannelConfig;
   internalSceneId: string;

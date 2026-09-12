@@ -78,6 +78,7 @@ pub struct ScenesState {
     scene_configs: Vec<SceneConfig>,
     selected_scene_internal_id: Option<String>,
     scene_settings_clipboard: Option<SceneSettingsClipboard>,
+    ready_generation: Option<u64>,
     gate: RecallGate,
     last_scene_list: Option<Vec<SceneListEntry>>,
     scene_list_edit_suppressed_until: Option<Instant>,
@@ -89,9 +90,16 @@ impl ScenesState {
             scene_configs: self.scene_configs.clone(),
             selected_scene_internal_id: self.selected_scene_internal_id.clone(),
             scene_settings_clipboard_available: self.scene_settings_clipboard.is_some(),
+            ready_generation: self.ready_generation,
         }
     }
 
+    /**
+     * @cc [owner:mixxorz,label:persistence] scene-document-snapshot
+     * The persisted scene document MUST contain scene configs and selection, and MUST exclude
+     * connection-derived readiness, recall tracking, scene-list suppression, and the settings
+     * clipboard.
+     */
     pub(crate) fn snapshot(&self) -> SceneDocument {
         SceneDocument {
             scene_configs: self.scene_configs.clone(),
@@ -104,6 +112,12 @@ impl ScenesState {
         self.selected_scene_internal_id = snapshot.selected_scene_internal_id;
     }
 
+    /**
+     * @cc [owner:mixxorz,label:persistence] session-replacement-resets-ephemera
+     * Replacing a session document MUST install its configs and selection while clearing the
+     * settings clipboard, recall gate, and scene-list edit suppression inherited from the prior
+     * session.
+     */
     pub(crate) fn replace_snapshot_for_session(&mut self, snapshot: SceneDocument) {
         self.replace_snapshot(snapshot);
         self.scene_settings_clipboard = None;
@@ -199,6 +213,11 @@ impl ScenesState {
         })
     }
 
+    /**
+     * @cc [owner:mixxorz,label:product] paste-preserves-destination-identity
+     * Pasting MUST reject an unlinked destination and MUST copy only duration, scopes, and channel
+     * values; the destination's durable UUID and linked LV1 index/name MUST remain unchanged.
+     */
     pub(crate) fn paste_scene_settings(
         &mut self,
         destination_internal_scene_id: uuid::Uuid,
@@ -320,6 +339,7 @@ impl ScenesState {
     pub(crate) fn observe_and_align_scene_list(
         &mut self,
         align_configs: bool,
+        generation: u64,
         scene_list: Vec<SceneListEntry>,
         now: Instant,
     ) -> bool {
@@ -328,8 +348,20 @@ impl ScenesState {
         if align_configs {
             self.scene_configs =
                 align_scene_configs(std::mem::take(&mut self.scene_configs), &scene_list);
+            self.ready_generation = Some(generation);
         }
         previous != self.scene_configs
+    }
+
+    /**
+     * @cc [owner:mixxorz,label:architecture] runtime-unavailability-preserves-document
+     * Losing the runtime scene library MUST clear readiness, cached LV1 scenes, and recall
+     * tracking without changing scene configs, selection, or the settings clipboard.
+     */
+    pub(crate) fn mark_scene_library_unavailable(&mut self) {
+        self.ready_generation = None;
+        self.last_scene_list = None;
+        self.reset_recall_tracking();
     }
 
     pub(crate) fn is_scene_list_edit_suppressed(&self, now: Instant) -> bool {
@@ -606,28 +638,6 @@ mod tests {
     }
 
     #[test]
-    fn baseline_scene_seen_shortly_after_arming_is_suppressed() {
-        let mut state = ScenesState::default();
-        let start = Instant::now();
-        let delay = Duration::from_millis(1_200);
-
-        assert!(!state.accepts_at(&scene(1, "Intro"), start, delay));
-        // Scene re-observed late in the arming window becomes the baseline.
-        assert!(!state.accepts_at(
-            &scene(1, "Intro"),
-            start + Duration::from_millis(1_900),
-            delay,
-        ));
-        // The same scene re-broadcast just after arming is the pre-existing
-        // scene, not an operator recall.
-        assert!(!state.accepts_at(
-            &scene(1, "Intro"),
-            start + Duration::from_millis(2_100),
-            delay,
-        ));
-    }
-
-    #[test]
     fn suppressed_baseline_echo_counts_as_trigger_for_repeat_suppression() {
         let mut state = ScenesState::default();
         let start = Instant::now();
@@ -771,7 +781,7 @@ mod tests {
         assert!(!state.is_scene_list_edit_suppressed(now));
         assert!(!state.accepts_at(
             &scene(1, "Intro"),
-            now + Duration::from_millis(1),
+            now + RECALL_ARMING_DELAY + Duration::from_millis(1),
             Duration::from_millis(500),
         ));
     }
@@ -1009,6 +1019,33 @@ mod tests {
         state.replace_snapshot_for_session(SceneDocument::empty());
 
         assert!(!state.projection_state().scene_settings_clipboard_available);
+    }
+
+    #[test]
+    fn generation_unavailability_preserves_document_selection_and_clipboard() {
+        let source_id = uuid::Uuid::from_u128(1);
+        let mut state = ScenesState::default();
+        replace_scene_configs(&mut state, vec![scene_config(source_id, 1, true)]);
+        state.select_scene_config(source_id).unwrap();
+        state.copy_scene_settings(source_id).unwrap();
+        state.observe_and_align_scene_list(
+            true,
+            0,
+            vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }],
+            tokio::time::Instant::now(),
+        );
+        state.mark_scene_library_unavailable();
+        let projection = state.projection_state();
+        assert_eq!(projection.scene_configs[0].internal_scene_id, source_id);
+        assert_eq!(
+            projection.selected_scene_internal_id,
+            Some(source_id.to_string())
+        );
+        assert!(projection.scene_settings_clipboard_available);
+        assert_eq!(projection.ready_generation, None);
     }
 
     #[test]

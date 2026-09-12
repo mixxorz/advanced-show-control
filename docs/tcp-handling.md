@@ -1,43 +1,35 @@
 # LV1 TCP Handling
 
-`Lv1Actor` owns the LV1 connection lifecycle and mirrored state. During a connected session, the actor owns the read half and a scoped writer task owns the write half.
+`Lv1Actor` owns one generation's LV1 TCP transport and mirrored state. It owns connection attempts, reconnect delay, read loop, ping timeout, disconnect facts, and the socket writer. The frontend does not participate in transport reconnection; it only requests lifecycle-level connect or disconnect.
 
 ## Framing
 
-LV1 OSC messages are carried in TCP frames with this shape:
+LV1 OSC messages use TCP frames:
 
 ```text
 [4-byte big-endian payload length][8-byte LV1 header][OSC payload]
 ```
 
-The LV1 header for app-sent frames is `00 00 00 02 00 00 00 00`.
+App-sent frames use the LV1 header `00 00 00 02 00 00 00 00`. Encoding and decoding are in `src-tauri/src/lv1/tcp.rs`.
 
-Encoding and decoding live in `src/lv1/tcp.rs`.
-
-## Socket Options
-
-`Lv1TcpClient::connect` enables `TCP_NODELAY` before the stream is split. Fader fades are latency-sensitive, and Nagle delay would hold back small writes that should reach LV1 immediately.
+`Lv1TcpClient::connect` enables `TCP_NODELAY` before splitting the stream because fader writes are latency-sensitive.
 
 ## Write Path
 
-Outbound fader writes flow through:
+Outbound fade writes flow directly through:
 
-`FadeEngine -> AppCommandBus -> Lv1Actor -> writer channel -> writer task -> socket`
+```text
+FadeEngine -> Lv1Connection -> LV1 mailbox (WriteBatch) -> bounded writer channel -> writer task -> socket
+```
 
-`FadeEngine` batches due writes into `WriteBatch` commands. `Lv1Actor` encodes those writes into one byte buffer and sends the buffer into the bounded writer channel with `try_send`. The writer task owns the socket write half and writes each queued buffer with `write_all`.
+There is no `AppCommandBus` in this path. Fade constructs an `Lv1Connection` from its fixed LV1 handle and generation. The client waits for mailbox capacity, then checks the generation and admits the command under the same guard; no guard is held while waiting. This protects admission, not commands or bytes already accepted. The LV1 actor encodes each `WriteBatch` into one byte buffer and uses `try_send` to enqueue it. The writer task exclusively owns the TCP write half and writes queued buffers with `write_all`.
 
-## Ping and Pong
+The read loop routes `/ping` replies through that same writer queue, preserving TCP ordering without blocking reads.
 
-The actor read loop routes incoming `/ping` messages to `/pong` and sends the reply through the same writer channel as all other outbound bytes. That keeps TCP ordering intact and keeps ping handling off the actor's read loop.
+## Backpressure and Flush
 
-## Backpressure
+The writer queue is bounded. A full or closed queue, writer error, read error, or ping timeout ends the connected loop. The actor clears connection-dependent live state, publishes a generation-tagged `Disconnected` fact with a reason, and retries transport connection unless its command channel has closed. Fade disconnect handling aborts active fades.
 
-The writer channel is bounded. If the channel is full or closed, the actor treats that as a TCP failure. At that point, queued fader values are considered stale and are not allowed to pile up indefinitely.
+`Lv1Command::Flush` normally enqueues a flush marker. Its reply succeeds only after all preceding queued bytes have been written and `flush()` succeeds. Writer failure completes pending flush replies with `CommandSendFailed` before the task exits.
 
-## Flush Semantics
-
-`Lv1Command::Flush` queues a flush message for the writer task. The writer task completes the flush reply only after all prior bytes in the writer task have been written and `flush()` has returned. If the writer task encounters an error, it completes any pending flush replies with `Err(Lv1ActorError::CommandSendFailed)` before exiting.
-
-## Failure Handling
-
-TCP read errors, writer errors, ping timeouts, and writer-channel backpressure all end the connected actor loop. The outer actor lifecycle then publishes `Lv1Event::Disconnected`, clears mirrored LV1 state, and the existing `FadeEngine` disconnect path aborts any active fade.
+Two disconnected-command drain contexts intentionally differ. During a reconnect delay, `Flush` replies `NotConnected` because no transport can accept it. After TCP connection but before full connected-loop initialization, stale commands are drained with `Flush` replying success because the actor is about to enter connected mode. Other direct writes return `NotConnected`; `WriteBatch` remains fire-and-forget and is dropped while disconnected so a new transport interval never receives stale fader values.

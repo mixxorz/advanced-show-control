@@ -1,47 +1,46 @@
 use std::collections::VecDeque;
-use std::path::PathBuf;
 
-use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
-use crate::cue_lists::CueListsProjectionState;
 use crate::fade::FadeEvent;
 use crate::logging::UiLogEvent;
-use crate::lv1::{
-    ChannelInfo, ConnectionStatus, Lv1Event, Lv1StateSnapshot, SceneListEntry, SceneState,
-};
+use crate::lv1::Lv1Event;
 use crate::projector::{
     AppConnectionState, AppFadeState, AppLogEntry, AppViewState, ChannelSummary, SceneSummary,
 };
-use crate::scenes::ScenesProjectionState;
-use crate::settings::AppSettings;
-use crate::show::ShowProjectionState;
+use crate::runtime::AppStateSnapshot;
 
 pub const MAX_PROJECTOR_LOGS: usize = 200;
 
 #[derive(Debug)]
+struct Lv1Projection {
+    connection: AppConnectionState,
+    current_scene: Option<SceneSummary>,
+    scenes: Vec<SceneSummary>,
+    channels: Vec<ChannelSummary>,
+}
+
+/// @cc [owner:mixxorz,label:architecture;state] projector-cache-ownership
+/// The cache MUST own only generation-bound LV1/Fade projection state, bounded frontend logs, and
+/// snapshot/log counters; app-lifetime Show, Scenes, Cue Lists, and Settings state MUST be read from
+/// `AppStateSnapshot` when a view is built rather than copied into this cache.
+#[derive(Debug)]
 pub struct ProjectionCache {
     active_generation: u64,
     state_version: u64,
-    lv1_snapshot: Option<Lv1StateSnapshot>,
-    discovered_lv1_systems: Vec<DiscoveredLv1System>,
-    connected_lv1_identity: Option<Lv1SystemIdentity>,
-    pending_lv1_identity: Option<Lv1SystemIdentity>,
-    reconnect_state: ReconnectState,
+    lv1_projection: Option<Lv1Projection>,
     fade_state: AppFadeState,
-    selected_scene_internal_id: Option<String>,
-    lockout: bool,
-    scene_configs: Vec<crate::scenes::SceneConfig>,
-    scene_settings_clipboard_available: bool,
-    cue_lists: Vec<crate::cue_lists::CueList>,
-    active_cue_list_id: Option<String>,
-    cued_cue_entry_id: Option<String>,
-    last_cue_recall_status: Option<String>,
-    show_file_path: Option<PathBuf>,
-    show_file_dirty: bool,
-    show_file_last_saved_at: Option<String>,
-    settings: AppSettings,
     logs: VecDeque<AppLogEntry>,
     next_log_id: u64,
-    last_event_at: Option<String>,
+}
+
+impl Default for Lv1Projection {
+    fn default() -> Self {
+        Self {
+            connection: AppConnectionState::Disconnected,
+            current_scene: None,
+            scenes: Vec::new(),
+            channels: Vec::new(),
+        }
+    }
 }
 
 impl Default for ProjectionCache {
@@ -55,135 +54,126 @@ impl ProjectionCache {
         Self {
             active_generation: 0,
             state_version: 0,
-            lv1_snapshot: None,
-            discovered_lv1_systems: Vec::new(),
-            connected_lv1_identity: None,
-            pending_lv1_identity: None,
-            reconnect_state: ReconnectState::default(),
+            lv1_projection: None,
             fade_state: AppFadeState::Idle,
-            selected_scene_internal_id: None,
-            lockout: false,
-            scene_configs: Vec::new(),
-            scene_settings_clipboard_available: false,
-            cue_lists: Vec::new(),
-            active_cue_list_id: None,
-            cued_cue_entry_id: None,
-            last_cue_recall_status: None,
-            settings: AppSettings::default(),
-            show_file_path: None,
-            show_file_dirty: false,
-            show_file_last_saved_at: None,
             logs: VecDeque::new(),
             next_log_id: 1,
-            last_event_at: None,
         }
-    }
-
-    pub fn apply_settings(&mut self, settings: AppSettings) {
-        self.settings = settings;
     }
 
     pub fn set_active_generation(&mut self, generation: u64) {
         self.active_generation = generation;
     }
 
+    /// @cc [owner:mixxorz,label:generation;state] generation-reset-boundary
+    /// A generation reset MUST clear all LV1-derived projection data and return Fade to `Idle`, while
+    /// preserving logs and snapshot/log counters that remain valid across connections.
+    pub fn reset_for_generation(&mut self, generation: u64) {
+        self.active_generation = generation;
+        self.reset_generation_scoped_state();
+    }
+
+    pub fn reset_generation_scoped_state(&mut self) {
+        self.lv1_projection = None;
+        self.fade_state = AppFadeState::Idle;
+    }
+
     pub fn is_active_generation(&self, generation: u64) -> bool {
         self.active_generation == generation
     }
 
-    pub fn apply_show_state(&mut self, state: ShowProjectionState) {
-        self.lockout = state.lockout;
-        self.show_file_path = state.show_file_path;
-        self.show_file_dirty = state.show_file_dirty;
-        self.show_file_last_saved_at = state.show_file_last_saved_at;
-        self.discovered_lv1_systems = state.discovered_lv1_systems;
-        self.connected_lv1_identity = state.connected_lv1_identity;
-        self.pending_lv1_identity = state.pending_lv1_identity;
-        self.reconnect_state = state.reconnect;
-        self.last_event_at = state.last_event_at;
+    pub fn active_generation(&self) -> u64 {
+        self.active_generation
     }
 
-    pub fn apply_scenes_state(&mut self, state: ScenesProjectionState) {
-        self.scene_configs = state.scene_configs;
-        self.selected_scene_internal_id = state.selected_scene_internal_id;
-        self.scene_settings_clipboard_available = state.scene_settings_clipboard_available;
+    /// @cc [owner:mixxorz,label:generation;safety] authoritative-snapshot-generation-filter
+    /// An authoritative LV1 snapshot MUST replace live projection fields only when its generation
+    /// equals the cache's active generation; a stale snapshot MUST leave the cache unchanged.
+    pub fn apply_lv1_snapshot(&mut self, generation: u64, snapshot: crate::lv1::Lv1StateSnapshot) {
+        if generation != self.active_generation {
+            return;
+        }
+        let projection = self.ensure_lv1_projection();
+        projection.connection = match snapshot.connection {
+            crate::lv1::ConnectionStatus::Connected => AppConnectionState::Connected,
+            crate::lv1::ConnectionStatus::Connecting => AppConnectionState::Connecting,
+            crate::lv1::ConnectionStatus::Disconnected => AppConnectionState::Disconnected,
+        };
+        projection.current_scene = snapshot.scene.map(|scene| SceneSummary {
+            index: scene.index,
+            name: scene.name,
+        });
+        projection.scenes = snapshot
+            .scene_list
+            .into_iter()
+            .map(|scene| SceneSummary {
+                index: scene.index,
+                name: scene.name,
+            })
+            .collect();
+        projection.channels = snapshot
+            .channels
+            .into_iter()
+            .map(|channel| ChannelSummary {
+                group: channel.group,
+                channel: channel.channel,
+                name: channel.name,
+            })
+            .collect();
     }
 
-    pub fn apply_cue_lists_state(&mut self, state: CueListsProjectionState) {
-        self.cue_lists = state.document.cue_lists;
-        self.active_cue_list_id = state.document.active_cue_list_id.map(|id| id.to_string());
-        self.cued_cue_entry_id = state.document.cued_cue_entry_id.map(|id| id.to_string());
-        self.last_cue_recall_status = state.last_recall_status;
-    }
-
+    /// @cc [owner:mixxorz,label:generation;projection] lv1-event-materiality
+    /// Stale-generation LV1 facts and parameter/keepalive facts MUST leave projected state unchanged
+    /// and return `false`; accepted connection, scene, scene-list, topology, and disconnect facts MUST
+    /// update or clear the live projection and return `true` so emission dirtiness tracks UI materiality.
     pub fn apply_lv1_event(&mut self, generation: u64, event: &Lv1Event) -> bool {
         if generation != self.active_generation {
             return false;
         }
         match event {
             Lv1Event::Connected => {
-                self.ensure_lv1_snapshot().connection = ConnectionStatus::Connected;
+                self.ensure_lv1_projection().connection = AppConnectionState::Connected
             }
-            Lv1Event::Disconnected { .. } => {
-                self.lv1_snapshot = None;
-            }
-            Lv1Event::PingReceived { .. } => return false,
+            Lv1Event::Disconnected { .. } => self.lv1_projection = None,
+            Lv1Event::PingReceived { .. }
+            | Lv1Event::FaderChanged { .. }
+            | Lv1Event::MuteChanged { .. }
+            | Lv1Event::PanChanged { .. }
+            | Lv1Event::BalanceChanged { .. }
+            | Lv1Event::WidthChanged { .. } => return false,
             Lv1Event::SceneChanged(crate::lv1::SceneObservation { scene, .. }) => {
-                self.ensure_lv1_snapshot().scene = Some(scene.clone());
+                self.ensure_lv1_projection().current_scene = Some(SceneSummary {
+                    index: scene.index,
+                    name: scene.name.clone(),
+                });
             }
             Lv1Event::SceneListChanged(scene_list) => {
-                self.ensure_lv1_snapshot().scene_list = scene_list.clone();
-            }
-            Lv1Event::FaderChanged {
-                group,
-                channel,
-                gain_db,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.gain_db = *gain_db
-                });
-            }
-            Lv1Event::MuteChanged {
-                group,
-                channel,
-                muted,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| channel_info.muted = *muted);
-            }
-            Lv1Event::PanChanged {
-                group,
-                channel,
-                pan,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.pan = Some(*pan)
-                });
-            }
-            Lv1Event::BalanceChanged {
-                group,
-                channel,
-                balance,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.balance = Some(*balance)
-                });
-            }
-            Lv1Event::WidthChanged {
-                group,
-                channel,
-                width,
-            } => {
-                self.update_channel(*group, *channel, |channel_info| {
-                    channel_info.width = Some(*width)
-                });
+                self.ensure_lv1_projection().scenes = scene_list
+                    .iter()
+                    .map(|scene| SceneSummary {
+                        index: scene.index,
+                        name: scene.name.clone(),
+                    })
+                    .collect();
             }
             Lv1Event::ChannelTopologyChanged(channels) => {
-                self.ensure_lv1_snapshot().channels = channels.clone();
+                self.ensure_lv1_projection().channels = channels
+                    .iter()
+                    .map(|channel| ChannelSummary {
+                        group: channel.group,
+                        channel: channel.channel,
+                        name: channel.name.clone(),
+                    })
+                    .collect();
             }
         }
         true
     }
 
+    /// @cc [owner:mixxorz,label:generation;projection] fade-event-generation-filter
+    /// Fade facts from a stale generation MUST neither mutate projected Fade state nor mark the view
+    /// dirty; accepted-generation Fade facts MUST preserve the aggregate Running/Blocked/Idle mapping
+    /// and report projector activity even when a per-channel fact leaves that aggregate unchanged.
     pub fn apply_fade_event(&mut self, generation: u64, event: &FadeEvent) -> bool {
         if generation != self.active_generation {
             return false;
@@ -200,6 +190,11 @@ impl ProjectionCache {
         true
     }
 
+    /// @cc [owner:mixxorz,label:logging;reliability] bounded-ordered-ui-logs
+    /// Accepted UI log events MUST remain in arrival order and evict the oldest entries until no more
+    /// than `MAX_PROJECTOR_LOGS` remain. Cache-local IDs start at 1 and increase with saturation, so
+    /// they MAY repeat at `u64::MAX`; when serialized as JavaScript numbers, exact integer identity is
+    /// not guaranteed above `Number.MAX_SAFE_INTEGER`.
     pub fn append_log(&mut self, event: UiLogEvent) {
         let entry = AppLogEntry {
             id: self.next_log_id,
@@ -214,106 +209,33 @@ impl ProjectionCache {
         }
     }
 
-    pub fn seed_from_view_state(&mut self, snapshot: &AppViewState) {
-        self.active_generation = snapshot.state_version;
-        self.state_version = snapshot.state_version;
-        self.lv1_snapshot = match snapshot.connection {
-            AppConnectionState::Disconnected => None,
-            AppConnectionState::Connecting | AppConnectionState::Connected => {
-                Some(Lv1StateSnapshot {
-                    connection: match snapshot.connection {
-                        AppConnectionState::Disconnected => ConnectionStatus::Disconnected,
-                        AppConnectionState::Connecting => ConnectionStatus::Connecting,
-                        AppConnectionState::Connected => ConnectionStatus::Connected,
-                    },
-                    scene: snapshot.current_scene.as_ref().map(|scene| SceneState {
-                        index: scene.index,
-                        name: scene.name.clone(),
-                    }),
-                    scene_list: snapshot
-                        .scenes
-                        .iter()
-                        .map(|scene| SceneListEntry {
-                            index: scene.index,
-                            name: scene.name.clone(),
-                        })
-                        .collect(),
-                    channels: snapshot
-                        .channels
-                        .iter()
-                        .map(|channel| ChannelInfo {
-                            group: channel.group,
-                            channel: channel.channel,
-                            name: channel.name.clone(),
-                            gain_db: 0.0,
-                            muted: false,
-                            pan: None,
-                            balance: None,
-                            width: None,
-                            pan_mode: None,
-                        })
-                        .collect(),
-                    ping_sequence: 0,
-                })
-            }
-        };
-        self.discovered_lv1_systems = snapshot.discovered_lv1_systems.clone();
-        self.connected_lv1_identity = snapshot.connected_lv1_identity.clone();
-        self.pending_lv1_identity = snapshot.pending_lv1_identity.clone();
-        self.reconnect_state = snapshot.reconnect.clone();
-        self.fade_state = snapshot.fade_state.clone();
-        self.selected_scene_internal_id = snapshot.selected_scene_internal_id.clone();
-        self.scene_settings_clipboard_available = snapshot.scene_settings_clipboard_available;
-        self.show_file_path = snapshot.show_file_path.as_ref().map(PathBuf::from);
-        self.show_file_dirty = snapshot.show_file_dirty;
-        self.show_file_last_saved_at = snapshot.show_file_last_saved_at.clone();
-        self.settings = snapshot.settings.clone();
-        self.logs = snapshot.logs.iter().cloned().collect();
-        self.next_log_id = snapshot
-            .logs
-            .iter()
-            .map(|entry| entry.id)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1);
-        self.last_event_at = snapshot.last_event_at.clone();
-    }
-
-    pub fn build_snapshot(&mut self) -> AppViewState {
+    /**
+     * @cc [owner:mixxorz,label:projection;consistency] retained-state-at-build
+     * Every snapshot MUST combine the cache's current generation-bound state and logs with the
+     * supplied retained app-state snapshot; missing LV1 state MUST project disconnected with no live
+     * scene, scene-list, or channel data rather than removing app-lifetime state.
+     */
+    /**
+     * @cc [owner:mixxorz,label:projection;ordering] snapshot-version-monotonic
+     * Each build MUST increment the cache-local `state_version` until it saturates at `u64::MAX`, and
+     * generation resets MUST NOT reset it. Versions are therefore nondecreasing, not indefinitely
+     * strictly increasing; when serialized as JavaScript numbers, exact integer ordering is not
+     * guaranteed above `Number.MAX_SAFE_INTEGER`.
+     */
+    pub fn build_snapshot(&mut self, state: &AppStateSnapshot) -> AppViewState {
         self.state_version = self.state_version.saturating_add(1);
         let state_version = self.state_version;
 
         let (connection, current_scene, scenes, channels) = self
-            .lv1_snapshot
+            .lv1_projection
             .as_ref()
-            .map(|snapshot| {
-                let connection = match snapshot.connection {
-                    ConnectionStatus::Connecting => AppConnectionState::Connecting,
-                    ConnectionStatus::Connected => AppConnectionState::Connected,
-                    ConnectionStatus::Disconnected => AppConnectionState::Disconnected,
-                };
-                let current_scene = snapshot.scene.as_ref().map(|scene| SceneSummary {
-                    index: scene.index,
-                    name: scene.name.clone(),
-                });
-                let scenes = snapshot
-                    .scene_list
-                    .iter()
-                    .map(|scene| SceneSummary {
-                        index: scene.index,
-                        name: scene.name.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                let channels = snapshot
-                    .channels
-                    .iter()
-                    .map(|channel| ChannelSummary {
-                        group: channel.group,
-                        channel: channel.channel,
-                        name: channel.name.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                (connection, current_scene, scenes, channels)
+            .map(|projection| {
+                (
+                    projection.connection.clone(),
+                    projection.current_scene.clone(),
+                    projection.scenes.clone(),
+                    projection.channels.clone(),
+                )
             })
             .unwrap_or((
                 AppConnectionState::Disconnected,
@@ -324,79 +246,70 @@ impl ProjectionCache {
 
         AppViewState {
             connection,
-            discovered_lv1_systems: self.discovered_lv1_systems.clone(),
-            connected_lv1_identity: self.connected_lv1_identity.clone(),
-            pending_lv1_identity: self.pending_lv1_identity.clone(),
-            reconnect: self.reconnect_state.clone(),
+            discovered_lv1_systems: state.show.discovered_lv1_systems.clone(),
+            connected_lv1_identity: state.show.connected_lv1_identity.clone(),
             current_scene,
             scenes: scenes.clone(),
             scene_count: scenes.len(),
             channel_count: channels.len(),
             channels,
             fade_state: self.fade_state.clone(),
-            lockout: self.lockout,
-            scene_configs: self.scene_configs.clone(),
-            scene_settings_clipboard_available: self.scene_settings_clipboard_available,
-            cue_lists: self.cue_lists.clone(),
-            active_cue_list_id: self.active_cue_list_id.clone(),
-            cued_cue_entry_id: self.cued_cue_entry_id.clone(),
-            last_cue_recall_status: self.last_cue_recall_status.clone(),
-            selected_scene_internal_id: self.selected_scene_internal_id.clone(),
-            show_file_name: self
-                .show_file_path
-                .as_ref()
-                .and_then(|path| path.file_name())
-                .and_then(|name| name.to_str())
-                .map(|name| name.to_string())
-                .unwrap_or_else(|| "Untitled Session".to_string()),
-            show_file_path: self
+            lockout: state.show.lockout,
+            scene_configs: state.scenes.scene_configs.clone(),
+            scene_settings_clipboard_available: state.scenes.scene_settings_clipboard_available,
+            cue_lists: state.cue_lists.document.cue_lists.clone(),
+            active_cue_list_id: state
+                .cue_lists
+                .document
+                .active_cue_list_id
+                .map(|id| id.to_string()),
+            cued_cue_entry_id: state
+                .cue_lists
+                .document
+                .cued_cue_entry_id
+                .map(|id| id.to_string()),
+            last_cue_recall_status: state.cue_lists.last_recall_status.clone(),
+            selected_scene_internal_id: state.scenes.selected_scene_internal_id.clone(),
+            show_file_name: state.show.show_file_name.clone(),
+            show_file_path: state
+                .show
                 .show_file_path
                 .as_ref()
                 .map(|path| path.to_string_lossy().into_owned()),
-            show_file_dirty: self.show_file_dirty,
-            show_file_last_saved_at: self.show_file_last_saved_at.clone(),
-            settings: self.settings.clone(),
+            show_file_dirty: state.show.show_file_dirty,
+            show_file_last_saved_at: state.show.show_file_last_saved_at.clone(),
+            settings: state.settings.clone(),
             logs: self.logs.iter().cloned().collect(),
-            last_event_at: self.last_event_at.clone(),
+            last_event_at: state.show.last_event_at.clone(),
             state_version,
         }
     }
 
-    fn ensure_lv1_snapshot(&mut self) -> &mut Lv1StateSnapshot {
-        self.lv1_snapshot.get_or_insert_with(|| Lv1StateSnapshot {
-            connection: ConnectionStatus::Disconnected,
-            scene: None,
-            scene_list: Vec::new(),
-            channels: Vec::new(),
-            ping_sequence: 0,
-        })
-    }
-
-    fn update_channel(&mut self, group: i32, channel: i32, apply: impl FnOnce(&mut ChannelInfo)) {
-        if let Some(existing) = self
-            .ensure_lv1_snapshot()
-            .channels
-            .iter_mut()
-            .find(|existing| existing.group == group && existing.channel == channel)
-        {
-            apply(existing);
-        }
+    fn ensure_lv1_projection(&mut self) -> &mut Lv1Projection {
+        self.lv1_projection
+            .get_or_insert_with(Lv1Projection::default)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connection_state::Lv1SystemIdentity;
+    use crate::cue_lists::CueListsProjectionState;
     use crate::fade::FadeParameter;
     use crate::lv1::{ChannelInfo, SceneState};
     use crate::projector::LogSeverity;
+    use crate::scenes::ScenesProjectionState;
     use crate::settings::AppSettings;
+    use crate::show::ShowProjectionState;
+    use std::path::PathBuf;
     #[test]
     fn cache_builds_initial_disconnected_snapshot_with_incrementing_versions() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
 
-        let first = cache.build_snapshot();
-        let second = cache.build_snapshot();
+        let first = cache.build_snapshot(&state);
+        let second = cache.build_snapshot(&state);
 
         assert_eq!(first.connection, AppConnectionState::Disconnected);
         assert_eq!(first.show_file_name, "Untitled Session");
@@ -407,6 +320,7 @@ mod tests {
     #[test]
     fn cache_applies_lv1_scene_and_topology_events() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
 
         cache.apply_lv1_event(0, &Lv1Event::Connected);
         cache.apply_lv1_event(
@@ -434,7 +348,7 @@ mod tests {
             }]),
         );
 
-        let snapshot = cache.build_snapshot();
+        let snapshot = cache.build_snapshot(&state);
 
         assert_eq!(snapshot.connection, AppConnectionState::Connected);
         assert_eq!(snapshot.current_scene.unwrap().name, "Bridge");
@@ -443,100 +357,189 @@ mod tests {
     }
 
     #[test]
-    fn cache_seeds_from_connected_view_state() {
+    fn cache_resets_generation_scoped_state_but_preserves_app_lifetime_state() {
         let mut cache = ProjectionCache::new();
-        cache.seed_from_view_state(&AppViewState {
-            connection: AppConnectionState::Connected,
-            discovered_lv1_systems: Vec::new(),
-            connected_lv1_identity: None,
-            pending_lv1_identity: None,
-            reconnect: ReconnectState::default(),
-            current_scene: Some(SceneSummary {
-                index: 1,
-                name: "Intro".to_string(),
-            }),
-            scenes: vec![SceneSummary {
-                index: 1,
-                name: "Intro".to_string(),
-            }],
-            scene_count: 1,
-            channel_count: 0,
-            channels: Vec::new(),
-            fade_state: AppFadeState::Idle,
-            lockout: false,
-            scene_configs: Vec::new(),
-            scene_settings_clipboard_available: false,
-            cue_lists: Vec::new(),
-            active_cue_list_id: None,
-            cued_cue_entry_id: None,
-            last_cue_recall_status: None,
-            settings: AppSettings::default(),
-            selected_scene_internal_id: None,
-            show_file_name: "Untitled Session".to_string(),
-            show_file_path: None,
-            show_file_dirty: false,
-            show_file_last_saved_at: None,
-            logs: vec![AppLogEntry {
-                id: 7,
-                timestamp: "2026-01-01T00:00:00.000Z".to_string(),
-                severity: LogSeverity::Info,
-                message: "seed log".to_string(),
-            }],
-            last_event_at: None,
-            state_version: 11,
-        });
-
-        cache.append_log(UiLogEvent {
-            severity: LogSeverity::Warning,
-            message: "projected log".to_string(),
-        });
-        let snapshot = cache.build_snapshot();
-
-        assert_eq!(snapshot.connection, AppConnectionState::Connected);
-        assert_eq!(snapshot.current_scene.unwrap().name, "Intro");
-        assert_eq!(snapshot.scenes.len(), 1);
-        assert_eq!(snapshot.logs[0].id, 7);
-        assert_eq!(snapshot.logs[1].id, 8);
-    }
-
-    #[test]
-    fn cache_clears_lv1_snapshot_on_disconnect() {
-        let mut cache = ProjectionCache::new();
-
-        cache.connected_lv1_identity = Some(Lv1SystemIdentity {
-            uuid: Some("connected-uuid".to_string()),
-            host: Some("lv1.local".to_string()),
-            address: "192.0.2.10".to_string(),
-            port: 7788,
-        });
-        cache.pending_lv1_identity = Some(Lv1SystemIdentity {
-            uuid: Some("pending-uuid".to_string()),
-            host: Some("pending.local".to_string()),
-            address: "192.0.2.11".to_string(),
-            port: 7788,
-        });
-        cache.reconnect_state = ReconnectState {
-            active: true,
-            attempt: 42,
+        let mut state = AppStateSnapshot {
+            show: ShowProjectionState {
+                lockout: true,
+                show_file_path: Some(PathBuf::from("show.asc")),
+                show_file_name: "show.asc".to_string(),
+                show_file_dirty: true,
+                show_file_last_saved_at: None,
+                discovered_lv1_systems: Vec::new(),
+                connected_lv1_identity: None,
+                last_event_at: None,
+            },
+            settings: AppSettings {
+                auto_save_sessions: true,
+                ..Default::default()
+            },
+            scenes: ScenesProjectionState {
+                scene_configs: vec![crate::scenes::SceneConfig {
+                    internal_scene_id: uuid::Uuid::from_u128(1),
+                    scene_index: Some(1),
+                    scene_name: "A".to_string(),
+                    duration_ms: 1_000,
+                    channel_configs: vec![],
+                    scoped_channels: vec![],
+                    scope_toggles: Default::default(),
+                }],
+                selected_scene_internal_id: Some("scene-config".to_string()),
+                scene_settings_clipboard_available: true,
+                ready_generation: Some(0),
+            },
+            ..Default::default()
         };
-
+        let cue_list_id = uuid::Uuid::from_u128(2);
+        state.cue_lists = CueListsProjectionState {
+            document: crate::cue_lists::CueListDocument {
+                cue_lists: vec![crate::cue_lists::CueList {
+                    id: cue_list_id,
+                    name: "Main".to_string(),
+                    entries: vec![],
+                }],
+                active_cue_list_id: Some(cue_list_id),
+                cued_cue_entry_id: None,
+            },
+            last_recall_status: Some("recalled".to_string()),
+        };
+        cache.append_log(UiLogEvent {
+            severity: LogSeverity::Info,
+            message: "kept".to_string(),
+        });
+        cache.apply_lv1_event(0, &Lv1Event::Connected);
         cache.apply_lv1_event(
             0,
-            &Lv1Event::Disconnected {
-                reason: "link lost".to_string(),
-            },
+            &Lv1Event::SceneChanged(crate::lv1::SceneObservation {
+                sequence: 1,
+                scene: SceneState {
+                    index: 1,
+                    name: "A".to_string(),
+                },
+            }),
         );
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::SceneListChanged(vec![crate::lv1::SceneListEntry {
+                index: 1,
+                name: "A".to_string(),
+            }]),
+        );
+        cache.apply_lv1_event(
+            0,
+            &Lv1Event::ChannelTopologyChanged(vec![ChannelInfo {
+                group: 1,
+                channel: 1,
+                name: "Vox".to_string(),
+                gain_db: -5.0,
+                muted: true,
+                pan: Some(0.5),
+                balance: None,
+                width: None,
+                pan_mode: None,
+            }]),
+        );
+        cache.apply_fade_event(0, &FadeEvent::FadeStarted);
+        let version_a = cache.build_snapshot(&state).state_version;
 
-        let snapshot = cache.build_snapshot();
+        cache.reset_for_generation(1);
+        cache.apply_lv1_event(1, &Lv1Event::Connected);
+        let snapshot = cache.build_snapshot(&state);
 
-        assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert!(snapshot.current_scene.is_none());
-        assert_eq!(snapshot.scenes.len(), 0);
+        assert!(snapshot.scenes.is_empty());
+        assert!(snapshot.channels.is_empty());
+        assert_eq!(snapshot.fade_state, AppFadeState::Idle);
+        assert!(snapshot.lockout);
+        assert_eq!(snapshot.show_file_name, "show.asc");
+        assert!(snapshot.settings.auto_save_sessions);
+        assert_eq!(snapshot.scene_configs.len(), 1);
+        assert_eq!(snapshot.cue_lists[0].name, "Main");
+        assert_eq!(
+            snapshot.selected_scene_internal_id.as_deref(),
+            Some("scene-config")
+        );
+        assert_eq!(snapshot.last_cue_recall_status.as_deref(), Some("recalled"));
+        assert_eq!(snapshot.logs[0].message, "kept");
+        assert!(snapshot.state_version > version_a);
     }
 
     #[test]
-    fn lv1_disconnect_does_not_clear_show_owned_connection_metadata() {
+    fn parameter_only_events_do_not_change_projection() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
+        cache.apply_lv1_event(0, &Lv1Event::Connected);
+        let before = cache.build_snapshot(&state);
+        for event in [
+            Lv1Event::FaderChanged {
+                group: 1,
+                channel: 1,
+                gain_db: -1.0,
+            },
+            Lv1Event::MuteChanged {
+                group: 1,
+                channel: 1,
+                muted: true,
+            },
+            Lv1Event::PanChanged {
+                group: 1,
+                channel: 1,
+                pan: 0.5,
+            },
+            Lv1Event::BalanceChanged {
+                group: 1,
+                channel: 1,
+                balance: 0.5,
+            },
+            Lv1Event::WidthChanged {
+                group: 1,
+                channel: 1,
+                width: 0.5,
+            },
+            Lv1Event::PingReceived { sequence: 1 },
+        ] {
+            assert!(!cache.apply_lv1_event(0, &event));
+        }
+        let after = cache.build_snapshot(&state);
+        assert_eq!(before.connection, after.connection);
+        assert!(after.channels.is_empty());
+    }
+
+    #[test]
+    fn lv1_disconnect_clears_live_state_but_preserves_show_owned_metadata() {
+        let mut cache = ProjectionCache::new();
+        let mut state = AppStateSnapshot::default();
+        cache.apply_lv1_snapshot(
+            0,
+            crate::lv1::Lv1StateSnapshot {
+                connection: crate::lv1::ConnectionStatus::Connected,
+                scene: Some(SceneState {
+                    index: 3,
+                    name: "Bridge".into(),
+                }),
+                scene_list: vec![crate::lv1::SceneListEntry {
+                    index: 3,
+                    name: "Bridge".into(),
+                }],
+                channels: vec![ChannelInfo {
+                    group: 0,
+                    channel: 1,
+                    name: "Vox".into(),
+                    gain_db: -5.0,
+                    muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }],
+                ping_sequence: 0,
+            },
+        );
+        let connected = cache.build_snapshot(&state);
+        assert_eq!(connected.connection, AppConnectionState::Connected);
+        assert_eq!(connected.current_scene.unwrap().name, "Bridge");
+        assert_eq!(connected.scenes.len(), 1);
+        assert_eq!(connected.channel_count, 1);
 
         let connected_identity = Lv1SystemIdentity {
             uuid: Some("connected-uuid".to_string()),
@@ -544,18 +547,8 @@ mod tests {
             address: "192.0.2.10".to_string(),
             port: 7788,
         };
-        let pending_identity = Lv1SystemIdentity {
-            uuid: Some("pending-uuid".to_string()),
-            host: Some("pending.local".to_string()),
-            address: "192.0.2.11".to_string(),
-            port: 7788,
-        };
-        let reconnect = ReconnectState {
-            active: true,
-            attempt: 42,
-        };
 
-        cache.apply_show_state(ShowProjectionState {
+        state.show = ShowProjectionState {
             lockout: false,
             show_file_path: None,
             show_file_name: "Untitled Session".to_string(),
@@ -563,10 +556,8 @@ mod tests {
             show_file_last_saved_at: None,
             discovered_lv1_systems: Vec::new(),
             connected_lv1_identity: Some(connected_identity.clone()),
-            pending_lv1_identity: Some(pending_identity.clone()),
-            reconnect: reconnect.clone(),
             last_event_at: None,
-        });
+        };
 
         let changed = cache.apply_lv1_event(
             0,
@@ -575,46 +566,49 @@ mod tests {
             },
         );
 
-        let snapshot = cache.build_snapshot();
+        let snapshot = cache.build_snapshot(&state);
 
         assert!(changed);
         assert_eq!(snapshot.connection, AppConnectionState::Disconnected);
         assert_eq!(snapshot.connected_lv1_identity, Some(connected_identity));
-        assert_eq!(snapshot.pending_lv1_identity, Some(pending_identity));
-        assert_eq!(snapshot.reconnect, reconnect);
+        assert!(snapshot.current_scene.is_none());
+        assert!(snapshot.scenes.is_empty());
+        assert!(snapshot.channels.is_empty());
+        assert_eq!(snapshot.channel_count, 0);
     }
 
     #[test]
     fn cache_applies_scenes_projection_state_separately_from_show_state() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot {
+            show: ShowProjectionState {
+                lockout: true,
+                show_file_path: None,
+                show_file_name: "Untitled Session".to_string(),
+                show_file_dirty: false,
+                show_file_last_saved_at: None,
+                discovered_lv1_systems: Vec::new(),
+                connected_lv1_identity: None,
+                last_event_at: None,
+            },
+            scenes: crate::scenes::ScenesProjectionState {
+                scene_configs: vec![crate::scenes::SceneConfig {
+                    internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
+                    scene_index: Some(5),
+                    scene_name: "Verse".to_string(),
+                    duration_ms: 1500,
+                    channel_configs: vec![],
+                    scoped_channels: vec![],
+                    scope_toggles: Default::default(),
+                }],
+                selected_scene_internal_id: Some("selected-id".to_string()),
+                scene_settings_clipboard_available: true,
+                ready_generation: Some(0),
+            },
+            ..Default::default()
+        };
 
-        cache.apply_show_state(ShowProjectionState {
-            lockout: true,
-            show_file_path: None,
-            show_file_name: "Untitled Session".to_string(),
-            show_file_dirty: false,
-            show_file_last_saved_at: None,
-            discovered_lv1_systems: Vec::new(),
-            connected_lv1_identity: None,
-            pending_lv1_identity: None,
-            reconnect: ReconnectState::default(),
-            last_event_at: None,
-        });
-        cache.apply_scenes_state(crate::scenes::ScenesProjectionState {
-            scene_configs: vec![crate::scenes::SceneConfig {
-                internal_scene_id: uuid::Uuid::from_u128(0x11111111111141118111111111111111),
-                scene_index: Some(5),
-                scene_name: "Verse".to_string(),
-                duration_ms: 1500,
-                channel_configs: vec![],
-                scoped_channels: vec![],
-                scope_toggles: Default::default(),
-            }],
-            selected_scene_internal_id: Some("selected-id".to_string()),
-            scene_settings_clipboard_available: true,
-        });
-
-        let snapshot = cache.build_snapshot();
+        let snapshot = cache.build_snapshot(&state);
 
         assert!(snapshot.lockout);
         assert_eq!(snapshot.scene_configs.len(), 1);
@@ -628,8 +622,9 @@ mod tests {
     #[test]
     fn cache_applies_cue_list_projection_state() {
         let mut cache = ProjectionCache::new();
+        let mut state = AppStateSnapshot::default();
         let cue_list_id = uuid::Uuid::from_u128(1);
-        cache.apply_cue_lists_state(CueListsProjectionState {
+        state.cue_lists = CueListsProjectionState {
             document: crate::cue_lists::CueListDocument {
                 cue_lists: vec![crate::cue_lists::CueList {
                     id: cue_list_id,
@@ -640,9 +635,9 @@ mod tests {
                 cued_cue_entry_id: None,
             },
             last_recall_status: None,
-        });
+        };
 
-        let snapshot = cache.build_snapshot();
+        let snapshot = cache.build_snapshot(&state);
 
         assert_eq!(snapshot.cue_lists[0].name, "Main");
         assert_eq!(
@@ -654,9 +649,13 @@ mod tests {
     #[test]
     fn cache_applies_fade_state_events() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
 
         assert!(cache.apply_fade_event(0, &FadeEvent::FadeStarted));
-        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Running);
+        assert_eq!(
+            cache.build_snapshot(&state).fade_state,
+            AppFadeState::Running
+        );
 
         assert!(cache.apply_fade_event(
             0,
@@ -666,25 +665,30 @@ mod tests {
                 parameter: FadeParameter::FaderDb,
             }
         ));
-        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Blocked);
+        assert_eq!(
+            cache.build_snapshot(&state).fade_state,
+            AppFadeState::Blocked
+        );
 
         assert!(cache.apply_fade_event(0, &FadeEvent::FadeCompleted));
-        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Idle);
+        assert_eq!(cache.build_snapshot(&state).fade_state, AppFadeState::Idle);
     }
 
     #[test]
     fn cache_ignores_stale_generation_fade_events() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
         cache.set_active_generation(2);
 
         assert!(!cache.apply_fade_event(1, &FadeEvent::FadeStarted));
 
-        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Idle);
+        assert_eq!(cache.build_snapshot(&state).fade_state, AppFadeState::Idle);
     }
 
     #[test]
     fn cache_keeps_fade_state_when_channel_cancelled() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
 
         cache.apply_fade_event(0, &FadeEvent::FadeStarted);
         cache.apply_fade_event(
@@ -696,12 +700,16 @@ mod tests {
             },
         );
 
-        assert_eq!(cache.build_snapshot().fade_state, AppFadeState::Running);
+        assert_eq!(
+            cache.build_snapshot(&state).fade_state,
+            AppFadeState::Running
+        );
     }
 
     #[test]
     fn cache_owns_bounded_log_entries() {
         let mut cache = ProjectionCache::new();
+        let state = AppStateSnapshot::default();
 
         for index in 0..(MAX_PROJECTOR_LOGS + 2) {
             cache.append_log(UiLogEvent {
@@ -710,7 +718,7 @@ mod tests {
             });
         }
 
-        let snapshot = cache.build_snapshot();
+        let snapshot = cache.build_snapshot(&state);
 
         assert_eq!(snapshot.logs.len(), MAX_PROJECTOR_LOGS);
         assert_eq!(snapshot.logs[0].id, 3);

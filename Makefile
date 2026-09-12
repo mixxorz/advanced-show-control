@@ -1,5 +1,6 @@
 .PHONY: help fmt lint test build check \
 	rust-fmt rust-lint rust-test rust-build \
+	dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-check dev-tools-build \
 	ui-fmt ui-lint ui-typecheck ui-build ui-test ui-storybook-test \
 	visual-test visual-update docs-install docs-build docs-serve dev storybook probe smoke
 
@@ -26,6 +27,7 @@ help:
 	  '  make rust-lint            cargo clippy --workspace --all-targets -- -D warnings' \
 	  '  make rust-test            cargo nextest run --workspace' \
 	  '  make rust-build           cargo build --workspace' \
+	  '  make dev-tools-check      Check, lint, and test the LV1 probe library and CLI' \
 	  '' \
 	  'UI targets:' \
 	  '  make ui-fmt               npm run format:check' \
@@ -46,13 +48,13 @@ help:
 	  '  make smoke                Run debug Tauri hardware smoke app quietly' \
 	  '  make smoke VERBOSE=1      Run debug smoke with terminal logs'
 
-fmt: rust-fmt ui-fmt
+fmt: rust-fmt dev-tools-fmt ui-fmt
 
-lint: rust-lint ui-lint
+lint: rust-lint dev-tools-lint ui-lint
 
-test: rust-test ui-test
+test: rust-test dev-tools-test ui-test
 
-build: rust-build ui-build
+build: rust-build dev-tools-build ui-build
 
 check: fmt lint ui-typecheck build test ui-storybook-test
 
@@ -77,6 +79,20 @@ rust-test:
 
 rust-build:
 	cargo build --workspace
+
+dev-tools-fmt:
+	cargo fmt --manifest-path src-tauri/dev-tools/Cargo.toml -- --check
+
+dev-tools-lint:
+	cargo clippy --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe -- -D warnings
+
+dev-tools-test:
+	cargo nextest run --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe
+
+dev-tools-check: dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-build
+
+dev-tools-build:
+	cargo build --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe
 
 ui-fmt:
 	npm --prefix ui run format:check

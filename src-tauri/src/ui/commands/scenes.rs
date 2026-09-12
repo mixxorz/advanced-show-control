@@ -10,24 +10,12 @@ pub async fn recall_scene(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<RecallSceneResult, String> {
-    let scene_recall = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scene_recall
-        .send(ScenesCommand::RecallScene {
-            internal_scene_id,
-            reply,
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
-        .map_err(map_app_command_error)
+    send_scene_command(lifecycle, |reply| ScenesCommand::RecallScene {
+        internal_scene_id,
+        reply,
+    })
+    .await?
+    .map_err(map_app_command_error)
 }
 
 #[tauri::command]
@@ -36,24 +24,12 @@ pub async fn set_scene_duration_ms(
     internal_scene_id: uuid::Uuid,
     duration_ms: u64,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::SetSceneDuration {
-            internal_scene_id,
-            duration_ms,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::SetSceneDuration {
+        internal_scene_id,
+        duration_ms,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -63,25 +39,13 @@ pub async fn link_scene_config(
     target_scene_index: i32,
     overwrite_existing: bool,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::LinkSceneConfig {
-            source_internal_scene_id,
-            target_scene_index,
-            overwrite_existing,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::LinkSceneConfig {
+        source_internal_scene_id,
+        target_scene_index,
+        overwrite_existing,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -89,23 +53,11 @@ pub async fn delete_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::DeleteSceneConfig {
-            internal_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::DeleteSceneConfig {
+        internal_scene_id,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -113,23 +65,11 @@ pub async fn copy_scene_settings(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::CopySceneSettings {
-            source_internal_scene_id: internal_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::CopySceneSettings {
+        source_internal_scene_id: internal_scene_id,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -137,23 +77,11 @@ pub async fn paste_scene_settings(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::PasteSceneSettings {
-            destination_internal_scene_id: internal_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::PasteSceneSettings {
+        destination_internal_scene_id: internal_scene_id,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -161,23 +89,11 @@ pub async fn select_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<SelectedSceneResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::SelectSceneConfig {
-            internal_scene_id,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::SelectSceneConfig {
+        internal_scene_id,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -185,23 +101,13 @@ pub async fn store_scene_config(
     lifecycle: State<'_, AppLifecycle>,
     internal_scene_id: uuid::Uuid,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::StoreSceneConfigFromCurrentLv1 {
+    send_scene_command(lifecycle, |reply| {
+        ScenesCommand::StoreSceneConfigFromCurrentLv1 {
             internal_scene_id,
             reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+        }
+    })
+    .await?
 }
 
 #[cfg(test)]
@@ -223,24 +129,12 @@ pub async fn set_all_channels_scoped(
     internal_scene_id: uuid::Uuid,
     scoped: bool,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::SetAllChannelsScoped {
-            internal_scene_id,
-            scoped,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::SetAllChannelsScoped {
+        internal_scene_id,
+        scoped,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -249,24 +143,14 @@ pub async fn set_scene_scope_faders_enabled(
     internal_scene_id: uuid::Uuid,
     enabled: bool,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::SetSceneScopeFadersEnabled {
+    send_scene_command(lifecycle, |reply| {
+        ScenesCommand::SetSceneScopeFadersEnabled {
             internal_scene_id,
             enabled,
             reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+        }
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -275,24 +159,12 @@ pub async fn set_scene_scope_pan_enabled(
     internal_scene_id: uuid::Uuid,
     enabled: bool,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::SetSceneScopePanEnabled {
-            internal_scene_id,
-            enabled,
-            reply: Some(reply),
-        })
-        .await
-        .map_err(|_| AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    rx.await
-        .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+    send_scene_command(lifecycle, |reply| ScenesCommand::SetSceneScopePanEnabled {
+        internal_scene_id,
+        enabled,
+        reply: Some(reply),
+    })
+    .await?
 }
 
 #[tauri::command]
@@ -303,24 +175,33 @@ pub async fn set_channel_scoped(
     channel: i32,
     scoped: bool,
 ) -> Result<ScenesCommandResult, String> {
-    let scenes = lifecycle
-        .current_scene_recall_fader()
-        .await
-        .ok_or(AppCommandError::ScenesUnavailable)
-        .map_err(map_app_command_error)?;
-    let (reply, rx) = oneshot::channel();
-    scenes
-        .send(ScenesCommand::SetChannelScoped {
-            internal_scene_id,
-            group,
-            channel,
-            scoped,
-            reply: Some(reply),
-        })
+    send_scene_command(lifecycle, |reply| ScenesCommand::SetChannelScoped {
+        internal_scene_id,
+        group,
+        channel,
+        scoped,
+        reply: Some(reply),
+    })
+    .await?
+}
+
+/// @cc [owner:mixxorz,label:architecture] scene-commands-use-owner-reply
+/// Scene adapters MUST construct an explicit `ScenesCommand`, send it to the app-lifetime Scenes
+/// owner, and await the caller-specific reply type; mailbox send and dropped-reply failures MUST be
+/// mapped to frontend-safe errors without performing scene validation or mutation in this helper.
+async fn send_scene_command<T>(
+    lifecycle: State<'_, AppLifecycle>,
+    build_command: impl FnOnce(oneshot::Sender<T>) -> ScenesCommand,
+) -> Result<T, String> {
+    let (reply, response) = oneshot::channel();
+    lifecycle
+        .scenes_handle()
+        .send(build_command(reply))
         .await
         .map_err(|_| AppCommandError::ScenesUnavailable)
         .map_err(map_app_command_error)?;
-    rx.await
+    response
+        .await
         .map_err(|_| AppCommandError::ReplyChannelClosed)
-        .map_err(map_app_command_error)?
+        .map_err(map_app_command_error)
 }

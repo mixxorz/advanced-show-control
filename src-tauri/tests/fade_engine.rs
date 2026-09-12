@@ -136,8 +136,14 @@ async fn no_global_fade_completed_for(
                     ..
                 }) => return true,
                 Ok(_) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return false,
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                    panic!(
+                        "event stream lagged by {count} while checking for an unexpected fade completion"
+                    )
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("event stream closed while checking for an unexpected fade completion")
+                }
             }
         }
     })
@@ -194,8 +200,7 @@ async fn spawn_runtime_for_test(
     event_bus: AppEventBus,
 ) -> (RuntimeGeneration, FadeEngineHandle) {
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, task, peers) = build_engine(runtime_generation.clone(), event_bus.clone(), 0);
-    peers.set_lv1(lv1);
+    let (engine, task) = build_engine(runtime_generation.clone(), event_bus.clone(), 0, lv1);
     task.spawn();
 
     let mut events = event_bus.subscribe();
@@ -232,7 +237,6 @@ async fn start_fade(engine: &FadeEngineHandle, config: FadeConfig) -> Result<(),
         .send(FadeCommand::RecallSceneFade {
             config,
             same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
-            expected_generation: None,
             readiness: RecallReadinessRequest::detached(
                 tokio::time::Instant::now() + std::time::Duration::from_secs(5),
             ),
@@ -466,8 +470,7 @@ async fn zero_duration_non_fader_targets_do_not_emit_fade_completed() {
     let event_bus = AppEventBus::default();
     let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
     let runtime_generation = RuntimeGeneration::new();
-    let (engine, task, peers) = build_engine(runtime_generation, event_bus.clone(), 0);
-    peers.set_lv1(lv1);
+    let (engine, task) = build_engine(runtime_generation, event_bus.clone(), 0, lv1);
     task.spawn();
     let mut app_events = event_bus.subscribe();
 
@@ -634,7 +637,7 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(45.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
@@ -646,7 +649,7 @@ async fn pan_family_override_cancels_pan_targets_without_stopping_fader() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(45.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
@@ -771,7 +774,7 @@ async fn fader_override_keeps_pan_family_targets_active_for_same_channel() {
                                         OscArg::Int(0),
                                         OscArg::Int(0),
                                         OscArg::Double(0.0),
-                                        OscArg::True,
+                                        OscArg::Bool(true),
                                     ],
                                 ))
                                 .unwrap();
@@ -1073,7 +1076,7 @@ async fn engine_detects_manual_override() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(0.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();
@@ -1590,7 +1593,7 @@ async fn override_of_last_target_emits_terminal_event() {
                     OscArg::Int(0),
                     OscArg::Int(0),
                     OscArg::Double(0.0),
-                    OscArg::True,
+                    OscArg::Bool(true),
                 ],
             ))
             .unwrap();

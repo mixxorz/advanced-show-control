@@ -1,36 +1,44 @@
 import type { AppCommands } from "../appContext";
 
-const noop = () => {};
-const promiseTrue = async () => true;
+const mutationCompleted = async () => {};
+const mutationSucceeded = async () => true;
 
+/**
+ * @cc [owner:mixxorz,label:testing] default-story-commands-are-deterministic
+ * Default story commands MUST perform no application, network, filesystem, timer, or shared-state
+ * side effects and MUST resolve deterministically; stories that need behavior MUST provide an
+ * explicit command override.
+ */
 export const mockAppCommands: AppCommands = {
-  abortAll: noop,
-  addSceneToActiveCueList: noop,
-  cueEntry: noop,
-  copySceneSettings: noop,
-  createCueList: noop,
-  deleteCueList: noop,
-  disconnect: noop,
-  newShowFile: noop,
-  openShowFile: noop,
-  pasteSceneSettings: noop,
-  removeCueEntry: noop,
-  recallCuedCue: noop,
-  renameCueList: noop,
+  abortAll: mutationCompleted,
+  addSceneToActiveCueList: mutationCompleted,
+  cueEntry: mutationCompleted,
+  copySceneSettings: mutationCompleted,
+  createCueList: mutationCompleted,
+  deleteCueList: mutationCompleted,
+  disconnect: mutationCompleted,
+  newShowFile: mutationCompleted,
+  openShowFile: mutationCompleted,
+  pasteSceneSettings: mutationCompleted,
+  removeCueEntry: mutationCompleted,
+  recallCuedCue: mutationCompleted,
+  renameCueList: mutationCompleted,
   probeLv1TcpConnectLatency: async () => ({ tcpConnectMs: 3 }),
-  reorderCueEntries: noop,
-  reorderCueLists: noop,
-  saveShowFile: noop,
-  saveShowFileAs: noop,
-  selectScene: noop,
-  recallScene: noop,
-  selectSystem: noop,
-  setActiveCueList: noop,
-  setAllChannelsScoped: noop,
-  setChannelScoped: noop,
-  setSceneDurationMs: promiseTrue,
-  setSceneScopeFadersEnabled: noop,
-  setSceneScopePanEnabled: noop,
-  storeSceneConfig: promiseTrue,
-  toggleLockout: noop,
+  reorderCueEntries: mutationCompleted,
+  reorderCueLists: mutationCompleted,
+  saveShowFile: mutationCompleted,
+  saveShowFileAs: mutationCompleted,
+  selectScene: mutationCompleted,
+  recallScene: mutationCompleted,
+  selectSystem: mutationCompleted,
+  setActiveCueList: mutationCompleted,
+  setAllChannelsScoped: mutationCompleted,
+  setChannelScoped: mutationCompleted,
+  setSceneDurationMs: mutationSucceeded,
+  setSceneScopeFadersEnabled: mutationCompleted,
+  setSceneScopePanEnabled: mutationCompleted,
+  storeSceneConfig: mutationSucceeded,
+  linkSceneConfig: mutationCompleted,
+  deleteSceneConfig: mutationCompleted,
+  toggleLockout: mutationCompleted,
 };

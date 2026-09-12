@@ -65,6 +65,7 @@ Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks
 - Define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables when a value is reusable.
 - Avoid hard-coded Tailwind values when a reusable token is appropriate.
 - Keep frontend state projected from backend snapshots. Do not bypass `app-status-changed` for backend-owned state.
+- The frontend may request explicit connect or disconnect, but must not own transport reconnect attempts, connection generations, or runtime peer installation; `Lv1Actor` owns transport reconnect and `AppLifecycle` owns generation transitions.
 - Use full-object replacement for settings updates unless the backend API explicitly exposes a narrower command.
 
 ## Safety-Critical Code

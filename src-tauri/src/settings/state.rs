@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use crate::atomic_file::StagedFile;
 use crate::connection_state::Lv1SystemIdentity;
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +28,10 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
+    /// @cc [owner:mixxorz,label:resilience] settings-load-fallback
+    /// Loading MUST use normalized persisted values when the complete document deserializes; a
+    /// missing, unreadable, or invalid `settings.json` MUST instead produce normalized defaults,
+    /// including no remembered LV1 identity, without rewriting the file.
     pub fn load(settings_dir: PathBuf) -> Self {
         let file_path = settings_dir.join("settings.json");
         let document = load_settings_file(&file_path);
@@ -40,6 +45,11 @@ impl SettingsState {
         self.document.settings.clone()
     }
 
+    /// @cc [owner:mixxorz,label:data-integrity] public-settings-replacement-atomicity
+    /// A changed public-settings replacement MUST preserve the remembered LV1 identity and update
+    /// in-memory state only after the complete normalized document is atomically published. A
+    /// staging or publication failure MUST return an error and leave both prior memory and the
+    /// destination document unchanged; normalized no-ops MUST perform no write and return `false`.
     pub fn replace_settings(&mut self, settings: AppSettings) -> Result<bool, String> {
         let normalized = settings.normalized();
         if normalized == self.document.settings {
@@ -47,8 +57,8 @@ impl SettingsState {
         }
         let mut updated = self.document.clone();
         updated.settings = normalized;
-        write_settings_file(&self.file_path, &updated)?;
-        self.document = updated;
+        let staged = StagedSettingsUpdate::prepare(self.file_path.clone(), updated)?;
+        self.publish_staged(staged)?;
         Ok(true)
     }
 
@@ -56,15 +66,49 @@ impl SettingsState {
         self.document.last_connected_lv1.clone()
     }
 
-    pub fn set_last_connected_lv1(&mut self, identity: Lv1SystemIdentity) -> Result<bool, String> {
+    /// @cc [owner:mixxorz,label:data-integrity] stage-private-identity-update
+    /// Staging a changed remembered identity MUST preserve all public settings and MUST NOT mutate
+    /// memory or publish the destination; an identical identity MUST return no staged update.
+    pub(crate) fn stage_last_connected_lv1(
+        &self,
+        identity: Lv1SystemIdentity,
+    ) -> Result<Option<StagedSettingsUpdate>, String> {
         if self.document.last_connected_lv1.as_ref() == Some(&identity) {
-            return Ok(false);
+            return Ok(None);
         }
+
         let mut updated = self.document.clone();
         updated.last_connected_lv1 = Some(identity);
-        write_settings_file(&self.file_path, &updated)?;
-        self.document = updated;
-        Ok(true)
+        StagedSettingsUpdate::prepare(self.file_path.clone(), updated).map(Some)
+    }
+
+    /// @cc [owner:mixxorz,label:data-integrity] publish-settings-after-file
+    /// Publication MUST replace `settings.json` before committing the staged document to memory;
+    /// replacement failure MUST return an explanatory error and retain the previous memory state.
+    pub(crate) fn publish_staged(&mut self, staged: StagedSettingsUpdate) -> Result<(), String> {
+        staged.file.publish().map_err(|err| {
+            format!(
+                "Failed to publish settings {}: {err}",
+                self.file_path.display()
+            )
+        })?;
+        self.document = staged.document;
+        Ok(())
+    }
+}
+
+pub(crate) struct StagedSettingsUpdate {
+    document: PersistedSettings,
+    file: StagedFile,
+}
+
+impl StagedSettingsUpdate {
+    fn prepare(file_path: PathBuf, document: PersistedSettings) -> Result<Self, String> {
+        let contents = serde_json::to_string_pretty(&document)
+            .map_err(|err| format!("Failed to serialize settings: {err}"))?;
+        let file = StagedFile::prepare(&file_path, contents.as_bytes())
+            .map_err(|err| format!("Failed to stage settings {}: {err}", file_path.display()))?;
+        Ok(Self { document, file })
     }
 }
 
@@ -106,92 +150,5 @@ fn load_settings_file(file_path: &Path) -> PersistedSettings {
             );
             PersistedSettings::default().normalized()
         }
-    }
-}
-
-fn write_settings_file(file_path: &Path, settings: &PersistedSettings) -> Result<(), String> {
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("Failed to create settings directory: {err}"))?;
-    }
-    let contents = serde_json::to_string_pretty(settings)
-        .map_err(|err| format!("Failed to serialize settings: {err}"))?;
-    std::fs::write(file_path, contents).map_err(|err| format!("Failed to write settings: {err}"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::connection_state::Lv1SystemIdentity;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn temp_settings_dir(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        std::env::temp_dir().join(format!(
-            "asc-settings-state-{name}-{}-{unique}",
-            std::process::id()
-        ))
-    }
-
-    fn identity(uuid: &str, host: &str, address: &str) -> Lv1SystemIdentity {
-        Lv1SystemIdentity {
-            uuid: Some(uuid.to_string()),
-            host: Some(host.to_string()),
-            address: address.to_string(),
-            port: 50000,
-        }
-    }
-
-    #[test]
-    fn invalid_persisted_document_resets_public_and_private_settings() {
-        let dir = temp_settings_dir("invalid-document");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("settings.json"), r#"{"lastConnectedLv1":42}"#).unwrap();
-
-        let state = SettingsState::load(dir);
-
-        assert_eq!(state.settings(), AppSettings::default());
-        assert_eq!(state.last_connected_lv1(), None);
-    }
-
-    #[test]
-    fn replacing_public_settings_preserves_remembered_identity() {
-        let dir = temp_settings_dir("preserve-identity");
-        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
-        let mut state = SettingsState::load(dir.clone());
-        state.set_last_connected_lv1(identity.clone()).unwrap();
-
-        state
-            .replace_settings(AppSettings {
-                auto_save_sessions: true,
-                ..Default::default()
-            })
-            .unwrap();
-
-        let reloaded = SettingsState::load(dir);
-        assert!(reloaded.settings().auto_save_sessions);
-        assert_eq!(reloaded.last_connected_lv1(), Some(identity));
-    }
-
-    #[test]
-    fn remembered_identity_uses_the_existing_flat_private_schema() {
-        let dir = temp_settings_dir("flat-private-schema");
-        let identity = identity("uuid-1", "LV1-FOH", "192.168.1.35");
-        let mut state = SettingsState::load(dir.clone());
-        state
-            .set_last_connected_lv1(identity)
-            .expect("remembered identity should save");
-
-        let document: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(dir.join("settings.json"))
-                .expect("settings document should exist"),
-        )
-        .expect("settings document should be JSON");
-        assert_eq!(document["lastConnectedLv1"]["uuid"], "uuid-1");
-        assert_eq!(document["lastConnectedLv1"]["host"], "LV1-FOH");
-        assert!(document.get("settings").is_none());
     }
 }

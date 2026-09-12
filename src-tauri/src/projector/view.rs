@@ -1,6 +1,6 @@
 use serde::Serialize;
 
-use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity, ReconnectState};
+use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 use crate::cue_lists::CueList;
 use crate::scenes::SceneConfig;
 use crate::settings::AppSettings;
@@ -60,8 +60,6 @@ pub struct AppViewState {
     pub connection: AppConnectionState,
     pub discovered_lv1_systems: Vec<DiscoveredLv1System>,
     pub connected_lv1_identity: Option<Lv1SystemIdentity>,
-    pub pending_lv1_identity: Option<Lv1SystemIdentity>,
-    pub reconnect: ReconnectState,
     pub current_scene: Option<SceneSummary>,
     pub scenes: Vec<SceneSummary>,
     pub scene_count: usize,

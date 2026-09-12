@@ -6,6 +6,12 @@ function formatDurationDraft(durationMs: number) {
   return `${formatDurationSeconds(durationMs)}s`;
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] duration-input-scene-reset
+ * The editable draft MUST reset from projected `durationMs` whenever the scene identity or
+ * projected duration changes, so a draft or failed mutation from one snapshot cannot leak into
+ * another scene or supersede a newer backend value.
+ */
 export function DurationInput(props: {
   internalSceneId: string;
   durationMs: number;
@@ -18,6 +24,19 @@ export function DurationInput(props: {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:product] duration-validation-and-command-result
+ * Commits MUST accept finite, non-negative seconds only: zero remains zero, positive values are
+ * clamped to `0.1..120` seconds and rounded to milliseconds. Empty, non-numeric, or negative input
+ * MUST restore the projected value without dispatch; a command that resolves `false` or rejects
+ * MUST also restore it.
+ */
+/**
+ * @cc [owner:mixxorz,label:product;accessibility] duration-commit-sequencing
+ * Enter MUST commit exactly once before blurring, Escape MUST discard without committing, and an
+ * ordinary blur MUST commit. Step buttons MUST have distinct accessible names, request one-second
+ * changes through the same normalization path, and remain native non-submit buttons.
+ */
 function DurationInputDraft(props: {
   internalSceneId: string;
   durationMs: number;
@@ -36,13 +55,17 @@ function DurationInputDraft(props: {
       return;
     }
 
-    const ok = await commands.setSceneDurationMs(
-      props.internalSceneId,
-      nextDurationMs,
-    );
-    if (ok) {
-      setDraft(formatDurationDraft(nextDurationMs));
-    } else {
+    try {
+      const ok = await commands.setSceneDurationMs(
+        props.internalSceneId,
+        nextDurationMs,
+      );
+      if (ok) {
+        setDraft(formatDurationDraft(nextDurationMs));
+      } else {
+        resetDraft();
+      }
+    } catch {
       resetDraft();
     }
   }
@@ -118,6 +141,7 @@ function DurationInputDraft(props: {
         />
         <div className="flex w-11 shrink-0 flex-col gap-1">
           <button
+            aria-label="Increase X-Fade"
             className="grid flex-1 place-items-center rounded-console-control border border-console-line bg-console-panel text-sm leading-none text-accent-orange hover:border-console-line-strong hover:text-accent-orange-hover active:border-accent-orange active:bg-accent-orange-active active:text-white"
             onClick={() => stepDuration(1)}
             type="button"
@@ -137,6 +161,7 @@ function DurationInputDraft(props: {
             </svg>
           </button>
           <button
+            aria-label="Decrease X-Fade"
             className="grid flex-1 place-items-center rounded-console-control border border-console-line bg-console-panel text-sm leading-none text-accent-orange hover:border-console-line-strong hover:text-accent-orange-hover active:border-accent-orange active:bg-accent-orange-active active:text-white"
             onClick={() => stepDuration(-1)}
             type="button"

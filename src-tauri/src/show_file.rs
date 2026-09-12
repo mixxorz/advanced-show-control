@@ -1,16 +1,20 @@
 pub use crate::show::{
-    ImportedShowFile, LoadValidationReport, SHOW_FILE_SCHEMA_VERSION, ShowFile,
-    ShowFileChannelConfig, ShowFileChannelRef, ShowFileSafety, ShowFileSceneConfig,
-    ShowFileSceneScopeToggles, export_show_file, import_show_file,
+    ImportedShowFile, SHOW_FILE_SCHEMA_VERSION, ShowFile, ShowFileSafety, ShowFileSceneConfig,
+    export_show_file, import_show_file,
 };
 
 use std::fs;
 use std::fs::OpenOptions;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 const MAX_BACKUPS_PER_SHOW_FILE: usize = 10;
 
+/// @cc [owner:mixxorz,label:persistence;compatibility] persisted-show-decoding
+/// Success MUST deserialize the persisted camelCase show schema and preserve `schema_version`
+/// unchanged for later validation by `import_show_file`; this function MUST NOT decide schema
+/// support. Legacy optional fields supported by `ShowFile` MUST retain their serde defaults, while
+/// unreadable or malformed files MUST return a path-qualified error.
 pub fn read_show_file(path: &Path) -> Result<ShowFile, String> {
     let json = fs::read_to_string(path)
         .map_err(|err| format!("Failed to read session {}: {err}", path.display()))?;
@@ -19,55 +23,23 @@ pub fn read_show_file(path: &Path) -> Result<ShowFile, String> {
         .map_err(|err| format!("Failed to parse session {}: {err}", path.display()))
 }
 
+/// @cc [owner:mixxorz,label:persistence;safety;compatibility] transactional-show-save
+/// A save MUST serialize the complete `ShowFile` as pretty JSON using its persisted camelCase field
+/// names and current values. If `path` exists, its pre-save bytes MUST first be published as a
+/// synchronized backup; only then may `StagedFile` atomically publish the JSON. Any failure MUST be
+/// returned rather than reported as a successful save, and a new destination requires no backup.
 pub fn write_show_file(path: &Path, file: &ShowFile, backup_dir: &Path) -> Result<(), String> {
     if path.exists() {
         create_backup(path, backup_dir)?;
     }
 
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            format!(
-                "Failed to create parent directory {}: {err}",
-                parent.display()
-            )
-        })?;
-    }
-
     let json = serde_json::to_string_pretty(file)
         .map_err(|err| format!("Failed to serialize session {}: {err}", path.display()))?;
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| format!("Session path has no parent: {}", path.display()))?;
-    let timestamp = crate::time::current_timestamp_millis();
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("show");
-    let (temp_path, mut temp_file) = reserve_unique_temp_file(parent, file_name, &timestamp)?;
-
-    let write_result = (|| -> Result<(), String> {
-        temp_file
-            .write_all(json.as_bytes())
-            .and_then(|_| temp_file.sync_all())
-            .map_err(|err| {
-                format!(
-                    "Failed to write temp session {}: {err}",
-                    temp_path.display()
-                )
-            })?;
-        drop(temp_file);
-        fs::rename(&temp_path, path).map_err(|err| {
-            format!(
-                "Failed to replace session {} from {}: {err}",
-                path.display(),
-                temp_path.display()
-            )
-        })
-    })();
-
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-
-    write_result
+    crate::atomic_file::StagedFile::prepare(path, json.as_bytes())
+        .map_err(|err| format!("Failed to stage session {}: {err}", path.display()))?
+        .publish()
+        .map_err(|err| format!("Failed to replace session {}: {err}", path.display()))
 }
 
 pub fn default_show_folder() -> PathBuf {
@@ -106,31 +78,53 @@ fn app_data_folder_name() -> &'static str {
     }
 }
 
+/// @cc [owner:mixxorz,label:persistence] backup-publication-and-retention
+/// Before returning success, this operation MUST publish a synchronized byte-for-byte copy under
+/// the selected backup name and attempt to prune the oldest published backups matching this show's
+/// exact stem down to `MAX_BACKUPS_PER_SHOW_FILE`. Failure before publication MUST attempt to remove
+/// the reserved temporary backup.
 fn create_backup(path: &Path, backup_dir: &Path) -> Result<(), String> {
     let timestamp = crate::time::current_timestamp_millis();
-    let (candidate, mut dest) = reserve_unique_backup_file(backup_dir, path, &timestamp)?;
-    let mut source = fs::File::open(path)
-        .map_err(|err| format!("Failed to open source session {}: {err}", path.display()))?;
+    let (candidate, staged_path, mut dest) =
+        reserve_unique_backup_file(backup_dir, path, &timestamp)?;
 
-    io::copy(&mut source, &mut dest).map_err(|err| {
-        format!(
-            "Failed to create backup {} from {}: {err}",
-            candidate.display(),
-            path.display()
-        )
-    })?;
+    let backup_result = (|| -> Result<(), String> {
+        let mut source = fs::File::open(path)
+            .map_err(|err| format!("Failed to open source session {}: {err}", path.display()))?;
 
-    dest.sync_all().map_err(|err| {
-        format!(
-            "Failed to flush backup {} from {}: {err}",
-            candidate.display(),
-            path.display()
-        )
-    })?;
+        io::copy(&mut source, &mut dest).map_err(|err| {
+            format!(
+                "Failed to create backup {} from {}: {err}",
+                candidate.display(),
+                path.display()
+            )
+        })?;
 
-    prune_old_backups(backup_dir, path, MAX_BACKUPS_PER_SHOW_FILE)?;
+        dest.sync_all().map_err(|err| {
+            format!(
+                "Failed to flush backup {} from {}: {err}",
+                candidate.display(),
+                path.display()
+            )
+        })?;
+        drop(dest);
 
-    Ok(())
+        fs::rename(&staged_path, &candidate).map_err(|err| {
+            format!(
+                "Failed to publish backup {} from {}: {err}",
+                candidate.display(),
+                staged_path.display()
+            )
+        })?;
+
+        prune_old_backups(backup_dir, path, MAX_BACKUPS_PER_SHOW_FILE)
+    })();
+
+    if backup_result.is_err() {
+        let _ = fs::remove_file(&staged_path);
+    }
+
+    backup_result
 }
 
 fn prune_old_backups(
@@ -170,23 +164,50 @@ fn prune_old_backups(
     Ok(())
 }
 
+/// @cc [owner:mixxorz,label:persistence;safety] backup-stem-classification-is-exact
+/// Classification MUST accept only generated names whose prefix is canonical decimal Unix-epoch
+/// milliseconds, optionally followed by `__backup` and a canonical positive integer. The complete
+/// source stem after the separator MUST match exactly, and collision suffixes MUST precede that
+/// separator. Legacy suffix-after-stem names MUST NOT be claimed for a shorter ambiguous stem.
 fn is_backup_for_show_file(name: &str, stem: &str) -> bool {
     let Some(prefix) = name.strip_suffix(".ascs") else {
         return false;
     };
 
-    let Some((_, source)) = prefix.split_once('-') else {
+    let Some((generated_prefix, source)) = prefix.split_once('-') else {
         return false;
     };
 
-    source == stem || source.starts_with(&format!("{stem}__backup"))
+    source == stem && is_generated_backup_prefix(generated_prefix)
+}
+
+fn is_generated_backup_prefix(prefix: &str) -> bool {
+    if is_canonical_decimal(prefix) {
+        return true;
+    }
+
+    let Some((timestamp, collision)) = prefix.split_once("__backup") else {
+        return false;
+    };
+    is_canonical_decimal(timestamp)
+        && is_canonical_decimal(collision)
+        && collision
+            .as_bytes()
+            .first()
+            .is_some_and(|digit| *digit != b'0')
+}
+
+fn is_canonical_decimal(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| byte.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'))
 }
 
 fn reserve_unique_backup_file(
     backup_dir: &Path,
     source_path: &Path,
     timestamp: &str,
-) -> Result<(PathBuf, fs::File), String> {
+) -> Result<(PathBuf, PathBuf, fs::File), String> {
     fs::create_dir_all(backup_dir).map_err(|err| {
         format!(
             "Failed to create backup directory {}: {err}",
@@ -199,15 +220,40 @@ fn reserve_unique_backup_file(
         .and_then(|value| value.to_str())
         .unwrap_or("show");
 
-    reserve_unique_file(backup_dir, |suffix| {
-        if suffix == 0 {
+    for suffix in 0.. {
+        let file_name = if suffix == 0 {
             format!("{timestamp}-{stem}.ascs")
         } else {
-            format!("{timestamp}-{stem}__backup{suffix}.ascs")
+            format!("{timestamp}__backup{suffix}-{stem}.ascs")
+        };
+        let candidate = backup_dir.join(&file_name);
+        if candidate.exists() {
+            continue;
         }
-    })
+
+        let staged_path = backup_dir.join(format!(".{file_name}.tmp"));
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&staged_path)
+        {
+            Ok(file) => return Ok((candidate, staged_path, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => {
+                return Err(format!(
+                    "Failed to reserve file {}: {err}",
+                    staged_path.display()
+                ));
+            }
+        }
+    }
+
+    unreachable!("suffix loop is unbounded")
 }
 
+/// @cc [owner:mixxorz,label:persistence] oldest-backups-pruned-first
+/// The returned paths MUST be exactly the excess entries beyond `max_backups`, ordered oldest first
+/// by modification time with filename as a deterministic tie-breaker.
 fn prune_backup_entries(
     mut backups: Vec<(SystemTime, String, PathBuf)>,
     max_backups: usize,
@@ -222,53 +268,11 @@ fn prune_backup_entries(
         .collect()
 }
 
-fn reserve_unique_temp_file(
-    parent_dir: &Path,
-    file_name: &str,
-    timestamp: &str,
-) -> Result<(PathBuf, fs::File), String> {
-    reserve_unique_file(parent_dir, |suffix| {
-        if suffix == 0 {
-            format!(".{file_name}.tmp-{timestamp}")
-        } else {
-            format!(".{file_name}.tmp-{timestamp}-{suffix}")
-        }
-    })
-}
-
-fn reserve_unique_file<F>(
-    directory: &Path,
-    candidate_name: F,
-) -> Result<(PathBuf, fs::File), String>
-where
-    F: Fn(usize) -> String,
-{
-    for suffix in 0.. {
-        let candidate = directory.join(candidate_name(suffix));
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&candidate)
-        {
-            Ok(file) => return Ok((candidate, file)),
-            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                return Err(format!(
-                    "Failed to reserve file {}: {err}",
-                    candidate.display()
-                ));
-            }
-        }
-    }
-
-    unreachable!("suffix loop is unbounded")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use crate::scenes::{ChannelConfig, ChannelRef, SceneScopeToggles};
+    use std::time::{Duration, UNIX_EPOCH};
 
     fn show_file() -> ShowFile {
         ShowFile {
@@ -284,7 +288,7 @@ mod tests {
                 scene_index: Some(1),
                 scene_name: "Intro".to_string(),
                 duration_ms: 4000,
-                channel_configs: vec![ShowFileChannelConfig {
+                channel_configs: vec![ChannelConfig {
                     group: 0,
                     channel: 2,
                     fader_db: Some(-12.5),
@@ -293,11 +297,11 @@ mod tests {
                     width: None,
                     pan_mode: None,
                 }],
-                scoped_channels: vec![ShowFileChannelRef {
+                scoped_channels: vec![ChannelRef {
                     group: 0,
                     channel: 2,
                 }],
-                scope_toggles: ShowFileSceneScopeToggles::default(),
+                scope_toggles: SceneScopeToggles::default(),
             }],
         }
     }
@@ -323,30 +327,14 @@ mod tests {
         })
     }
 
-    fn temp_test_dir(name: &str) -> PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "advanced-show-control-{}-{}-{}",
-            name,
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        path
-    }
-
     #[test]
     fn default_show_folder_uses_home_documents_when_document_dir_is_missing() {
-        let home = temp_test_dir("home-documents");
-        let folder = default_show_folder_from(None, Some(home.clone()));
+        let home = PathBuf::from("/home/engineer");
 
-        assert_eq!(folder, home.join("Documents").join("Advanced Show Control"));
-
-        let _ = fs::remove_dir_all(&home);
+        assert_eq!(
+            default_show_folder_from(None, Some(home.clone())),
+            home.join("Documents").join("Advanced Show Control")
+        );
     }
 
     #[test]
@@ -359,83 +347,16 @@ mod tests {
     }
 
     #[test]
-    fn save_show_file_writes_json_and_creates_backup_on_overwrite() {
-        let temp_dir = temp_test_dir("write");
-        let show_path = temp_dir.join("test.ascs");
-        let backup_dir = temp_dir.join("backups");
-        let file = show_file();
-
-        write_show_file(&show_path, &file, &backup_dir).unwrap();
-        write_show_file(&show_path, &file, &backup_dir).unwrap();
-
-        let json = fs::read_to_string(&show_path).unwrap();
-        assert!(json.contains("\"sceneConfigs\""));
-
-        let backups = fs::read_dir(&backup_dir).unwrap().count();
-        assert_eq!(backups, 1);
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn reserve_unique_backup_file_adds_suffix_when_candidate_exists() {
-        let backup_dir = temp_test_dir("backup-path");
-        let candidate = backup_dir.join("123-test.ascs");
-        fs::write(&candidate, "taken").unwrap();
-
-        let (path, _file) =
-            reserve_unique_backup_file(&backup_dir, Path::new("test.ascs"), "123").unwrap();
-
-        assert_eq!(
-            path.file_name().and_then(|value| value.to_str()),
-            Some("123-test__backup1.ascs")
-        );
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn reserve_unique_temp_file_adds_suffix_when_candidate_exists() {
-        let temp_dir = temp_test_dir("temp-path");
-        let candidate = temp_dir.join(".test.ascs.tmp-123");
-        fs::write(&candidate, "taken").unwrap();
-
-        let (path, _file) = reserve_unique_temp_file(&temp_dir, "test.ascs", "123").unwrap();
-
-        assert_eq!(
-            path.file_name().and_then(|value| value.to_str()),
-            Some(".test.ascs.tmp-123-1")
-        );
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
-    fn read_show_file_parses_json() {
-        let temp_dir = temp_test_dir("read");
-        let show_path = temp_dir.join("test.ascs");
-        let json = serde_json::to_string_pretty(&show_file()).unwrap();
-
-        fs::write(&show_path, json).unwrap();
-
-        let loaded = read_show_file(&show_path).unwrap();
-        assert_eq!(loaded, show_file());
-
-        let _ = fs::remove_dir_all(&temp_dir);
-    }
-
-    #[test]
     fn show_file_serializes_camel_case_json() {
-        let json = serde_json::to_string_pretty(&show_file()).unwrap();
+        let json = serde_json::to_value(show_file()).unwrap();
 
-        assert!(json.contains(&format!("\"schemaVersion\": {}", SHOW_FILE_SCHEMA_VERSION)));
-        assert!(json.contains("\"sceneConfigs\""));
-        assert!(json.contains("\"durationMs\": 4000"));
-        assert!(json.contains("\"channelConfigs\""));
-        assert!(json.contains("\"scopedChannels\""));
-        assert!(json.contains("\"scopeToggles\""));
-        assert!(json.contains("\"faders\": false"));
-        assert!(json.contains("\"faderDb\": -12.5"));
+        assert_eq!(json["schemaVersion"], SHOW_FILE_SCHEMA_VERSION);
+        assert_eq!(json["sceneConfigs"][0]["durationMs"], 4000);
+        assert_eq!(
+            json["sceneConfigs"][0]["channelConfigs"][0]["faderDb"],
+            -12.5
+        );
+        assert_eq!(json["sceneConfigs"][0]["scopeToggles"]["faders"], false);
     }
 
     #[test]
@@ -478,164 +399,117 @@ mod tests {
         assert!(enabled.scene_configs[0].scope_toggles.pan);
         assert!(!disabled.scene_configs[0].scope_toggles.faders);
         assert!(!disabled.scene_configs[0].scope_toggles.pan);
-
-        let enabled_json = serde_json::to_value(enabled).unwrap();
-        let disabled_json = serde_json::to_value(disabled).unwrap();
-
-        assert_eq!(
-            enabled_json["sceneConfigs"][0]["scopeToggles"]["faders"],
-            true
-        );
-        assert_eq!(enabled_json["sceneConfigs"][0]["scopeToggles"]["pan"], true);
-        assert_eq!(
-            disabled_json["sceneConfigs"][0]["scopeToggles"]["faders"],
-            false
-        );
-        assert_eq!(
-            disabled_json["sceneConfigs"][0]["scopeToggles"]["pan"],
-            false
-        );
     }
 
     #[test]
-    fn create_backup_prunes_old_backups_for_same_show_file() {
-        let backup_dir = temp_test_dir("backup-prune");
-        let source = backup_dir.join("show.ascs");
-        fs::write(&source, "current").unwrap();
+    fn backup_names_match_only_the_exact_show_stem() {
+        assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
+        assert!(is_backup_for_show_file("100__backup1-mix.ascs", "mix"));
+        assert!(!is_backup_for_show_file("100-mix-1.ascs", "mix"));
+        assert!(is_backup_for_show_file("100-mix-1.ascs", "mix-1"));
+        assert!(!is_backup_for_show_file(".100-mix.ascs.tmp", "mix"));
+    }
 
-        for index in 0..11 {
-            fs::write(
-                backup_dir.join(format!("100{index}-show.ascs")),
-                format!("old-{index}"),
-            )
-            .unwrap();
+    #[test]
+    fn backup_names_reject_unrelated_or_malformed_prefixes() {
+        for name in [
+            "notes-mix.ascs",
+            "-mix.ascs",
+            "01-mix.ascs",
+            "100_extra-mix.ascs",
+            "100__backup-mix.ascs",
+            "100__backup0-mix.ascs",
+            "100__backup01-mix.ascs",
+            "100__backupx-mix.ascs",
+        ] {
+            assert!(!is_backup_for_show_file(name, "mix"), "accepted {name}");
         }
-        fs::write(backup_dir.join("1000-other.ascs"), "keep").unwrap();
-
-        create_backup(&source, &backup_dir).unwrap();
-
-        let mut entries: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-        entries.sort();
-
-        let show_backups: Vec<_> = entries
-            .iter()
-            .filter(|name| {
-                name.strip_suffix(".ascs")
-                    .and_then(|prefix| prefix.split_once('-'))
-                    .is_some_and(|(_, source)| source == "show")
-            })
-            .collect();
-
-        assert!(entries.iter().any(|name| name == "1000-other.ascs"));
-        assert_eq!(show_backups.len(), 10);
-
-        let _ = fs::remove_dir_all(&backup_dir);
     }
 
     #[test]
-    fn prune_old_backups_does_not_match_hyphenated_neighbor_show_files() {
-        let backup_dir = temp_test_dir("backup-boundary");
-        let source = backup_dir.join("foo.ascs");
-
-        fs::write(backup_dir.join("100-foo.ascs"), "foo-old").unwrap();
-        fs::write(backup_dir.join("101-foo-bar.ascs"), "foo-bar-old").unwrap();
-        fs::write(&source, "current").unwrap();
-
-        prune_old_backups(&backup_dir, &source, 0).unwrap();
-
-        let entries: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-
-        assert!(entries.contains(&"101-foo-bar.ascs".to_string()));
-
-        let _ = fs::remove_dir_all(&backup_dir);
+    fn backup_names_cannot_cross_classify_backup_like_show_stems() {
+        assert!(is_backup_for_show_file("100__backup1-mix.ascs", "mix"));
+        assert!(!is_backup_for_show_file(
+            "100__backup1-mix.ascs",
+            "mix__backup1"
+        ));
+        assert!(is_backup_for_show_file(
+            "100-mix__backup1.ascs",
+            "mix__backup1"
+        ));
+        assert!(!is_backup_for_show_file("100-mix__backup1.ascs", "mix"));
     }
 
     #[test]
-    fn prune_backup_entries_uses_age_not_lexicographic_filename_order() {
-        use std::time::{Duration, UNIX_EPOCH};
+    fn reserve_unique_backup_file_puts_collision_before_stem_separator() {
+        let backup_dir =
+            std::env::temp_dir().join(format!("show-backup-reservation-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&backup_dir).unwrap();
+        fs::write(backup_dir.join("100-mix.ascs"), "existing").unwrap();
 
-        let older = UNIX_EPOCH + Duration::from_secs(1);
-        let middle = UNIX_EPOCH + Duration::from_secs(2);
-        let newer = UNIX_EPOCH + Duration::from_secs(3);
+        let (candidate, staged, file) =
+            reserve_unique_backup_file(&backup_dir, Path::new("mix.ascs"), "100").unwrap();
 
+        assert_eq!(candidate, backup_dir.join("100__backup1-mix.ascs"));
+        assert_eq!(staged, backup_dir.join(".100__backup1-mix.ascs.tmp"));
+        assert!(is_backup_for_show_file(
+            candidate.file_name().unwrap().to_str().unwrap(),
+            "mix"
+        ));
+        drop(file);
+        fs::remove_dir_all(backup_dir).unwrap();
+    }
+
+    #[test]
+    fn prune_backup_entries_uses_age_not_filename_order() {
         let backups = vec![
             (
-                middle,
+                UNIX_EPOCH + Duration::from_secs(2),
                 "10-foo.ascs".to_string(),
                 PathBuf::from("10-foo.ascs"),
             ),
-            (older, "2-foo.ascs".to_string(), PathBuf::from("2-foo.ascs")),
             (
-                newer,
+                UNIX_EPOCH + Duration::from_secs(1),
+                "2-foo.ascs".to_string(),
+                PathBuf::from("2-foo.ascs"),
+            ),
+            (
+                UNIX_EPOCH + Duration::from_secs(3),
                 "11-foo.ascs".to_string(),
                 PathBuf::from("11-foo.ascs"),
             ),
         ];
 
-        let pruned = prune_backup_entries(backups, 2);
-
-        assert_eq!(pruned, vec![PathBuf::from("2-foo.ascs")]);
+        assert_eq!(
+            prune_backup_entries(backups, 2),
+            vec![PathBuf::from("2-foo.ascs")]
+        );
     }
 
     #[test]
-    fn prune_backup_entries_keeps_mix_dash_digit_backups_separate_from_mix_backups() {
-        use std::time::{Duration, UNIX_EPOCH};
-
-        let older = UNIX_EPOCH + Duration::from_secs(1);
-        let newer = UNIX_EPOCH + Duration::from_secs(2);
-
-        let backup_dir = temp_test_dir("backup-mix-boundary");
-        let exact = backup_dir.join("100-mix.ascs");
-        let hyphenated = backup_dir.join("101-mix-1.ascs");
-        fs::write(&exact, "mix").unwrap();
-        fs::write(&hyphenated, "mix-1").unwrap();
-
-        let exact_entries = vec![
-            (older, "100-mix.ascs".to_string(), exact.clone()),
-            (newer, "101-mix-1.ascs".to_string(), hyphenated.clone()),
+    fn prune_backup_entries_breaks_equal_mtime_ties_by_filename() {
+        let modified = UNIX_EPOCH + Duration::from_secs(1);
+        let backups = vec![
+            (
+                modified,
+                "3-foo.ascs".to_string(),
+                PathBuf::from("3-foo.ascs"),
+            ),
+            (
+                modified,
+                "1-foo.ascs".to_string(),
+                PathBuf::from("1-foo.ascs"),
+            ),
+            (
+                modified,
+                "2-foo.ascs".to_string(),
+                PathBuf::from("2-foo.ascs"),
+            ),
         ];
 
         assert_eq!(
-            prune_backup_entries(exact_entries, 0),
-            vec![exact.clone(), hyphenated.clone()]
+            prune_backup_entries(backups, 1),
+            vec![PathBuf::from("1-foo.ascs"), PathBuf::from("2-foo.ascs")]
         );
-        assert!(is_backup_for_show_file("100-mix.ascs", "mix"));
-        assert!(!is_backup_for_show_file("101-mix-1.ascs", "mix"));
-        assert!(is_backup_for_show_file("101-mix-1.ascs", "mix-1"));
-
-        let _ = fs::remove_dir_all(&backup_dir);
-    }
-
-    #[test]
-    fn create_backup_keeps_unrelated_backups() {
-        let backup_dir = temp_test_dir("backup-unrelated");
-        let source = backup_dir.join("setlist.ascs");
-        fs::write(&source, "current").unwrap();
-
-        for index in 0..2 {
-            fs::write(
-                backup_dir.join(format!("100{index}-setlist.ascs")),
-                format!("old-{index}"),
-            )
-            .unwrap();
-        }
-        fs::write(backup_dir.join("1000-other.ascs"), "keep").unwrap();
-
-        create_backup(&source, &backup_dir).unwrap();
-
-        let entries: Vec<_> = fs::read_dir(&backup_dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-            .collect();
-
-        assert!(entries.iter().any(|name| name == "1000-other.ascs"));
-
-        let _ = fs::remove_dir_all(&backup_dir);
     }
 }

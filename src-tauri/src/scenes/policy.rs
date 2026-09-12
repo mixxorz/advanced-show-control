@@ -16,6 +16,19 @@ pub enum RecallPolicyDecision {
     Blocked { reason: String },
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety] fade-admission-gates
+ * `Start` MUST require lockout to be off, a connected fresh snapshot whose current scene exactly
+ * matches the recalled index and name, a scene config, complete live topology for every scoped
+ * channel, and every stored value required by an enabled scope.
+ */
+/**
+ * @cc [owner:mixxorz,label:safety] blocked-skipped-no-fade-config
+ * A missing scene config, both scopes disabled, or no targets supported by the stored pan mode MUST
+ * return `Skip`. Missing live topology, a scoped channel config, or a fader value required by enabled
+ * fader scope MUST return `Blocked`. Optional pan-family values MAY be omitted while admitting the
+ * available targets; neither `Skip` nor `Blocked` may return a `FadeConfig`.
+ */
 pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
     let RecallPolicyInput {
         recalled_scene,

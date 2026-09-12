@@ -22,6 +22,16 @@ import { ConsoleIconButton } from "./ConsoleIconButton";
 import { CueListNameModal } from "./CueListNameModal";
 import { ConsoleButton } from "./ConsoleButton";
 
+/**
+ * @cc [owner:mixxorz,label:product] cue-list-management-lifecycle
+ * Create and rename MUST pass the entered name to the corresponding command, and a successful
+ * submit MUST close the name dialog only after that command resolves. Delete MUST require explicit
+ * confirmation before dispatching its command. Selecting a different list MUST activate it before
+ * closing this modal, while selecting the already-active list MUST close without issuing a
+ * redundant activation. Whenever a nested create, rename, or delete dialog is open, the management
+ * dialog and all of its list, close, creation, and drag actions MUST remain inert until that nested
+ * dialog closes.
+ */
 export function CueListManageModal(props: { onClose: () => void }) {
   const { appState } = useAppState();
   const commands = useAppCommands();
@@ -29,8 +39,18 @@ export function CueListManageModal(props: { onClose: () => void }) {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [pendingRename, setPendingRename] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const nestedDialogOpen =
+    showCreateModal || !!pendingRename || !!pendingDelete;
 
+  /**
+   * @cc [owner:mixxorz,label:product] cue-list-reorder-permutation
+   * A drop onto a different known cue list MUST send every current cue-list ID exactly once in the
+   * resulting visual order. Missing targets, same-item drops, and IDs absent from the current
+   * snapshot MUST NOT dispatch a reorder.
+   */
   function handleDragEnd(event: DragEndEvent) {
+    if (nestedDialogOpen) return;
+
     const activeId = String(event.active.id);
     const overId = event.over?.id == null ? null : String(event.over.id);
     if (!overId || activeId === overId) return;
@@ -43,7 +63,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
     );
     if (oldIndex < 0 || newIndex < 0) return;
 
-    void commands.reorderCueLists?.(
+    void commands.reorderCueLists(
       arrayMove(appState.cueLists, oldIndex, newIndex).map(
         (cueList) => cueList.id,
       ),
@@ -57,6 +77,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           aria-label="Manage Cue Lists"
           aria-modal="true"
           className="grid h-[min(70vh,36rem)] max-h-full w-full max-w-xl grid-rows-[auto_1fr] gap-5 overflow-hidden rounded-console-panel border border-console-line bg-console-panel/95 px-6 py-6 shadow-2xl"
+          inert={nestedDialogOpen}
           role="dialog"
         >
           <div className="flex items-start justify-between gap-6 border-b border-console-line pb-4">
@@ -68,6 +89,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
 
             <div className="flex items-center gap-3">
               <ConsoleButton
+                disabled={nestedDialogOpen}
                 onClick={() => setShowCreateModal(true)}
                 size="small"
               >
@@ -75,7 +97,8 @@ export function CueListManageModal(props: { onClose: () => void }) {
               </ConsoleButton>
               <button
                 aria-label="Close manage cue lists modal"
-                className="relative h-7 w-7 text-console-secondary hover:text-console-primary"
+                className="relative h-7 w-7 text-console-secondary hover:text-console-primary disabled:text-console-disabled"
+                disabled={nestedDialogOpen}
                 onClick={props.onClose}
                 type="button"
               >
@@ -95,12 +118,13 @@ export function CueListManageModal(props: { onClose: () => void }) {
                   <CueListRow
                     active={cueList.id === appState.activeCueListId}
                     cueList={cueList}
+                    disabled={nestedDialogOpen}
                     key={cueList.id}
                     onDelete={() => setPendingDelete(cueList.id)}
                     onRename={() => setPendingRename(cueList.id)}
                     onSelect={() => {
                       if (cueList.id !== appState.activeCueListId) {
-                        void commands.setActiveCueList?.(cueList.id);
+                        void commands.setActiveCueList(cueList.id);
                       }
                       props.onClose();
                     }}
@@ -117,7 +141,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           initialName=""
           onCancel={() => setShowCreateModal(false)}
           onSubmit={async (name) => {
-            await commands.createCueList?.(name);
+            await commands.createCueList(name);
             setShowCreateModal(false);
           }}
           submitLabel="Create"
@@ -132,7 +156,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           }
           onCancel={() => setPendingRename(null)}
           onSubmit={async (name) => {
-            await commands.renameCueList?.(pendingRename, name);
+            await commands.renameCueList(pendingRename, name);
             setPendingRename(null);
           }}
           submitLabel="Rename"
@@ -156,7 +180,7 @@ export function CueListManageModal(props: { onClose: () => void }) {
           }
           onCancel={() => setPendingDelete(null)}
           onConfirm={() => {
-            void commands.deleteCueList?.(pendingDelete);
+            void commands.deleteCueList(pendingDelete);
             setPendingDelete(null);
           }}
           title="Delete Cue List"
@@ -166,14 +190,24 @@ export function CueListManageModal(props: { onClose: () => void }) {
   );
 }
 
+/**
+ * @cc [owner:mixxorz,label:accessibility;product] cue-list-nested-actions-isolated
+ * Cue-list selection MUST use a semantic button that is a sibling of the drag, rename, and delete
+ * controls, never an interactive ancestor of them. Enter or Space on any control MUST invoke only
+ * that control and MUST NOT select the cue list or close the management modal.
+ */
 function CueListRow(props: {
   active: boolean;
   cueList: CueList;
+  disabled: boolean;
   onDelete: () => void;
   onRename: () => void;
   onSelect: () => void;
 }) {
-  const sortable = useSortable({ id: props.cueList.id });
+  const sortable = useSortable({
+    id: props.cueList.id,
+    disabled: props.disabled,
+  });
 
   return (
     <div
@@ -183,13 +217,6 @@ function CueListRow(props: {
           ? "grid w-full gap-3 rounded-console-control border border-accent-orange bg-accent-orange-soft py-2.5 pr-2 pl-3 text-left md:grid-cols-[auto_1fr_auto] md:items-center"
           : "grid w-full gap-3 rounded-console-control border border-console-line bg-console-section/70 py-2.5 pr-2 pl-3 text-left hover:border-console-line-strong hover:bg-console-control/70 md:grid-cols-[auto_1fr_auto] md:items-center"
       }
-      onKeyDown={(event) => {
-        if (event.key === "Enter" || event.key === " ") {
-          event.preventDefault();
-          props.onSelect();
-        }
-      }}
-      onClick={props.onSelect}
       style={{
         opacity: sortable.isDragging ? 0.55 : 1,
         transform: CSS.Transform.toString(
@@ -198,40 +225,42 @@ function CueListRow(props: {
         transition: sortable.transition,
         zIndex: sortable.isDragging ? 1 : undefined,
       }}
-      role="button"
-      tabIndex={0}
     >
       <span
+        {...sortable.attributes}
+        {...(!props.disabled ? sortable.listeners : {})}
+        aria-disabled={props.disabled}
         aria-label={`Drag ${props.cueList.name}`}
         className="cursor-grab text-console-secondary active:cursor-grabbing"
-        onClick={(event) => event.stopPropagation()}
-        {...sortable.attributes}
-        {...sortable.listeners}
+        tabIndex={props.disabled ? -1 : sortable.attributes.tabIndex}
       >
         <GripVertical aria-hidden="true" className="h-5 w-5" />
       </span>
-      <div className="min-w-0 truncate text-base font-normal text-console-primary">
+      <button
+        className="min-w-0 truncate text-left text-base font-normal text-console-primary"
+        disabled={props.disabled}
+        onClick={props.onSelect}
+        type="button"
+      >
         {props.cueList.name}
-      </div>
+      </button>
       <div className="flex flex-wrap gap-1 md:justify-self-end">
         <ConsoleIconButton
           aria-label={`Rename ${props.cueList.name}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onRename();
-          }}
+          disabled={props.disabled}
+          onClick={props.onRename}
           size="small"
+          type="button"
           variant="secondary"
         >
           <SquarePen aria-hidden="true" className="h-4 w-4" />
         </ConsoleIconButton>
         <ConsoleIconButton
           aria-label={`Delete ${props.cueList.name}`}
-          onClick={(event) => {
-            event.stopPropagation();
-            props.onDelete();
-          }}
+          disabled={props.disabled}
+          onClick={props.onDelete}
           size="small"
+          type="button"
           variant="ghost-danger"
         >
           <Trash2 aria-hidden="true" className="h-4 w-4" />

@@ -1,5 +1,6 @@
 mod actor;
 mod commands;
+mod connection;
 mod discovery;
 mod events;
 mod handle;
@@ -12,6 +13,7 @@ mod types;
 
 pub use actor::{Lv1ActorTask, build_actor};
 pub use commands::{Lv1Command, Lv1ParameterWrite, Lv1WriteParameter};
+pub(crate) use connection::Lv1Connection;
 pub use discovery::{DiscoverOptions, DiscoveryEntry, discover, resolve_target};
 pub use events::{Lv1ActorError, Lv1Event};
 pub use handle::Lv1ActorHandle;
