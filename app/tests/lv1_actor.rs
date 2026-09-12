@@ -994,6 +994,7 @@ async fn actor_flush_waits_for_successful_gain_and_mute_writes() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let (message_tx, message_rx) = std::sync::mpsc::channel();
+        let (release_server, wait_for_flush) = std::sync::mpsc::channel();
 
         tokio::task::spawn_blocking(move || {
             use std::io::Read;
@@ -1015,6 +1016,11 @@ async fn actor_flush_waits_for_successful_gain_and_mute_writes() {
                                 "/Set/Track/Out/Gain" | "/Set/Track/Out/Mute"
                             ) {
                                 message_tx.send(message).unwrap();
+                                wait_for_flush
+                                    .recv_timeout(std::time::Duration::from_secs(5))
+                                    .expect(
+                                        "flush did not complete while the server was connected",
+                                    );
                                 return;
                             }
                         }
@@ -1078,6 +1084,7 @@ async fn actor_flush_waits_for_successful_gain_and_mute_writes() {
             .await
             .unwrap();
         assert_eq!(flush_result.await.unwrap(), Ok(()));
+        release_server.send(()).unwrap();
 
         let message = tokio::task::spawn_blocking(move || {
             message_rx
