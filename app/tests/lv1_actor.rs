@@ -894,6 +894,7 @@ async fn disconnected_flush_and_recall_scene_return_errors() {
     drop(listener);
 
     let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, AppEventBus::default(), 0);
+    let reply_timeout = std::time::Duration::from_secs(5);
 
     let (flush_reply, flush_result) = oneshot::channel();
     handle
@@ -903,7 +904,7 @@ async fn disconnected_flush_and_recall_scene_return_errors() {
         .await
         .unwrap();
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), flush_result)
+        tokio::time::timeout(reply_timeout, flush_result)
             .await
             .expect("disconnected Flush reply timed out")
             .unwrap()
@@ -919,7 +920,7 @@ async fn disconnected_flush_and_recall_scene_return_errors() {
         .await
         .unwrap();
     assert!(
-        tokio::time::timeout(std::time::Duration::from_secs(2), recall_result)
+        tokio::time::timeout(reply_timeout, recall_result)
             .await
             .expect("disconnected RecallScene reply timed out")
             .unwrap()

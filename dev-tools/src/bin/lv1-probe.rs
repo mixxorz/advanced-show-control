@@ -1460,11 +1460,32 @@ async fn wait_for_channels_with_mute_settle(
 
         tokio::select! {
             _ = &mut sleep => {
+                let mut saw_settle_event = false;
+                let queued_event_count = events.len();
+                for _ in 0..queued_event_count {
+                    match events.try_recv() {
+                        Ok(AppEvent::Lv1 {
+                            event: Lv1Event::MuteChanged { .. } | Lv1Event::ChannelTopologyChanged(_),
+                            ..
+                        }) => saw_settle_event = true,
+                        Ok(_) => {}
+                        Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
+                            log_lagged_subscriber("vegas-settle", count);
+                            saw_settle_event = true;
+                        }
+                        Err(tokio::sync::broadcast::error::TryRecvError::Empty | tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+                    }
+                }
+
                 let (reply, rx) = oneshot::channel();
                 lv1.send(Lv1Command::GetState { reply }).await?;
                 let latest = rx.await?;
                 if !latest.channels.is_empty() {
                     snapshot = latest.channels;
+                }
+                if saw_settle_event {
+                    settle_deadline = Instant::now() + settle_window;
+                    continue;
                 }
                 if Instant::now() >= settle_deadline || Instant::now() >= deadline {
                     return Ok(snapshot);

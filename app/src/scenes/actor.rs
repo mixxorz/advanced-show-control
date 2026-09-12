@@ -3702,7 +3702,7 @@ mod tests {
         fixture.set_current_scene(exact_scene.clone());
         fixture.publish_ping(1, 11);
         fixture.publish_scene_observation(1, 12, exact_scene);
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Wait);
 
         fixture.publish_ping(1, 12);
         yield_to_actor().await;

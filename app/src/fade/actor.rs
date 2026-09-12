@@ -2588,22 +2588,38 @@ mod tests {
             event: Lv1Event::PingReceived { sequence: 42 },
         });
 
-        let writes = tokio::time::timeout(Duration::from_millis(300), write_rx.recv())
-            .await
-            .expect("fade should resume after readiness release")
-            .expect("fade write channel should remain open");
-        assert!(writes.iter().any(|write| {
-            write.parameter == Lv1WriteParameter::Pan && write.group == 0 && write.channel == 0
-        }));
-        assert!(writes.iter().any(|write| {
-            write.parameter == Lv1WriteParameter::FaderDb && write.group == 0 && write.channel == 1
-        }));
-        assert!(!writes.iter().any(|write| {
-            write.parameter == Lv1WriteParameter::FaderDb && write.group == 0 && write.channel == 0
-        }));
-        assert!(!writes.iter().any(|write| {
-            write.parameter == Lv1WriteParameter::Pan && write.group == 0 && write.channel == 1
-        }));
+        tokio::time::timeout(Duration::from_millis(300), async {
+            let mut saw_pan = false;
+            let mut saw_fader = false;
+            while !saw_pan || !saw_fader {
+                let writes = write_rx
+                    .recv()
+                    .await
+                    .expect("fade write channel should remain open");
+                assert!(!writes.iter().any(|write| {
+                    write.parameter == Lv1WriteParameter::FaderDb
+                        && write.group == 0
+                        && write.channel == 0
+                }));
+                assert!(!writes.iter().any(|write| {
+                    write.parameter == Lv1WriteParameter::Pan
+                        && write.group == 0
+                        && write.channel == 1
+                }));
+                saw_pan |= writes.iter().any(|write| {
+                    write.parameter == Lv1WriteParameter::Pan
+                        && write.group == 0
+                        && write.channel == 0
+                });
+                saw_fader |= writes.iter().any(|write| {
+                    write.parameter == Lv1WriteParameter::FaderDb
+                        && write.group == 0
+                        && write.channel == 1
+                });
+            }
+        })
+        .await
+        .expect("remaining fade targets should resume after readiness release");
     }
 
     #[tokio::test(start_paused = true, flavor = "current_thread")]
@@ -3263,7 +3279,7 @@ mod tests {
         assert!(saw_scene_a_cancelled);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true, flavor = "current_thread")]
     async fn post_recall_ping_reset_rebases_unrelated_fade_and_replaces_overlap() {
         let snapshots = vec![
             connected_snapshot(
