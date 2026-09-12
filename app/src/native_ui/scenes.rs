@@ -950,7 +950,6 @@ impl Render for ScenesView {
         div()
             .relative()
             .size_full()
-            .p_3()
             .flex()
             .gap_3()
             .bg(rgb(CONSOLE_BG))

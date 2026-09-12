@@ -1093,7 +1093,6 @@ impl Render for CueListsView {
         div()
             .relative()
             .size_full()
-            .p_3()
             .flex()
             .flex_col()
             .gap_3()
