@@ -20,7 +20,7 @@ pub struct SettingsActorTask {
 
 impl SettingsActorTask {
     pub fn spawn(self) {
-        tauri::async_runtime::spawn(run_settings_actor(
+        tokio::spawn(run_settings_actor(
             self.rx,
             self.event_bus,
             self.state,
@@ -33,7 +33,7 @@ impl SettingsActorTask {
     fn spawn_with_dispatch(self, dispatch: tracing::Dispatch) {
         use tracing::instrument::WithSubscriber;
 
-        tauri::async_runtime::spawn(
+        tokio::spawn(
             run_settings_actor(
                 self.rx,
                 self.event_bus,

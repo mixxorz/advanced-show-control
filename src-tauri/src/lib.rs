@@ -1,3 +1,4 @@
+pub mod application;
 mod atomic_file;
 pub mod connection_state;
 pub mod cue_lists;
@@ -6,6 +7,7 @@ pub mod fade;
 pub mod lifecycle;
 pub mod logging;
 pub mod lv1;
+pub mod native_ui;
 pub mod projector;
 pub mod runtime;
 pub mod scenes;

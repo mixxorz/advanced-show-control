@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::{broadcast, watch};
 
 use crate::lifecycle::RuntimeSnapshotSource;
@@ -14,8 +13,52 @@ use super::ProjectionCache;
 
 pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
 
-pub struct ProjectorInputs<R: Runtime> {
-    pub app: AppHandle<R>,
+#[derive(Clone)]
+pub struct ProjectionSink {
+    snapshots: watch::Sender<Option<AppViewState>>,
+}
+
+pub struct ProjectionSubscription {
+    snapshots: watch::Receiver<Option<AppViewState>>,
+}
+
+impl ProjectionSink {
+    pub fn subscribe(&self) -> ProjectionSubscription {
+        ProjectionSubscription {
+            snapshots: self.snapshots.subscribe(),
+        }
+    }
+
+    fn publish(&self, snapshot: AppViewState) {
+        self.snapshots.send_replace(Some(snapshot));
+    }
+}
+
+impl ProjectionSubscription {
+    pub async fn changed(&mut self) -> Result<(), watch::error::RecvError> {
+        self.snapshots.changed().await
+    }
+
+    pub fn latest(&mut self) -> Option<AppViewState> {
+        self.snapshots.borrow_and_update().clone()
+    }
+}
+
+/// @cc [owner:mixxorz,label:architecture;projection] latest-snapshot-projection-channel
+/// The host-neutral projection channel MUST retain only the latest complete snapshot so a slow or
+/// late host bridge can resume from current state without replaying stale intermediate views.
+pub fn projection_channel() -> (ProjectionSink, ProjectionSubscription) {
+    let (snapshots, receiver) = watch::channel(None);
+    (
+        ProjectionSink { snapshots },
+        ProjectionSubscription {
+            snapshots: receiver,
+        },
+    )
+}
+
+pub struct ProjectorInputs {
+    pub sink: ProjectionSink,
     pub generation: u64,
     pub state: watch::Receiver<AppStateSnapshot>,
     pub runtime_source: RuntimeSnapshotSource,
@@ -31,9 +74,9 @@ pub struct ProjectorInputs<R: Runtime> {
  */
 /**
  * @cc [owner:mixxorz,label:performance;projection] dirty-throttled-emission
- * The projector MUST emit only while dirty and only on interval ticks spaced by
- * `PROJECTOR_INTERVAL`; unchanged retained state and non-material LV1 facts MUST NOT cause an
- * emission, while multiple changes before a tick MUST be coalesced into the latest snapshot.
+ * The projector MUST publish only while dirty and only on interval ticks spaced by
+ * `PROJECTOR_INTERVAL`; unchanged retained state and non-material LV1 facts MUST NOT cause a
+ * publication, while multiple changes before a tick MUST be coalesced into the latest snapshot.
  */
 /**
  * @cc [owner:mixxorz,label:logging;projection] ui-log-input-boundary
@@ -47,10 +90,10 @@ pub struct ProjectorInputs<R: Runtime> {
  * bounded authoritative recovery. Facts arriving after that drain, including during recovery, MAY
  * remain queued and be processed normally after recovery subject to generation filtering.
  */
-pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::JoinHandle<()> {
+pub fn spawn_projector(inputs: ProjectorInputs) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let ProjectorInputs {
-            app,
+            sink,
             generation,
             mut state,
             runtime_source,
@@ -69,7 +112,7 @@ pub fn spawn_projector<R: Runtime>(inputs: ProjectorInputs<R>) -> tokio::task::J
                 _ = interval.tick() => {
                     if dirty {
                         let snapshot = cache.build_snapshot(&state.borrow_and_update());
-                        emit_app_status(&app, &snapshot);
+                        sink.publish(snapshot);
                         dirty = false;
                     }
                 }
@@ -156,15 +199,6 @@ async fn recover_projector_after_lag(
         return false;
     }
     true
-}
-
-/// @cc [owner:mixxorz,label:architecture;reliability] sole-best-effort-status-emission
-/// This projector boundary MUST be the sole emitter of `app-status-changed`; emission failure MUST be
-/// diagnostic-only and MUST NOT terminate the projector or recursively create a frontend log.
-fn emit_app_status<R: Runtime>(app: &AppHandle<R>, snapshot: &AppViewState) {
-    if let Err(err) = app.emit("app-status-changed", snapshot) {
-        tracing::debug!(event = "projector_emit_failed", error = %err, "Failed to emit app-status-changed from projector");
-    }
 }
 
 /// @cc [owner:mixxorz,label:architecture;generation] projector-event-routing

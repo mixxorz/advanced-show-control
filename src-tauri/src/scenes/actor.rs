@@ -242,11 +242,7 @@ impl ScenesTask {
     }
 
     pub fn spawn(self) {
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(run_scenes_actor(self));
-        } else {
-            tauri::async_runtime::spawn(run_scenes_actor(self));
-        }
+        tokio::spawn(run_scenes_actor(self));
     }
 }
 

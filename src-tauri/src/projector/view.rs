@@ -83,3 +83,56 @@ pub struct AppViewState {
     pub last_event_at: Option<String>,
     pub state_version: u64,
 }
+
+/// @cc [owner:mixxorz,label:architecture] pre-snapshot-placeholder
+/// This value MUST be used only before the first accepted projector snapshot or in isolated tests;
+/// it MUST NOT overwrite an accepted snapshot or be treated as evidence of backend disconnection.
+impl Default for AppViewState {
+    fn default() -> Self {
+        Self {
+            connection: AppConnectionState::Disconnected,
+            discovered_lv1_systems: Vec::new(),
+            connected_lv1_identity: None,
+            current_scene: None,
+            scenes: Vec::new(),
+            scene_count: 0,
+            channel_count: 0,
+            channels: Vec::new(),
+            fade_state: AppFadeState::Idle,
+            lockout: false,
+            scene_configs: Vec::new(),
+            scene_settings_clipboard_available: false,
+            cue_lists: Vec::new(),
+            active_cue_list_id: None,
+            cued_cue_entry_id: None,
+            last_cue_recall_status: None,
+            settings: AppSettings::default(),
+            selected_scene_internal_id: None,
+            show_file_name: "Untitled Session".to_string(),
+            show_file_path: None,
+            show_file_dirty: false,
+            show_file_last_saved_at: None,
+            logs: Vec::new(),
+            last_event_at: None,
+            state_version: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_view_is_only_a_disconnected_pre_snapshot_placeholder() {
+        let view = AppViewState::default();
+
+        assert_eq!(view.connection, AppConnectionState::Disconnected);
+        assert_eq!(view.fade_state, AppFadeState::Idle);
+        assert_eq!(view.show_file_name, "Untitled Session");
+        assert_eq!(view.state_version, 0);
+        assert!(view.scenes.is_empty());
+        assert!(view.scene_configs.is_empty());
+        assert_eq!(view.settings, AppSettings::default());
+    }
+}

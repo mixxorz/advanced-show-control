@@ -1,10 +1,10 @@
 use std::error::Error;
 use std::fs;
+use std::path::Path;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-use tauri::Runtime;
 use tokio::sync::broadcast;
 use tracing::{Event, Level, Subscriber};
 use tracing_appender::non_blocking::WorkerGuard;
@@ -21,7 +21,7 @@ use crate::projector::LogSeverity;
 use crate::runtime::events::{AppEvent, log_lagged_subscriber};
 use crate::settings::{AppSettings, SettingsEvent};
 
-const UI_SINK_TARGET: &str = "advanced_show_control_tauri::logging::ui_sink";
+const UI_SINK_TARGET: &str = "advanced_show_control::logging::ui_sink";
 
 fn default_env_filter() -> tracing_subscriber::EnvFilter {
     tracing_subscriber::EnvFilter::new(default_env_filter_directive())
@@ -106,7 +106,7 @@ impl LoggingRuntime {
 
     pub fn spawn_settings_watcher(&self, mut events: broadcast::Receiver<AppEvent>) {
         let gate = self.diagnostic_file_gate.clone();
-        tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             loop {
                 match events.recv().await {
                     Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings })) => {
@@ -132,15 +132,14 @@ fn apply_settings_to_diagnostic_file_gate(gate: &DiagnosticFileGate, settings: &
 }
 
 /// @cc [owner:mixxorz,label:observability] logging-sink-delivery
-/// Initialization MUST install an append-only JSON diagnostic-file sink, a human-readable stdout
-/// sink, and the frontend sink. Subject to the process-wide environment filter, the file and stdout
+/// Initialization MUST install an append-only JSON diagnostic-file sink beneath the explicitly
+/// supplied platform app-config directory, a human-readable stdout sink, and the frontend sink.
+/// Subject to the process-wide environment filter, the file and stdout
 /// sinks MUST admit `DEBUG` and above at bootstrap, while the frontend sink MUST admit only `INFO`
 /// and above; disabling extensive diagnostics MUST raise only the file sink's minimum level to
 /// `INFO`.
-pub fn init_logging<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> Result<LoggingRuntime, Box<dyn Error>> {
-    let log_path = diagnostic_log_path(app);
+pub fn init_logging(app_config_dir: &Path) -> Result<LoggingRuntime, Box<dyn Error>> {
+    let log_path = diagnostic_log_path(app_config_dir);
     if let Some(parent) = log_path.parent() {
         fs::create_dir_all(parent)?;
     }

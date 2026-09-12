@@ -6,33 +6,21 @@ use crate::runtime::events::AppEventBus;
 use crate::scenes::{SceneConfig, ScenesEvent, ScenesProjectionState};
 use crate::settings::{AppSettings, SettingsEvent};
 use crate::show::ShowState;
-use serde_json::Value;
-use tauri::{
-    Listener,
-    test::{MockRuntime, mock_app},
-};
-use tokio::sync::mpsc;
 use uuid::Uuid;
 
 struct ProjectorTest {
-    _app: tauri::App<MockRuntime>,
     events: AppEventBus,
     logs: broadcast::Sender<UiLogEvent>,
-    snapshots: mpsc::UnboundedReceiver<Value>,
+    snapshots: ProjectionSubscription,
     task: tokio::task::JoinHandle<()>,
 }
 
 impl ProjectorTest {
     fn new(events: AppEventBus) -> Self {
-        let app = mock_app();
-        let handle = app.handle().clone();
-        let (sent, snapshots) = mpsc::unbounded_channel();
-        handle.listen_any("app-status-changed", move |event| {
-            let _ = sent.send(serde_json::from_str::<Value>(event.payload()).unwrap());
-        });
+        let (sink, snapshots) = projection_channel();
         let (logs, log_rx) = broadcast::channel(8);
         let task = spawn_projector(ProjectorInputs {
-            app: handle,
+            sink,
             generation: 0,
             state: events.state(),
             runtime_source: crate::lifecycle::AppLifecycle::default().runtime_snapshot_source(),
@@ -40,7 +28,6 @@ impl ProjectorTest {
             logs: log_rx,
         });
         Self {
-            _app: app,
             events,
             logs,
             snapshots,
@@ -48,16 +35,19 @@ impl ProjectorTest {
         }
     }
 
-    async fn snapshot(&mut self) -> Value {
-        tokio::time::timeout(Duration::from_secs(1), self.snapshots.recv())
+    async fn snapshot(&mut self) -> AppViewState {
+        tokio::time::timeout(Duration::from_secs(1), self.snapshots.changed())
             .await
-            .expect("projector should emit a snapshot")
-            .unwrap()
+            .expect("projector should publish a snapshot")
+            .expect("projector should remain available");
+        self.snapshots
+            .latest()
+            .expect("snapshot should be available")
     }
 
     async fn assert_no_snapshot(&mut self) {
         assert!(
-            tokio::time::timeout(PROJECTOR_INTERVAL * 2, self.snapshots.recv())
+            tokio::time::timeout(PROJECTOR_INTERVAL * 2, self.snapshots.changed())
                 .await
                 .is_err()
         );
@@ -101,8 +91,8 @@ async fn projector_starts_from_latest_state_even_when_published_before_subscript
     events.publish(AppEvent::Show(state));
     let mut test = ProjectorTest::new(events);
     let snapshot = test.snapshot().await;
-    assert_eq!(snapshot["lockout"], true);
-    assert_eq!(snapshot["showFileName"], "Seeded Show");
+    assert!(snapshot.lockout);
+    assert_eq!(snapshot.show_file_name, "Seeded Show");
 }
 
 #[tokio::test]
@@ -116,11 +106,10 @@ async fn projector_emits_ui_log_entries_from_log_input() {
         .unwrap();
     let snapshot = test.snapshot().await;
     assert!(
-        snapshot["logs"]
-            .as_array()
-            .unwrap()
+        snapshot
+            .logs
             .iter()
-            .any(|entry| entry["message"] == "projected log")
+            .any(|entry| entry.message == "projected log")
     );
 }
 
@@ -136,9 +125,9 @@ async fn ping_event_does_not_emit_app_status_changed() {
 #[tokio::test]
 async fn show_state_changes_are_projected() {
     let mut test = ProjectorTest::new(AppEventBus::default());
-    assert_eq!(test.snapshot().await["lockout"], false);
+    assert!(!test.snapshot().await.lockout);
     test.events.publish(show_event(true));
-    assert_eq!(test.snapshot().await["lockout"], true);
+    assert!(test.snapshot().await.lockout);
 }
 
 #[tokio::test]
@@ -164,9 +153,9 @@ async fn scene_state_changes_are_projected() {
         },
     });
     let snapshot = test.snapshot().await;
-    assert_eq!(snapshot["sceneConfigs"][0]["sceneName"], "Bridge");
+    assert_eq!(snapshot.scene_configs[0].scene_name, "Bridge");
     assert_eq!(
-        snapshot["selectedSceneInternalId"],
+        snapshot.selected_scene_internal_id.unwrap(),
         Uuid::from_u128(1).to_string()
     );
 }
@@ -176,8 +165,8 @@ async fn cue_state_changes_are_projected() {
     let mut test = ProjectorTest::new(AppEventBus::default());
     test.events.publish(AppEvent::CueLists(cue_state()));
     let snapshot = test.snapshot().await;
-    assert_eq!(snapshot["cueLists"][0]["name"], "Main");
-    assert_eq!(snapshot["lastCueRecallStatus"], "recalling");
+    assert_eq!(snapshot.cue_lists[0].name, "Main");
+    assert_eq!(snapshot.last_cue_recall_status.unwrap(), "recalling");
 }
 
 #[tokio::test]
@@ -193,18 +182,15 @@ async fn session_replacement_projects_scenes_and_cues_together() {
             persisted_scene_edit: false,
         },
     });
-    assert_eq!(
-        test.snapshot().await["sceneSettingsClipboardAvailable"],
-        true
-    );
+    assert!(test.snapshot().await.scene_settings_clipboard_available);
     test.events.publish(AppEvent::SessionReplaced {
         generation: 99,
         scenes: ScenesProjectionState::default(),
         cue_lists: cue_state(),
     });
     let snapshot = test.snapshot().await;
-    assert_eq!(snapshot["sceneSettingsClipboardAvailable"], false);
-    assert_eq!(snapshot["cueLists"][0]["name"], "Main");
+    assert!(!snapshot.scene_settings_clipboard_available);
+    assert_eq!(snapshot.cue_lists[0].name, "Main");
 }
 
 #[tokio::test(start_paused = true)]
@@ -212,7 +198,7 @@ async fn unchanged_state_does_not_emit_another_snapshot() {
     let mut test = ProjectorTest::new(AppEventBus::default());
     test.events.publish(show_event(true));
     test.events.publish(show_event(true));
-    assert_eq!(test.snapshot().await["lockout"], true);
+    assert!(test.snapshot().await.lockout);
     test.events.publish(show_event(true));
     test.assert_no_snapshot().await;
 }
@@ -221,7 +207,10 @@ async fn unchanged_state_does_not_emit_another_snapshot() {
 async fn bus_lag_resets_live_state_without_losing_latest_app_state() {
     let mut test = ProjectorTest::new(AppEventBus::new(1));
     test.events.publish_lv1(0, Lv1Event::Connected);
-    assert_eq!(test.snapshot().await["connection"], "connected");
+    assert_eq!(
+        test.snapshot().await.connection,
+        crate::projector::AppConnectionState::Connected
+    );
     test.events.publish(show_event(true));
     test.events.publish(AppEvent::CueLists(cue_state()));
     for sequence in 1..8 {
@@ -229,9 +218,12 @@ async fn bus_lag_resets_live_state_without_losing_latest_app_state() {
             .publish_lv1(0, Lv1Event::PingReceived { sequence });
     }
     let snapshot = test.snapshot().await;
-    assert_eq!(snapshot["connection"], "disconnected");
-    assert_eq!(snapshot["lockout"], true);
-    assert_eq!(snapshot["cueLists"][0]["name"], "Main");
+    assert_eq!(
+        snapshot.connection,
+        crate::projector::AppConnectionState::Disconnected
+    );
+    assert!(snapshot.lockout);
+    assert_eq!(snapshot.cue_lists[0].name, "Main");
 }
 
 #[tokio::test]
@@ -244,5 +236,5 @@ async fn settings_state_changes_are_projected() {
                 ..Default::default()
             },
         }));
-    assert_eq!(test.snapshot().await["settings"]["autoSaveSessions"], true);
+    assert!(test.snapshot().await.settings.auto_save_sessions);
 }

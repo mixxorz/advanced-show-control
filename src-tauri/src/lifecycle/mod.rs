@@ -6,7 +6,6 @@ use std::sync::Arc;
 use std::future::Future;
 #[cfg(test)]
 use std::pin::Pin;
-use tauri::{AppHandle, Runtime};
 use tokio::sync::{Mutex, oneshot};
 use tokio::task::JoinHandle;
 use tracing::instrument::WithSubscriber;
@@ -104,8 +103,8 @@ struct RuntimeClearTransaction {
 struct LifecycleInner {
     generation: RuntimeGeneration,
     connecting: bool,
-    frontend_ready: bool,
     runtime: Option<InstalledRuntime>,
+    projection_sink: Option<crate::projector::ProjectionSink>,
     projector: Option<JoinHandle<()>>,
 }
 
@@ -186,8 +185,8 @@ impl AppLifecycle {
             inner: Arc::new(Mutex::new(LifecycleInner {
                 generation: runtime_generation,
                 connecting: false,
-                frontend_ready: false,
                 runtime: None,
+                projection_sink: None,
                 projector: None,
             })),
             event_bus,
@@ -372,9 +371,8 @@ impl AppLifecycle {
     /// A connection candidate MUST be installed under its generation fence before its LV1/Fade
     /// tasks are started. A rejected candidate MUST be cleaned up and return a stale-generation
     /// error without starting those tasks.
-    pub async fn connect_to_identity<R: Runtime>(
+    pub async fn connect_to_identity(
         &self,
-        app: AppHandle<R>,
         generation: u64,
         identity: crate::connection_state::Lv1SystemIdentity,
     ) -> Result<ConnectCommandResult, String> {
@@ -396,7 +394,6 @@ impl AppLifecycle {
         }
         let started_runtime = built_runtime.spawn_lv1_and_fade();
 
-        let _ = app;
         let result = self.spawn_finish_connect_transaction(identity, started_runtime);
         result
             .await
@@ -415,7 +412,7 @@ impl AppLifecycle {
         let (reply, result) = oneshot::channel();
         let lifecycle = self.clone();
         let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-        tauri::async_runtime::spawn(
+        tokio::spawn(
             async move {
                 let outcome = lifecycle
                     .finish_connect_transaction(identity, started_runtime)
@@ -473,7 +470,7 @@ impl AppLifecycle {
         if initial_snapshot.connection != ConnectionStatus::Connected {
             let lifecycle = self.clone();
             let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-            let finalizer = tauri::async_runtime::spawn(
+            let finalizer = tokio::spawn(
                 async move {
                     lifecycle
                         .finalize_failed_connection(
@@ -494,7 +491,7 @@ impl AppLifecycle {
 
         let lifecycle = self.clone();
         let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-        let finalizer = tauri::async_runtime::spawn(
+        let finalizer = tokio::spawn(
             async move {
                 lifecycle
                     .finalize_connection_metadata(
@@ -793,9 +790,8 @@ impl AppLifecycle {
     /// @cc [owner:mixxorz,label:safety;ordering] explicit-connect-replaces-runtime
     /// An explicit connect MUST invalidate and clear the current runtime before allocating the new
     /// connection generation, so old generation tasks cannot remain admitted during replacement.
-    pub async fn connect_lv1_system<R: Runtime>(
+    pub async fn connect_lv1_system(
         &self,
-        app: AppHandle<R>,
         identity: crate::connection_state::Lv1SystemIdentity,
     ) -> Result<ConnectCommandResult, String> {
         self.abort_current_runtime().await;
@@ -803,7 +799,7 @@ impl AppLifecycle {
             .begin_connecting()
             .await
             .ok_or_else(|| "Failed to begin LV1 connection".to_string())?;
-        self.connect_to_identity(app, generation, identity).await
+        self.connect_to_identity(generation, identity).await
     }
 
     pub async fn refresh_lv1_discovery(
@@ -870,10 +866,7 @@ impl AppLifecycle {
     /// When no remembered LV1 identity exists, startup auto-connect MUST return `changed: false`
     /// without discovery, runtime teardown, or generation advancement; settings/discovery/Show
     /// failures after an identity is found MUST be returned.
-    pub async fn startup_auto_connect_lv1<R: Runtime>(
-        &self,
-        app: AppHandle<R>,
-    ) -> Result<ConnectCommandResult, String> {
+    pub async fn startup_auto_connect_lv1(&self) -> Result<ConnectCommandResult, String> {
         let Some(remembered) = self.last_connected_lv1_identity().await? else {
             return Ok(ConnectCommandResult { changed: false });
         };
@@ -889,7 +882,7 @@ impl AppLifecycle {
             .await
             .map_err(|_| "Show state reply channel is closed".to_string())?;
 
-        self.startup_auto_connect_with_discovered(app, remembered, &state.discovered_lv1_systems)
+        self.startup_auto_connect_with_discovered(remembered, &state.discovered_lv1_systems)
             .await
     }
 
@@ -897,9 +890,8 @@ impl AppLifecycle {
     /// Startup auto-connect MUST preserve the active generation, current runtime, and remembered
     /// identity when discovery does not yield one safe target; only an unambiguous accepted target
     /// may trigger runtime abort and a new connection generation.
-    async fn startup_auto_connect_with_discovered<R: Runtime>(
+    async fn startup_auto_connect_with_discovered(
         &self,
-        app: AppHandle<R>,
         remembered: crate::connection_state::Lv1SystemIdentity,
         systems: &[crate::connection_state::DiscoveredLv1System],
     ) -> Result<ConnectCommandResult, String> {
@@ -917,27 +909,26 @@ impl AppLifecycle {
             .begin_connecting()
             .await
             .ok_or_else(|| "Failed to begin LV1 startup auto-connect".to_string())?;
-        self.connect_to_identity(app, generation, identity).await
+        self.connect_to_identity(generation, identity).await
     }
 
     /// @cc [owner:mixxorz,label:architecture] projector-starts-once
     /// The first frontend-ready call MUST atomically mark readiness and start one projector from the
     /// current generation and retained/event/log sources; subsequent calls MUST succeed without
     /// replacing or starting another projector.
-    pub async fn frontend_ready<R: Runtime>(
+    pub async fn frontend_ready(
         &self,
-        app: AppHandle<R>,
         logs: tokio::sync::broadcast::Receiver<UiLogEvent>,
-    ) -> Result<(), String> {
+    ) -> Result<crate::projector::ProjectionSubscription, String> {
         let mut inner = self.inner.lock().await;
-        if inner.frontend_ready {
-            return Ok(());
+        if let Some(sink) = &inner.projection_sink {
+            return Ok(sink.subscribe());
         }
-        inner.frontend_ready = true;
         let generation = inner.generation.current().await;
+        let (sink, subscription) = crate::projector::projection_channel();
         inner.projector = Some(crate::projector::spawn_projector(
             crate::projector::ProjectorInputs {
-                app,
+                sink: sink.clone(),
                 generation,
                 state: self.event_bus.state(),
                 runtime_source: self.runtime_snapshot_source(),
@@ -945,7 +936,8 @@ impl AppLifecycle {
                 logs,
             },
         ));
-        Ok(())
+        inner.projection_sink = Some(sink);
+        Ok(subscription)
     }
 }
 
@@ -1020,7 +1012,6 @@ mod tests {
     use crate::scenes::ScenesCommand;
 
     use std::path::PathBuf;
-    use tauri::test::mock_app;
     use tokio::sync::{mpsc, oneshot};
 
     fn fake_lv1_handle(snapshot: Lv1StateSnapshot) -> crate::lv1::Lv1ActorHandle {
@@ -1279,6 +1270,29 @@ mod tests {
             identity: identity(uuid, host, address),
             status,
         }
+    }
+
+    #[tokio::test]
+    async fn frontend_ready_starts_one_projector_and_returns_latest_snapshot_subscriptions() {
+        let fixture = lifecycle_for_test(AppEventBus::default());
+        let (_first_logs, first_log_rx) = tokio::sync::broadcast::channel(1);
+        let (_second_logs, second_log_rx) = tokio::sync::broadcast::channel(1);
+
+        let mut first = fixture.frontend_ready(first_log_rx).await.unwrap();
+        let mut second = fixture.frontend_ready(second_log_rx).await.unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), first.changed())
+            .await
+            .expect("first subscription should receive the initial snapshot")
+            .expect("projector should remain available");
+        tokio::time::timeout(std::time::Duration::from_secs(1), second.changed())
+            .await
+            .expect("second subscription should receive the initial snapshot")
+            .expect("projector should remain available");
+        let first_snapshot = first.latest().unwrap();
+        let second_snapshot = second.latest().unwrap();
+        assert_eq!(first_snapshot.state_version, second_snapshot.state_version);
+        assert_eq!(first_snapshot, second_snapshot);
     }
 
     #[tokio::test]
@@ -2474,7 +2488,6 @@ mod tests {
     async fn connect_lv1_system_attempts_selected_identity() {
         let capture = crate::test_support::TracingCapture::new();
         let _tracing_guard = capture.install();
-        let app = mock_app();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
@@ -2482,15 +2495,12 @@ mod tests {
         drop(listener);
 
         let result = lifecycle
-            .connect_lv1_system(
-                app.handle().clone(),
-                Lv1SystemIdentity {
-                    uuid: None,
-                    host: Some("Unreachable".to_string()),
-                    address: std::net::Ipv4Addr::LOCALHOST.to_string(),
-                    port: unavailable_port,
-                },
-            )
+            .connect_lv1_system(Lv1SystemIdentity {
+                uuid: None,
+                host: Some("Unreachable".to_string()),
+                address: std::net::Ipv4Addr::LOCALHOST.to_string(),
+                port: unavailable_port,
+            })
             .await;
 
         assert!(
@@ -2516,13 +2526,12 @@ mod tests {
 
     #[tokio::test]
     async fn startup_without_remembered_identity_does_not_advance_generation() {
-        let app = mock_app();
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let before = lifecycle.active_generation().await;
 
         let result = lifecycle
-            .startup_auto_connect_lv1(app.handle().clone())
+            .startup_auto_connect_lv1()
             .await
             .expect("startup without a stored identity should not fail");
 
@@ -2532,7 +2541,6 @@ mod tests {
 
     #[tokio::test]
     async fn ambiguous_startup_match_preserves_generation_and_remembered_identity() {
-        let app = mock_app();
         let event_bus = AppEventBus::default();
         let settings_dir = TestSettingsDir::new();
         let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
@@ -2556,11 +2564,7 @@ mod tests {
         let before = lifecycle.active_generation().await;
 
         let result = lifecycle
-            .startup_auto_connect_with_discovered(
-                app.handle().clone(),
-                remembered.clone(),
-                &systems,
-            )
+            .startup_auto_connect_with_discovered(remembered.clone(), &systems)
             .await
             .expect("ambiguous startup match should not fail");
 

@@ -19,8 +19,9 @@ but every such fact MUST carry the actor's assigned generation. Consumers of gen
 MUST discard facts that do not match their active generation.
 
 @cc [owner:mixxorz,label:architecture] projector-only-frontend-state
-The projector MUST be the only backend component that constructs and emits `app-status-changed`.
-Tauri command adapters MUST NOT emit backend state snapshots or implement domain policy.
+The projector MUST be the only backend component that constructs `AppViewState` snapshots and MUST
+publish them through its host-neutral latest-value sink. Host adapters MAY forward those snapshots
+to their UI event mechanism but MUST NOT construct snapshots or implement domain policy.
 
 @cc [owner:mixxorz,label:security;logging] diagnostic-data-minimization
 Production tracing and frontend-safe errors MUST NOT include credentials, tokens, raw OSC payloads,

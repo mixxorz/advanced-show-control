@@ -94,7 +94,7 @@ pub struct ShowActorTask {
 
 impl ShowActorTask {
     pub fn spawn(self) {
-        tauri::async_runtime::spawn(run_show_actor(
+        tokio::spawn(run_show_actor(
             self.rx,
             self.events,
             self.event_bus,
