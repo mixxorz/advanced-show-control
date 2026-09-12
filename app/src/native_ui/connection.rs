@@ -59,6 +59,7 @@ impl ConnectionState {
 
     pub fn open_manual(&mut self) {
         self.invalidate_latency_session();
+        self.command_error = None;
         self.mode = Some(ConnectionDialogMode::Manual);
     }
 
@@ -456,6 +457,16 @@ mod tests {
         state.finish_command(7);
         assert!(state.pending_identity.is_none());
         assert_eq!(state.pending_command_id, None);
+    }
+
+    #[test]
+    fn opening_the_dialog_discards_a_previous_connection_error() {
+        let mut state = ConnectionState::startup();
+        state.command_error = Some("old failure".to_string());
+
+        state.open_manual();
+
+        assert_eq!(state.command_error, None);
     }
 
     #[test]

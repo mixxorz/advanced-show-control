@@ -191,11 +191,18 @@ mod macos {
                     .context("failed to save cue-manager screenshot")?;
                 cue_manager_capture = Some(manager);
                 cx.update_window(window.into(), |_, window, cx| {
+                    window.click("delete-cue-list-33333333-3333-4333-8333-333333333333", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("delete-cue-list-confirmation").is_some());
+                    assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
                     window.press("escape", cx);
                 })?;
                 cx.run_until_parked();
                 cx.update_window(window.into(), |_, window, cx| {
                     window.render_frame(cx);
+                    assert!(window.try_find("delete-cue-list-confirmation").is_none());
+                    assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
+                    window.press("escape", cx);
                 })?;
                 cx.run_until_parked();
                 cx.update_window(window.into(), |_, window, cx| {

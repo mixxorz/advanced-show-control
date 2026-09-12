@@ -73,10 +73,10 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         colors.button_hover = rgb(CONSOLE_CONTROL_HOVER).into();
         colors.button_active = rgb(CONSOLE_LINE_STRONG).into();
         colors.button_foreground = rgb(CONSOLE_PRIMARY).into();
-        colors.button_primary = rgb(ACCENT_ORANGE).into();
-        colors.button_primary_hover = rgb(ACCENT_ORANGE_HOVER).into();
+        colors.button_primary = rgb(ACCENT_ORANGE_ACTIVE).into();
+        colors.button_primary_hover = rgb(ACCENT_ORANGE).into();
         colors.button_primary_active = rgb(ACCENT_ORANGE_ACTIVE).into();
-        colors.button_primary_foreground = rgb(CONSOLE_BG).into();
+        colors.button_primary_foreground = rgb(0xffffff).into();
         colors.list = rgb(CONSOLE_PANEL).into();
         colors.list_even = rgb(CONSOLE_PANEL).into();
         colors.list_hover = rgb(CONSOLE_CONTROL_HOVER).into();
@@ -129,15 +129,16 @@ mod tests {
             assert_eq!(theme.mono_font_family.as_ref(), "Fira Code");
             assert_eq!(theme.mode, ThemeMode::Dark);
             assert_eq!(theme.colors.background, rgb(CONSOLE_BG).into());
-            assert_eq!(theme.colors.button_primary, rgb(ACCENT_ORANGE).into());
+            assert_eq!(
+                theme.colors.button_primary,
+                rgb(ACCENT_ORANGE_ACTIVE).into()
+            );
             assert_eq!(
                 theme.tokens.button_primary.background,
-                rgb(ACCENT_ORANGE).into()
+                rgb(ACCENT_ORANGE_ACTIVE).into()
             );
-            assert_eq!(
-                theme.colors.button_primary_foreground,
-                rgb(CONSOLE_BG).into()
-            );
+            assert_eq!(theme.colors.button_primary_hover, rgb(ACCENT_ORANGE).into());
+            assert_eq!(theme.colors.button_primary_foreground, rgb(0xffffff).into());
         });
     }
 }

@@ -53,6 +53,7 @@ pub struct ScenesView {
     duration_input: Entity<InputState>,
     duration_identity: Option<(Uuid, u64)>,
     duration_edit_revision: u64,
+    pending_duration_command: Option<(u64, Uuid, u64)>,
     selected_link_target: Option<i32>,
     pending_overwrite: Option<PendingOverwrite>,
     overwrite_focus: FocusHandle,
@@ -96,6 +97,7 @@ impl ScenesView {
             duration_input,
             duration_identity,
             duration_edit_revision: 0,
+            pending_duration_command: None,
             selected_link_target,
             pending_overwrite: None,
             overwrite_focus: cx.focus_handle(),
@@ -134,15 +136,31 @@ impl ScenesView {
         let previous_scene_id = self.duration_identity.map(|(id, _)| id);
         let next_duration_identity =
             selected_scene(&snapshot).map(|scene| (scene.internal_scene_id, scene.duration_ms));
+        let next_scene_id = next_duration_identity.map(|(id, _)| id);
+        let preserve_pending_draft = preserve_pending_duration_draft(
+            self.pending_duration_command
+                .map(|(_, scene_id, target)| (scene_id, target)),
+            next_duration_identity,
+        );
+        if self
+            .pending_duration_command
+            .is_some_and(|(_, scene_id, target)| next_duration_identity == Some((scene_id, target)))
+        {
+            self.pending_duration_command = None;
+        }
         if next_duration_identity != self.duration_identity {
-            let duration = next_duration_identity.map_or(0, |(_, duration)| duration);
-            self.duration_input.update(cx, |input, cx| {
-                input.set_value(format_duration(duration), window, cx)
-            });
+            if !preserve_pending_draft {
+                let duration = next_duration_identity.map_or(0, |(_, duration)| duration);
+                self.duration_input.update(cx, |input, cx| {
+                    input.set_value(format_duration(duration), window, cx)
+                });
+            }
             self.duration_identity = next_duration_identity;
         }
 
-        let next_scene_id = next_duration_identity.map(|(id, _)| id);
+        if previous_scene_id != next_scene_id {
+            self.pending_duration_command = None;
+        }
         if previous_scene_id != next_scene_id
             || !snapshot
                 .scenes
@@ -189,23 +207,46 @@ impl ScenesView {
             self.reset_duration(projected, window, cx);
             return;
         };
-        if duration_ms == projected {
+        if duration_ms == projected && self.pending_duration_command.is_none() {
             self.reset_duration(projected, window, cx);
             return;
         }
-        self.dispatch_duration(scene_id, duration_ms);
-        self.reset_duration(projected, window, cx);
+        let command_id = self.dispatch_duration(scene_id, duration_ms);
+        self.pending_duration_command = Some((command_id, scene_id, duration_ms));
+        self.reset_duration(duration_ms, window, cx);
     }
 
-    fn dispatch_duration(&self, scene_id: Uuid, duration_ms: u64) {
-        self.dispatch(move |commands| {
-            Box::pin(async move {
-                commands
-                    .set_scene_duration_ms(scene_id, duration_ms)
-                    .await
-                    .map(|_| ())
-            })
-        });
+    fn dispatch_duration(&self, scene_id: Uuid, duration_ms: u64) -> u64 {
+        self.dispatcher.dispatch(move |commands| async move {
+            commands
+                .set_scene_duration_ms(scene_id, duration_ms)
+                .await
+                .map(|_| ())
+        })
+    }
+
+    pub fn command_finished(
+        &mut self,
+        command_id: u64,
+        failed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((pending_id, scene_id, _)) = self.pending_duration_command else {
+            return;
+        };
+        if pending_id != command_id {
+            return;
+        }
+        if failed {
+            self.pending_duration_command = None;
+        }
+        if failed
+            && let Some(scene) = selected_scene(&self.snapshot)
+            && scene.internal_scene_id == scene_id
+        {
+            self.reset_duration(scene.duration_ms, window, cx);
+        }
     }
 
     fn reset_duration(&self, duration_ms: u64, window: &mut Window, cx: &mut Context<Self>) {
@@ -501,10 +542,15 @@ impl ScenesView {
             let draft = this.duration_input.read(cx).value().to_string();
             let next = stepped_duration(&draft, projected, direction);
             this.duration_edit_revision = this.duration_edit_revision.wrapping_add(1);
-            if next != projected {
-                this.dispatch_duration(scene_id, next);
+            if duration_step_requires_dispatch(
+                next,
+                projected,
+                this.pending_duration_command.is_some(),
+            ) {
+                let command_id = this.dispatch_duration(scene_id, next);
+                this.pending_duration_command = Some((command_id, scene_id, next));
             }
-            this.reset_duration(projected, window, cx);
+            this.reset_duration(next, window, cx);
         }))
     }
 
@@ -1057,6 +1103,20 @@ fn step_duration(duration_ms: u64, direction: i64) -> u64 {
     }
 }
 
+fn preserve_pending_duration_draft(
+    pending: Option<(Uuid, u64)>,
+    projected: Option<(Uuid, u64)>,
+) -> bool {
+    pending.is_some_and(|(pending_scene, pending_target)| {
+        projected
+            .is_some_and(|(scene, duration)| scene == pending_scene && duration != pending_target)
+    })
+}
+
+fn duration_step_requires_dispatch(next: u64, projected: u64, pending: bool) -> bool {
+    next != projected || pending
+}
+
 fn stepped_duration(draft: &str, projected: u64, direction: i64) -> u64 {
     step_duration(normalize_duration(draft).unwrap_or(projected), direction)
 }
@@ -1169,8 +1229,33 @@ mod tests {
 
     #[test]
     fn duration_steps_use_the_typed_draft_as_their_base() {
-        assert_eq!(stepped_duration("2.5s", 1_000, 1), 3_500);
+        let first = stepped_duration("1.0s", 1_000, 1);
+        let second = stepped_duration(&format_duration(first), 1_000, 1);
+
+        assert_eq!(first, 2_000);
+        assert_eq!(second, 3_000);
         assert_eq!(stepped_duration("invalid", 1_000, -1), 0);
+        assert!(duration_step_requires_dispatch(1_000, 1_000, true));
+        assert!(!duration_step_requires_dispatch(1_000, 1_000, false));
+    }
+
+    #[test]
+    fn intermediate_duration_projection_preserves_the_latest_pending_draft() {
+        let scene_id = Uuid::new_v4();
+        let other_scene_id = Uuid::new_v4();
+
+        assert!(preserve_pending_duration_draft(
+            Some((scene_id, 3_000)),
+            Some((scene_id, 2_000)),
+        ));
+        assert!(!preserve_pending_duration_draft(
+            Some((scene_id, 3_000)),
+            Some((scene_id, 3_000)),
+        ));
+        assert!(!preserve_pending_duration_draft(
+            Some((scene_id, 3_000)),
+            Some((other_scene_id, 2_000)),
+        ));
     }
 
     #[test]

@@ -104,6 +104,9 @@ impl AppShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.scenes.update(cx, |scenes, cx| {
+            scenes.command_finished(command_id, failed, window, cx)
+        });
         self.cue_lists.update(cx, |cue_lists, cx| {
             cue_lists.command_finished(command_id, failed, window, cx)
         });

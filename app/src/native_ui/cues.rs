@@ -98,6 +98,7 @@ pub struct CueListsView {
     pending_delete: Option<Uuid>,
     pending_manage_command: Option<(u64, ManageCommand)>,
     manage_focus: FocusHandle,
+    nested_focus: FocusHandle,
     manage_return_focus: Option<FocusHandle>,
     name_input: Entity<InputState>,
     _name_input_subscription: Subscription,
@@ -126,6 +127,7 @@ impl CueListsView {
             pending_delete: None,
             pending_manage_command: None,
             manage_focus: cx.focus_handle(),
+            nested_focus: cx.focus_handle(),
             manage_return_focus: None,
             name_input,
             _name_input_subscription: name_input_subscription,
@@ -936,7 +938,7 @@ impl CueListsView {
                     .label("DELETE")
                     .accessibility_label(delete_label)
                     .disabled(manager_inert)
-                    .on_click(move |_, _, cx| {
+                    .on_click(move |_, window, cx| {
                         cx.stop_propagation();
                         delete_entity.update(cx, |this, cx| {
                             if this.manager_controls_inert() {
@@ -944,6 +946,7 @@ impl CueListsView {
                             }
                             this.pending_delete = Some(id);
                             this.name_editor = None;
+                            this.nested_focus.focus(window, cx);
                             cx.notify();
                         });
                     }),
@@ -964,6 +967,8 @@ impl CueListsView {
         };
         div()
             .id("cue-list-name-editor")
+            .role(Role::Dialog)
+            .aria_label(title)
             .p_3()
             .flex()
             .flex_col()
@@ -1020,6 +1025,10 @@ impl CueListsView {
         );
         div()
             .id("delete-cue-list-confirmation")
+            .role(Role::Dialog)
+            .aria_label("Delete cue list confirmation")
+            .test_support()
+            .track_focus(&self.nested_focus)
             .p_3()
             .flex()
             .items_center()
