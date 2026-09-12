@@ -39,9 +39,16 @@ impl PresentationState {
     }
 
     pub fn begin_command(&mut self) -> u64 {
-        self.latest_command_id = self.latest_command_id.wrapping_add(1);
-        self.command_error = None;
-        self.latest_command_id
+        let command_id = self.latest_command_id.wrapping_add(1);
+        self.command_started(command_id);
+        command_id
+    }
+
+    pub fn command_started(&mut self, command_id: u64) {
+        if command_id > self.latest_command_id {
+            self.latest_command_id = command_id;
+            self.command_error = None;
+        }
     }
 
     /// @cc [owner:mixxorz,label:product] latest-user-command-error
