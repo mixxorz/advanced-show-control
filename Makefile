@@ -1,7 +1,7 @@
 .PHONY: help fmt lint test build check \
 	rust-fmt rust-lint rust-test rust-build \
 	dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-check dev-tools-build \
-	docs-install docs-build docs-serve dev gallery probe smoke \
+	docs-install docs-build docs-serve dev dev-watch gallery probe smoke \
 	visual-test visual-update package-macos package-windows
 
 DOCS_VENV := .venv-docs
@@ -24,6 +24,7 @@ help:
 	  '' \
 	  'Native application targets:' \
 	  '  make dev                  Run the GPUI application' \
+	  '  make dev-watch            Rebuild and relaunch the GPUI app when sources change' \
 	  '  make gallery              Open the native component/state gallery' \
 	  '  make visual-test          Run GPUI native visual/component tests (macOS)' \
 	  '  make visual-update        Update reviewed native visual snapshots (macOS)' \
@@ -83,6 +84,9 @@ dev-tools-build:
 
 dev:
 	cargo run -p advanced-show-control --bin advanced-show-control
+
+dev-watch:
+	cargo watch -w app -w Cargo.toml -w Cargo.lock -x 'run -p advanced-show-control --bin advanced-show-control'
 
 gallery:
 	cargo run -p advanced-show-control --features debug-tools --bin native-gallery
