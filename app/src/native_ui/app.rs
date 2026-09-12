@@ -18,7 +18,7 @@ use super::keyboard::{
     InteractionState, RoutedAction, global_key_context, normalized_physical_key, route_action,
 };
 use super::logs::LogsView;
-use super::menu::{About, NewShow, OpenShow, SaveShow, SaveShowAs};
+use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, SaveShow, SaveShowAs};
 #[cfg(target_os = "macos")]
 use super::menu::{Hide, HideOthers, Quit};
 use super::scenes::ScenesView;
@@ -34,6 +34,7 @@ pub struct AppRoot {
     connection: Rc<RefCell<ConnectionState>>,
     latest_snapshot: Rc<RefCell<AppViewState>>,
     go_command_id: Rc<Cell<Option<u64>>>,
+    pending_save_command_id: Cell<Option<u64>>,
 }
 
 impl AppRoot {
@@ -101,6 +102,7 @@ impl AppRoot {
             connection,
             latest_snapshot,
             go_command_id,
+            pending_save_command_id: Cell::new(None),
         }
     }
 
@@ -168,6 +170,9 @@ impl AppRoot {
                 cx.notify();
             }
             UiEvent::CommandFinished { command_id, result } => {
+                if self.pending_save_command_id.get() == Some(command_id) {
+                    self.pending_save_command_id.set(None);
+                }
                 let was_connection_command =
                     self.connection.borrow().pending_command_id == Some(command_id);
                 let completed_error = result.as_ref().err().cloned();
@@ -189,6 +194,17 @@ impl AppRoot {
                 }
                 self.sync_connection_dialog(window, cx);
                 cx.notify();
+            }
+            UiEvent::SaveDestinationRequired { command_id } => {
+                if self.pending_save_command_id.get() == Some(command_id) {
+                    self.pending_save_command_id.set(None);
+                    if !window.has_active_prompt()
+                        && !self.shell.read(cx).shortcut_capture_active(cx)
+                        && !self.modal_open(window, cx)
+                    {
+                        self.prompt_to_save(false, cx);
+                    }
+                }
             }
             UiEvent::LatencyMeasured {
                 session_id,
@@ -228,11 +244,52 @@ impl AppRoot {
     }
 
     pub fn new_show(&self) {
+        self.pending_save_command_id.set(None);
         self.dispatcher
-            .dispatch(|commands| async move { commands.new_show_file().await.map(|_| ()) });
+            .dispatch_serial(|commands| async move { commands.new_show_file().await.map(|_| ()) });
+    }
+
+    pub fn new_show_from_template(&self, cx: &mut Context<Self>) {
+        self.pending_save_command_id.set(None);
+        let response = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Open Template".into()),
+        });
+        let dispatcher = self.dispatcher.clone();
+        cx.spawn(async move |this, cx| match response.await {
+            Ok(Ok(Some(paths))) => {
+                let path = paths.into_iter().next();
+                if path.as_ref().is_some_and(|path| !is_show_file_path(path)) {
+                    Self::push_async_error(
+                        &this,
+                        "Select an Advanced Show Control template (.ascs).".to_string(),
+                        cx,
+                    );
+                    return;
+                }
+                dispatcher.dispatch_serial(move |commands| async move {
+                    commands.new_show_file_from_template(path).await.map(|_| ())
+                });
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => Self::push_async_error(
+                &this,
+                format!("Could not open the template picker: {error}"),
+                cx,
+            ),
+            Err(error) => Self::push_async_error(
+                &this,
+                format!("The template picker did not return a result: {error}"),
+                cx,
+            ),
+        })
+        .detach();
     }
 
     pub fn open_show(&self, cx: &mut Context<Self>) {
+        self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -251,7 +308,7 @@ impl AppRoot {
                     );
                     return;
                 }
-                dispatcher.dispatch(move |commands| async move {
+                dispatcher.dispatch_serial(move |commands| async move {
                     commands.open_show_file(path).await.map(|_| ())
                 });
             }
@@ -270,38 +327,25 @@ impl AppRoot {
         .detach();
     }
 
-    pub fn save_show(&self, cx: &mut Context<Self>) {
-        if self.presentation.snapshot().show_file_path.is_some() {
-            self.dispatcher.dispatch(|commands| async move {
-                commands.save_show_file(None).await.map(|_| ())
-            });
-        } else {
-            self.prompt_to_save(false, cx);
-        }
+    pub fn save_show(&self) {
+        self.pending_save_command_id
+            .set(Some(self.dispatcher.save_show()));
     }
 
     pub fn save_show_as(&self, cx: &mut Context<Self>) {
+        self.pending_save_command_id.set(None);
         self.prompt_to_save(true, cx);
     }
 
     fn prompt_to_save(&self, save_as: bool, cx: &mut Context<Self>) {
         let folder = crate::show_file::default_show_folder();
-        let file_name = if self
-            .presentation
-            .snapshot()
-            .show_file_name
-            .ends_with(".ascs")
-        {
-            self.presentation.snapshot().show_file_name.clone()
-        } else {
-            format!("{}.ascs", self.presentation.snapshot().show_file_name)
-        };
+        let file_name = suggested_save_file_name(self.presentation.snapshot(), save_as);
         let response = cx.prompt_for_new_path(&folder, Some(&file_name));
         let dispatcher = self.dispatcher.clone();
         cx.spawn(async move |this, cx| match response.await {
             Ok(Ok(Some(path))) => {
                 let path = ensure_show_file_extension(path);
-                dispatcher.dispatch(move |commands| async move {
+                dispatcher.dispatch_serial(move |commands| async move {
                     if save_as {
                         commands.save_show_file_as(Some(path)).await.map(|_| ())
                     } else {
@@ -365,6 +409,17 @@ impl AppRoot {
         }
     }
 
+    fn on_new_show_from_template(
+        &mut self,
+        _: &NewShowFromTemplate,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.action_blocked(window, cx) {
+            self.new_show_from_template(cx);
+        }
+    }
+
     fn on_open_show(&mut self, _: &OpenShow, window: &mut Window, cx: &mut Context<Self>) {
         if !self.action_blocked(window, cx) {
             self.open_show(cx);
@@ -373,7 +428,7 @@ impl AppRoot {
 
     fn on_save_show(&mut self, _: &SaveShow, window: &mut Window, cx: &mut Context<Self>) {
         if !self.action_blocked(window, cx) {
-            self.save_show(cx);
+            self.save_show();
         }
     }
 
@@ -482,6 +537,17 @@ fn is_show_file_path(path: &std::path::Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("ascs"))
 }
 
+fn suggested_save_file_name(snapshot: &AppViewState, save_as: bool) -> String {
+    if !save_as {
+        return "Untitled Session.ascs".to_string();
+    }
+    if snapshot.show_file_name.ends_with(".ascs") {
+        snapshot.show_file_name.clone()
+    } else {
+        format!("{}.ascs", snapshot.show_file_name)
+    }
+}
+
 fn ensure_show_file_extension(mut path: std::path::PathBuf) -> std::path::PathBuf {
     if !is_show_file_path(&path) {
         path.set_extension("ascs");
@@ -498,6 +564,7 @@ impl Render for AppRoot {
             .key_context(global_key_context())
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_new_show))
+            .on_action(cx.listener(Self::on_new_show_from_template))
             .on_action(cx.listener(Self::on_open_show))
             .on_action(cx.listener(Self::on_save_show))
             .on_action(cx.listener(Self::on_save_show_as));
@@ -518,7 +585,10 @@ impl Render for AppRoot {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{about_detail, ensure_show_file_extension, is_show_file_path};
+    use super::{
+        about_detail, ensure_show_file_extension, is_show_file_path, suggested_save_file_name,
+    };
+    use crate::projector::AppViewState;
 
     #[test]
     fn show_file_paths_require_the_session_extension_case_insensitively() {
@@ -537,6 +607,23 @@ mod tests {
         assert_eq!(
             ensure_show_file_extension(PathBuf::from("show.txt")),
             PathBuf::from("show.ascs")
+        );
+    }
+
+    #[test]
+    fn ordinary_save_uses_an_untitled_suggestion_when_the_authoritative_path_is_empty() {
+        let stale_snapshot = AppViewState {
+            show_file_name: "Source Template.ascs".to_string(),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            suggested_save_file_name(&stale_snapshot, false),
+            "Untitled Session.ascs"
+        );
+        assert_eq!(
+            suggested_save_file_name(&stale_snapshot, true),
+            "Source Template.ascs"
         );
     }
 
