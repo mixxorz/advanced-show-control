@@ -4,11 +4,11 @@ This guide takes you from installation to your first scene fade. Before you begi
 
 ## 1. Download and install
 
-Download [Advanced Show Control v2 for Windows](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_Windows_x64_Setup.zip) or [Advanced Show Control v2 for macOS](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_macOS_universal.dmg).
+Download the appropriate archive from the [latest Advanced Show Control release](https://github.com/mixxorz/advanced-show-control/releases/latest). The native app requires macOS 15 or newer or Windows 10 or newer.
 
-On Windows, extract the ZIP file and run the installer. On macOS, open the disk image and install the app.
+On Windows, extract the x64 ZIP archive and run **Advanced Show Control.exe**. On macOS, extract the universal ZIP archive, move **Advanced Show Control.app** to Applications if desired, and open it.
 
-The downloads are not signed, and the macOS version is not notarized. If your computer blocks the app, approve it in your operating-system security settings and open it again.
+The Windows download is unsigned. The macOS app is ad-hoc signed, not Developer ID signed or notarized. If your computer blocks the app, approve it in your operating-system security settings and open it again.
 
 ## 2. Connect to LV1
 

@@ -66,7 +66,7 @@ jobs:
             echo "No release notes found for ${release_tag}" >&2
             exit 1
           fi
-          printf '\n---\n\nThese artifacts are unsigned. The macOS artifact is not notarized.\n' >> release-notes.md
+          printf '\n---\n\nThe Windows artifact is unsigned. The macOS artifact is ad-hoc signed, not Developer ID signed or notarized.\n' >> release-notes.md
 
       - name: Download staged release artifacts
         uses: actions/download-artifact@v4
@@ -82,5 +82,5 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" \
             --title "Advanced Show Control ${GITHUB_REF_NAME}" \
             --notes-file release-notes.md \
-            dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_Windows_x64_Setup.zip \
-            dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_macOS_universal.dmg
+            dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_Windows_x64.zip \
+            dist/release/Advanced-Show-Control_${{ needs.validate-release.outputs.release_tag }}_macOS_universal.zip

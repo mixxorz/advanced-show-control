@@ -18,11 +18,10 @@ Arrange scenes in show order without rearranging the scene list in LV1. Prepare 
 
 ## Get started
 
-[Download for Windows](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_Windows_x64_Setup.zip){ .md-button .md-button--primary }
-[Download for macOS](https://github.com/mixxorz/advanced-show-control/releases/download/v2/Advanced-Show-Control_v2_macOS_universal.dmg){ .md-button .md-button--primary }
+[Download the latest release](https://github.com/mixxorz/advanced-show-control/releases/latest){ .md-button .md-button--primary }
 [Follow the Quick Start](getting-started.md){ .md-button }
 
-Version 2 is the current stable release. The downloads are not signed, and the macOS version is not notarized. If your computer blocks the app, approve it in your operating-system security settings.
+Advanced Show Control supports macOS 15 or newer and Windows 10 or newer. Releases provide a universal macOS app archive and an unsigned Windows x64 archive. The macOS app is ad-hoc signed, not Developer ID signed or notarized. If your computer blocks the app, approve it in your operating-system security settings.
 
 Advanced Show Control controls live mixer parameters. Rehearse every fade and cue-list sequence on the system you will use for the show.
 

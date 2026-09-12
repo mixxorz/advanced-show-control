@@ -1,3 +1,0 @@
-@cc [owner:mixxorz,label:architecture] dev-tools-remain-separate
-Code in this subtree MUST remain in the non-publishable `advanced-show-control-dev-tools` crate and
-MUST NOT be linked into, registered by, or shipped as part of the production application binaries.

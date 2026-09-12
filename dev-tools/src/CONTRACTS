@@ -1,0 +1,6 @@
+@cc [owner:mixxorz,label:architecture] dev-tools-remain-separate
+Code in this subtree MUST remain in the standalone, non-publishable
+`advanced-show-control-dev-tools` crate rooted at top-level `dev-tools/`, outside the root Cargo
+workspace whose production member is `app/`. It MAY depend on the production crate's explicit
+debug-tool API, but MUST NOT be linked into, registered by, or shipped as part of the production
+application binary.
