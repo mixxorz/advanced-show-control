@@ -22,6 +22,9 @@ pub enum UiEvent {
         command_id: u64,
         result: Result<(), String>,
     },
+    SaveDestinationRequired {
+        command_id: u64,
+    },
     LatencyMeasured {
         session_id: u64,
         identity: Lv1SystemIdentity,
@@ -97,17 +100,43 @@ impl CommandDispatcher {
     }
 
     /// Enqueues commands that must reach their owner in user-action order. Settings replacements use
-    /// this lane so each complete-object edit composes onto and persists after its predecessor.
+    /// this lane so complete-object edits compose, and file actions use it so a subsequent Save sees
+    /// the authoritative result of the preceding New, Open, or template load.
     pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
         let command_id = self.next_command_id();
+        self.enqueue_serial(
+            command_id,
+            Box::new(move |commands| Box::pin(command(commands))),
+        );
+        command_id
+    }
+
+    pub fn save_show(&self) -> u64 {
+        let command_id = self.next_command_id();
+        let ui_events = self.ui_events.clone();
+        self.enqueue_serial(
+            command_id,
+            Box::new(move |commands| {
+                Box::pin(async move {
+                    if commands.save_show_file(None).await?.is_none() {
+                        let _ = ui_events.send(UiEvent::SaveDestinationRequired { command_id });
+                    }
+                    Ok(())
+                })
+            }),
+        );
+        command_id
+    }
+
+    fn enqueue_serial(&self, command_id: u64, command: BoxedCommand) {
         let _ = self.ui_events.send(UiEvent::CommandStarted { command_id });
         let serial = SerialCommand {
             command_id,
-            command: Box::new(move |commands| Box::pin(command(commands))),
+            command,
         };
         if self.serial_commands.send(serial).is_err() {
             let _ = self.ui_events.send(UiEvent::CommandFinished {
@@ -115,7 +144,6 @@ impl CommandDispatcher {
                 result: Err("Application command queue unavailable".to_string()),
             });
         }
-        command_id
     }
 
     pub fn probe_latency(

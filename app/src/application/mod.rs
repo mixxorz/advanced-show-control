@@ -119,6 +119,23 @@ impl ApplicationCommandContext {
         receive_nested(response).await.map(Some)
     }
 
+    /// A missing path means the host picker was cancelled without changing the current session.
+    pub async fn new_show_file_from_template(
+        &self,
+        path: Option<PathBuf>,
+    ) -> Result<Option<NewShowFileResult>, String> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::NewShowFileFromTemplate {
+            path,
+            reply: Some(reply),
+        })
+        .await?;
+        receive_nested(response).await.map(Some)
+    }
+
     /// Saves to the current Show-owned path, or to `fallback_path` when the show has no path yet.
     /// A missing current and fallback path means the host picker was cancelled.
     pub async fn save_show_file(
@@ -544,8 +561,61 @@ mod tests {
         let context = context_with_show(show);
 
         assert_eq!(context.open_show_file(None).await.unwrap(), None);
+        assert_eq!(
+            context.new_show_file_from_template(None).await.unwrap(),
+            None
+        );
         assert_eq!(context.save_show_file_as(None).await.unwrap(), None);
         assert!(commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn new_from_template_dispatches_the_selected_path() {
+        let template = PathBuf::from("template.ascs");
+        let expected = template.clone();
+        let (show, mut commands) = tokio::sync::mpsc::channel(4);
+        let context = context_with_show(show);
+        let actor = tokio::spawn(async move {
+            let ShowCommand::NewShowFileFromTemplate { path, reply } =
+                commands.recv().await.unwrap()
+            else {
+                panic!("expected new-from-template command");
+            };
+            assert_eq!(path, expected);
+            reply
+                .unwrap()
+                .send(Ok(NewShowFileResult {
+                    selected_scene_internal_id: Some("scene-id".to_string()),
+                }))
+                .unwrap();
+        });
+
+        assert_eq!(
+            context
+                .new_show_file_from_template(Some(template))
+                .await
+                .unwrap()
+                .unwrap()
+                .selected_scene_internal_id,
+            Some("scene-id".to_string())
+        );
+        actor.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_without_an_authoritative_current_path_requests_a_destination() {
+        let (show, mut commands) = tokio::sync::mpsc::channel(4);
+        let context = context_with_show(show);
+        let actor = tokio::spawn(async move {
+            let ShowCommand::CurrentShowFilePath { reply } = commands.recv().await.unwrap() else {
+                panic!("expected current-path query");
+            };
+            reply.send(None).unwrap();
+            assert!(commands.try_recv().is_err());
+        });
+
+        assert_eq!(context.save_show_file(None).await.unwrap(), None);
+        actor.await.unwrap();
     }
 
     #[tokio::test]

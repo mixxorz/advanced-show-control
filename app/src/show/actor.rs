@@ -246,10 +246,12 @@ fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool)
 /**
  * @cc [owner:mixxorz,label:persistence] show-persistence-orchestration
  * Save MUST obtain one combined Scenes/Cue Lists `SessionDocument`, write it with current lockout,
- * and mark path/timestamp clean only after the write succeeds; save MUST NOT require LV1. New and
- * load MUST require a connected, generation-current LV1 scene snapshot and replace both documents
- * before updating Show metadata. Any pre-commit read, validation, write, or replacement error MUST
- * be returned without reporting success or applying the corresponding Show metadata transition.
+ * and mark path/timestamp clean only after the write succeeds; save MUST NOT require LV1. New,
+ * load, and new-from-template MUST require a connected, generation-current LV1 scene snapshot and
+ * replace both documents before updating Show metadata. Any pre-commit read, validation, write, or
+ * replacement error MUST be returned without reporting success or applying the corresponding Show
+ * metadata transition. New-from-template MUST use the load validation and reconciliation path while
+ * leaving the committed show without a backing path.
  */
 async fn handle_command(
     command: ShowCommand,
@@ -298,6 +300,29 @@ async fn handle_command(
                 tracing::info!(event = "session_created", "New session created");
                 Ok(NewShowFileResult {
                     selected_scene_internal_id,
+                })
+            }
+            .await;
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+        ShowCommand::NewShowFileFromTemplate { path, reply } => {
+            let result = async {
+                let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
+                let mut file = read_show_file(&path)?;
+                let loaded = load_show_file_from_dto(
+                    state,
+                    event_bus,
+                    peers,
+                    ShowFileLoadKind::NewFromTemplate,
+                    &mut file,
+                    &lv1,
+                    expected_generation,
+                )
+                .await?;
+                Ok(NewShowFileResult {
+                    selected_scene_internal_id: loaded.selected_scene_internal_id,
                 })
             }
             .await;
@@ -363,7 +388,7 @@ async fn handle_command(
                     state,
                     event_bus,
                     peers,
-                    path,
+                    ShowFileLoadKind::Open(path),
                     &mut file,
                     &lv1,
                     expected_generation,
@@ -448,16 +473,22 @@ fn map_app_command_error(error: AppCommandError) -> String {
     }
 }
 
+enum ShowFileLoadKind {
+    Open(std::path::PathBuf),
+    NewFromTemplate,
+}
+
 /// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
-/// A successful load MUST adopt the imported path, saved timestamp, and lockout, and MUST remain
-/// clean only when no scene-ID generation, LV1 scene alignment, or cue reconciliation changed the
-/// imported persisted document. The published Show projection's dirty state MUST account for the
-/// reconciled document returned by the replacement commit.
+/// A successful ordinary load MUST adopt the imported path, saved timestamp, and lockout, and MUST
+/// remain clean only when no scene-ID generation, LV1 scene alignment, or cue reconciliation changed
+/// the imported persisted document. A successful template load MUST preserve imported session data
+/// and lockout while clearing backing-file metadata so it behaves as a new show. The published Show
+/// projection's dirty state MUST account for reconciliation according to the selected load kind.
 async fn load_show_file_from_dto(
     state: &mut ShowState,
     event_bus: &AppEventBus,
     peers: &ShowActorPeers,
-    path: std::path::PathBuf,
+    load_kind: ShowFileLoadKind,
     file: &mut super::show_file::ShowFile,
     lv1: &Lv1StateSnapshot,
     expected_generation: u64,
@@ -497,10 +528,17 @@ async fn load_show_file_from_dto(
     )
     .await?;
     should_mark_dirty |= committed.cue_lists != imported_cue_list_snapshot;
-    state.set_lockout(imported.lockout);
-    state.mark_saved(path, saved_at.clone());
-    if should_mark_dirty {
-        state.mark_dirty();
+    match &load_kind {
+        ShowFileLoadKind::Open(path) => {
+            state.set_lockout(imported.lockout);
+            state.mark_saved(path.clone(), saved_at.clone());
+            if should_mark_dirty {
+                state.mark_dirty();
+            }
+        }
+        ShowFileLoadKind::NewFromTemplate => {
+            state.reset_for_new_show_from_template(imported.lockout);
+        }
     }
     publish_state_changed(event_bus, state);
     if alignment_changed {
@@ -514,7 +552,17 @@ async fn load_show_file_from_dto(
             )
         );
     }
-    tracing::info!(event = "session_opened", "Session loaded");
+    match load_kind {
+        ShowFileLoadKind::Open(_) => {
+            tracing::info!(event = "session_opened", "Session loaded");
+        }
+        ShowFileLoadKind::NewFromTemplate => {
+            tracing::info!(
+                event = "session_created_from_template",
+                "New session created from template"
+            );
+        }
+    }
     Ok(LoadShowFileResult {
         selected_scene_internal_id,
         saved_at,
@@ -727,6 +775,20 @@ mod tests {
     ) -> Result<crate::show::LoadShowFileResult, String> {
         let (reply, response) = tokio::sync::oneshot::channel();
         show.send(ShowCommand::LoadShowFileFromPath {
+            path,
+            reply: Some(reply),
+        })
+        .await
+        .unwrap();
+        response.await.unwrap()
+    }
+
+    async fn new_show_from_template(
+        show: &ShowStateHandle,
+        path: std::path::PathBuf,
+    ) -> Result<crate::show::NewShowFileResult, String> {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::NewShowFileFromTemplate {
             path,
             reply: Some(reply),
         })
@@ -1000,6 +1062,98 @@ mod tests {
             CueListDocument::default()
         );
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn new_from_template_loads_session_data_without_adopting_the_template_path() {
+        let event_bus = AppEventBus::default();
+        let (show, _peers, scenes, cue_lists) = load_fixture(
+            event_bus,
+            lv1_snapshot(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+            false,
+        );
+        let cue_list_id = Uuid::from_u128(2);
+        let cue_entry_id = Uuid::from_u128(3);
+        let mut template = show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 2_500))]);
+        template.safety.lockout = true;
+        template.cue_lists = vec![crate::cue_lists::CueList {
+            id: cue_list_id,
+            name: "Main".to_string(),
+            entries: vec![crate::cue_lists::CueEntry {
+                id: cue_entry_id,
+                scene_internal_id: Uuid::from_u128(1),
+            }],
+        }];
+        template.active_cue_list_id = Some(cue_list_id);
+        template.cued_cue_entry_id = Some(cue_entry_id);
+        let path = write_test_show("template", &template);
+        let original_bytes = std::fs::read(&path).unwrap();
+
+        let result = new_show_from_template(&show, path.clone())
+            .await
+            .expect("template should load");
+
+        assert_eq!(
+            result.selected_scene_internal_id,
+            Some(Uuid::from_u128(1).to_string())
+        );
+        assert_eq!(
+            get_scene_document(&scenes).await.scene_configs[0].duration_ms,
+            2_500
+        );
+        assert_eq!(
+            get_cue_list_document(&cue_lists).await.cue_lists[0].name,
+            "Main"
+        );
+        let state = current_show_state(&show).await;
+        assert_eq!(state.show_file_path, None);
+        assert_eq!(state.show_file_name, "Untitled Session");
+        assert_eq!(state.show_file_last_saved_at, None);
+        assert!(!state.show_file_dirty);
+        assert!(state.lockout);
+        assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_template_leaves_current_session_unchanged() {
+        let event_bus = AppEventBus::default();
+        let (show, _peers, scenes, _cue_lists) = load_fixture(
+            event_bus,
+            lv1_snapshot(vec![SceneListEntry {
+                index: 1,
+                name: "Intro".to_string(),
+            }]),
+            false,
+        );
+        let current_path = write_test_show(
+            "current-before-template",
+            &show_file(vec![file_scene(scene_config(1, Some(1), "Intro", 1_000))]),
+        );
+        load_show(&show, current_path.clone()).await.unwrap();
+        let invalid_path =
+            std::env::temp_dir().join(format!("show-invalid-template-{}.ascs", Uuid::new_v4()));
+        std::fs::write(&invalid_path, "not valid json").unwrap();
+
+        let result = new_show_from_template(&show, invalid_path.clone()).await;
+
+        assert!(result.is_err());
+        assert_eq!(
+            get_scene_document(&scenes).await.scene_configs[0].duration_ms,
+            1_000
+        );
+        let state = current_show_state(&show).await;
+        assert_eq!(state.show_file_path, Some(current_path.clone()));
+        assert_eq!(
+            state.show_file_name,
+            current_path.file_name().unwrap().to_string_lossy()
+        );
+        assert!(!state.show_file_dirty);
+        std::fs::remove_file(current_path).unwrap();
+        std::fs::remove_file(invalid_path).unwrap();
     }
 
     #[tokio::test]
