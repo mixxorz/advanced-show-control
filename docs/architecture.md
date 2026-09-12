@@ -2,9 +2,9 @@
 
 ## Purpose and Scope
 
-Advanced Show Control is a Rust/Tauri fader-fade overlay for LV1. LV1 remains authoritative for scene creation, scene recall, and normal console state. ASC owns fade metadata and moves only configured fader and pan-family controls. Because it controls live faders, ownership, generation guards, lockout, and exact-scene validation are safety boundaries.
+Advanced Show Control is a native Rust fader-fade overlay for LV1, built with GPUI Kit. LV1 remains authoritative for scene creation, scene recall, and normal console state. ASC owns fade metadata and moves only configured fader and pan-family controls. Because it controls live faders, ownership, generation guards, lockout, and exact-scene validation are safety boundaries.
 
-The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
+The production crate is `app/`. Domain actors and services live under `app/src/`; the GPUI Kit host and views live under `app/src/native_ui/`. The separate, non-publishable `dev-tools/` crate contains the hardware-smoke and LV1 probe CLIs. The application has no JavaScript frontend or Tauri host.
 
 ## Runtime Ownership
 
@@ -17,15 +17,15 @@ The Rust backend is `src-tauri/src/`; the React/TypeScript frontend is `ui/`.
 | `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
 | `settings`  | App-lifetime actor. Owns app settings and private remembered LV1 identity in app-config `settings.json`.                                        |
 | `lifecycle` | Owns connection-generation transitions and generation-scoped peer installation/removal.                                                         |
-| `projector` | App-lifetime `AppViewState` cache and the sole `app-status-changed` emitter.                                                                    |
-| `runtime`   | Owns `AppEventBus`, lifecycle facts, generation guards, and frontend-safe command errors.                                                       |
-| `ui`        | Tauri setup and thin command adapters.                                                                                                          |
+| `projector` | App-lifetime `AppViewState` cache and sole publisher to the native projection sink.                                                            |
+| `runtime`   | Owns `AppEventBus`, lifecycle facts, generation guards, and UI-safe command errors.                                                             |
+| `native_ui` | Owns the GPUI host, views, native menus/dialogs, Tokio bridge, and thin command dispatch.                                                        |
 
 ## Commands and Facts
 
-Native File menu actions call the same Tauri command functions used by the frontend. Dialog behavior, mailbox dispatch, and error mapping have one implementation in `ui/commands/show.rs`.
+Native menu actions and visible GPUI controls use the same host-neutral command dispatch. Dialog behavior, mailbox dispatch, and error mapping remain adapter concerns under `native_ui/`.
 
-Actors receive explicit mailbox command enums. Show, Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or Tauri adapter.
+Actors receive explicit mailbox command enums. Show, Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or native UI adapter.
 
 `AppEventBus` broadcasts ephemeral facts, never requests. Alongside the broadcast channel it retains the latest full Show, Scenes, Cue Lists, and Settings projections in one watch snapshot. Publishing replaces the corresponding projection before broadcasting; unchanged projections do not notify watch subscribers. This is in-memory state, not event replay or durable storage. Its fact families are:
 
@@ -42,7 +42,7 @@ Settings(event)
 
 LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime.
 
-`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not frontend state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee.
+`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not presented UI state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee.
 
 ## Lifecycle, Connections, and Peers
 
@@ -69,9 +69,9 @@ Direct peers are intentional:
 
 Connection completion, failure, and disconnect use one `SetLv1ConnectionIfCurrent` command with an optional identity. Show checks its own shared generation authority during the synchronous metadata update; callers cannot supply a different generation guard.
 
-Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and frontend discovery share this path.
+Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and native UI discovery share this path.
 
-`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The frontend requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
+`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The native UI requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
 
 ## Scenes Library and Recall
 
@@ -113,19 +113,21 @@ Settings and session saves share `StagedFile`: it reserves and syncs a temporary
 
 Settings loads normalized defaults or persisted values from `settings.json`, saves changed full-object replacements immediately, and publishes `SettingsEvent::StateChanged`. Remembered LV1 identity is private metadata in the same file and is accessed by lifecycle through dedicated commands, not projected as public settings.
 
-## Projection and Frontend Boundary
+## GPUI and Tokio Boundary
 
 `ProjectionCache` owns only generation-bound LV1/Fade state, bounded logs, and the snapshot version. The projector combines this cache with the latest retained app-state snapshot and emits changed views at most every 100 ms. It neither duplicates app-owned projections nor queries their actors at startup. Show and Settings seed retained state during construction; session replacement updates scenes and cues in one watch update. Serialized document reads for saving still use the owner mailbox, not this display snapshot.
 
-The projector accepts LV1/Fade facts only for its active generation. It receives UI log input from the tracing UI sink; `INFO`, `WARN`, and `ERROR` become bounded frontend log entries, while runtime modules use `tracing` rather than facts solely for logging.
+GPUI owns the native event loop, windows, focus, input, and rendering. A dedicated Tokio runtime owns actors, LV1 networking, timers, and asynchronous file work. GPUI context types do not enter actors, and Tokio runtime types do not enter component rendering. Handlers submit explicit commands without blocking the GPUI thread; the native bridge schedules accepted projection updates on the GPUI thread.
 
-Every emitted `AppViewState` has a monotonically increasing `state_version`. The frontend applies a snapshot only when its version is newer than the latest accepted version; command responses, polling, and event delivery may arrive out of order and must not overwrite newer UI state.
+The projector accepts LV1/Fade facts only for its active generation. It receives UI log input from the tracing UI sink; `INFO`, `WARN`, and `ERROR` become bounded native log entries, while runtime modules use `tracing` rather than facts solely for logging.
+
+Every emitted `AppViewState` has a monotonically increasing `state_version`. The GPUI bridge applies a snapshot only when its version is newer than the latest accepted version; command completion and projection delivery may arrive out of order and must not overwrite newer UI state.
 
 On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded and falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
 
 ## Debug Smoke Boundary
 
-The debug Tauri app is development-only. Its JavaScript runner uses production Tauri commands for discovery, connection, show creation, scene configuration, scope/duration, recall, lockout, settings, and cue-list workflows; it validates projected snapshots and live LV1 fader values. Debug-only commands are limited to smoke report/exit and deterministic setup or observation unavailable to production commands, such as raw LV1 recall and test-channel gain access.
+The non-GUI Rust smoke CLI lives in the separate `dev-tools/` crate. It uses production runtime commands for discovery, connection, show creation, scene configuration, scope/duration, recall, lockout, settings, and cue-list workflows; it validates projected snapshots and live LV1 fader values. It uses the isolated `com.advancedshowcontrol.debug` data directory and never reads or writes production configuration. Debug-only APIs are limited to deterministic setup or observation unavailable through production commands, such as raw LV1 recall and test-channel gain access. Development-tool code is not linked into the production binary.
 
 `make smoke` requires LV1-compatible hardware. Its terminal output is not authoritative: always inspect `logs/debug-smoke-report.txt` for the suite result.
 

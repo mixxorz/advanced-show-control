@@ -2,15 +2,15 @@
 
 ## Project Context
 
-This project is a Tauri/Rust/React desktop app that adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows.
+This project is a native Rust desktop app built with GPUI Kit. It adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows. Supported production targets are macOS 15 or newer and Windows 10 or newer.
 
 Project layout:
 
-- `src-tauri/` contains the production Rust/Tauri crate, `advanced-show-control`. Core Rust modules such as `lv1/`, `fade/`, `scenes/`, `cue_lists/`, `show/`, and `runtime/` live under `src-tauri/src/` alongside Tauri adapter modules.
-- `src-tauri/dev-tools/` is a separate development-only crate containing the debug app and preserved `src/bin/lv1-probe.rs` CLI.
-- `ui/` contains the React/TypeScript frontend.
+- `app/` contains the production `advanced-show-control` crate. Core modules such as `lv1/`, `fade/`, `scenes/`, `cue_lists/`, `show/`, and `runtime/` live under `app/src/`; the GPUI Kit host and views live under `app/src/native_ui/`.
+- `dev-tools/` is a separate, non-publishable development crate containing the `advanced-show-control-smoke` hardware-smoke CLI and `lv1-probe` CLI.
+- `site/` contains the published user manual; internal architecture and engineering documentation lives in `docs/`.
 
-Do not assume `src/` is the frontend; this project does not use the default Tauri template layout.
+There is no JavaScript frontend or Tauri host. Do not add npm, React, TypeScript, browser-test, or Tauri dependencies.
 
 LV1 remains the source of truth for scene creation and scene recall. The app is a fader-fade overlay. It stores fade metadata for LV1 scenes and moves only the scoped faders that the engineer has configured.
 
@@ -33,17 +33,17 @@ Current architecture is actor-oriented:
 - `Lv1Actor` owns a generation-scoped LV1 TCP transport, reconnect loop, and mirrored LV1 state.
 - `FadeEngine` owns generation-scoped active fade timing and writes directly through its `Lv1ActorHandle` peer.
 - `Scenes` is one app-lifetime actor/document that owns scene configs, selection, clipboard, scene reconciliation, and recall policy/queue; it receives generation-scoped LV1/Fade peers from lifecycle.
-- `CueLists` is an app-lifetime actor that owns cue documents and reconciles UUID references through its `Scenes` peer.
+- Cue Lists is a synchronous domain component owned with the app-lifetime Scenes actor/document; it owns cue documents and reconciles their scene UUID references.
 - `Show` owns app-lifetime show-file metadata, dirty state, lockout, connection/discovery metadata, and persistence orchestration; it does not own scene configs or cue documents.
 - `Settings` is app-lifetime and persists app settings plus private remembered LV1 identity.
-- The projector owns the Tauri-side `AppViewState` projection and emits `app-status-changed`.
+- The projector constructs complete, versioned `AppViewState` snapshots and publishes them through the native projection sink to GPUI.
 - `AppLifecycle` owns explicit connection generations and direct peer wiring.
 - `AppEventBus` broadcasts facts/events; mailbox commands go directly to their owning actor.
 
 Read these files before substantial work:
 
 - `docs/architecture.md` for runtime architecture.
-- `docs/coding-conventions.md` for logging, testing, frontend, verification, and commit conventions.
+- `docs/coding-conventions.md` for logging, testing, native UI, verification, and commit conventions.
 - `docs/lv1-osc.md` for LV1 protocol details when touching protocol behavior.
 
 Roadmap and actionable work live in GitHub Milestones and Issues:
@@ -64,7 +64,7 @@ Roadmap and actionable work live in GitHub Milestones and Issues:
 - Keep docs current when behavior, architecture, or project phase changes.
 - File or reference GitHub issues for future ideas instead of adding roadmap items to repository docs.
 - For UI work, preserve the existing design language unless the task is to redesign it.
-- For frontend styling, define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables. Avoid hard-coded Tailwind values when a reusable token is appropriate.
+- Define reusable fonts, colors, spacing, borders, and interaction states as GPUI theme tokens. Avoid hard-coded visual values when a reusable token is appropriate.
 
 ## Code Contracts
 
@@ -92,7 +92,7 @@ Rust tests should fit one of these categories:
 
 - Pure unit tests that call functions directly and have no side effects.
 - Actor tests that interact through the actor mailbox, `AppEventBus`, and a tracing listener when tracing output is part of the behavior under test.
-- Smoke tests through the debug module/app.
+- Smoke tests through the separate `dev-tools/` smoke CLI.
 
 Do not test side-effecting actor behavior by directly mutating actor internals or inspecting private state. When writing implementation plans, specify which of these categories covers each Rust behavior being added or changed.
 
@@ -110,7 +110,7 @@ Do not test side-effecting actor behavior by directly mutating actor internals o
 
 ## Verification Commands
 
-Use the smallest relevant `make` target while developing, then run broader verification before completion. The root `Makefile` is a thin command index over the Cargo and npm workflows below.
+Use the smallest relevant `make` target while developing, then run broader verification before completion. The root `Makefile` is a thin command index over the native Cargo workflows below.
 
 Common root targets:
 
@@ -123,17 +123,19 @@ make build
 make check
 ```
 
-`make check` runs the standard non-visual CI-style verification: formatting, linting, tests, and builds. It does not run Docker visual checks or the hardware/debug smoke app.
+`make check` runs the standard CI-style formatting, linting, tests, and builds for the production and development-tool crates. It does not run native visual checks, packaging, or hardware smoke.
 
-Common development targets:
+Native development and packaging targets:
 
 ```bash
 make dev
-make storybook
+make visual-test
+make package-macos RELEASE_ID="local"
+make package-windows RELEASE_ID="local"
 make probe ARGS="..."
 ```
 
-`make dev` starts the Tauri dev server and app. `make storybook` starts Storybook on port 6006. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
+`make dev` runs the GPUI application. `make visual-test` runs the GPUI native visual/component tests on macOS. The package targets create distributable archives under `dist/release/`; macOS packaging requires macOS and builds an ad-hoc-signed universal `.app` without Developer ID signing or notarization, while Windows packaging creates an unsigned archive and requires PowerShell and the MSVC x64 target. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
 
 Debug smoke target:
 
@@ -142,18 +144,18 @@ make smoke
 make smoke VERBOSE=1
 ```
 
-`make smoke` runs the dev-only Tauri hardware smoke app quietly and requires an LV1-compatible target environment. Use `VERBOSE=1` to stream terminal logs.
+`make smoke` runs the non-GUI Rust hardware-smoke CLI from `dev-tools/` and requires an LV1-compatible target environment. Use `VERBOSE=1` to stream terminal logs.
 
 After running `make smoke`, always inspect `logs/debug-smoke-report.txt` for the authoritative suite result. The terminal output can be noisy or truncated; do not claim the smoke passed just because the shell command returned or no failure marker appeared in captured output.
 
-Runtime diagnostic logs are JSONL files written under Tauri's app config directory, not the repo `logs/` folder. On macOS, check:
+Runtime diagnostic logs are JSONL files written under the native app-data directory, not the repo `logs/` folder. On macOS, check:
 
 ```bash
 ~/Library/Application Support/com.advancedshowcontrol.app/logs/diagnostics-*.jsonl
 ~/Library/Application Support/com.advancedshowcontrol.debug/logs/diagnostics-*.jsonl
 ```
 
-The normal app uses `com.advancedshowcontrol.app`; the debug smoke app uses `com.advancedshowcontrol.debug`.
+The production app retains the `com.advancedshowcontrol.app` data location for compatibility. The smoke CLI uses the isolated `com.advancedshowcontrol.debug` data location and writes its authoritative repository report to `logs/debug-smoke-report.txt`.
 
 Common Rust checks:
 
@@ -171,46 +173,11 @@ cargo build --workspace
 
 Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks. Avoid `cargo test` unless you specifically need a test harness feature that nextest cannot provide.
 
-Common frontend checks:
+Native UI tests use `#[gpui_kit::test]` and run with the Rust suite. On macOS, `make visual-test` selects the native visual/component tests. Windows appearance requires manual visual acceptance where equivalent image rendering is unavailable.
 
-```bash
-make ui-fmt
-make ui-lint
-make ui-typecheck
-make ui-build
-make ui-test
-make ui-storybook-test
-make visual-test
+CI runs the checks covered by `make check` on native targets and may run platform packaging separately.
 
-npm --prefix ui run format:check
-npm --prefix ui run lint
-npm --prefix ui run typecheck
-npm --prefix ui run build
-npm --prefix ui run test
-npm --prefix ui run test:storybook
-npm --prefix ui run test:visual:ci
-```
-
-Frontend check meanings:
-
-- `make ui-fmt` / `npm --prefix ui run format:check` runs Prettier in check mode.
-- `make ui-lint` / `npm --prefix ui run lint` runs ESLint.
-- `make ui-typecheck` / `npm --prefix ui run typecheck` runs TypeScript with `tsc --noEmit`.
-- `make ui-build` / `npm --prefix ui run build` runs the Vite production build.
-- `make ui-test` / `npm --prefix ui run test` runs Vitest unit tests.
-- `make ui-storybook-test` / `npm --prefix ui run test:storybook` runs Storybook interaction/browser tests through Vitest.
-- `make visual-test` / `npm --prefix ui run test:visual:ci` runs Playwright visual regression tests in the Docker visual-test image for CI-compatible screenshots.
-- `make visual-update` / `npm --prefix ui run test:visual:update:ci` regenerates Playwright visual snapshots in the Docker visual-test image; use this when UI changes intentionally update screenshots.
-- Prefer the `:ci` visual commands over local `npm run test:visual` / `npm run test:visual:update` so screenshot rendering matches CI more closely.
-
-CI runs the checks covered by `make check`: Rust formatting, linting, tests, and build, plus frontend `format:check`, `lint`, `typecheck`, `build`, `test`, and `test:storybook`. CI also runs Docker-backed visual checks on manual workflow dispatch or when visual-relevant files change.
-
-Hook-only targeted checks may run at commit time for staged files. Do not run these manually; let the hooks run them at commit time:
-
-- Rust formatting for staged Rust files.
-- Rust clippy for staged Rust files.
-- UI Prettier for staged UI files.
-- UI ESLint for staged UI files.
+Hook-only targeted Rust formatting and Clippy checks run for staged production and development-tool Rust files at commit time. Do not run these manually; let the hooks run them at commit time.
 
 Do not bypass hooks; fix failures in a new commit.
 

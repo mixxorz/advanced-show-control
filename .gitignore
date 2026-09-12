@@ -1,22 +1,13 @@
 # Rust / Cargo
-target
-src-tauri/target/
-src-tauri/dev-tools/gen/
+target/
+**/target/
 **/*.rs.bk
 *.pdb
 **/mutants.out*/
 rustc-ice-*.txt
 
-# Node / UI
-node_modules/
-ui/node_modules/
-ui/dist/
-ui/dist-debug/
-ui/storybook-static/
-ui/test-results/
-ui/playwright-report/
-
-# Local app data
+# Generated application output
+dist/
 logs/
 
 # Tooling

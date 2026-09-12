@@ -99,7 +99,7 @@ jobs:
             else
               printf 'This is the first nightly release.\n'
             fi
-            printf '\n---\n\nThese artifacts are unsigned. The macOS artifact is not notarized.\n'
+            printf '\n---\n\nThe Windows artifact is unsigned. The macOS artifact is ad-hoc signed, not Developer ID signed or notarized.\n'
           } > release-notes.md
 
       - name: Download staged release artifacts
@@ -121,5 +121,5 @@ jobs:
             --title "Advanced Show Control Nightly ${release_date}" \
             --notes-file release-notes.md \
             --prerelease \
-            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_Windows_x64_Setup.zip" \
-            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_macOS_universal.dmg"
+            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_Windows_x64.zip" \
+            "dist/release/Advanced-Show-Control_${RELEASE_TAG}_macOS_universal.zip"

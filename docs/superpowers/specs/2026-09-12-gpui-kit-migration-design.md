@@ -1,7 +1,9 @@
 # GPUI Kit Migration Design
 
-**Status:** Approved design
+**Status:** Historical approved design — implemented
 **Date:** 2026-09-12
+
+> This document preserves the approved migration specification as historical design context. The migration is complete; current repository structure, architecture, and commands are documented in `README.md`, `docs/architecture.md`, and `docs/coding-conventions.md`. Future-tense language below is retained to record the approved plan rather than rewritten as current guidance.
 
 ## Summary
 

@@ -1,27 +1,23 @@
 ---
 name: make-sure-it-works
-description: Use when finishing SDD, implementation-plan work, feature work, bug fixes, or user-reported workflow fixes in this LV1 fade utility, before claiming completion or notifying the user.
+description: Use before claiming implementation, bug-fix, native UI, or user-workflow work is complete in this LV1 fade utility.
 ---
 
 # Make Sure It Works
 
 ## Overview
 
-Completion means the user's workflow works through the real boundary that could fail. Green checks are not enough when they do not exercise the production path.
-
-**Core principle:** prove the behavior at the boundary where the bug or feature lives, then state exactly what was and was not verified.
+Completion requires fresh evidence at the boundary where the behavior could fail. Broad green checks do not by themselves prove a specific workflow.
 
 ## When To Use
 
-- Before ending any SDD task or implementation-plan task.
 - Before saying a feature, bug fix, user workflow, or review item is complete.
-- Before sending a completion notification.
-- When a test uses mocks but the real workflow crosses Tauri commands, actors, event bus, projector, filesystem, LV1 state, or debug smoke app boundaries.
-- When the user asks for a smoke test, end-to-end test, integration test, or says the feature should actually work.
+- When a workflow crosses GPUI, native command dispatch, actors, `AppEventBus`, the projector, persistence, LV1 state, or hardware-smoke boundaries.
+- When the user asks for a smoke, end-to-end, integration, native visual, or component test.
 
 ## Completion Gate
 
-Do not claim completion until you can fill this matrix from fresh evidence:
+Fill this matrix from fresh evidence before claiming completion:
 
 | Requirement | Proof command/test | Boundary proved | Boundary not proved | Output inspected |
 |---|---|---|---|---|
@@ -29,71 +25,68 @@ Do not claim completion until you can fill this matrix from fresh evidence:
 
 Rules:
 
-- The primary workflow row must assert the final observed state, not just that a handler or mock was called.
-- If the workflow crosses backend state or projection, one proof must observe the projected `AppViewState` or rendered UI after the real command path.
-- If the user says smoke test, this repo's default meaning is `make smoke`; inspect `logs/debug-smoke-report.txt` before calling it smoke-verified.
-- Do not call Vitest, Storybook, Playwright, mocked AppRuntime tests, or `make check` a smoke test.
-- If `make smoke` is not feasible, say `not smoke-verified` and explain the exact substitute boundary you did verify.
-- A code review is not proof that the workflow works. Ask reviewers whether the tests would fail if the reported workflow still failed.
+- Assert the final observed state, not only that a handler, sender, or mock was called.
+- If behavior crosses domain state or projection, observe the actor result, projected `AppViewState`, or rendered GPUI state after the real command path.
+- Use only the test styles allowed by `docs/coding-conventions.md`: pure unit tests, actor tests through mailboxes/`AppEventBus` (plus tracing when relevant), and smoke tests through `dev-tools/`. Native UI tests use `#[gpui_kit::test]`.
+- Before changing or verifying production code, discover applicable `@cc` comments and ancestor `CONTRACTS` files with `cc-check list path/to/file.rs[:line]`. Check semantic compliance; `cc-check format` validates syntax and duplicate IDs only.
+- A code review or `make check` is not requirement-specific workflow proof.
 
-## Boundary Checklist
+## Choose the Smallest Meaningful Proof
 
-For the main workflow, identify every layer it depends on and mark each as proved or unproved:
-
-| Layer | Example proof |
+| Boundary | Preferred proof |
 |---|---|
-| UI interaction | user event changes rendered UI |
-| Frontend command adapter | command wrapper called with production shape |
-| Tauri command registration | command invoked through Tauri/debug app path |
-| Actor/domain mutation | actor state changes through mailbox/handle |
-| Show/file persistence | document or dirty state reflects mutation |
-| Event bus/projector | `app-status-changed` or `AppViewState` contains update |
-| Rendered projection | user-visible UI shows final state |
-| LV1/hardware behavior | `make smoke` report or dedicated hardware smoke output |
+| Pure domain calculation | Targeted pure unit test with `cargo nextest run ...` |
+| Actor mutation or safety behavior | Actor test through mailbox and `AppEventBus` |
+| Logging behavior | Actor test with a tracing listener |
+| GPUI behavior | `#[gpui_kit::test]` component test |
+| Native appearance on macOS | `make visual-test` and inspected perceptual snapshot result |
+| Production and development crates | `make check` |
+| LV1/hardware workflow | `make smoke`, then inspect `logs/debug-smoke-report.txt` |
 
-You do not always need every layer. You must prove the layer where the feature could realistically fail.
+Use `make visual-update` only after inspecting intentional UI changes. Windows appearance requires manual acceptance where equivalent image rendering is unavailable.
 
-## Smoke Means Smoke
+## Smoke Means Hardware Smoke
 
-In this repository, `smoke` is a protected word.
+In this repository, `make smoke` runs the non-GUI `advanced-show-control-smoke` CLI from `dev-tools/` against an LV1-compatible environment. Its terminal output is not authoritative. Always inspect `logs/debug-smoke-report.txt` before reporting the suite result.
 
 Use these labels accurately:
 
-| Test type | Allowed label |
+| Evidence | Allowed label |
 |---|---|
-| `make smoke` debug Tauri app plus `logs/debug-smoke-report.txt` inspected | smoke-verified |
-| Debug app path without LV1-dependent assertions | debug-app verified |
-| Rust actor mailbox/event bus test | actor verified |
-| Tauri command adapter test | command-boundary verified |
-| React test with mocked services | frontend wiring verified |
-| Storybook or Playwright screenshot | visual verified |
+| `make smoke` plus authoritative report inspected | smoke-verified |
+| Actor mailbox/event-bus test | actor verified |
+| GPUI Kit component test | native component verified |
+| `make visual-test` with output inspected | native visual verified on macOS |
+| Broad format, lint, test, and build checks | `make check` passed |
+
+If hardware smoke is not feasible, say `not smoke-verified` and name the substitute boundary that was tested.
+
+## Common Commands
+
+```bash
+cargo nextest run -p advanced-show-control <test-filter>
+cargo nextest run --manifest-path dev-tools/Cargo.toml
+make visual-test
+make check
+make smoke
+```
 
 ## Red Flags
 
 Stop before completion if you are about to say:
 
-- "The smoke test passes" but you did not run `make smoke`.
-- "End-to-end" but a mock stands at the command/backend boundary.
-- "It works" but the test only asserts a callback was called.
-- "Review found no issues" but no test would fail if the user's workflow still failed.
-- "make check passed" as proof of a specific user workflow.
-- "Should be fixed" without observing the final projected/rendered state.
-
-## Common Mistakes
-
-| Mistake | Correction |
-|---|---|
-| Mocked service call treated as workflow proof | Add proof across the real command/projection boundary. |
-| Broad verification treated as feature verification | Add a requirement-specific proof row. |
-| Smoke requested but only frontend tests run | Run `make smoke` or report `not smoke-verified`. |
-| Projection bug tested only at command call site | Wait for and assert projected state/UI after mutation. |
-| Completion notification sent after partial proof | State gaps first; notify only after requested verification is complete. |
+- “Smoke passed” without running `make smoke` and reading `logs/debug-smoke-report.txt`.
+- “End-to-end” when a mock replaces a boundary relevant to the failure.
+- “It works” when the test only records command dispatch.
+- “Visual verified” without running and inspecting the native visual test.
+- “`make check` passed” as the only proof of a specific workflow.
+- “Should be fixed” without observing the final domain, projected, rendered, or hardware state.
 
 ## Final Response Contract
 
-When using this skill, final status must include:
+Report:
 
-- The primary workflow proof and the final state observed.
-- The broad checks run, if any.
-- Whether the work is smoke-verified, debug-app verified, command-boundary verified, actor verified, frontend wiring verified, or visual verified.
-- Any unverified boundary in plain language.
+- The primary workflow proof and final state observed.
+- Every command run and whether it passed.
+- The accurate verification label, if applicable.
+- Any unverified boundary or platform-specific risk in plain language.

@@ -30,15 +30,18 @@ Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when ne
 
 Shortcuts do not operate while you are entering text or working in a dialog. Holding a shortcut does not repeat CUE or GO. A shortcut does not bypass **SAFE**, connection checks, or the LV1 scene number-and-name check.
 
+### Time display
+
+Choose **24 hour** or **12 hour** to control the clock format in the bottom status bar. The default is **24 hour**.
+
 ## Not active in v2
 
-In v2, **Auto load last show file** does not open a session, **Auto save sessions** does not save changes, **Time display** does not change the clock, and **Fader override sensitivity** does not change manual override.
+In v2, **Auto load last show file** does not open a session, **Auto save sessions** does not save changes, and **Fader override sensitivity** does not change manual override.
 
 | Setting | Default | What to do instead |
 | --- | --- | --- |
 | **Auto load last show file** | Off | Open the required session yourself. |
 | **Auto save sessions** | Off | Use **File > Save Session** after each intended change. |
-| **Time display** | **24 hour** | Read the clock as displayed. |
 | **Fader override sensitivity** | `9` | During a fade, a fader you move follows your move while other scoped controls may continue. Rehearse this response before show use. |
 
 **Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2.

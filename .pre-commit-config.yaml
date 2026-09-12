@@ -7,6 +7,7 @@ repos:
         language: system
         pass_filenames: false
         types: [rust]
+        exclude: ^dev-tools/
 
       - id: cargo-clippy
         name: cargo clippy
@@ -14,17 +15,18 @@ repos:
         language: system
         pass_filenames: false
         types: [rust]
+        exclude: ^dev-tools/
 
-      - id: ui-prettier
-        name: ui prettier
-        entry: npm --prefix ui run format
+      - id: dev-tools-fmt
+        name: dev-tools cargo fmt
+        entry: cargo fmt --manifest-path dev-tools/Cargo.toml
         language: system
         pass_filenames: false
-        files: ^ui/
+        files: ^dev-tools/.*\.rs$
 
-      - id: ui-eslint
-        name: ui eslint
-        entry: npm --prefix ui run lint:fix
+      - id: dev-tools-clippy
+        name: dev-tools cargo clippy
+        entry: cargo clippy --manifest-path dev-tools/Cargo.toml --all-targets -- -D warnings
         language: system
         pass_filenames: false
-        files: ^ui/
+        files: ^dev-tools/.*\.rs$

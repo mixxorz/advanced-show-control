@@ -38,4 +38,4 @@ If **Logs** has no message for the problem, inspect the timestamp and severity a
 
 ## An inactive setting does not produce a result
 
-**Auto load last show file**, **Auto save sessions**, **Time display**, and **Fader override sensitivity** are inactive in v2. Open and save the session yourself. During rehearsal, move a fading fader to confirm that your move takes control of it. See [Not Active In v2](settings.md#not-active-in-v2).
+**Auto load last show file**, **Auto save sessions**, and **Fader override sensitivity** are inactive in v2. Open and save the session yourself. During rehearsal, move a fading fader to confirm that your move takes control of it. See [Not Active In v2](settings.md#not-active-in-v2).

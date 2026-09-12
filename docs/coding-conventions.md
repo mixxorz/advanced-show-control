@@ -11,14 +11,14 @@ This document is the source of truth for day-to-day implementation conventions i
 - Keep docs current when behavior, architecture, or project phase changes.
 - File or reference GitHub issues for future ideas instead of expanding current implementation scope.
 
-## Rust Backend
+## Rust Application
 
-- Core backend code lives under `src-tauri/src/` in the `advanced-show-control` crate.
+- Production code lives under `app/src/` in the `advanced-show-control` crate. The separate `dev-tools/` crate contains only development CLIs.
 - Domain state belongs to the actor or module that owns that domain.
 - Actor handles must remain dumb cloneable mailbox senders. Do not add convenience methods that hide command enum construction.
 - Callers should construct command enum variants explicitly and attach a `oneshot` reply when they need a result.
-- Tauri command adapters must stay thin: deserialize frontend input, send actor commands, await replies, and map errors into frontend-safe strings.
-- Business logic belongs in owning actors/modules, not in Tauri command adapters or actor handles.
+- Native command adapters must stay thin: accept GPUI or menu input, send actor commands, await replies off the GPUI thread, and map errors into UI-safe strings.
+- Business logic belongs in owning actors/modules, not in native UI adapters or actor handles.
 - Import public domain items from the module root. Do not import from private submodules unless the module intentionally exposes that path.
 
 ## Logging
@@ -32,7 +32,7 @@ This document is the source of truth for day-to-day implementation conventions i
 
 ### Logging Levels
 
-- `DEBUG`: protocol details, internal decisions, noisy diagnostics, subscriber lag details, state counts, low-level write/drop information, no-op operations, and actor shutdown details. `DEBUG` events go to diagnostic file/stdout sinks, not the frontend log UI.
+- `DEBUG`: protocol details, internal decisions, noisy diagnostics, subscriber lag details, state counts, low-level write/drop information, no-op operations, and actor shutdown details. `DEBUG` events go to diagnostic file/stdout sinks, not the native log view.
 - `INFO`: user-relevant operational facts and successful state changes that an engineer may need to understand app behavior, such as connection progress, scene/cue actions, completed user-requested file operations, settings updates, and non-noisy reconciliation outcomes.
 - `WARN`: visible safety blocks, skipped/blocked operations, recoverable failures, invalid user-owned files that fall back to safe defaults, and user-relevant conditions that need attention.
 - `ERROR`: command failures, unrecoverable runtime setup failures, and failed file writes that prevent diagnostics or user-requested persistence.
@@ -41,8 +41,8 @@ This document is the source of truth for day-to-day implementation conventions i
 
 - Runtime modules emit tracing events only. They do not publish `AppEventBus` events solely to create logs.
 - `DEBUG` and above are written to diagnostic logs.
-- `INFO`, `WARN`, and `ERROR` are projected into frontend log state through the tracing UI sink.
-- The frontend receives log state only through `app-status-changed` snapshots. It must not subscribe directly to backend logs.
+- `INFO`, `WARN`, and `ERROR` are projected into native UI log state through the tracing UI sink.
+- GPUI receives logs only as part of complete `AppViewState` snapshots from the native projection sink. Components must not subscribe directly to runtime logs.
 
 ## Rust Tests
 
@@ -50,23 +50,24 @@ Rust tests should fit one of these categories:
 
 - Pure unit tests that call functions directly and have no side effects.
 - Actor tests that interact through the actor mailbox, `AppEventBus`, and a tracing listener when tracing output is part of behavior under test.
-- Smoke tests through the debug module/app.
+- Smoke tests through the separate `dev-tools/` smoke CLI.
 
 Do not test side-effecting actor behavior by directly mutating actor internals or inspecting private state.
 
-Do not write source-string tests that read Rust source files with `include_str!` or similar mechanisms and assert on implementation text. Test behavior through public functions, actor mailboxes, command adapters, or smoke tests instead.
+Do not write source-string tests that read Rust source files with `include_str!` or similar mechanisms and assert on implementation text. Test behavior through public functions, actor mailboxes, native command adapters, or smoke tests instead.
 
 Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks. Avoid `cargo test` unless a test harness feature specifically requires it.
 
-## Frontend
+## Native UI
 
-- Frontend code lives under `ui/`; do not assume a root `src/` frontend.
+- GPUI Kit host and view code lives under `app/src/native_ui/`. There is no JavaScript frontend or Tauri host.
 - Preserve the existing design language unless the task is to redesign it.
-- Define reusable fonts, colors, spacing, borders, and interaction states as Tailwind/CSS theme variables when a value is reusable.
-- Avoid hard-coded Tailwind values when a reusable token is appropriate.
-- Keep frontend state projected from backend snapshots. Do not bypass `app-status-changed` for backend-owned state.
-- The frontend may request explicit connect or disconnect, but must not own transport reconnect attempts, connection generations, or runtime peer installation; `Lv1Actor` owns transport reconnect and `AppLifecycle` owns generation transitions.
-- Use full-object replacement for settings updates unless the backend API explicitly exposes a narrower command.
+- Define reusable fonts, colors, spacing, borders, and interaction states as GPUI theme tokens when a value is reusable.
+- Keep backend-owned state projected through complete, versioned `AppViewState` snapshots. GPUI entities may own presentation-only state such as focus, open dialogs, drag previews, and pending text.
+- GPUI handlers must not block on actor replies, discovery, network work, file I/O, or path prompts. Submit work to the dedicated Tokio runtime and schedule accepted results on the GPUI thread.
+- The UI may request explicit connect or disconnect, but must not own transport reconnect attempts, connection generations, or runtime peer installation; `Lv1Actor` owns transport reconnect and `AppLifecycle` owns generation transitions.
+- Use full-object replacement for settings updates unless the domain API explicitly exposes a narrower command.
+- Do not introduce npm, React, TypeScript, browser-test, or Tauri dependencies.
 
 ## Safety-Critical Code
 
@@ -82,9 +83,10 @@ Use `cargo nextest run ...` for Rust tests, including targeted inner-loop checks
 
 ## Verification
 
-- Use the smallest relevant `make` target or direct Cargo/npm command while developing.
+- Use the smallest relevant `make` target or direct Cargo command while developing.
 - Before claiming work is complete, run the verification command that proves the claim and read the output.
 - CI-style verification is `make check`.
+- `make visual-test` compares native macOS screenshots with reviewed perceptual snapshots. Use `make visual-update` only after inspecting intentional UI changes.
 - Hook-only checks should run at commit time; do not bypass hooks.
 
 Common targeted checks:
@@ -93,10 +95,9 @@ Common targeted checks:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace
-npm --prefix ui run format:check
-npm --prefix ui run lint
-npm --prefix ui run typecheck
-npm --prefix ui run test
+cargo build --workspace
+cargo run -p advanced-show-control --features debug-tools --bin native-visual-test -- dist/visual
+cargo nextest run --manifest-path dev-tools/Cargo.toml
 ```
 
 ## Commits

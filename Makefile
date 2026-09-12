@@ -1,8 +1,8 @@
 .PHONY: help fmt lint test build check \
 	rust-fmt rust-lint rust-test rust-build \
 	dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-check dev-tools-build \
-	ui-fmt ui-lint ui-typecheck ui-build ui-test ui-storybook-test \
-	visual-test visual-update docs-install docs-build docs-serve dev storybook probe smoke
+	docs-install docs-build docs-serve dev gallery probe smoke \
+	visual-test visual-update package-macos package-windows
 
 DOCS_VENV := .venv-docs
 DOCS_PYTHON := $(DOCS_VENV)/bin/python
@@ -11,52 +11,39 @@ DOCS_ZENSICAL := $(DOCS_VENV)/bin/zensical
 help:
 	@printf '%s\n' \
 	  'Common targets:' \
-	  '  make fmt                  Check Rust and UI formatting' \
-	  '  make lint                 Run Rust clippy and UI ESLint' \
-	  '  make test                 Run Rust and UI unit tests' \
-	  '  make build                Build Rust workspace and UI' \
-	  '  make check                Run CI-like non-visual checks' \
+	  '  make fmt                  Check Rust formatting' \
+	  '  make lint                 Run Clippy for the app and development tools' \
+	  '  make test                 Run app and development-tool tests' \
+	  '  make build                Build the app and development tools' \
+	  '  make check                Run CI-like formatting, lint, test, and build checks' \
 	  '' \
 	  'Documentation targets:' \
 	  '  make docs-install         Install pinned documentation dependencies' \
-	  '  make docs-build           Build documentation site with strict validation' \
-	  '  make docs-serve           Serve documentation site locally' \
+	  '  make docs-build           Build documentation with strict validation' \
+	  '  make docs-serve           Serve documentation locally' \
 	  '' \
-	  'Rust targets:' \
-	  '  make rust-fmt             cargo fmt --all -- --check' \
-	  '  make rust-lint            cargo clippy --workspace --all-targets -- -D warnings' \
-	  '  make rust-test            cargo nextest run --workspace' \
-	  '  make rust-build           cargo build --workspace' \
-	  '  make dev-tools-check      Check, lint, and test the LV1 probe library and CLI' \
+	  'Native application targets:' \
+	  '  make dev                  Run the GPUI application' \
+	  '  make gallery              Open the native component/state gallery' \
+	  '  make visual-test          Run GPUI native visual/component tests (macOS)' \
+	  '  make visual-update        Update reviewed native visual snapshots (macOS)' \
+	  '  make package-macos        Build an ad-hoc-signed universal macOS app archive' \
+	  '  make package-windows      Build an unsigned Windows x64 app archive' \
 	  '' \
-	  'UI targets:' \
-	  '  make ui-fmt               npm run format:check' \
-	  '  make ui-lint              npm run lint' \
-	  '  make ui-typecheck         npm run typecheck' \
-	  '  make ui-build             npm run build' \
-	  '  make ui-test              npm run test' \
-	  '  make ui-storybook-test    npm run test:storybook' \
-	  '' \
-	  'Visual targets:' \
-	  '  make visual-test          npm run test:visual:ci' \
-	  '  make visual-update        npm run test:visual:update:ci' \
-	  '' \
-	  'Development targets:' \
-	  '  make dev                  Start Tauri dev server and app' \
-	  '  make storybook            Start Storybook dev server' \
+	  'Development-tool targets:' \
 	  '  make probe                Run LV1 probe CLI (pass ARGS="...")' \
-	  '  make smoke                Run debug Tauri hardware smoke app quietly' \
-	  '  make smoke VERBOSE=1      Run debug smoke with terminal logs'
+	  '  make smoke                Run the non-GUI hardware smoke suite quietly' \
+	  '  make smoke VERBOSE=1      Run hardware smoke with terminal output'
 
-fmt: rust-fmt dev-tools-fmt ui-fmt
+fmt: rust-fmt dev-tools-fmt
 
-lint: rust-lint dev-tools-lint ui-lint
+lint: rust-lint dev-tools-lint
 
-test: rust-test dev-tools-test ui-test
+test: rust-test dev-tools-test
 
-build: rust-build dev-tools-build ui-build
+build: rust-build dev-tools-build
 
-check: fmt lint ui-typecheck build test ui-storybook-test
+check: fmt lint test build
 
 docs-install:
 	@test -x "$(DOCS_PYTHON)" || python3 -m venv "$(DOCS_VENV)"
@@ -81,56 +68,43 @@ rust-build:
 	cargo build --workspace
 
 dev-tools-fmt:
-	cargo fmt --manifest-path src-tauri/dev-tools/Cargo.toml -- --check
+	cargo fmt --manifest-path dev-tools/Cargo.toml -- --check
 
 dev-tools-lint:
-	cargo clippy --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe -- -D warnings
+	cargo clippy --manifest-path dev-tools/Cargo.toml --all-targets -- -D warnings
 
 dev-tools-test:
-	cargo nextest run --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe
+	cargo nextest run --manifest-path dev-tools/Cargo.toml
 
 dev-tools-check: dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-build
 
 dev-tools-build:
-	cargo build --manifest-path src-tauri/dev-tools/Cargo.toml --lib --bin lv1-probe
-
-ui-fmt:
-	npm --prefix ui run format:check
-
-ui-lint:
-	npm --prefix ui run lint
-
-ui-typecheck:
-	npm --prefix ui run typecheck
-
-ui-build:
-	npm --prefix ui run build
-
-ui-test:
-	npm --prefix ui run test
-
-ui-storybook-test:
-	npm --prefix ui run test:storybook
-
-visual-test:
-	npm --prefix ui run test:visual:ci
-
-visual-update:
-	npm --prefix ui run test:visual:update:ci
+	cargo build --manifest-path dev-tools/Cargo.toml --all-targets
 
 dev:
-	npm run tauri -- dev
+	cargo run -p advanced-show-control --bin advanced-show-control
 
-storybook:
-	npm --prefix ui run storybook
+gallery:
+	cargo run -p advanced-show-control --features debug-tools --bin native-gallery
+
+visual-test:
+	cargo run -p advanced-show-control --features debug-tools --bin native-visual-test -- dist/visual
+
+visual-update:
+	ASC_UPDATE_NATIVE_VISUALS=1 cargo run -p advanced-show-control --features debug-tools --bin native-visual-test -- dist/visual
+
+package-macos:
+	./scripts/package-macos.sh "$(or $(RELEASE_ID),local)"
+
+package-windows:
+	powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -ReleaseId "$(or $(RELEASE_ID),local)"
 
 probe:
-	cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin lv1-probe -- $(ARGS)
+	cargo run --manifest-path dev-tools/Cargo.toml --bin lv1-probe -- $(ARGS)
 
 smoke:
-	@npm --prefix ui run build:debug
 	@if [ "$(VERBOSE)" = "1" ]; then \
-		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug; \
+		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path dev-tools/Cargo.toml --bin advanced-show-control-smoke; \
 	else \
-		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path src-tauri/dev-tools/Cargo.toml --bin advanced-show-control-debug >/dev/null 2>&1; \
+		perl -e 'alarm shift; exec @ARGV' $${SMOKE_TIMEOUT:-240} cargo run --manifest-path dev-tools/Cargo.toml --bin advanced-show-control-smoke >/dev/null 2>&1; \
 	fi

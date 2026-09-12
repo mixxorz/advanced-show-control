@@ -1,6 +1,6 @@
 # LV1 TCP Handling
 
-`Lv1Actor` owns one generation's LV1 TCP transport and mirrored state. It owns connection attempts, reconnect delay, read loop, ping timeout, disconnect facts, and the socket writer. The frontend does not participate in transport reconnection; it only requests lifecycle-level connect or disconnect.
+`Lv1Actor` owns one generation's LV1 TCP transport and mirrored state. It owns connection attempts, reconnect delay, read loop, ping timeout, disconnect facts, and the socket writer. The native UI does not participate in transport reconnection; it only requests lifecycle-level connect or disconnect.
 
 ## Framing
 
@@ -10,7 +10,7 @@ LV1 OSC messages use TCP frames:
 [4-byte big-endian payload length][8-byte LV1 header][OSC payload]
 ```
 
-App-sent frames use the LV1 header `00 00 00 02 00 00 00 00`. Encoding and decoding are in `src-tauri/src/lv1/tcp.rs`.
+App-sent frames use the LV1 header `00 00 00 02 00 00 00 00`. Encoding and decoding are in `app/src/lv1/tcp.rs`.
 
 `Lv1TcpClient::connect` enables `TCP_NODELAY` before splitting the stream because fader writes are latency-sensitive.
 

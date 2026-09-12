@@ -1,8 +1,8 @@
 # Design References
 
-This folder stores local visual references for frontend work.
+This folder stores local visual references for native UI work.
 
-## Real Frontend Shell And Scenes
+## Application Shell And Scenes
 
 Approved shell reference image:
 

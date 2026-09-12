@@ -1,6 +1,6 @@
 ---
 name: adding-logging
-description: Use when adding, changing, reviewing, or relying on application logs, tracing events, frontend log UI messages, diagnostics, or user-facing operational messages.
+description: Use when adding, changing, reviewing, or relying on application logs, tracing events, native log UI messages, diagnostics, or user-facing operational messages.
 ---
 
 # Adding Logging
@@ -39,8 +39,8 @@ Logs are both diagnostics and user-visible operational facts. Every application 
 - Runtime modules emit tracing events only.
 - Do not publish `AppEventBus` events solely to create logs.
 - `DEBUG` and above go to diagnostic logs.
-- `INFO`, `WARN`, and `ERROR` project into frontend log state through the tracing UI sink.
-- The frontend receives log state only through `app-status-changed` snapshots.
+- `INFO`, `WARN`, and `ERROR` project into the native Logs view through the tracing UI sink.
+- The GPUI host receives log state only through projector snapshots.
 
 ## Common Mistakes
 
