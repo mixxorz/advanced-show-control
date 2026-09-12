@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use gpui_kit::base::Button as BaseButton;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::dialog::{Dialog, DialogContent};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{Disableable as _, WindowExt as _};
@@ -17,6 +17,7 @@ use crate::lv1::TcpConnectProbeResult;
 use crate::projector::{AppConnectionState, AppViewState};
 
 use super::CommandDispatcher;
+use super::button::bordered_button;
 use super::theme::{
     CONSOLE_CONTROL, CONSOLE_LINE, CONSOLE_MUTED, CONSOLE_PANEL, CONSOLE_SECONDARY, STATUS_CUED,
     STATUS_CURRENT, STATUS_DANGER,
@@ -217,9 +218,9 @@ fn build_dialog(
             |dialog| {
                 dialog.footer(
                     div().flex().justify_end().child(
-                        Button::new("disconnect-lv1")
+                        bordered_button("disconnect-lv1")
                             .danger()
-                            .label("Disconnect")
+                            .label("DISCONNECT")
                             .on_click(move |_, window, cx| {
                                 disconnect_dispatcher.dispatch(|commands| async move {
                                     commands.disconnect_lv1().await.map(|_| ())
@@ -348,13 +349,13 @@ fn system_row(
                 }),
         )
         .child(
-            Button::new(SharedString::from(format!(
+            bordered_button(SharedString::from(format!(
                 "probe-{}",
                 identity_key(&identity)
             )))
             .secondary()
             .accessibility_label(probe_label)
-            .label("Test")
+            .label("TEST")
             .disabled(matches!(latency, Some(LatencyState::Pending)))
             .on_click(move |_, window, _| {
                 if let Some(session_id) = probe_state.borrow_mut().begin_latency(&probe_identity) {

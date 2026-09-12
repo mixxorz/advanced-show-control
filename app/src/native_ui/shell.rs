@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use gpui_kit::base::Button as BaseButton;
 use gpui_kit::component::Disableable as _;
-use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::{
     Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, rgb,
@@ -13,6 +13,7 @@ use gpui_kit::{
 use crate::projector::{AppConnectionState, AppFadeState, AppViewState};
 use crate::settings::TimeDisplayFormat;
 
+use super::button::bordered_button;
 use super::cues::CueListsView;
 use super::logs::LogsView;
 use super::scenes::ScenesView;
@@ -143,7 +144,7 @@ impl AppShell {
             .selected(active)
             .disabled(self.modal_open(cx))
             .px_5()
-            .py_3()
+            .py_4()
             .border_b_2()
             .border_color(rgb(if active {
                 ACCENT_ORANGE
@@ -164,7 +165,7 @@ impl AppShell {
                 this.active_tab = tab;
                 cx.notify();
             }))
-            .child(label)
+            .child(label.to_ascii_uppercase())
     }
 
     fn content(&self) -> gpui_kit::AnyElement {
@@ -197,12 +198,13 @@ impl Render for AppShell {
             AppConnectionState::Connecting => CONSOLE_SECONDARY,
             AppConnectionState::Disconnected => STATUS_DANGER,
         };
-        let console_name = self
-            .snapshot
-            .connected_lv1_identity
-            .as_ref()
-            .and_then(|identity| identity.host.clone())
-            .unwrap_or_else(|| "Console A".to_string());
+        let console_name = console_display_name(
+            &self.snapshot.connection,
+            self.snapshot
+                .connected_lv1_identity
+                .as_ref()
+                .and_then(|identity| identity.host.as_deref()),
+        );
         let lockout = self.snapshot.lockout;
         let actions_blocked = self.modal_open(cx) || self.shortcut_capture_active(cx);
         let lockout_dispatcher = self.dispatcher.clone();
@@ -258,10 +260,10 @@ impl Render for AppShell {
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         (this.open_connection)(window, cx);
                                     }))
-                                    .child(console_name),
+                                    .child(console_name.to_uppercase()),
                             )
                             .child(
-                                Button::new("toggle-lockout")
+                                bordered_button("toggle-lockout")
                                     .accessibility_label("Toggle safe mode")
                                     .label("SAFE")
                                     .toggled(lockout)
@@ -274,10 +276,10 @@ impl Render for AppShell {
                                     }),
                             )
                             .child(
-                                Button::new("abort-all")
+                                bordered_button("abort-all")
                                     .danger()
                                     .accessibility_label("Abort all fades")
-                                    .label("Abort All")
+                                    .label("ABORT ALL")
                                     .disabled(actions_blocked)
                                     .on_click(move |_, _, _| {
                                         abort_dispatcher.dispatch(|commands| async move {
@@ -345,7 +347,7 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
                 .border_r_1()
                 .border_color(rgb(CONSOLE_LINE))
                 .child(
-                    Button::new("go")
+                    bordered_button("go")
                         .primary()
                         .accessibility_label("Recall cued scene")
                         .label("GO")
@@ -402,6 +404,14 @@ fn resolve_cued_scene(snapshot: &AppViewState) -> Option<&crate::scenes::SceneCo
         .find(|scene| scene.internal_scene_id == entry.scene_internal_id)
 }
 
+fn console_display_name(connection: &AppConnectionState, host: Option<&str>) -> String {
+    match connection {
+        AppConnectionState::Disconnected => "CONNECT CONSOLE".to_owned(),
+        AppConnectionState::Connecting => host.unwrap_or("CONNECTING…").to_owned(),
+        AppConnectionState::Connected => host.unwrap_or("CONNECTED CONSOLE").to_owned(),
+    }
+}
+
 fn format_time(time: chrono::NaiveTime, format: &TimeDisplayFormat) -> String {
     match format {
         TimeDisplayFormat::TwentyFourHour => time.format("%H:%M:%S").to_string(),
@@ -429,7 +439,23 @@ fn status_cell(label: &'static str, value: &str, color: u32) -> impl IntoElement
 mod tests {
     use chrono::NaiveTime;
 
-    use super::{TimeDisplayFormat, format_time};
+    use super::{AppConnectionState, TimeDisplayFormat, console_display_name, format_time};
+
+    #[test]
+    fn console_display_name_is_actionable_while_offline() {
+        assert_eq!(
+            console_display_name(&AppConnectionState::Disconnected, None),
+            "CONNECT CONSOLE"
+        );
+        assert_eq!(
+            console_display_name(&AppConnectionState::Disconnected, Some("Stale Console")),
+            "CONNECT CONSOLE"
+        );
+        assert_eq!(
+            console_display_name(&AppConnectionState::Connected, Some("FOH")),
+            "FOH"
+        );
+    }
 
     #[test]
     fn clock_respects_the_selected_time_display() {

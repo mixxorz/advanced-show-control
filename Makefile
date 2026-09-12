@@ -86,7 +86,7 @@ dev:
 	cargo run -p advanced-show-control --bin advanced-show-control
 
 dev-watch:
-	cargo watch -w app -w Cargo.toml -w Cargo.lock -x 'run -p advanced-show-control --bin advanced-show-control'
+	cargo watch --poll --no-dot-ignores -w app -w Cargo.toml -w Cargo.lock -x 'run -p advanced-show-control --bin advanced-show-control'
 
 gallery:
 	cargo run -p advanced-show-control --features debug-tools --bin native-gallery

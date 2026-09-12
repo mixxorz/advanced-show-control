@@ -1,9 +1,7 @@
-use std::collections::HashMap;
-
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
 use gpui_kit::component::{
-    Disableable, Sizable,
-    button::{Button, ButtonVariants},
+    Disableable, IconName, Sizable,
+    button::ButtonVariants,
     input::{Input, InputEvent, InputState},
 };
 use gpui_kit::{
@@ -12,7 +10,15 @@ use gpui_kit::{
 };
 use uuid::Uuid;
 
-use super::{CommandDispatcher, theme};
+use super::{
+    CommandDispatcher,
+    button::bordered_button,
+    scene_library::{
+        format_scene_number, scene_library_columns, scene_library_header, scene_library_panel,
+        scene_library_row,
+    },
+    theme,
+};
 use crate::{
     cue_lists::{CueEntry, CueList},
     projector::AppViewState,
@@ -310,83 +316,80 @@ impl CueListsView {
         cx.notify();
     }
 
-    fn render_scene_library(&self) -> impl IntoElement {
+    fn render_scene_library(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let scenes = self.snapshot.scene_configs.clone();
-        div()
-            .w(px(350.))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .bg(rgb(theme::CONSOLE_PANEL))
-            .border_1()
-            .border_color(rgb(theme::CONSOLE_LINE))
-            .child(panel_header("SCENE LIBRARY"))
+        let recall_scene_id = selected_scene_config(&self.snapshot)
+            .filter(|scene| scene.scene_index.is_some())
+            .map(|scene| scene.internal_scene_id);
+        let recall = bordered_button("cue-scene-library-recall")
+            .label("RECALL")
+            .primary()
+            .disabled(recall_scene_id.is_none())
+            .on_click(cx.listener(move |this, _, _, _| {
+                if let Some(scene_id) = recall_scene_id {
+                    this.dispatch(move |commands| {
+                        Box::pin(async move { commands.recall_scene(scene_id).await.map(|_| ()) })
+                    });
+                }
+            }));
+
+        scene_library_panel()
+            .child(scene_library_header(recall))
+            .child(scene_library_columns())
             .child(
                 div()
                     .id("cue-scene-library")
                     .flex_1()
                     .overflow_y_scroll()
-                    .children(scenes.into_iter().map(|scene| self.render_scene_row(scene))),
+                    .children(
+                        scenes
+                            .into_iter()
+                            .map(|scene| self.render_scene_row(scene, cx)),
+                    ),
             )
     }
 
-    fn render_scene_row(&self, scene: SceneConfig) -> impl IntoElement {
+    fn render_scene_row(&self, scene: SceneConfig, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let current = self.snapshot.current_scene.as_ref().is_some_and(|current| {
             scene.scene_index == Some(current.index) && scene.scene_name == current.name
         });
         let scene_id = scene.internal_scene_id;
+        let selected = self.snapshot.selected_scene_internal_id.as_deref()
+            == Some(scene_id.to_string().as_str());
         let name: SharedString = scene.scene_name.clone().into();
-        div()
-            .id(format!("cue-scene-{scene_id}"))
-            .flex()
-            .items_center()
-            .gap_3()
-            .px_3()
-            .py_2()
-            .border_b_1()
-            .border_color(rgb(theme::CONSOLE_LINE_SOFT))
-            .hover(|style| style.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
-            .on_drag(
-                SceneDrag {
-                    scene_id,
-                    name: name.clone(),
-                },
-                |payload, _, _, cx| cx.new(|_| payload.clone()),
-            )
-            .child(
-                div()
-                    .w(px(42.))
-                    .font_family("Fira Code")
-                    .text_color(rgb(if current {
-                        theme::STATUS_CURRENT
-                    } else {
-                        theme::CONSOLE_SECONDARY
-                    }))
-                    .child(format_scene_number(scene.scene_index)),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .text_color(rgb(if current {
-                        theme::STATUS_CURRENT
-                    } else {
-                        theme::CONSOLE_PRIMARY
-                    }))
-                    .child(name),
-            )
-            .child(
-                div()
-                    .font_family("Fira Code")
-                    .text_color(rgb(theme::CONSOLE_MUTED))
-                    .child(if scene.duration_ms == 0 {
-                        "CUT".to_string()
-                    } else {
-                        format!("{:.1}s", scene.duration_ms as f64 / 1_000.0)
-                    }),
-            )
+        let selection_label = if selected {
+            "Selected scene"
+        } else {
+            "Select scene"
+        };
+        scene_library_row(
+            SharedString::from(format!("cue-scene-{scene_id}")),
+            &scene,
+            if current {
+                Some(theme::STATUS_CURRENT)
+            } else if selected {
+                Some(theme::ACCENT_ORANGE)
+            } else {
+                None
+            },
+        )
+        .accessibility_label(format!(
+            "{selection_label} {} {}",
+            format_scene_number(scene.scene_index),
+            scene.scene_name
+        ))
+        .selected(selected)
+        .when(selected, |row| row.bg(rgb(theme::CONSOLE_CONTROL)))
+        .hover(|style| style.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
+        .on_click(cx.listener(move |this, _, _, _| {
+            this.dispatch(move |commands| {
+                Box::pin(async move { commands.select_scene_config(scene_id).await.map(|_| ()) })
+            });
+        }))
+        .on_drag(SceneDrag { scene_id, name }, |payload, _, _, cx| {
+            cx.new(|_| payload.clone())
+        })
+        .into_any_element()
     }
 
     fn render_cue_pane(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -400,7 +403,7 @@ impl CueListsView {
                 .is_some_and(|list| list.entries.iter().any(|entry| entry.id == *id))
         });
         let entity = cx.entity();
-        let cue_button = Button::new("cue-selected")
+        let cue_button = bordered_button("cue-selected")
             .small()
             .label("CUE")
             .disabled(selected.is_none())
@@ -410,7 +413,7 @@ impl CueListsView {
                 }
             });
         let entity = cx.entity();
-        let manage = Button::new("manage-cue-lists")
+        let manage = bordered_button("manage-cue-lists")
             .small()
             .label("MANAGE CUE LISTS")
             .on_click(move |_, window, cx| {
@@ -453,15 +456,16 @@ impl CueListsView {
             .child(
                 div()
                     .flex()
-                    .px_3()
+                    .pr_3()
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(theme::CONSOLE_LINE_SOFT))
                     .text_xs()
                     .text_color(rgb(theme::CONSOLE_SECONDARY))
+                    .child(div().w(px(25.)))
                     .child(div().flex_1().child("SCENE NAME"))
                     .child(div().w(px(54.)).text_right().child("#"))
-                    .child(div().w(px(72.))),
+                    .child(div().w(px(28.))),
             )
             .child(self.render_active_entries(list, cx))
     }
@@ -507,16 +511,16 @@ impl CueListsView {
                 .child("No active cue list.")
                 .into_any_element();
         };
-        let duplicate_counts = scene_reference_counts(&list.entries);
         div()
             .id("active-cue-entries")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
             .children(
-                list.entries.into_iter().enumerate().map(|(index, entry)| {
-                    self.render_entry_row(entry, index, &duplicate_counts, cx)
-                }),
+                list.entries
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, entry)| self.render_entry_row(entry, index, cx)),
             )
             .child(append)
             .into_any_element()
@@ -526,16 +530,10 @@ impl CueListsView {
         &self,
         entry: CueEntry,
         index: usize,
-        duplicate_counts: &HashMap<Uuid, usize>,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let scene = scene_by_id(&self.snapshot, entry.scene_internal_id);
         let missing = scene.is_none();
-        let duplicate = duplicate_counts
-            .get(&entry.scene_internal_id)
-            .copied()
-            .unwrap_or(0)
-            > 1;
         let current = scene.is_some_and(|scene| {
             self.snapshot.current_scene.as_ref().is_some_and(|current| {
                 scene.scene_index == Some(current.index) && scene.scene_name == current.name
@@ -545,27 +543,23 @@ impl CueListsView {
             self.snapshot.cued_cue_entry_id.as_deref() == Some(entry.id.to_string().as_str());
         let selected = self.selected_entry_id == Some(entry.id);
         let scene_name = scene.map_or("Missing scene", |scene| scene.scene_name.as_str());
-        let display_name: SharedString = if duplicate {
-            format!("{scene_name}  ·  DUPLICATE").into()
-        } else {
-            scene_name.to_string().into()
-        };
+        let display_name: SharedString = scene_name.to_string().into();
         let color = if current {
             theme::STATUS_CURRENT
         } else if cued {
             theme::STATUS_CUED
-        } else if missing || duplicate {
+        } else if missing {
             theme::STATUS_WARNING
         } else {
             theme::CONSOLE_PRIMARY
         };
-        let border = if current {
+        let left_border = if current {
             theme::STATUS_CURRENT
         } else if cued {
             theme::STATUS_CUED
         } else if selected {
             theme::ACCENT_ORANGE
-        } else if missing || duplicate {
+        } else if missing {
             theme::STATUS_WARNING
         } else {
             theme::CONSOLE_PANEL
@@ -576,8 +570,9 @@ impl CueListsView {
         let drop_entity = cx.entity();
         let scene_drop_entity = cx.entity();
         let remove_entity = cx.entity();
-        let select_label = format!("Select cue {display_name}");
-        let remove_label = format!("Remove cue {display_name}");
+        let cue_number = index + 1;
+        let select_label = format!("Select cue {cue_number}: {display_name}");
+        let remove_label = format!("Remove cue {cue_number}: {display_name}");
 
         div()
             .id(format!("cue-entry-row-{entry_id}"))
@@ -585,9 +580,8 @@ impl CueListsView {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .border_l_3()
             .border_b_1()
-            .border_color(rgb(border))
+            .border_color(rgb(theme::CONSOLE_LINE_SOFT))
             .bg(rgb(if selected {
                 theme::CONSOLE_CONTROL
             } else {
@@ -634,6 +628,7 @@ impl CueListsView {
                     cx.notify();
                 });
             })
+            .child(div().w(px(3.)).h_full().bg(rgb(left_border)))
             .child(
                 BaseButton::new(format!("select-cue-entry-{entry_id}"))
                     .accessibility_label(select_label)
@@ -652,13 +647,18 @@ impl CueListsView {
                             }
                         });
                     })
-                    .child(div().w(px(22.)).text_color(rgb(color)).child(
-                        if current || cued || selected || missing || duplicate {
-                            "▶"
-                        } else {
-                            ""
-                        },
-                    ))
+                    .child(
+                        div()
+                            .w(px(22.))
+                            .text_color(rgb(color))
+                            .child(div().ml(px(-2.)).child(
+                                if current || cued || selected || missing {
+                                    "▶"
+                                } else {
+                                    ""
+                                },
+                            )),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -680,10 +680,12 @@ impl CueListsView {
                     ),
             )
             .child(
-                Button::new(format!("remove-cue-entry-{entry_id}"))
+                bordered_button(format!("remove-cue-entry-{entry_id}"))
                     .small()
+                    .ml_2()
+                    .mr_2()
                     .danger()
-                    .label("REMOVE")
+                    .icon(IconName::Delete)
                     .accessibility_label(remove_label)
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
@@ -709,7 +711,7 @@ impl CueListsView {
     fn render_manage_overlay(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let manager_inert = self.manager_controls_inert();
         let entity = cx.entity();
-        let close = Button::new("close-cue-manager")
+        let close = bordered_button("close-cue-manager")
             .small()
             .label("CLOSE")
             .disabled(manager_inert)
@@ -722,7 +724,7 @@ impl CueListsView {
                 });
             });
         let entity = cx.entity();
-        let create = Button::new("new-cue-list")
+        let create = bordered_button("new-cue-list")
             .small()
             .primary()
             .label("NEW CUE LIST")
@@ -906,7 +908,7 @@ impl CueListsView {
                     }),
             )
             .child(
-                Button::new(format!("rename-cue-list-{id}"))
+                bordered_button(format!("rename-cue-list-{id}"))
                     .small()
                     .label("RENAME")
                     .accessibility_label(rename_label)
@@ -932,7 +934,7 @@ impl CueListsView {
                     }),
             )
             .child(
-                Button::new(format!("delete-cue-list-{id}"))
+                bordered_button(format!("delete-cue-list-{id}"))
                     .small()
                     .danger()
                     .label("DELETE")
@@ -984,7 +986,7 @@ impl CueListsView {
                     .justify_end()
                     .gap_2()
                     .child(
-                        Button::new("cancel-cue-list-name")
+                        bordered_button("cancel-cue-list-name")
                             .small()
                             .label("CANCEL")
                             .disabled(submitting)
@@ -997,7 +999,7 @@ impl CueListsView {
                             }),
                     )
                     .child(
-                        Button::new("submit-cue-list-name")
+                        bordered_button("submit-cue-list-name")
                             .small()
                             .primary()
                             .label("SAVE")
@@ -1045,7 +1047,7 @@ impl CueListsView {
                     .flex()
                     .gap_2()
                     .child(
-                        Button::new("cancel-delete-cue-list")
+                        bordered_button("cancel-delete-cue-list")
                             .small()
                             .label("CANCEL")
                             .disabled(submitting)
@@ -1058,7 +1060,7 @@ impl CueListsView {
                             }),
                     )
                     .child(
-                        Button::new("confirm-delete-cue-list")
+                        bordered_button("confirm-delete-cue-list")
                             .small()
                             .danger()
                             .label("DELETE")
@@ -1104,28 +1106,13 @@ impl Render for CueListsView {
                     .min_h_0()
                     .flex()
                     .gap_3()
-                    .child(self.render_scene_library())
+                    .child(self.render_scene_library(cx))
                     .child(self.render_cue_pane(cx)),
             )
             .when(self.manage_open, |root| {
                 root.child(self.render_manage_overlay(cx))
             })
     }
-}
-
-fn panel_header(title: &'static str) -> impl IntoElement {
-    div()
-        .h(px(54.))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .px_4()
-        .border_b_1()
-        .border_color(rgb(theme::CONSOLE_LINE))
-        .font_family("Fira Code")
-        .text_lg()
-        .text_color(rgb(theme::ACCENT_ORANGE))
-        .child(title)
 }
 
 fn manager_controls_inert(
@@ -1142,6 +1129,14 @@ fn active_cue_list(snapshot: &AppViewState) -> Option<&CueList> {
         .cue_lists
         .iter()
         .find(|list| list.id.to_string() == active)
+}
+
+fn selected_scene_config(snapshot: &AppViewState) -> Option<&SceneConfig> {
+    let selected_id = snapshot.selected_scene_internal_id.as_deref()?;
+    snapshot
+        .scene_configs
+        .iter()
+        .find(|scene| scene.internal_scene_id.to_string() == selected_id)
 }
 
 fn scene_by_id(snapshot: &AppViewState, scene_id: Uuid) -> Option<&SceneConfig> {
@@ -1190,18 +1185,6 @@ fn reordered_ids<T: StableId>(items: &[T], from: Uuid, to: Uuid) -> Option<Vec<U
     Some(ids)
 }
 
-fn scene_reference_counts(entries: &[CueEntry]) -> HashMap<Uuid, usize> {
-    let mut counts = HashMap::new();
-    for entry in entries {
-        *counts.entry(entry.scene_internal_id).or_default() += 1;
-    }
-    counts
-}
-
-fn format_scene_number(index: Option<i32>) -> String {
-    index.map_or_else(|| "---".to_string(), |index| format!("{:03}", index + 1))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1227,13 +1210,6 @@ mod tests {
         assert_eq!(reordered_ids(&entries, id(2), id(2)), None);
         assert_eq!(reordered_ids(&entries, id(99), id(2)), None);
         assert_eq!(reordered_ids(&entries, id(1), id(99)), None);
-    }
-
-    #[test]
-    fn duplicate_scene_references_are_counted_by_stable_scene_id() {
-        let counts = scene_reference_counts(&[entry(1, 10), entry(2, 10), entry(3, 11)]);
-        assert_eq!(counts.get(&id(10)), Some(&2));
-        assert_eq!(counts.get(&id(11)), Some(&1));
     }
 
     #[test]

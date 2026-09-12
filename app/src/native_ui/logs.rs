@@ -6,6 +6,7 @@ use gpui_kit::{
 
 use crate::projector::{AppViewState, LogSeverity};
 
+use super::panel::panel_header;
 use super::theme::{
     CONSOLE_LINE, CONSOLE_LINE_SOFT, CONSOLE_MUTED, CONSOLE_PANEL, CONSOLE_PRIMARY, STATUS_DANGER,
     STATUS_WARNING,
@@ -74,15 +75,7 @@ impl Render for LogsView {
             .border_1()
             .border_color(rgb(CONSOLE_LINE))
             .bg(rgb(CONSOLE_PANEL))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(rgb(CONSOLE_LINE))
-                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-                    .child("LOGS"),
-            )
+            .child(panel_header("LOGS"))
             .child(
                 div()
                     .id("projected-logs")

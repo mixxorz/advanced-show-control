@@ -10,6 +10,7 @@ use crate::settings::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 use super::CommandDispatcher;
 use super::keyboard::{CaptureResult, ShortcutCapture, shortcuts_equal};
+use super::panel::panel_header;
 use super::theme::{
     ACCENT_ORANGE, CONSOLE_CONTROL, CONSOLE_CONTROL_HOVER, CONSOLE_LINE, CONSOLE_MUTED,
     CONSOLE_PANEL, CONSOLE_PRIMARY, STATUS_DANGER,
@@ -275,22 +276,17 @@ impl Render for SettingsView {
         let settings = self.settings().clone();
         div()
             .id("settings-view")
+            .test_support()
             .track_focus(&self.focus)
             .key_context(super::keyboard::shortcut_capture_key_context())
             .on_key_down(cx.listener(Self::on_key_down))
             .size_full()
             .bg(rgb(CONSOLE_PANEL))
+            .border_1()
+            .border_color(rgb(CONSOLE_LINE))
             .text_color(rgb(CONSOLE_PRIMARY))
             .overflow_y_scroll()
-            .child(
-                div()
-                    .border_b_1()
-                    .border_color(rgb(CONSOLE_LINE))
-                    .px_4()
-                    .py_3()
-                    .text_lg()
-                    .child("SETTINGS"),
-            )
+            .child(panel_header("SETTINGS"))
             .child(
                 div()
                     .p_4()
@@ -458,6 +454,7 @@ fn control_button(
     accessibility_label: impl Into<SharedString>,
     enabled: bool,
 ) -> BaseButton {
+    let label: SharedString = label.into();
     BaseButton::new(id)
         .accessibility_label(accessibility_label)
         .disabled(!enabled)
@@ -476,7 +473,7 @@ fn control_button(
                 .cursor_pointer()
                 .hover(|style| style.bg(rgb(CONSOLE_CONTROL_HOVER)))
         })
-        .child(label.into())
+        .child(label.to_uppercase())
 }
 
 fn selected_control(control: BaseButton) -> BaseButton {

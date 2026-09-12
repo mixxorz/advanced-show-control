@@ -47,7 +47,7 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         let theme = Theme::global_mut(cx);
         theme.font_family = "Fira Sans".into();
         theme.mono_font_family = "Fira Code".into();
-        theme.font_size = px(14.0);
+        theme.font_size = px(16.0);
         theme.mono_font_size = px(12.0);
         theme.radius = px(2.5);
         theme.radius_lg = px(4.0);

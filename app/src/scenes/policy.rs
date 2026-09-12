@@ -1,6 +1,6 @@
 use crate::fade::{FadeConfig, FadeCurve, FadeParameter, FadeSceneIdentity, FadeTarget};
 use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, PanMode, SceneState};
-use crate::scenes::SceneConfig;
+use crate::scenes::{SceneConfig, is_supported_scope_group};
 
 pub struct RecallPolicyInput {
     pub recalled_scene: SceneState,
@@ -25,9 +25,10 @@ pub enum RecallPolicyDecision {
 /**
  * @cc [owner:mixxorz,label:safety] blocked-skipped-no-fade-config
  * A missing scene config, both scopes disabled, or no targets supported by the stored pan mode MUST
- * return `Skip`. Missing live topology, a scoped channel config, or a fader value required by enabled
- * fader scope MUST return `Blocked`. Optional pan-family values MAY be omitted while admitting the
- * available targets; neither `Skip` nor `Blocked` may return a `FadeConfig`.
+ * return `Skip`. An unsupported scoped channel group, missing live topology, a scoped channel
+ * config, or a fader value required by enabled fader scope MUST return `Blocked`. Optional
+ * pan-family values MAY be omitted while admitting available targets; neither `Skip` nor `Blocked`
+ * may return a `FadeConfig`.
  */
 pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
     let RecallPolicyInput {
@@ -70,6 +71,12 @@ pub fn decide_scene_recall(input: RecallPolicyInput) -> RecallPolicyDecision {
     let faders_enabled = config.scope_toggles.faders;
 
     for scoped in &config.scoped_channels {
+        if !is_supported_scope_group(scoped.group) {
+            return blocked(format!(
+                "scoped channel group={} is unsupported",
+                scoped.group
+            ));
+        }
         if !live_channels.contains(&(scoped.group, scoped.channel)) {
             return blocked(format!(
                 "scoped channel group={} channel={} is missing from live topology",
@@ -245,6 +252,43 @@ mod tests {
             scene_config: Some(config(1000, Some(-12.5), None, None, None, None)),
         });
         assert!(matches!(decision, RecallPolicyDecision::Blocked { .. }));
+    }
+
+    #[test]
+    fn blocks_scoped_channels_from_unsupported_groups() {
+        let mut scene_config = config(1000, Some(-12.5), None, None, None, None);
+        scene_config.channel_configs[0].group = 24;
+        scene_config.scoped_channels[0].group = 24;
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        let decision = decide_scene_recall(RecallPolicyInput {
+            recalled_scene: scene.clone(),
+            lv1_snapshot: snapshot(
+                Some(scene),
+                vec![ChannelInfo {
+                    group: 24,
+                    channel: 2,
+                    name: "Hidden channel".to_string(),
+                    gain_db: 0.0,
+                    muted: false,
+                    pan: None,
+                    balance: None,
+                    width: None,
+                    pan_mode: None,
+                }],
+            ),
+            lockout: false,
+            scene_config: Some(scene_config),
+        });
+
+        assert_eq!(
+            decision,
+            RecallPolicyDecision::Blocked {
+                reason: "scoped channel group=24 is unsupported".to_string(),
+            }
+        );
     }
 
     #[test]

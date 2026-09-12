@@ -14,23 +14,20 @@ use gpui_kit::{
 use uuid::Uuid;
 
 use crate::native_ui::CommandDispatcher;
+use crate::native_ui::button::bordered_button;
+use crate::native_ui::scene_library::{
+    format_scene_number, scene_library_columns, scene_library_header, scene_library_panel,
+    scene_library_row,
+};
 use crate::native_ui::theme::{
-    ACCENT_ORANGE, CONSOLE_BG, CONSOLE_LINE, CONSOLE_LINE_SOFT, CONSOLE_MUTED, CONSOLE_PANEL,
-    CONSOLE_PRIMARY, CONSOLE_SECONDARY, CONSOLE_SECTION, STATUS_CUED, STATUS_CURRENT,
-    STATUS_WARNING,
+    ACCENT_ORANGE, CONSOLE_BG, CONSOLE_CONTROL, CONSOLE_CONTROL_HOVER, CONSOLE_LINE, CONSOLE_MUTED,
+    CONSOLE_PANEL, CONSOLE_PRIMARY, CONSOLE_SECONDARY, CONSOLE_SECTION, STATUS_CUED,
+    STATUS_CURRENT, STATUS_WARNING,
 };
 use crate::projector::{AppViewState, SceneSummary};
 use crate::scenes::{ChannelConfig, SceneConfig};
 
-const GROUP_ORDER: [&str; 7] = [
-    "Inputs",
-    "Groups",
-    "Aux",
-    "Masters",
-    "Matrix",
-    "Link/DCAs",
-    "Unknown",
-];
+const GROUP_ORDER: [&str; 6] = ["Inputs", "Groups", "Aux", "Masters", "Matrix", "Link/DCAs"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PendingOverwrite {
@@ -271,39 +268,24 @@ impl ScenesView {
         let duplicate_names = duplicate_scene_names(&self.snapshot.scene_configs);
         let cued_id = cued_scene_id(&self.snapshot);
         let selected_id = selected_scene(&self.snapshot).map(|scene| scene.internal_scene_id);
+        let recall_scene_id = selected_scene(&self.snapshot)
+            .filter(|scene| scene.scene_index.is_some())
+            .map(|scene| scene.internal_scene_id);
+        let recall = bordered_button("scene-library-recall")
+            .label("RECALL")
+            .primary()
+            .disabled(recall_scene_id.is_none())
+            .on_click(cx.listener(move |this, _, _, _| {
+                if let Some(scene_id) = recall_scene_id {
+                    this.dispatch(move |commands| {
+                        Box::pin(async move { commands.recall_scene(scene_id).await.map(|_| ()) })
+                    });
+                }
+            }));
 
-        div()
-            .w(px(368.))
-            .h_full()
-            .flex()
-            .flex_col()
-            .bg(rgb(CONSOLE_PANEL))
-            .border_1()
-            .border_color(rgb(CONSOLE_LINE))
-            .child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(rgb(CONSOLE_LINE))
-                    .text_lg()
-                    .text_color(rgb(CONSOLE_PRIMARY))
-                    .child("SCENE LIBRARY"),
-            )
-            .child(
-                div()
-                    .grid()
-                    .grid_cols(3)
-                    .px_3()
-                    .py_2()
-                    .border_b_1()
-                    .border_color(rgb(CONSOLE_LINE_SOFT))
-                    .text_sm()
-                    .text_color(rgb(CONSOLE_SECONDARY))
-                    .child("#")
-                    .child("SCENE NAME")
-                    .child("X-FADE"),
-            )
+        scene_library_panel()
+            .child(scene_library_header(recall))
+            .child(scene_library_columns())
             .when(!duplicate_names.is_empty(), |panel| {
                 panel.child(
                     div()
@@ -341,28 +323,27 @@ impl ScenesView {
                             cued_id,
                             selected_id,
                         );
-                        let color = row_color(state);
-                        Button::new(SharedString::from(format!("scene-row-{scene_id}")))
-                            .accessibility_label(format!(
-                                "Select scene {} {}",
-                                format_scene_number(scene.scene_index),
-                                scene.scene_name
-                            ))
-                            .child(
-                                div()
-                                    .w_full()
-                                    .grid()
-                                    .grid_cols(3)
-                                    .gap_2()
-                                    .text_color(rgb(color))
-                                    .child(format_scene_number(scene.scene_index))
-                                    .child(scene.scene_name.clone())
-                                    .child(format_duration(scene.duration_ms)),
-                            )
-                            .selected(state.selected)
-                            .on_click(cx.listener(move |this, _, _, _| {
-                                this.select_scene(scene_id);
-                            }))
+                        let selection_label = if state.selected {
+                            "Selected scene"
+                        } else {
+                            "Select scene"
+                        };
+                        scene_library_row(
+                            SharedString::from(format!("scene-row-{scene_id}")),
+                            scene,
+                            row_highlight(state),
+                        )
+                        .accessibility_label(format!(
+                            "{selection_label} {} {}",
+                            format_scene_number(scene.scene_index),
+                            scene.scene_name
+                        ))
+                        .selected(state.selected)
+                        .when(state.selected, |row| row.bg(rgb(CONSOLE_CONTROL)))
+                        .hover(|style| style.bg(rgb(CONSOLE_CONTROL_HOVER)))
+                        .on_click(cx.listener(move |this, _, _, _| {
+                            this.select_scene(scene_id);
+                        }))
                     })),
             )
     }
@@ -442,19 +423,6 @@ impl ScenesView {
                 div()
                     .flex()
                     .gap_2()
-                    .child(
-                        Button::new("scene-recall")
-                            .label("Recall")
-                            .primary()
-                            .disabled(unlinked)
-                            .on_click(cx.listener(move |this, _, _, _| {
-                                this.dispatch(move |commands| {
-                                    Box::pin(async move {
-                                        commands.recall_scene(scene_id).await.map(|_| ())
-                                    })
-                                });
-                            })),
-                    )
                     .child(action_button(
                         "scene-store",
                         "Store",
@@ -525,8 +493,8 @@ impl ScenesView {
     }
 
     fn duration_step_button(&self, direction: i64, cx: &mut Context<Self>) -> Button {
-        let label = if direction > 0 { "+1s" } else { "−1s" };
-        Button::new(if direction > 0 {
+        let label = if direction > 0 { "+1S" } else { "−1S" };
+        bordered_button(if direction > 0 {
             "duration-step-up"
         } else {
             "duration-step-down"
@@ -580,12 +548,11 @@ impl ScenesView {
                     .gap_2()
                     .children(self.snapshot.scenes.iter().map(|target| {
                         let index = target.index;
-                        Button::new(("link-target", index as u64))
-                            .label(format!(
-                                "{} {}",
-                                format_scene_number(Some(index)),
-                                target.name
-                            ))
+                        bordered_button(("link-target", index as u64))
+                            .label(
+                                format!("{} {}", format_scene_number(Some(index)), target.name)
+                                    .to_uppercase(),
+                            )
                             .small()
                             .selected(self.selected_link_target == Some(index))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -599,8 +566,8 @@ impl ScenesView {
                     .flex()
                     .gap_2()
                     .child(
-                        Button::new("link-scene")
-                            .label("Link to scene")
+                        bordered_button("link-scene")
+                            .label("LINK TO SCENE")
                             .primary()
                             .small()
                             .disabled(self.selected_link_target.is_none())
@@ -609,8 +576,8 @@ impl ScenesView {
                             })),
                     )
                     .child(
-                        Button::new("delete-unlinked-scene")
-                            .label("Delete")
+                        bordered_button("delete-unlinked-scene")
+                            .label("DELETE")
                             .danger()
                             .small()
                             .on_click(cx.listener(move |this, _, _, _| {
@@ -734,8 +701,8 @@ impl ScenesView {
                             .justify_end()
                             .gap_2()
                             .child(
-                                Button::new("cancel-overwrite")
-                                    .label("Cancel")
+                                bordered_button("cancel-overwrite")
+                                    .label("CANCEL")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.pending_overwrite = None;
                                         this.restore_overwrite_focus(window, cx);
@@ -743,8 +710,8 @@ impl ScenesView {
                                     })),
                             )
                             .child(
-                                Button::new("confirm-overwrite")
-                                    .label("Overwrite")
+                                bordered_button("confirm-overwrite")
+                                    .label("OVERWRITE")
                                     .danger()
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.confirm_overwrite(window, cx);
@@ -916,12 +883,14 @@ impl ScenesView {
                                     let active = scoped.contains(&(channel.group, channel.channel));
                                     let group = channel.group;
                                     let channel_number = channel.channel;
-                                    Button::new(SharedString::from(format!(
+                                    bordered_button(SharedString::from(format!(
                                         "scope-channel-{group}-{channel_number}"
                                     )))
                                     .label(channel_label(group, channel_number))
                                     .tooltip(channel_tooltip(channel, &self.snapshot))
-                                    .small()
+                                    .w(px(56.))
+                                    .h(px(36.))
+                                    .when(active, |button| button.primary())
                                     .selected(active)
                                     .on_click(cx.listener(move |this, _, _, _| {
                                         this.dispatch(move |commands| {
@@ -966,8 +935,8 @@ fn action_button(
     cx: &mut Context<ScenesView>,
     handler: impl Fn(&ScenesView) + 'static,
 ) -> Button {
-    Button::new(id)
-        .label(label)
+    bordered_button(id)
+        .label(label.to_ascii_uppercase())
         .secondary()
         .disabled(disabled)
         .on_click(cx.listener(move |this, _, _, _| handler(this)))
@@ -980,9 +949,11 @@ fn scope_toggle(
     cx: &mut Context<ScenesView>,
     handler: impl Fn(&ScenesView) + 'static,
 ) -> Button {
-    Button::new(id)
-        .label(label)
+    bordered_button(id)
+        .label(label.to_ascii_uppercase())
         .small()
+        .border_color(rgb(if active { ACCENT_ORANGE } else { CONSOLE_LINE }))
+        .when(active, |button| button.primary())
         .selected(active)
         .on_click(cx.listener(move |this, _, _, _| handler(this)))
 }
@@ -1038,17 +1009,17 @@ fn row_state(
     }
 }
 
-fn row_color(state: SceneRowState) -> u32 {
+fn row_highlight(state: SceneRowState) -> Option<u32> {
     if state.unlinked {
-        STATUS_WARNING
+        Some(STATUS_WARNING)
     } else if state.current {
-        STATUS_CURRENT
+        Some(STATUS_CURRENT)
     } else if state.cued {
-        STATUS_CUED
+        Some(STATUS_CUED)
     } else if state.selected {
-        ACCENT_ORANGE
+        Some(ACCENT_ORANGE)
     } else {
-        CONSOLE_SECONDARY
+        None
     }
 }
 
@@ -1120,10 +1091,6 @@ fn stepped_duration(draft: &str, projected: u64, direction: i64) -> u64 {
     step_duration(normalize_duration(draft).unwrap_or(projected), direction)
 }
 
-fn format_scene_number(index: Option<i32>) -> String {
-    index.map_or_else(|| "---".to_owned(), |index| format!("{:03}", index + 1))
-}
-
 fn format_duration(duration_ms: u64) -> String {
     format!("{:.1}s", duration_ms as f64 / 1000.0)
 }
@@ -1162,7 +1129,7 @@ fn channel_label(group: i32, channel: i32) -> SharedString {
         3 => "LR".into(),
         4 => "C".into(),
         5 => "M".into(),
-        7 => "Cue".into(),
+        7 => "CUE".into(),
         8 => "TB".into(),
         _ => (channel + 1).to_string().into(),
     }
@@ -1290,10 +1257,11 @@ mod tests {
     }
 
     #[test]
-    fn grouped_channels_are_sorted_by_group_then_channel() {
+    fn grouped_channels_are_sorted_and_omit_unknown_groups() {
         let channels = vec![
             channel_config(1, 4),
             channel_config(0, 3),
+            channel_config(99, 0),
             channel_config(1, 1),
             channel_config(0, 2),
         ];

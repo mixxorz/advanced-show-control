@@ -5220,7 +5220,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_scene_config_from_current_lv1_publishes_state_change() {
+    async fn store_scene_config_from_current_lv1_preserves_empty_scope() {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
@@ -5329,13 +5329,7 @@ mod tests {
                 assert!(persisted_scene_edit);
                 assert_eq!(state.scene_configs[0].scene_index, Some(3));
                 assert_eq!(state.scene_configs[0].scene_name, "Song 2 -- Changed");
-                assert_eq!(
-                    state.scene_configs[0].scoped_channels,
-                    vec![ChannelRef {
-                        group: 0,
-                        channel: 2,
-                    }]
-                );
+                assert!(state.scene_configs[0].scoped_channels.is_empty());
                 assert!(!state.scene_configs[0].scope_toggles.faders);
                 assert!(state.scene_configs[0].scope_toggles.pan);
             }

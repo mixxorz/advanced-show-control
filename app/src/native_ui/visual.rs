@@ -7,7 +7,7 @@ mod macos {
     use anyhow::{Context as _, Result};
     use gpui_kit::component::{Root, WindowExt as _};
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{AppContext as _, HeadlessAppContext, px, size};
+    use gpui_kit::{AppContext as _, HeadlessAppContext, ScrollDelta, point, px, size};
     use uuid::Uuid;
 
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
@@ -162,6 +162,11 @@ mod macos {
             tab_captures.push(image);
             if selector == "tab-Settings" {
                 cx.update_window(window.into(), |_, window, cx| {
+                    window.scroll(
+                        "settings-view",
+                        ScrollDelta::Pixels(point(px(0.), px(-600.))),
+                        cx,
+                    );
                     window.click("go-shortcut", cx);
                     window.press("cmd-s", cx);
                 })?;
@@ -628,7 +633,7 @@ impl gpui_kit::Render for GalleryRoot {
         cx: &mut gpui_kit::Context<Self>,
     ) -> impl gpui_kit::IntoElement {
         use gpui_kit::component::Disableable as _;
-        use gpui_kit::component::button::{Button, ButtonVariants as _};
+        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::{ParentElement as _, Styled as _, div, px, rgb};
 
         div().relative().size_full().child(self.app.clone()).child(
@@ -643,14 +648,14 @@ impl gpui_kit::Render for GalleryRoot {
                 .border_color(rgb(super::theme::CONSOLE_LINE))
                 .bg(rgb(super::theme::CONSOLE_CHROME))
                 .child(
-                    Button::new("gallery-ready-state")
+                    super::button::bordered_button("gallery-ready-state")
                         .primary()
                         .label("READY STATE")
                         .disabled(!self.safe)
                         .on_click(cx.listener(|this, _, _, cx| this.show_state(false, cx))),
                 )
                 .child(
-                    Button::new("gallery-safe-state")
+                    super::button::bordered_button("gallery-safe-state")
                         .warning()
                         .label("SAFE STATE")
                         .disabled(self.safe)

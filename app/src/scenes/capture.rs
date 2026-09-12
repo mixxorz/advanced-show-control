@@ -1,6 +1,6 @@
 use super::state::ScenesState;
 use crate::lv1::ChannelInfo;
-use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig};
+use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, is_supported_scope_group};
 use uuid::Uuid;
 impl ScenesState {
     /**
@@ -9,9 +9,9 @@ impl ScenesState {
      * missing, or the scene config is unlinked.
      */
     /**
-     * @cc [owner:mixxorz,label:product] capture-empty-scope-initialization
-     * When the existing scope is empty, capture MUST initialize it to every channel in the supplied
-     * live snapshot; otherwise it MUST only remove scoped channels absent from that snapshot.
+     * @cc [owner:mixxorz,label:product] capture-scope-preservation
+     * Capture MUST preserve an empty scope as empty and otherwise only remove scoped channels absent
+     * from the supplied live snapshot.
      */
     /**
      * @cc [owner:mixxorz,label:product] capture-preserves-scene-policy
@@ -40,20 +40,12 @@ impl ScenesState {
                 channel: channel.channel,
             })
             .collect();
-        let scoped_channels = self
-            .get_scene_config(internal_scene_id)
-            .map(|scene| {
-                if scene.scoped_channels.is_empty() {
-                    current_refs.clone()
-                } else {
-                    scene
-                        .scoped_channels
-                        .into_iter()
-                        .filter(|scoped| current_refs.iter().any(|current| current == scoped))
-                        .collect()
-                }
-            })
-            .unwrap_or_else(|| current_refs.clone());
+        let scoped_channels = previous
+            .scoped_channels
+            .iter()
+            .filter(|scoped| current_refs.iter().any(|current| current == *scoped))
+            .cloned()
+            .collect();
         let snapshot = SceneConfig {
             internal_scene_id,
             scene_index: Some(scene_index),
@@ -126,6 +118,11 @@ impl ScenesState {
         let scene = self
             .get_scene_config_mut(internal_scene_id)
             .ok_or_else(|| "Scene config not found".to_string())?;
+        if scoped && !is_supported_scope_group(group) {
+            return Err(format!(
+                "Channel group {group} is not supported for scene scope"
+            ));
+        }
         let channel_exists = scene
             .channel_configs
             .iter()
@@ -164,6 +161,7 @@ impl ScenesState {
         let refs: Vec<ChannelRef> = scene
             .channel_configs
             .iter()
+            .filter(|entry| is_supported_scope_group(entry.group))
             .map(|entry| ChannelRef {
                 group: entry.group,
                 channel: entry.channel,
@@ -217,5 +215,71 @@ impl ScenesState {
             scene.scope_toggles.pan = enabled;
             Ok(true)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenes::{SceneDocument, SceneScopeToggles};
+
+    fn state_with_supported_and_unknown_channels() -> (ScenesState, Uuid) {
+        let scene_id = Uuid::from_u128(0x11111111111141118111111111111111);
+        let channels = [0, 24]
+            .map(|group| ChannelConfig {
+                group,
+                channel: 0,
+                fader_db: Some(0.0),
+                pan: None,
+                balance: None,
+                width: None,
+                pan_mode: None,
+            })
+            .to_vec();
+        let mut state = ScenesState::default();
+        state.replace_snapshot(SceneDocument {
+            scene_configs: vec![SceneConfig {
+                internal_scene_id: scene_id,
+                scene_index: Some(0),
+                scene_name: "Scene".to_string(),
+                duration_ms: 1_000,
+                channel_configs: channels,
+                scoped_channels: Vec::new(),
+                scope_toggles: SceneScopeToggles::default(),
+            }],
+            selected_scene_internal_id: None,
+        });
+        (state, scene_id)
+    }
+
+    #[test]
+    fn all_scopes_only_channel_groups_exposed_by_the_scope_editor() {
+        let (mut state, scene_id) = state_with_supported_and_unknown_channels();
+
+        assert!(state.set_all_channels_scoped(scene_id, true).unwrap());
+
+        assert_eq!(
+            state.get_scene_config(scene_id).unwrap().scoped_channels,
+            vec![ChannelRef {
+                group: 0,
+                channel: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn unknown_channel_groups_cannot_be_added_to_scope() {
+        let (mut state, scene_id) = state_with_supported_and_unknown_channels();
+
+        let error = state.set_channel_scoped(scene_id, 24, 0, true).unwrap_err();
+
+        assert_eq!(error, "Channel group 24 is not supported for scene scope");
+        assert!(
+            state
+                .get_scene_config(scene_id)
+                .unwrap()
+                .scoped_channels
+                .is_empty()
+        );
     }
 }
