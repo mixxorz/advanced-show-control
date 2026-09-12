@@ -275,14 +275,14 @@ async fn handle_command(
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
             let result = async {
                 let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
-                let scene_document = SceneDocument {
-                    scene_configs: crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list),
-                    selected_scene_internal_id: None,
-                };
-                let selected_scene_internal_id = scene_document
-                    .scene_configs
+                let scene_configs = crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list);
+                let selected_scene_internal_id = scene_configs
                     .first()
                     .map(|scene| scene.internal_scene_id.to_string());
+                let scene_document = SceneDocument {
+                    scene_configs,
+                    selected_scene_internal_id: selected_scene_internal_id.clone(),
+                };
                 validate_lv1_snapshot(peers, expected_generation, &lv1).await?;
                 replace_session_document(
                     peers,
@@ -1567,7 +1567,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(rx.await.unwrap().is_ok());
+        let result = rx.await.unwrap().unwrap();
 
         let state = tokio::time::timeout(
             std::time::Duration::from_secs(1),
@@ -1579,6 +1579,19 @@ mod tests {
         let scene_document = get_scene_document(&scenes).await;
         assert_eq!(scene_document.scene_configs.len(), 2);
         assert_eq!(scene_document.scene_configs[0].scene_name, "Intro");
+        let selected_scene_internal_id = Some(
+            scene_document.scene_configs[0]
+                .internal_scene_id
+                .to_string(),
+        );
+        assert_eq!(
+            scene_document.selected_scene_internal_id,
+            selected_scene_internal_id
+        );
+        assert_eq!(
+            result.selected_scene_internal_id,
+            selected_scene_internal_id
+        );
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@ const TARGET_A: f64 = -10.0;
 const TARGET_B: f64 = 0.0;
 const GAIN_TOLERANCE: f64 = 0.5;
 const SAME_SCENE_DURATION: Duration = Duration::from_secs(6);
+const RECALL_GATE_SETTLE: Duration = Duration::from_millis(2_100);
 const SMOKE_APP_IDENTIFIER: &str = "com.advancedshowcontrol.debug";
 
 /// @cc [owner:mixxorz,label:safety] smoke-config-isolation
@@ -302,10 +303,17 @@ impl Runner<'_> {
         let selected = result
             .selected_scene_internal_id
             .ok_or("new show selected no scene")?;
-        self.resolve_scenes().await?;
-        if self.scene_a.to_string() != selected {
-            return Err("new show did not select Smoke A".to_string());
-        }
+        let selected = Uuid::parse_str(&selected)
+            .map_err(|error| format!("new show selected an invalid scene id: {error}"))?;
+        let state = self
+            .wait_state("new show selected Smoke A", move |state| {
+                new_session_ready(state, selected)
+            })
+            .await?;
+        self.scene_a = selected;
+        self.scene_b = find_named(&state, 1, SMOKE_B)
+            .expect("new_session_ready requires Smoke B")
+            .internal_scene_id;
         Ok(())
     }
 
@@ -420,6 +428,7 @@ impl Runner<'_> {
                 .await?;
             self.commands.set_scene_duration_ms(scene_id, 1_000).await?;
         }
+        tokio::time::sleep(RECALL_GATE_SETTLE).await;
         Ok(())
     }
 
@@ -671,6 +680,12 @@ impl Runner<'_> {
     }
 }
 
+fn new_session_ready(state: &AppViewState, selected: Uuid) -> bool {
+    state.selected_scene_internal_id.as_deref() == Some(selected.to_string().as_str())
+        && find_named(state, 0, SMOKE_A).is_some_and(|scene| scene.internal_scene_id == selected)
+        && find_named(state, 1, SMOKE_B).is_some()
+}
+
 fn find_named<'a>(state: &'a AppViewState, index: i32, name: &str) -> Option<&'a SceneConfig> {
     state
         .scene_configs
@@ -749,6 +764,42 @@ mod tests {
             id
         );
         assert!(find_named(&state, 1, SMOKE_A).is_none());
+    }
+
+    #[test]
+    fn new_session_wait_rejects_the_previous_scene_document() {
+        let previous_scene = Uuid::new_v4();
+        let selected_scene = Uuid::new_v4();
+        let scene_b = Uuid::new_v4();
+        let mut state = AppViewState {
+            selected_scene_internal_id: Some(previous_scene.to_string()),
+            scene_configs: vec![
+                SceneConfig {
+                    internal_scene_id: previous_scene,
+                    scene_index: Some(0),
+                    scene_name: SMOKE_A.to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+                SceneConfig {
+                    internal_scene_id: scene_b,
+                    scene_index: Some(1),
+                    scene_name: SMOKE_B.to_string(),
+                    duration_ms: 0,
+                    channel_configs: Vec::new(),
+                    scoped_channels: Vec::new(),
+                    scope_toggles: SceneScopeToggles::default(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        assert!(!new_session_ready(&state, selected_scene));
+        state.scene_configs[0].internal_scene_id = selected_scene;
+        state.selected_scene_internal_id = Some(selected_scene.to_string());
+        assert!(new_session_ready(&state, selected_scene));
     }
 
     #[test]
