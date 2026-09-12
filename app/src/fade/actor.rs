@@ -397,10 +397,11 @@ fn complete_fade(
 
 /**
  * @cc [owner:mixxorz,label:safety] recall-admission
- * A recall MUST be admitted only while the engine's fixed generation is current and a fresh LV1
- * snapshot reports `Connected`; rejection MUST leave existing targets and readiness state intact.
- * A targetless detached recall remains generation-checked but MAY skip the fresh snapshot because it
- * installs neither targets nor a readiness barrier.
+ * A recall MUST be admitted only while the engine's fixed generation is current, its absolute
+ * readiness deadline is unexpired, and a fresh LV1 snapshot reports `Connected`; rejection MUST
+ * leave existing targets and readiness state intact. A targetless detached recall remains
+ * generation- and deadline-checked but MAY skip the fresh snapshot because it installs neither
+ * targets nor a readiness barrier.
  */
 /**
  * @cc [owner:mixxorz,label:product;safety] overlap-and-same-scene
@@ -436,14 +437,21 @@ async fn handle_recall_scene_fade(
     same_scene_behavior: SameSceneRecallBehavior,
     readiness: RecallReadinessRequest,
 ) -> Result<RecallSceneFadeOutcome, AppCommandError> {
+    let deadline = readiness.deadline;
+    ensure_recall_deadline(deadline)?;
     connection.ensure_current().await?;
+    ensure_recall_deadline(deadline)?;
     let completion_owned = readiness.completion.is_some();
     if config.targets.is_empty() && !completion_owned {
         return Ok(RecallSceneFadeOutcome::Started);
     }
-    let snapshot = connection
-        .request(|reply| Lv1Command::GetState { reply })
-        .await?;
+    let snapshot = tokio::time::timeout_at(
+        deadline,
+        connection.request(|reply| Lv1Command::GetState { reply }),
+    )
+    .await
+    .map_err(|_| recall_readiness_lost())??;
+    ensure_recall_deadline(deadline)?;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable);
     }
@@ -452,18 +460,25 @@ async fn handle_recall_scene_fade(
     let duration = Duration::from_millis(config.duration_ms);
 
     if config.targets.is_empty() {
-        start_readiness_barrier(
-            state,
-            config.scene.index,
-            config.scene.name,
-            snapshot.ping_sequence,
-            now,
-            readiness,
-        );
-        return Ok(RecallSceneFadeOutcome::Started);
+        return connection
+            .if_current(|| {
+                ensure_recall_deadline(deadline)?;
+                start_readiness_barrier(
+                    state,
+                    config.scene.index,
+                    config.scene.name,
+                    snapshot.ping_sequence,
+                    now,
+                    readiness,
+                );
+                Ok(RecallSceneFadeOutcome::Started)
+            })
+            .await
+            .ok_or(AppCommandError::StaleGeneration)?;
     }
 
     if duration.is_zero() {
+        ensure_recall_deadline(deadline)?;
         let writes = config
             .targets
             .iter()
@@ -476,19 +491,118 @@ async fn handle_recall_scene_fade(
                 )
             })
             .collect();
-        send_batch(connection, &state.event_bus, writes).await?;
+        send_batch_checked(connection, &state.event_bus, writes, || {
+            ensure_recall_deadline(deadline)
+        })
+        .await?;
 
-        return connection.if_current(|| {
-        for target in &config.targets {
-            state.channels.retain(|ch| ch.key != target.key());
-            state.fan_out(FadeEvent::ChannelCompleted {
-                group: target.group,
-                channel: target.channel,
-                parameter: target.parameter,
-            });
-            tracing::debug!(event = "fade_channel_completed", group = target.group, channel = target.channel, parameter = ?target.parameter, "Fade channel completed: group {}, channel {}", target.group, target.channel);
-        }
-        if completion_owned {
+        return connection
+            .if_current(|| {
+                ensure_recall_deadline(deadline)?;
+                for target in &config.targets {
+                    state.channels.retain(|ch| ch.key != target.key());
+                    state.fan_out(FadeEvent::ChannelCompleted {
+                        group: target.group,
+                        channel: target.channel,
+                        parameter: target.parameter,
+                    });
+                    tracing::debug!(event = "fade_channel_completed", group = target.group, channel = target.channel, parameter = ?target.parameter, "Fade channel completed: group {}, channel {}", target.group, target.channel);
+                }
+                if completion_owned {
+                    start_readiness_barrier(
+                        state,
+                        config.scene.index,
+                        config.scene.name,
+                        snapshot.ping_sequence,
+                        now,
+                        readiness,
+                    );
+                }
+                Ok(RecallSceneFadeOutcome::Started)
+            })
+            .await
+            .ok_or(AppCommandError::StaleGeneration)?;
+    }
+
+    connection
+        .if_current(|| {
+            ensure_recall_deadline(deadline)?;
+            let scene_owns_active_targets = state
+                .channels
+                .iter()
+                .any(|active| active.scene == config.scene);
+            let overriding_target_count = if same_scene_behavior
+                == SameSceneRecallBehavior::OverrideMatchingTargets
+                && scene_owns_active_targets
+            {
+                state
+                    .channels
+                    .iter()
+                    .filter(|active| {
+                        config
+                            .targets
+                            .iter()
+                            .any(|target| active.key == target.key())
+                    })
+                    .count()
+            } else {
+                0
+            };
+            let finishing_target_count = match same_scene_behavior {
+                SameSceneRecallBehavior::FinishActiveTargets => {
+                    state.finish_scene_on_next_tick(&config.scene)
+                }
+                SameSceneRecallBehavior::OverrideMatchingTargets => 0,
+            };
+            let outcome = if finishing_target_count > 0 {
+                RecallSceneFadeOutcome::Finishing {
+                    target_count: finishing_target_count,
+                }
+            } else {
+                for target in &config.targets {
+                    let active_start_value = state
+                        .channels
+                        .iter()
+                        .find(|ch| ch.key == target.key())
+                        .map(|ch| {
+                            if ch.is_done(now) {
+                                ch.target_value
+                            } else {
+                                ch.value_at(now)
+                            }
+                        });
+                    let snapshot_start_value = snapshot
+                        .channels
+                        .iter()
+                        .find(|ch| ch.group == target.group && ch.channel == target.channel)
+                        .and_then(|ch| live_value_for_snapshot(ch, target));
+                    let start_value = if state.is_waiting_for_readiness() {
+                        snapshot_start_value.or(active_start_value)
+                    } else {
+                        active_start_value.or(snapshot_start_value)
+                    }
+                    .unwrap_or(target.target);
+
+                    state.channels.retain(|ch| ch.key != target.key());
+                    state.channels.push(ActiveTarget::new(ActiveTargetInit {
+                        scene: config.scene.clone(),
+                        key: target.key(),
+                        start_value,
+                        target_value: target.target,
+                        curve: config.curve,
+                        duration,
+                        started_at: now,
+                    }));
+                }
+                if overriding_target_count > 0 {
+                    RecallSceneFadeOutcome::Overriding {
+                        target_count: overriding_target_count,
+                    }
+                } else {
+                    RecallSceneFadeOutcome::Started
+                }
+            };
+
             start_readiness_barrier(
                 state,
                 config.scene.index,
@@ -497,125 +611,62 @@ async fn handle_recall_scene_fade(
                 now,
                 readiness,
             );
-        }
-        RecallSceneFadeOutcome::Started
-        }).await.ok_or(AppCommandError::StaleGeneration);
-    }
 
-    let scene_owns_active_targets = state
-        .channels
-        .iter()
-        .any(|active| active.scene == config.scene);
-    let overriding_target_count = if same_scene_behavior
-        == SameSceneRecallBehavior::OverrideMatchingTargets
-        && scene_owns_active_targets
-    {
-        state
-            .channels
-            .iter()
-            .filter(|active| {
-                config
-                    .targets
-                    .iter()
-                    .any(|target| active.key == target.key())
-            })
-            .count()
-    } else {
-        0
-    };
-    let finishing_target_count = match same_scene_behavior {
-        SameSceneRecallBehavior::FinishActiveTargets => {
-            state.finish_scene_on_next_tick(&config.scene)
-        }
-        SameSceneRecallBehavior::OverrideMatchingTargets => 0,
-    };
-    let outcome = if finishing_target_count > 0 {
-        RecallSceneFadeOutcome::Finishing {
-            target_count: finishing_target_count,
-        }
-    } else {
-        for target in &config.targets {
-            let active_start_value =
-                state
-                    .channels
-                    .iter()
-                    .find(|ch| ch.key == target.key())
-                    .map(|ch| {
-                        if ch.is_done(now) {
-                            ch.target_value
-                        } else {
-                            ch.value_at(now)
-                        }
-                    });
-            let snapshot_start_value = snapshot
-                .channels
-                .iter()
-                .find(|ch| ch.group == target.group && ch.channel == target.channel)
-                .and_then(|ch| live_value_for_snapshot(ch, target));
-            let start_value = if state.is_waiting_for_readiness() {
-                snapshot_start_value.or(active_start_value)
-            } else {
-                active_start_value.or(snapshot_start_value)
-            }
-            .unwrap_or(target.target);
-
-            state.channels.retain(|ch| ch.key != target.key());
-            state.channels.push(ActiveTarget::new(ActiveTargetInit {
-                scene: config.scene.clone(),
-                key: target.key(),
-                start_value,
-                target_value: target.target,
-                curve: config.curve,
-                duration,
-                started_at: now,
-            }));
-        }
-        if overriding_target_count > 0 {
-            RecallSceneFadeOutcome::Overriding {
-                target_count: overriding_target_count,
-            }
-        } else {
-            RecallSceneFadeOutcome::Started
-        }
-    };
-
-    start_readiness_barrier(
-        state,
-        config.scene.index,
-        config.scene.name,
-        snapshot.ping_sequence,
-        now,
-        readiness,
-    );
-
-    Ok(outcome)
+            Ok(outcome)
+        })
+        .await
+        .ok_or(AppCommandError::StaleGeneration)?
 }
 
 /// @cc [owner:mixxorz,label:safety] readiness-only-admission
-/// A readiness-only request MUST install or replace a barrier only after a generation-checked fresh
-/// LV1 snapshot reports `Connected`; admission failure MUST preserve the existing barrier and active
-/// targets.
+/// A readiness-only request MUST install or replace a barrier only before its absolute deadline and
+/// after a generation-checked fresh LV1 snapshot reports `Connected`; admission failure MUST
+/// preserve the existing barrier and active targets.
 async fn handle_wait_for_recall_readiness(
     connection: &Lv1Connection,
     state: &mut EngineState,
     scene: crate::fade::types::FadeSceneIdentity,
     readiness: RecallReadinessRequest,
 ) -> Result<(), AppCommandError> {
-    let snapshot = connection
-        .request(|reply| Lv1Command::GetState { reply })
-        .await?;
+    let deadline = readiness.deadline;
+    ensure_recall_deadline(deadline)?;
+    let snapshot = tokio::time::timeout_at(
+        deadline,
+        connection.request(|reply| Lv1Command::GetState { reply }),
+    )
+    .await
+    .map_err(|_| recall_readiness_lost())??;
+    ensure_recall_deadline(deadline)?;
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err(AppCommandError::Lv1Unavailable);
     }
-    start_readiness_barrier(
-        state,
-        scene.index,
-        scene.name,
-        snapshot.ping_sequence,
-        Instant::now(),
-        readiness,
-    );
-    Ok(())
+    connection
+        .if_current(|| {
+            ensure_recall_deadline(deadline)?;
+            start_readiness_barrier(
+                state,
+                scene.index,
+                scene.name,
+                snapshot.ping_sequence,
+                Instant::now(),
+                readiness,
+            );
+            Ok(())
+        })
+        .await
+        .ok_or(AppCommandError::StaleGeneration)?
+}
+
+fn ensure_recall_deadline(deadline: Instant) -> Result<(), AppCommandError> {
+    if Instant::now() >= deadline {
+        Err(recall_readiness_lost())
+    } else {
+        Ok(())
+    }
+}
+
+fn recall_readiness_lost() -> AppCommandError {
+    AppCommandError::RecallCanceled("LV1 recall readiness was lost".to_string())
 }
 
 fn start_readiness_barrier(
@@ -679,18 +730,30 @@ fn build_parameter_write(
 }
 
 /// @cc [owner:mixxorz,label:safety;reliability] checked-batch-failure-publication
-/// Every fade write batch MUST pass through the generation-fenced LV1 connection. A non-staleness
-/// failure MUST publish exactly one `WriteFailed` fact and a complete user-facing error message if
-/// the engine's generation remains current at publication. If it is stale by that point, the engine
-/// MUST publish and log nothing.
+/// Every fade write batch MUST pass through the generation-fenced LV1 connection. A transport or
+/// mailbox failure MUST publish exactly one `WriteFailed` fact and a complete user-facing error
+/// message if the engine's generation remains current at publication. Staleness and validation
+/// cancellation before mailbox admission MUST publish and log nothing.
 async fn send_batch(
     connection: &Lv1Connection,
     event_bus: &AppEventBus,
     writes: Vec<Lv1ParameterWrite>,
 ) -> Result<(), AppCommandError> {
-    let result = connection.send(Lv1Command::WriteBatch(writes)).await;
+    send_batch_checked(connection, event_bus, writes, || Ok(())).await
+}
+
+async fn send_batch_checked(
+    connection: &Lv1Connection,
+    event_bus: &AppEventBus,
+    writes: Vec<Lv1ParameterWrite>,
+    validate: impl FnOnce() -> Result<(), AppCommandError>,
+) -> Result<(), AppCommandError> {
+    let result = connection
+        .send_checked(Lv1Command::WriteBatch(writes), validate)
+        .await;
     if let Err(error) = &result
         && *error != AppCommandError::StaleGeneration
+        && !matches!(error, AppCommandError::RecallCanceled(_))
     {
         connection.if_current(|| {
             let reason = error.to_string();
@@ -1646,6 +1709,104 @@ mod tests {
             );
         }
         assert!(fixture.commands.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_recall_deadline_rejects_a_late_zero_duration_write() {
+        let mut fixture = ConnectionFixture::new().await;
+        let deadline = Instant::now() + Duration::from_millis(200);
+        let (reply, mut result) = oneshot::channel();
+        fixture
+            .engine
+            .send(FadeCommand::RecallSceneFade {
+                config: fade_config(
+                    scene(1, "Intro"),
+                    vec![FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -12.5,
+                    }],
+                    0,
+                ),
+                same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                readiness: RecallReadinessRequest::detached(deadline),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let snapshot_reply = fixture.snapshot_request().await;
+
+        tokio::time::advance(Duration::from_millis(201)).await;
+        for _ in 0..32 {
+            tokio::task::yield_now().await;
+        }
+        assert!(snapshot_reply.send(connected_snapshot(0, vec![])).is_err());
+
+        assert_eq!(
+            result.try_recv(),
+            Ok(Err(AppCommandError::RecallCanceled(
+                "LV1 recall readiness was lost".to_string()
+            )))
+        );
+        assert!(fixture.commands.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn expired_recall_deadline_rejects_zero_duration_write_after_capacity_wait() {
+        let capture = TracingCapture::new();
+        let _guard = capture.install();
+        let mut fixture = ConnectionFixture::new().await;
+        let deadline = Instant::now() + Duration::from_millis(200);
+        let (reply, result) = oneshot::channel();
+        fixture
+            .engine
+            .send(FadeCommand::RecallSceneFade {
+                config: fade_config(
+                    scene(1, "Intro"),
+                    vec![FadeTarget {
+                        group: 0,
+                        channel: 0,
+                        parameter: FadeParameter::FaderDb,
+                        target: -12.5,
+                    }],
+                    0,
+                ),
+                same_scene_behavior: SameSceneRecallBehavior::FinishActiveTargets,
+                readiness: RecallReadinessRequest::detached(deadline),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let snapshot_reply = fixture.snapshot_request().await;
+        fixture.fill_mailbox().await;
+        snapshot_reply.send(connected_snapshot(0, vec![])).unwrap();
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(Duration::from_millis(201)).await;
+        fixture.release_mailbox(false).await;
+
+        assert_eq!(
+            result.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(
+                "LV1 recall readiness was lost".to_string()
+            ))
+        );
+        assert!(fixture.commands.try_recv().is_err());
+        assert!(
+            !std::iter::from_fn(|| fixture.events.try_recv().ok()).any(|event| matches!(
+                event,
+                AppEvent::Fade {
+                    event: FadeEvent::WriteFailed { .. },
+                    ..
+                }
+            ))
+        );
+        assert!(
+            capture
+                .matching("fade_write_failed", Level::ERROR)
+                .is_empty()
+        );
     }
 
     #[tokio::test]
