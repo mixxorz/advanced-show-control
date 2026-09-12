@@ -177,14 +177,14 @@ impl AppRoot {
                     self.shell.update(cx, |_, cx| cx.notify());
                 }
                 let failed = result.is_err();
-                self.presentation.complete_command(command_id, result);
+                let is_latest_command = self.presentation.complete_command(command_id, result);
                 self.shell.update(cx, |shell, cx| {
                     shell.command_finished(command_id, failed, window, cx)
                 });
                 if was_connection_command {
                     self.connection.borrow_mut().command_error = completed_error.clone();
                 }
-                if let Some(error) = completed_error {
+                if is_latest_command && let Some(error) = completed_error {
                     window.push_notification(Notification::error(error), cx);
                 }
                 self.sync_connection_dialog(window, cx);

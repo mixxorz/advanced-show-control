@@ -54,11 +54,12 @@ impl PresentationState {
     /// @cc [owner:mixxorz,label:product] latest-user-command-error
     /// Among overlapping user commands, only the latest-started request may clear or set the
     /// visible command error; an older late result MUST NOT overwrite a newer outcome.
-    pub fn complete_command(&mut self, command_id: u64, result: Result<(), String>) {
+    pub fn complete_command(&mut self, command_id: u64, result: Result<(), String>) -> bool {
         if command_id != self.latest_command_id {
-            return;
+            return false;
         }
         self.command_error = result.err();
+        true
     }
 
     pub fn window_title(&self) -> String {
@@ -138,8 +139,8 @@ mod tests {
         let first = state.begin_command();
         let second = state.begin_command();
 
-        state.complete_command(second, Err("new failure".to_string()));
-        state.complete_command(first, Ok(()));
+        assert!(state.complete_command(second, Err("new failure".to_string())));
+        assert!(!state.complete_command(first, Ok(())));
 
         assert_eq!(state.command_error(), Some("new failure"));
     }
