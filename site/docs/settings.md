@@ -14,6 +14,10 @@ Use **Settings** to change same-scene recall behavior, shortcuts, and diagnostic
 
 Use these settings with **Extensive diagnostics** when investigating unexpected immediate fade completion. If disabling finishing removes the jump, same-scene finishing was selected. Increase the threshold to test whether delayed duplicate LV1 scene notifications are being accepted. Rehearse any changed value before show use.
 
+### ASC recall interval
+
+**ASC recall interval** adds a wait after LV1 exact-scene observation and the two-ping readiness check complete, before ASC dispatches the next queued recall. It defaults to `0 ms` and accepts values from `0 ms` through `10,000 ms` in `100 ms` steps. At the default, ASC does not add a wait.
+
 ### Extensive diagnostics
 
 Enable **Extensive diagnostics** only while you investigate a problem. When it is off, diagnostic files include `INFO`, `WARN`, and `ERROR`. When it is on, they also include `DEBUG`, so files can grow quickly. Disable it after you collect the information you need.

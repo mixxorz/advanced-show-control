@@ -201,6 +201,7 @@ fn log_settings_updated(settings: &AppSettings) {
         enable_extensive_diagnostics = settings.enable_extensive_diagnostics,
         same_scene_recall_enabled = settings.same_scene_recall_enabled,
         same_scene_recall_threshold_ms = settings.same_scene_recall_threshold_ms,
+        asc_recall_interval_ms = settings.asc_recall_interval_ms,
         go_shortcut = %shortcut_label(&settings.keyboard_shortcuts.go),
         cue_shortcut = %shortcut_label(&settings.keyboard_shortcuts.cue),
         "Settings updated"
@@ -353,6 +354,7 @@ mod tests {
                     auto_save_sessions: true,
                     fader_override_sensitivity: 99,
                     same_scene_recall_threshold_ms: 9_999,
+                    asc_recall_interval_ms: 10_100,
                     ..Default::default()
                 },
                 reply,
@@ -370,6 +372,7 @@ mod tests {
         assert_eq!(saved["autoSaveSessions"], true);
         assert_eq!(saved["faderOverrideSensitivity"], 10);
         assert_eq!(saved["sameSceneRecallThresholdMs"], 5_000);
+        assert_eq!(saved["ascRecallIntervalMs"], 10_000);
 
         let received = events.recv().await.unwrap();
         assert!(matches!(
@@ -378,6 +381,7 @@ mod tests {
                 if settings.auto_save_sessions
                     && settings.fader_override_sensitivity == 10
                     && settings.same_scene_recall_threshold_ms == 5_000
+                    && settings.asc_recall_interval_ms == 10_000
         ));
         let logs = captured.matching("settings_updated", tracing::Level::INFO);
         assert!(logs.iter().any(|event| {
@@ -392,6 +396,11 @@ mod tests {
                     .get("same_scene_recall_threshold_ms")
                     .map(String::as_str)
                     == Some("5000")
+                && event
+                    .fields
+                    .get("asc_recall_interval_ms")
+                    .map(String::as_str)
+                    == Some("10000")
         }));
     }
 

@@ -233,8 +233,11 @@ async fn settings_state_changes_are_projected() {
         .publish(AppEvent::Settings(SettingsEvent::StateChanged {
             settings: AppSettings {
                 auto_save_sessions: true,
+                asc_recall_interval_ms: 1_200,
                 ..Default::default()
             },
         }));
-    assert!(test.snapshot().await.settings.auto_save_sessions);
+    let settings = test.snapshot().await.settings;
+    assert!(settings.auto_save_sessions);
+    assert_eq!(settings.asc_recall_interval_ms, 1_200);
 }

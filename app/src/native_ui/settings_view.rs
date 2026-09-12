@@ -406,6 +406,25 @@ impl Render for SettingsView {
                             })
                         }),
                     ))
+                    .child(self.stepper(
+                        "asc-recall-interval",
+                        "ASC recall interval",
+                        format!("{} ms", settings.asc_recall_interval_ms),
+                        settings.asc_recall_interval_ms > 0,
+                        settings.asc_recall_interval_ms < 10_000,
+                        cx.listener(|this, _, _, cx| {
+                            this.update(cx, |s| {
+                                s.asc_recall_interval_ms =
+                                    s.asc_recall_interval_ms.saturating_sub(100)
+                            })
+                        }),
+                        cx.listener(|this, _, _, cx| {
+                            this.update(cx, |s| {
+                                s.asc_recall_interval_ms =
+                                    s.asc_recall_interval_ms.saturating_add(100).min(10_000)
+                            })
+                        }),
+                    ))
                     .child(self.toggle_row(
                         "diagnostics",
                         "Extensive diagnostics",
