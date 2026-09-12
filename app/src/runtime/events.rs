@@ -9,6 +9,8 @@ use crate::scenes::ScenesEvent;
 use crate::settings::SettingsEvent;
 use crate::show::ShowProjectionState;
 
+const DEFAULT_BROADCAST_CAPACITY: usize = 4096;
+
 #[derive(Debug, Clone)]
 pub enum RuntimeLifecycleEvent {
     ActiveGenerationChanged { generation: u64 },
@@ -116,8 +118,11 @@ impl AppEventBus {
 }
 
 impl Default for AppEventBus {
+    /// @cc [owner:mixxorz,label:reliability] default-broadcast-capacity
+    /// A default bus MUST retain 4,096 events published after subscription and before the subscriber
+    /// receives, without reporting lag.
     fn default() -> Self {
-        Self::new(256)
+        Self::new(DEFAULT_BROADCAST_CAPACITY)
     }
 }
 
@@ -128,4 +133,28 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
         missed_events = count,
         "Event subscriber lagged and missed {count} events"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+
+    #[tokio::test]
+    async fn default_bus_retains_4096_events_for_a_waiting_subscriber() {
+        let event_bus = AppEventBus::default();
+        let mut receiver = event_bus.subscribe();
+
+        for generation in 0..4096 {
+            event_bus.publish_runtime_generation_changed(generation);
+        }
+
+        for expected_generation in 0..4096 {
+            let event = receiver.recv().await.expect("default bus must not lag");
+            assert!(matches!(
+                event,
+                AppEvent::Runtime(RuntimeLifecycleEvent::ActiveGenerationChanged { generation })
+                    if generation == expected_generation
+            ));
+        }
+    }
 }

@@ -40,9 +40,9 @@ Show(state)
 Settings(event)
 ```
 
-LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime.
+LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime. The production event bus retains 4,096 facts so normal LV1 parameter bursts do not immediately overrun a temporarily occupied subscriber.
 
-`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not presented UI state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee.
+`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not presented UI state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee. Fade continues processing relevant LV1 and generation facts while a fresh LV1 snapshot request is pending, so snapshot latency does not suspend readiness, manual override, or disconnect handling.
 
 ## Lifecycle, Connections, and Peers
 
