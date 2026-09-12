@@ -200,12 +200,12 @@ Existing contracts that refer specifically to Tauri or `app-status-changed` will
 
 ## Persistence Compatibility
 
-The serialized `.ascs` schema and `settings.json` representation remain byte-shape compatible with current readers and writers. Existing fixtures continue to pass. The migration does not introduce a schema version or conversion path.
+The serialized `.ascs` schema and `settings.json` representation retain their current field names, schema versions, defaults, and read/write semantics. Existing files require no conversion, and existing fixtures continue to pass. The migration does not introduce a schema version or conversion path.
 
 Application identifiers and platform data locations remain compatible with the current installation:
 
-- macOS continues using the existing `com.advancedshowcontrol.app` application-support location;
-- Windows resolves the equivalent existing application configuration location using the same application identity;
+- macOS continues using `~/Library/Application Support/com.advancedshowcontrol.app`;
+- Windows continues using the existing `%APPDATA%\com.advancedshowcontrol.app` location;
 - diagnostic filenames, settings filename, default show location, backup naming, and retention behavior remain unchanged.
 
 ## Development and Smoke Tools
