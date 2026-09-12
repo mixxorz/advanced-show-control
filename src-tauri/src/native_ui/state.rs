@@ -92,12 +92,18 @@ impl PresentationState {
     }
 }
 
+/// @cc [owner:mixxorz,label:product;formatting] session-window-title-state
+/// The title MUST use the projected show-file name with only its final extension removed, and MUST
+/// append ` *` if and only if the projected session is dirty; it MUST NOT infer state from a path
+/// or local save operation.
 pub fn format_session_window_title(show_file_name: &str, dirty: bool) -> String {
-    if dirty {
-        format!("{show_file_name} * — Advanced Show Control")
-    } else {
-        format!("{show_file_name} — Advanced Show Control")
-    }
+    let session_name = show_file_name
+        .rsplit_once('.')
+        .map_or(show_file_name, |(stem, _)| stem);
+    format!(
+        "Advanced Show Control - {session_name}{}",
+        if dirty { " *" } else { "" }
+    )
 }
 
 #[cfg(test)]
@@ -142,11 +148,11 @@ mod tests {
     fn title_marks_dirty_session() {
         assert_eq!(
             format_session_window_title("Show.ascs", true),
-            "Show.ascs * — Advanced Show Control"
+            "Advanced Show Control - Show *"
         );
         assert_eq!(
             format_session_window_title("Show.ascs", false),
-            "Show.ascs — Advanced Show Control"
+            "Advanced Show Control - Show"
         );
     }
 

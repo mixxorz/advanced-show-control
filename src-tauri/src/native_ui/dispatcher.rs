@@ -1,4 +1,5 @@
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -32,7 +33,16 @@ pub struct CommandDispatcher {
     runtime: tokio::runtime::Handle,
     commands: ApplicationCommandContext,
     ui_events: mpsc::UnboundedSender<UiEvent>,
+    serial_commands: mpsc::UnboundedSender<SerialCommand>,
     next_command_id: Arc<AtomicU64>,
+}
+
+type CommandFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
+type BoxedCommand = Box<dyn FnOnce(ApplicationCommandContext) -> CommandFuture + Send>;
+
+struct SerialCommand {
+    command_id: u64,
+    command: BoxedCommand,
 }
 
 impl CommandDispatcher {
@@ -41,12 +51,32 @@ impl CommandDispatcher {
         commands: ApplicationCommandContext,
         ui_events: mpsc::UnboundedSender<UiEvent>,
     ) -> Self {
+        let (serial_commands, mut serial_receiver) = mpsc::unbounded_channel::<SerialCommand>();
+        let serial_context = commands.clone();
+        let serial_events = ui_events.clone();
+        runtime.spawn(async move {
+            while let Some(serial) = serial_receiver.recv().await {
+                let result = (serial.command)(serial_context.clone()).await;
+                let _ = serial_events.send(UiEvent::CommandFinished {
+                    command_id: serial.command_id,
+                    result,
+                });
+            }
+        });
         Self {
             runtime,
             commands,
             ui_events,
+            serial_commands,
             next_command_id: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    fn next_command_id(&self) -> u64 {
+        self.next_command_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .expect("application command identifier exhausted")
+            + 1
     }
 
     pub fn dispatch<F, Fut>(&self, command: F) -> u64
@@ -54,11 +84,7 @@ impl CommandDispatcher {
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
         Fut: Future<Output = Result<(), String>> + Send + 'static,
     {
-        let command_id = self
-            .next_command_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
-            .expect("application command identifier exhausted")
-            + 1;
+        let command_id = self.next_command_id();
         let commands = self.commands.clone();
         let ui_events = self.ui_events.clone();
         let _ = ui_events.send(UiEvent::CommandStarted { command_id });
@@ -66,6 +92,28 @@ impl CommandDispatcher {
             let result = command(commands).await;
             let _ = ui_events.send(UiEvent::CommandFinished { command_id, result });
         });
+        command_id
+    }
+
+    /// Enqueues commands that must reach their owner in user-action order. Settings replacements use
+    /// this lane so each complete-object edit composes onto and persists after its predecessor.
+    pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
+    where
+        F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        let command_id = self.next_command_id();
+        let _ = self.ui_events.send(UiEvent::CommandStarted { command_id });
+        let serial = SerialCommand {
+            command_id,
+            command: Box::new(move |commands| Box::pin(command(commands))),
+        };
+        if self.serial_commands.send(serial).is_err() {
+            let _ = self.ui_events.send(UiEvent::CommandFinished {
+                command_id,
+                result: Err("Application command queue unavailable".to_string()),
+            });
+        }
         command_id
     }
 

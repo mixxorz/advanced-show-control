@@ -112,4 +112,18 @@ mod tests {
         assert_eq!(STATUS_CUED, 0x52d62d);
         assert_eq!(STATUS_DANGER, 0xff5c5c);
     }
+
+    #[gpui_kit::test]
+    fn bundled_fonts_and_console_theme_install(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            install(cx).expect("bundled fonts and theme should install");
+
+            let theme = Theme::global(cx);
+            assert_eq!(theme.font_family.as_ref(), "Fira Sans");
+            assert_eq!(theme.mono_font_family.as_ref(), "Fira Code");
+            assert_eq!(theme.mode, ThemeMode::Dark);
+            assert_eq!(theme.colors.background, rgb(CONSOLE_BG).into());
+        });
+    }
 }

@@ -2,6 +2,8 @@ pub mod application;
 mod atomic_file;
 pub mod connection_state;
 pub mod cue_lists;
+#[cfg(feature = "debug-tools")]
+pub mod debug_tools;
 pub mod diagnostics;
 pub mod fade;
 pub mod lifecycle;
@@ -18,7 +20,6 @@ pub mod show_file;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod time;
-pub mod ui;
 
 /// @cc [owner:mixxorz,label:architecture;testing] vegas-dev-tool-api
 /// The deterministic Vegas helpers MUST remain exported from the library crate so the separate

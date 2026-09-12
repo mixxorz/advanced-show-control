@@ -18,6 +18,8 @@ pub struct NativeRuntime {
     commands: ApplicationCommandContext,
     projections: Option<ProjectionSubscription>,
     _logging: LoggingRuntime,
+    #[cfg(feature = "debug-tools")]
+    debug_commands: crate::debug_tools::DebugRuntimeCommands,
 }
 
 impl NativeRuntime {
@@ -39,6 +41,8 @@ impl NativeRuntime {
                 app_config_dir.display()
             )
         })?;
+        #[cfg(feature = "debug-tools")]
+        let debug_commands;
         let (logging, commands) = {
             let _entered = runtime.enter();
             let event_bus = AppEventBus::default();
@@ -59,6 +63,10 @@ impl NativeRuntime {
             );
             show_task.spawn();
             settings_task.spawn();
+            #[cfg(feature = "debug-tools")]
+            {
+                debug_commands = crate::debug_tools::DebugRuntimeCommands::new(lifecycle.clone());
+            }
             let commands =
                 ApplicationCommandContext::new(lifecycle, show, settings, logging.ui_logs.clone());
             (logging, commands)
@@ -73,6 +81,8 @@ impl NativeRuntime {
             commands,
             projections: Some(projections),
             _logging: logging,
+            #[cfg(feature = "debug-tools")]
+            debug_commands,
         })
     }
 
@@ -82,6 +92,11 @@ impl NativeRuntime {
 
     pub fn commands(&self) -> ApplicationCommandContext {
         self.commands.clone()
+    }
+
+    #[cfg(feature = "debug-tools")]
+    pub fn debug_commands(&self) -> crate::debug_tools::DebugRuntimeCommands {
+        self.debug_commands.clone()
     }
 
     pub fn take_projections(&mut self) -> ProjectionSubscription {
