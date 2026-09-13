@@ -65,6 +65,14 @@ If the number or name does not match, the fade does not start. Correct the scene
 
 Moving a fader during a fade gives you control of that fader; the other scoped controls may continue moving. If LV1 disconnects, the fade stops. Reconnect and confirm the console state before recalling again.
 
+### Readiness and successive recalls
+
+After LV1 reports the exact recalled scene, Advanced Show Control confirms it with fresh connected state and waits for two newer LV1 keepalive responses. This readiness check shows that LV1 has resumed normal control communication after processing the scene recall; it does not wait for the fade to finish.
+
+Active fades pause during the readiness check. When it succeeds, remaining targets resume; targets selected for same-scene finishing complete on the next update. Fades started by different scenes can remain active together: targets from the new scene replace matching controls, while non-overlapping targets from earlier scenes continue.
+
+For successive recalls sent by Advanced Show Control, the optional [ASC recall interval](settings.md#asc-recall-interval) begins after readiness succeeds. The next queued recall waits for that interval, even when an earlier fade is still running. A readiness failure stops paused fades and cancels the remaining queued recalls rather than continuing with uncertain LV1 state.
+
 ## Link a missing scene
 
 When an LV1 scene can no longer be found, its scene fade becomes unlinked. Its fade time and scope are retained, but **Store** and **Recall** are unavailable.

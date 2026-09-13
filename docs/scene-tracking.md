@@ -20,25 +20,6 @@ Selection and the settings clipboard survive reconnect. The LV1-derived library 
 
 Cue entries reference scene config UUIDs, never LV1 locators. For ordinary scene-document updates, Cue Lists reconciles against the current valid UUID set and retains entries while clearing invalid active/cued references. For `FileReplacement`, Show coordinates the transaction: it passes the replacement Cue List document and valid scene UUID set directly to Cue Lists, because Cue Lists intentionally ignores the replacement Scenes event for reconciliation.
 
-## Recall Paths
+## Recall Coordination
 
-An **explicit ASC recall** queues a requested config, dispatches LV1 recall only after validation, and holds its caller reply until dispatch. The resulting later matching LV1 scene observation provides the post-dispatch boundary before Fade readiness and the next queued request.
-
-An **event-driven fade** starts from an LV1 `SceneChanged` observation, including an operator recall performed outside ASC. It does not send an LV1 recall command. After settle and policy gates, it obtains fresh LV1 state and must validate generation, connection, lockout, exact index/name, linked config, scope/targets, and live topology before Fade admission.
-
-Both paths use the same safety validation. A blocked, skipped, disabled, or ambiguous event before admission does not abort an active fade. A validated/admitted recall—including zero-duration or no-target cases—enters post-recall readiness; its timeout aborts paused fades.
-
-## Timing and Correlation
-
-The recall actor applies these concrete safety windows:
-
-- **25 ms settle delay:** lets current-scene frames stabilize before policy evaluation.
-- **2 s arming window:** observations establish the reconnect baseline rather than triggering a fade.
-- **500 ms scene-list-edit suppression:** avoids intermediate list-edit state.
-- **Configurable same-scene repeat suppression:** 500 ms by default; it suppresses repeated exact observations, not explicit queue entries.
-- **5 s recall safety deadline:** spans the exact post-dispatch observation and Fade readiness only.
-- **Configurable ASC recall interval:** 0 ms by default and normalized to at most 10 s. It starts only after successful two-ping readiness and delays the next ASC-originated LV1 dispatch. The interval phase remains active when the FIFO is empty, so newly admitted requests wait for its exact boundary.
-
-`SceneObservation.sequence` is connection-local. An explicit queued recall requires an observation with a sequence later than its dispatch sequence and the exact requested index/name. Fade readiness then requires two newer same-generation LV1 pings. The post-readiness interval is separate from the fixed five-second safety deadline: configuring 10 seconds does not allow observation or Fade readiness to take longer than five seconds. Lockout, disconnect, generation or session replacement, and unsafe recovery cancel both queued intent and any active interval. Canceled in-flight requests leave bounded five-second late-observation suppression records; overflow uses a five-second fail-closed suppression fallback rather than guessing correlation.
-
-These gates are not retries. The recall actor uses fresh LV1 state where subscriber ordering could otherwise create a stale decision, and exact scene matching remains mandatory before any fader command.
+Scene tracking supplies the durable identity and exact LV1 locator used by both recall paths. The complete recall algorithm—including ASC-originated and LV1-originated recalls, dispatch correlation, fresh-state validation, Fade readiness, overlapping fades, timing, and the configurable ASC recall interval—is documented in [Scene Recall Coordination](scene-recall.md).

@@ -16,7 +16,7 @@ Use these settings with **Extensive diagnostics** when investigating unexpected 
 
 ### ASC recall interval
 
-**ASC recall interval** adds a wait after LV1 exact-scene observation and the two-ping readiness check complete, before ASC dispatches the next queued recall. It defaults to `0 ms` and accepts values from `0 ms` through `10,000 ms` in `100 ms` steps. At the default, ASC does not add a wait.
+**ASC recall interval** adds a wait after LV1 exact-scene observation and the two-ping readiness check complete, before ASC dispatches the next queued recall. It defaults to `0 ms` and accepts values from `0 ms` through `10,000 ms` in `100 ms` steps. At the default, ASC does not add a wait. See [Readiness and successive recalls](scenes.md#readiness-and-successive-recalls) for how the interval relates to active fades.
 
 ### Extensive diagnostics
 

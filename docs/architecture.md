@@ -83,6 +83,8 @@ The production actor loops outside Fade, Scenes, Show, and Projector were audite
 
 ## Scenes Library and Recall
 
+This section summarizes runtime ownership and safety boundaries. [Scene Recall Coordination](scene-recall.md) is the detailed source of truth for recall paths, correlation, Fade readiness, overlapping fades, and the ASC recall interval.
+
 Scenes preserves its document—durable config UUIDs, selection, and settings clipboard—across disconnects and generations. Its LV1-derived runtime library is explicitly:
 
 1. `AwaitingPeers`: no accepted LV1/Fade peers for the active generation.
