@@ -52,7 +52,7 @@ A connect transaction:
 
 1. advances and publishes the active generation;
 2. constructs LV1 and Fade for that generation and installs their handles only if still current;
-3. starts LV1/Fade, confirms a connected initial LV1 snapshot, and updates connected-LV1 metadata;
+3. starts LV1/Fade, waits up to ten seconds for the generation's `Connected` fact when the first responsive snapshot is still `Connecting`, confirms connectivity with a fresh snapshot, and updates connected-LV1 metadata;
 4. installs Scenes' accepted generation peers; then
 5. sends `ScenesCommand::RuntimePeersReady` with the initial scene list.
 
