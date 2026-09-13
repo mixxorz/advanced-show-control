@@ -130,6 +130,14 @@ pub(super) struct RecallReadinessCompletion {
     result: Result<(), RecallReadinessError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RecallReadinessOutcome {
+    Ignored,
+    Failed,
+    IntervalStarted,
+    ReadyToDispatch,
+}
+
 #[derive(Clone, Copy)]
 pub(super) struct RecallDeadline {
     request_id: Uuid,
@@ -465,21 +473,22 @@ impl RecallCoordinator {
      * @cc [owner:mixxorz,label:safety] readiness-completion-fenced
      * A readiness result MUST affect the coordinator only when its request and generation still
      * identify the awaiting in-flight recall and the owning actor has established that generation
-     * as authoritative. Timeout or cancellation MUST cancel remaining intent; only success may
-     * begin the post-readiness interval or make the next FIFO request dispatchable.
+     * as authoritative. Timeout or cancellation MUST cancel remaining coordinator intent and MUST
+     * tell the owning actor to cancel its current explicit-recall operation; only success may begin
+     * the post-readiness interval or make the next FIFO request dispatchable.
      */
     pub fn handle_readiness_completion(
         &mut self,
         completion: RecallReadinessCompletion,
         interval: Duration,
         now: Instant,
-    ) -> bool {
+    ) -> RecallReadinessOutcome {
         if !self.in_flight.as_ref().is_some_and(|in_flight| {
             in_flight.request_id == completion.request_id
                 && in_flight.generation == completion.generation
                 && matches!(in_flight.phase, InFlightPhase::AwaitingReadiness { .. })
         }) {
-            return false;
+            return RecallReadinessOutcome::Ignored;
         }
 
         match completion.result {
@@ -500,15 +509,15 @@ impl RecallCoordinator {
                         "Paused fades were aborted and queued scene recalls were canceled because LV1 did not resume its keepalive cadence after scene recall"
                     );
                 }
-                false
+                RecallReadinessOutcome::Failed
             }
             Err(_) => {
                 self.cancel("LV1 recall readiness was lost", true);
-                false
+                RecallReadinessOutcome::Failed
             }
             Ok(()) if interval.is_zero() => {
                 self.in_flight = None;
-                true
+                RecallReadinessOutcome::ReadyToDispatch
             }
             Ok(()) => {
                 let in_flight = self
@@ -518,7 +527,7 @@ impl RecallCoordinator {
                 in_flight.phase = InFlightPhase::PostReadinessInterval {
                     until: now + interval,
                 };
-                false
+                RecallReadinessOutcome::IntervalStarted
             }
         }
     }

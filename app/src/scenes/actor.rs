@@ -24,8 +24,8 @@ use crate::scenes::recall_coordinator::{
 use crate::scenes::recall_coordinator::{
     ObservationFadeRequest, ObservationHandoffCompletion, PendingRecallAdmission,
     PendingRecallDispatch, PendingSceneObservation, PreparedObservationHandoff,
-    PreparedRecallDispatch, PreparedSceneObservation, RecallCoordinator, fresh_lv1_snapshot,
-    send_fade_checked,
+    PreparedRecallDispatch, PreparedSceneObservation, RecallCoordinator, RecallReadinessOutcome,
+    fresh_lv1_snapshot, send_fade_checked,
 };
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
@@ -297,24 +297,40 @@ async fn run_scenes_actor(task: ScenesTask) {
         tokio::select! {
             completion = recall_coordinator.readiness_completion(), if events.is_empty() && events.sender_strong_count() > 0 => {
                 if runtime_generation.current().await != completion.generation() {
+                    cancel_pending_explicit_recall(
+                        pending_recall.take(),
+                        &mut recall_coordinator,
+                        "LV1 connection generation changed",
+                    );
                     recall_coordinator.cancel("LV1 connection generation changed", false);
                     recall_coordinator.clear_late_observations();
                     continue;
                 }
-                if recall_coordinator.handle_readiness_completion(
+                match recall_coordinator.handle_readiness_completion(
                     completion,
                     Duration::from_millis(settings.asc_recall_interval_ms.min(10_000)),
                     tokio::time::Instant::now(),
-                ) && pending_recall.is_none()
-                {
-                    pending_recall = start_next_recall_dispatch(
-                        &mut recall_coordinator,
-                        &peers,
-                        active_generation,
-                    );
-                    if pending_recall.is_none() && peers.handles(active_generation).is_none() {
-                        recall_coordinator.cancel("LV1 state is unavailable", true);
+                ) {
+                    RecallReadinessOutcome::Failed => {
+                        cancel_pending_explicit_recall(
+                            pending_recall.take(),
+                            &mut recall_coordinator,
+                            "LV1 recall readiness was lost",
+                        );
                     }
+                    RecallReadinessOutcome::ReadyToDispatch if pending_recall.is_none() => {
+                        pending_recall = start_next_recall_dispatch(
+                            &mut recall_coordinator,
+                            &peers,
+                            active_generation,
+                        );
+                        if pending_recall.is_none() && peers.handles(active_generation).is_none() {
+                            recall_coordinator.cancel("LV1 state is unavailable", true);
+                        }
+                    }
+                    RecallReadinessOutcome::Ignored
+                    | RecallReadinessOutcome::IntervalStarted
+                    | RecallReadinessOutcome::ReadyToDispatch => {}
                 }
             }
             event = events.recv() => {
@@ -559,6 +575,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                     {
                         held_scene_command = Some(command);
                         continue;
+                    }
+                    if let Some(operation) = pending_snapshot.take() {
+                        operation.cancel("Store scene canceled: session was replaced");
                     }
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
@@ -1036,8 +1055,9 @@ impl PendingSnapshotOperation {
  * @cc [owner:mixxorz,label:safety;reliability] store-snapshot-pending-operation
  * A store-from-LV1 state request MUST run as the Scenes actor's single pending snapshot operation.
  * While it is pending the actor MUST continue consuming runtime and LV1 facts, lockout changes,
- * and recall deadlines. Disconnect, generation change, or actor shutdown MUST drop the request and
- * reject its caller before a late snapshot can mutate or publish scene state.
+ * and recall deadlines. Disconnect, generation change, session replacement, Abort All, or actor
+ * shutdown MUST drop the request and reject its caller before a late snapshot can mutate or publish
+ * scene state.
  */
 async fn finish_pending_snapshot(
     mut operation: PendingSnapshotOperation,
@@ -1938,7 +1958,7 @@ mod tests {
     use super::*;
     use crate::fade::{
         FadeCommand, FadeConfig, FadeCurve, FadeEngineHandle, FadeParameter, FadeSceneIdentity,
-        FadeTarget, SameSceneRecallBehavior,
+        FadeTarget, RecallReadinessError, SameSceneRecallBehavior,
     };
     use crate::lv1::{
         Lv1ActorError, Lv1ActorHandle, Lv1Event, Lv1StateSnapshot, RecallSceneDispatch,
@@ -4266,6 +4286,136 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_failure_cancels_a_pending_recall_admission() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, mut lv1_commands) = tokio::sync::mpsc::channel(8);
+        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
+        task.spawn();
+        install_scene_document(
+            &handle,
+            SceneDocument {
+                scene_configs: vec![queue_scene(1, "Intro"), queue_scene(2, "Verse")],
+                selected_scene_internal_id: None,
+            },
+        )
+        .await;
+        let snapshot = |scene| Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene,
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            channels: Vec::new(),
+            ping_sequence: 10,
+        };
+
+        let (first_reply, first_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::RecallScene {
+                internal_scene_id: uuid::Uuid::from_u128(1),
+                reply: first_reply,
+            })
+            .await
+            .unwrap();
+        let Some(Lv1Command::GetState { reply }) = lv1_commands.recv().await else {
+            panic!("expected first admission snapshot");
+        };
+        reply.send(snapshot(None)).unwrap();
+        let Some(Lv1Command::GetState { reply }) = lv1_commands.recv().await else {
+            panic!("expected first dispatch snapshot");
+        };
+        reply.send(snapshot(None)).unwrap();
+        let Some(Lv1Command::RecallScene {
+            reply: Some(dispatch_reply),
+            ..
+        }) = lv1_commands.recv().await
+        else {
+            panic!("expected first LV1 recall");
+        };
+        dispatch_reply
+            .send(Ok(RecallSceneDispatch {
+                scene_observation_sequence: 10,
+            }))
+            .unwrap();
+        assert!(first_result.await.unwrap().is_ok());
+
+        let intro = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::SceneChanged(SceneObservation {
+                sequence: 11,
+                scene: intro.clone(),
+            }),
+        );
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let Some(Lv1Command::GetState { reply }) = lv1_commands.recv().await else {
+            panic!("expected exact observation snapshot");
+        };
+        reply.send(snapshot(Some(intro))).unwrap();
+        let Some(FadeCommand::WaitForRecallReadiness {
+            readiness,
+            reply: Some(fade_reply),
+            ..
+        }) = fade_commands.recv().await
+        else {
+            panic!("expected readiness-only Fade handoff");
+        };
+        let readiness_completion = readiness
+            .completion
+            .expect("queue owns readiness completion");
+        fade_reply.send(Ok(())).unwrap();
+        yield_to_actor().await;
+
+        let (second_reply, second_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::RecallScene {
+                internal_scene_id: uuid::Uuid::from_u128(2),
+                reply: second_reply,
+            })
+            .await
+            .unwrap();
+        let Some(Lv1Command::GetState {
+            reply: held_admission,
+        }) = lv1_commands.recv().await
+        else {
+            panic!("expected held second admission snapshot");
+        };
+
+        readiness_completion
+            .send(Err(RecallReadinessError::TimedOut {
+                generation: 1,
+                scene_index: 1,
+                scene_name: "Intro".to_string(),
+                observed_ping_count: 0,
+            }))
+            .unwrap();
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), second_result)
+                .await
+                .expect("readiness failure should cancel the held admission")
+                .unwrap(),
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "LV1 recall readiness was lost"
+        ));
+        assert!(held_admission.send(snapshot(None)).is_err());
+        assert!(lv1_commands.try_recv().is_err());
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn pending_recall_admission_snapshot_is_canceled_by_disconnect() {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
@@ -5750,6 +5900,102 @@ mod tests {
         })
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_replacement_cancels_a_pending_store_snapshot() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+        let (fade, _fade_commands) = tokio::sync::mpsc::channel(1);
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+
+        let (document_reply, document_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::GetSessionDocument {
+                reply: document_reply,
+            })
+            .await
+            .unwrap();
+        let mut replacement = document_result.await.unwrap();
+        replacement.scenes.scene_configs[0].duration_ms = 9_000;
+
+        let (store_reply, store_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::StoreSceneConfigFromCurrentLv1 {
+                internal_scene_id: intro_internal_scene_id(),
+                reply: Some(store_reply),
+            })
+            .await
+            .unwrap();
+        let Some(Lv1Command::GetState {
+            reply: held_snapshot,
+        }) = lv1_rx.recv().await
+        else {
+            panic!("expected held LV1 snapshot request");
+        };
+
+        let (replace_reply, replace_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::ReplaceSessionDocument {
+                replacement: crate::session::SessionReplacement::new(replacement.clone()),
+                expected_generation: 1,
+                reply: replace_reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(replace_result.await.unwrap().unwrap(), replacement);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), store_result)
+                .await
+                .expect("session replacement should cancel the held store")
+                .unwrap(),
+            Err("Store scene canceled: session was replaced".to_string())
+        );
+        assert!(
+            held_snapshot
+                .send(Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: vec![scene_entry(1, "Intro")],
+                    channels: vec![crate::lv1::ChannelInfo {
+                        group: 0,
+                        channel: 1,
+                        name: "Changed after replacement".to_string(),
+                        gain_db: -20.0,
+                        muted: false,
+                        pan: None,
+                        balance: None,
+                        width: None,
+                        pan_mode: None,
+                    }],
+                    ping_sequence: 10,
+                })
+                .is_err()
+        );
+
+        let (document_reply, document_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::GetSessionDocument {
+                reply: document_reply,
+            })
+            .await
+            .unwrap();
+        assert_eq!(document_result.await.unwrap(), replacement);
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test]
