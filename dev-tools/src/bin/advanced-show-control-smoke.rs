@@ -22,7 +22,7 @@ const TARGET_B: f64 = 0.0;
 const GAIN_TOLERANCE: f64 = 0.5;
 const SAME_SCENE_DURATION: Duration = Duration::from_secs(6);
 const RECALL_GATE_SETTLE: Duration = Duration::from_millis(2_100);
-const CONFIGURED_RECALL_INTERVAL: Duration = Duration::from_secs(1);
+const CONFIGURED_RECALL_INTERVAL: Duration = Duration::from_secs(10);
 const RECALL_INTERVAL_TOLERANCE: Duration = Duration::from_millis(100);
 const SMOKE_APP_IDENTIFIER: &str = "com.advancedshowcontrol.debug";
 
