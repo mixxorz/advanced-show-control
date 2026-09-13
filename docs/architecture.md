@@ -71,7 +71,15 @@ Connection completion, failure, and disconnect use one `SetLv1ConnectionIfCurren
 
 Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and native UI discovery share this path.
 
-`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The native UI requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
+`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. Every timed reconnect delay continues servicing mailbox commands with disconnected outcomes, so state reads and acknowledged commands do not wait for the retry timer. The native UI requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
+
+### Remaining actor responsiveness audit
+
+The production actor loops outside Fade, Scenes, Show, and Projector were audited with these outcomes:
+
+- **LV1:** Connected processing already selects between socket reads, writer failures, ping timeout, and mailbox commands, while socket writes run in a dedicated serial writer task. Failed connection and registration retry delays already service the mailbox. The post-disconnect retry delay did not, so it now drains commands with the same disconnected outcomes. TCP registration remains serial because `Connected` must not be published until registration completes.
+- **Settings:** No concurrency change is warranted. It has one bounded command mailbox and no event subscription that can lag or overflow. Settings replacements and remembered-identity updates must remain serial across staging, atomic publication, in-memory commit, reply, and projection; processing later reads or writes during that transaction would expose or reorder persistence state. Actor construction loads settings before the task starts, so startup loading cannot starve actor inputs.
+- **Lifecycle:** No actor-loop change is warranted because `AppLifecycle` is an orchestration service, not a mailbox or event actor. Its independently callable futures coordinate through narrow transition and discovery locks. Blocking discovery already runs on a blocking worker without holding the transition lock or a domain mailbox, and connection finalization already runs in a detached generation-fenced task.
 
 ## Scenes Library and Recall
 

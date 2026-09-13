@@ -205,8 +205,11 @@ fn drain_disconnected_command(
     }
 }
 
+/// @cc [owner:mixxorz,label:responsiveness;connection] reconnect-delay-mailbox-service
+/// Every timed reconnect delay MUST continue draining the command mailbox with disconnected
+/// outcomes so state reads and acknowledged commands do not wait for the retry timer.
+///
 /// Drain pending commands for `duration`, responding to GetState immediately.
-/// Used during reconnect delays so callers are never blocked indefinitely.
 async fn drain_commands_for(
     state: &mut ActorState,
     cmd_rx: &mut mpsc::Receiver<Lv1Command>,
@@ -290,7 +293,11 @@ async fn run_actor(
             break;
         }
 
-        tokio::time::sleep(RECONNECT_DELAY).await;
+        if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
+            == DrainCommandsResult::CommandChannelClosed
+        {
+            break;
+        }
     }
 }
 
@@ -702,6 +709,54 @@ mod tests {
                 .iter()
                 .any(|event| event.message.as_deref() == Some("parsed /Notify/SceneList scenes=1"))
         );
+    }
+
+    #[tokio::test]
+    async fn actor_answers_state_requests_during_reconnect_delay() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let bus = AppEventBus::default();
+        let mut events = bus.subscribe();
+        let (handle, task) = build_actor("127.0.0.1".to_string(), port, bus, 0);
+        task.spawn();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ) {}
+        })
+        .await
+        .expect("actor should connect");
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    event: Lv1Event::Disconnected { .. },
+                    ..
+                }
+            ) {}
+        })
+        .await
+        .expect("actor should observe transport closure");
+
+        let (reply, response) = oneshot::channel();
+        handle
+            .send(Lv1Command::GetState { reply })
+            .await
+            .expect("state request should enter mailbox");
+        let snapshot = tokio::time::timeout(Duration::from_millis(250), response)
+            .await
+            .expect("state request should not wait for reconnect delay")
+            .expect("actor should answer state request");
+        assert_eq!(snapshot.connection, ConnectionStatus::Disconnected);
     }
 
     #[tokio::test]
