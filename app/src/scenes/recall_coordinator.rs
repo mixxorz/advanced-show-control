@@ -525,11 +525,13 @@ impl RecallCoordinator {
 
     /**
      * @cc [owner:mixxorz,label:safety] recall-cancellation-boundary
-     * Cancellation MUST drop the in-flight readiness receiver, fail every waiting caller, and
-     * retain an awaiting-observation identity for bounded late-event suppression. It MUST NOT
-     * itself abort an active fade or turn an already-dispatched caller reply into a failure.
+     * Cancellation MUST clear any unsettled observation, drop the in-flight readiness receiver,
+     * fail every waiting caller, and retain an awaiting-observation identity for bounded late-event
+     * suppression. It MUST NOT itself abort an active fade or turn an already-dispatched caller
+     * reply into a failure.
      */
     pub fn cancel(&mut self, reason: &str, emit_log: bool) -> bool {
+        self.pending_observation = None;
         let in_flight = self.in_flight.take();
         let had_in_flight = in_flight.is_some();
         if let Some(in_flight) = in_flight {
@@ -1306,6 +1308,27 @@ mod tests {
             Err(AppCommandError::CommandFailed(message))
                 if message == "timed out waiting for fresh LV1 scene to match recalled scene 1: Intro"
         ));
+    }
+
+    #[test]
+    fn cancellation_clears_an_unsettled_scene_observation() {
+        let now = Instant::now();
+        let mut coordinator = RecallCoordinator::default();
+        coordinator.observe_scene(
+            1,
+            10,
+            SceneState {
+                index: 1,
+                name: "Intro".to_string(),
+            },
+            now,
+        );
+        assert!(coordinator.pending_observation_deadline().is_some());
+
+        coordinator.cancel("test cancellation", false);
+
+        assert!(coordinator.pending_observation_deadline().is_none());
+        assert!(coordinator.take_pending_observation().is_none());
     }
 
     #[test]

@@ -209,6 +209,13 @@ fn build_scenes_actor_with_before_fade_handoff(
  * facts observed after recovery began. If Settings cannot be refreshed, recall automation MUST
  * remain stopped rather than continue with stale policy.
  */
+/**
+ * @cc [owner:mixxorz,label:safety] scene-facts-precede-pending-commits
+ * Pending-operation completions and settled observations MUST NOT commit while runtime, LV1, or
+ * Settings facts are already queued. Selection MUST remain fair so fact traffic cannot starve
+ * commands, lockout changes, or recall deadlines; derived-state completion MAY wait for the fact
+ * backlog to clear and MUST fail closed if that backlog causes receiver lag.
+ */
 async fn run_scenes_actor(task: ScenesTask) {
     let ScenesTask {
         initial_generation,
@@ -288,6 +295,189 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
         };
         tokio::select! {
+            completion = recall_coordinator.readiness_completion(), if events.is_empty() && events.sender_strong_count() > 0 => {
+                if runtime_generation.current().await != completion.generation() {
+                    recall_coordinator.cancel("LV1 connection generation changed", false);
+                    recall_coordinator.clear_late_observations();
+                    continue;
+                }
+                if recall_coordinator.handle_readiness_completion(
+                    completion,
+                    Duration::from_millis(settings.asc_recall_interval_ms.min(10_000)),
+                    tokio::time::Instant::now(),
+                ) && pending_recall.is_none()
+                {
+                    pending_recall = start_next_recall_dispatch(
+                        &mut recall_coordinator,
+                        &peers,
+                        active_generation,
+                    );
+                    if pending_recall.is_none() && peers.handles(active_generation).is_none() {
+                        recall_coordinator.cancel("LV1 state is unavailable", true);
+                    }
+                }
+            }
+            event = events.recv() => {
+                match event {
+                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneListChanged(scene_list) }) if event_generation == active_generation => {
+                        scene_list_revision = scene_list_revision.wrapping_add(1);
+                        let cached_before_ready = runtime_generation
+                            .if_current(event_generation, || {
+                                match scene_library_status {
+                                    SceneLibraryStatus::AwaitingPeers => {
+                                        cached_scene_list = Some(scene_list);
+                                        true
+                                    }
+                                    SceneLibraryStatus::AwaitingSceneList => {
+                                        scene_library_status = SceneLibraryStatus::Ready;
+                                        apply_scene_list(
+                                            &mut recall_state,
+                                            &event_bus,
+                                            active_generation,
+                                            scene_list,
+                                        );
+                                        false
+                                    }
+                                    SceneLibraryStatus::Ready => {
+                                        apply_scene_list(
+                                            &mut recall_state,
+                                            &event_bus,
+                                            active_generation,
+                                            scene_list,
+                                        );
+                                        false
+                                    }
+                                }
+                            })
+                            .await
+                            .unwrap_or(false);
+                        if cached_before_ready {
+                            continue;
+                        }
+                    }
+                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) if scene_library_status == SceneLibraryStatus::Ready && accepts_scene_observation_generation(event_generation, active_generation) => {
+                        recall_coordinator.observe_scene(event_generation, sequence, scene, tokio::time::Instant::now());
+                        #[cfg(test)]
+                        if let Some(observer) = pending_scene_observer.take() {
+                            let _ = observer.send(());
+                        }
+                    }
+                    Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
+                        settings_revision = settings_revision.wrapping_add(1);
+                        settings = updated_settings;
+                    }
+                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
+                        pending_lag_recovery = None;
+                        pending_observation_settings = None;
+                        pending_observation_snapshot = None;
+                        pending_observation_handoff = None;
+                        cancel_pending_explicit_recall(
+                            pending_recall.take(),
+                            &mut recall_coordinator,
+                            "LV1 disconnected",
+                        );
+                        if let Some(operation) = pending_abort.take() {
+                            operation.cancel(AppCommandError::FadeUnavailable);
+                        }
+                        scene_list_revision = scene_list_revision.wrapping_add(1);
+                        if let Some(operation) = pending_snapshot.take() {
+                            operation.cancel("Store scene blocked: LV1 disconnected");
+                        }
+                        cached_scene_list = None;
+                        scene_library_status = SceneLibraryStatus::AwaitingSceneList;
+                        recall_state.mark_scene_library_unavailable();
+                        recall_coordinator.clear_pending_observation();
+                        recall_coordinator.cancel("LV1 disconnected", true);
+                        recall_coordinator.clear_late_observations();
+                        publish_scene_state_changed(
+                            &event_bus,
+                            active_generation,
+                            &recall_state,
+                            false,
+                        );
+                    }
+                    Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
+                        pending_lag_recovery = None;
+                        pending_observation_settings = None;
+                        pending_observation_snapshot = None;
+                        pending_observation_handoff = None;
+                        cancel_pending_explicit_recall(
+                            pending_recall.take(),
+                            &mut recall_coordinator,
+                            "LV1 connection generation changed",
+                        );
+                        if let Some(operation) = pending_abort.take() {
+                            operation.cancel(AppCommandError::StaleGeneration);
+                        }
+                        scene_list_revision = scene_list_revision.wrapping_add(1);
+                        if let Some(operation) = pending_snapshot.take() {
+                            operation.cancel("Store scene blocked: LV1 generation changed");
+                        }
+                        transition_scene_generation(
+                            &mut active_generation,
+                            event_generation,
+                            &mut cached_scene_list,
+                            &mut scene_library_status,
+                            &mut recall_state,
+                            &mut recall_coordinator,
+                            &peers,
+                            &event_bus,
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                        log_lagged_subscriber("scene-recall", count);
+                        pending_observation_settings = None;
+                        pending_observation_snapshot = None;
+                        pending_observation_handoff = None;
+                        cancel_pending_explicit_recall(
+                            pending_recall.take(),
+                            &mut recall_coordinator,
+                            "LV1 recall readiness was lost",
+                        );
+                        drain_retained_events(&mut events);
+                        let current_generation = runtime_generation.current().await;
+                        if current_generation != active_generation {
+                            if let Some(operation) = pending_abort.take() {
+                                operation.cancel(AppCommandError::StaleGeneration);
+                            }
+                            scene_list_revision = scene_list_revision.wrapping_add(1);
+                            transition_scene_generation(
+                                &mut active_generation,
+                                current_generation,
+                                &mut cached_scene_list,
+                                &mut scene_library_status,
+                                &mut recall_state,
+                                &mut recall_coordinator,
+                                &peers,
+                                &event_bus,
+                            );
+                        }
+                        recall_coordinator.cancel("LV1 recall readiness was lost", true);
+                        recall_coordinator.clear_pending_observation();
+                        scene_library_status = SceneLibraryStatus::AwaitingSceneList;
+                        recall_state.mark_scene_library_unavailable();
+                        publish_scene_state_changed(
+                            &event_bus,
+                            active_generation,
+                            &recall_state,
+                            false,
+                        );
+                        pending_lag_recovery = Some(PendingLagRecovery::new(
+                            active_generation,
+                            settings_revision,
+                            scene_list_revision,
+                            settings_handle.clone(),
+                            peers.handles(active_generation).map(|handles| handles.lv1),
+                        ));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        recall_coordinator.cancel("scene recall event stream closed", true);
+                        recall_coordinator.clear_late_observations();
+                        break;
+                    }
+                }
+            }
             command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
@@ -314,19 +504,22 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => cues.dispatch(command),
                 }
             }
-            () = cues.complete_recall() => {}
+            () = cues.complete_recall(), if events.is_empty() && events.sender_strong_count() > 0 => {}
             command = async {
                 match held_scene_command.take() {
                     Some(command) => Some(command),
                     None => command_rx.recv().await,
                 }
-            }, if pending_snapshot.is_none() && scene_commands_open && ((pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none()) || held_scene_command.is_none()) => {
+            }, if scene_commands_open && ((pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none()) || held_scene_command.is_none()) => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
                 };
-                if pending_abort.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() || pending_observation_handoff.is_some() {
+                if pending_snapshot.is_some() || pending_abort.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() || pending_observation_handoff.is_some() {
                     if matches!(command, ScenesCommand::Shutdown) {
+                        if let Some(operation) = pending_snapshot.take() {
+                            operation.cancel("Store scene blocked: Scenes actor stopped");
+                        }
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -340,6 +533,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                         let ScenesCommand::AbortAll { reply } = command else {
                             unreachable!("matched Abort All command");
                         };
+                        if let Some(operation) = pending_snapshot.take() {
+                            operation.cancel("Store scene canceled: Abort All was requested");
+                        }
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -359,7 +555,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         continue;
                     }
                     if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
-                        || (pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none())
+                        || (pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none())
                     {
                         held_scene_command = Some(command);
                         continue;
@@ -479,167 +675,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                     break;
                 }
             }
-            event = events.recv() => {
-                match event {
-                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneListChanged(scene_list) }) if event_generation == active_generation => {
-                        scene_list_revision = scene_list_revision.wrapping_add(1);
-                        let cached_before_ready = runtime_generation
-                            .if_current(event_generation, || {
-                                match scene_library_status {
-                                    SceneLibraryStatus::AwaitingPeers => {
-                                        cached_scene_list = Some(scene_list);
-                                        true
-                                    }
-                                    SceneLibraryStatus::AwaitingSceneList => {
-                                        scene_library_status = SceneLibraryStatus::Ready;
-                                        apply_scene_list(
-                                            &mut recall_state,
-                                            &event_bus,
-                                            active_generation,
-                                            scene_list,
-                                        );
-                                        false
-                                    }
-                                    SceneLibraryStatus::Ready => {
-                                        apply_scene_list(
-                                            &mut recall_state,
-                                            &event_bus,
-                                            active_generation,
-                                            scene_list,
-                                        );
-                                        false
-                                    }
-                                }
-                            })
-                            .await
-                            .unwrap_or(false);
-                        if cached_before_ready {
-                            continue;
-                        }
-                    }
-                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }) }) if scene_library_status == SceneLibraryStatus::Ready && accepts_scene_observation_generation(event_generation, active_generation) => {
-                        recall_coordinator.observe_scene(event_generation, sequence, scene, tokio::time::Instant::now());
-                        #[cfg(test)]
-                        if let Some(observer) = pending_scene_observer.take() {
-                            let _ = observer.send(());
-                        }
-                    }
-                    Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
-                        settings_revision = settings_revision.wrapping_add(1);
-                        settings = updated_settings;
-                    }
-                    Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
-                        pending_lag_recovery = None;
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
-                        cancel_pending_explicit_recall(
-                            pending_recall.take(),
-                            &mut recall_coordinator,
-                            "LV1 disconnected",
-                        );
-                        if let Some(operation) = pending_abort.take() {
-                            operation.cancel(AppCommandError::FadeUnavailable);
-                        }
-                        scene_list_revision = scene_list_revision.wrapping_add(1);
-                        if let Some(operation) = pending_snapshot.take() {
-                            operation.cancel("Store scene blocked: LV1 disconnected");
-                        }
-                        cached_scene_list = None;
-                        scene_library_status = SceneLibraryStatus::AwaitingSceneList;
-                        recall_state.mark_scene_library_unavailable();
-                        recall_coordinator.clear_pending_observation();
-                        recall_coordinator.cancel("LV1 disconnected", true);
-                        recall_coordinator.clear_late_observations();
-                        publish_scene_state_changed(
-                            &event_bus,
-                            active_generation,
-                            &recall_state,
-                            false,
-                        );
-                    }
-                    Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
-                        pending_lag_recovery = None;
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
-                        cancel_pending_explicit_recall(
-                            pending_recall.take(),
-                            &mut recall_coordinator,
-                            "LV1 connection generation changed",
-                        );
-                        if let Some(operation) = pending_abort.take() {
-                            operation.cancel(AppCommandError::StaleGeneration);
-                        }
-                        scene_list_revision = scene_list_revision.wrapping_add(1);
-                        if let Some(operation) = pending_snapshot.take() {
-                            operation.cancel("Store scene blocked: LV1 generation changed");
-                        }
-                        transition_scene_generation(
-                            &mut active_generation,
-                            event_generation,
-                            &mut cached_scene_list,
-                            &mut scene_library_status,
-                            &mut recall_state,
-                            &mut recall_coordinator,
-                            &peers,
-                            &event_bus,
-                        );
-                    }
-                    Ok(_) => {}
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("scene-recall", count);
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
-                        cancel_pending_explicit_recall(
-                            pending_recall.take(),
-                            &mut recall_coordinator,
-                            "LV1 recall readiness was lost",
-                        );
-                        drain_retained_events(&mut events);
-                        let current_generation = runtime_generation.current().await;
-                        if current_generation != active_generation {
-                            if let Some(operation) = pending_abort.take() {
-                                operation.cancel(AppCommandError::StaleGeneration);
-                            }
-                            scene_list_revision = scene_list_revision.wrapping_add(1);
-                            transition_scene_generation(
-                                &mut active_generation,
-                                current_generation,
-                                &mut cached_scene_list,
-                                &mut scene_library_status,
-                                &mut recall_state,
-                                &mut recall_coordinator,
-                                &peers,
-                                &event_bus,
-                            );
-                        }
-                        recall_coordinator.cancel("LV1 recall readiness was lost", true);
-                        recall_coordinator.clear_pending_observation();
-                        scene_library_status = SceneLibraryStatus::AwaitingSceneList;
-                        recall_state.mark_scene_library_unavailable();
-                        publish_scene_state_changed(
-                            &event_bus,
-                            active_generation,
-                            &recall_state,
-                            false,
-                        );
-                        pending_lag_recovery = Some(PendingLagRecovery::new(
-                            active_generation,
-                            settings_revision,
-                            scene_list_revision,
-                            settings_handle.clone(),
-                            peers.handles(active_generation).map(|handles| handles.lv1),
-                        ));
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        recall_coordinator.cancel("scene recall event stream closed", true);
-                        recall_coordinator.clear_late_observations();
-                        break;
-                    }
-                }
-            }
             recovered_settings = async {
                 pending_observation_settings
                     .as_mut()
@@ -647,7 +682,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_observation_settings.is_some() => {
+            }, if pending_observation_settings.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_observation_settings
                     .take()
                     .expect("completed observation-settings operation exists");
@@ -685,7 +720,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_observation_snapshot.is_some() => {
+            }, if pending_observation_snapshot.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_observation_snapshot
                     .take()
                     .expect("completed observation-snapshot operation exists");
@@ -725,7 +760,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_observation_handoff.is_some() => {
+            }, if pending_observation_handoff.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_observation_handoff
                     .take()
                     .expect("completed observation-handoff operation exists");
@@ -745,7 +780,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_recall.is_some() => {
+            }, if pending_recall.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_recall
                     .take()
                     .expect("completed explicit-recall operation exists");
@@ -768,7 +803,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_abort.is_some() => {
+            }, if pending_abort.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let mut operation = pending_abort
                     .take()
                     .expect("completed abort operation exists");
@@ -789,7 +824,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_lag_recovery.is_some() => {
+            }, if pending_lag_recovery.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_lag_recovery
                     .take()
                     .expect("completed lag-recovery operation exists");
@@ -828,7 +863,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .future
                     .as_mut()
                     .await
-            }, if pending_snapshot.is_some() => {
+            }, if pending_snapshot.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_snapshot
                     .take()
                     .expect("completed pending snapshot operation exists");
@@ -895,35 +930,13 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
             }
-            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() => {
+            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && events.is_empty() && events.sender_strong_count() > 0 => {
                 if let Some(observation) = recall_coordinator.take_pending_observation() {
                     pending_observation_settings = Some(PendingObservationSettings::new(
                         observation,
                         settings_revision,
                         settings_handle.clone(),
                     ));
-                }
-            }
-            completion = recall_coordinator.readiness_completion() => {
-                if runtime_generation.current().await != completion.generation() {
-                    recall_coordinator.cancel("LV1 connection generation changed", false);
-                    recall_coordinator.clear_late_observations();
-                    continue;
-                }
-                if recall_coordinator.handle_readiness_completion(
-                    completion,
-                    Duration::from_millis(settings.asc_recall_interval_ms.min(10_000)),
-                    tokio::time::Instant::now(),
-                ) && pending_recall.is_none()
-                {
-                    pending_recall = start_next_recall_dispatch(
-                        &mut recall_coordinator,
-                        &peers,
-                        active_generation,
-                    );
-                    if pending_recall.is_none() && peers.handles(active_generation).is_none() {
-                        recall_coordinator.cancel("LV1 state is unavailable", true);
-                    }
                 }
             }
         }
@@ -5637,6 +5650,87 @@ mod tests {
                 .unwrap(),
             Err("Store scene blocked: LV1 disconnected".to_string())
         );
+        assert!(
+            held_snapshot
+                .send(Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: vec![scene_entry(1, "Intro")],
+                    channels: Vec::new(),
+                    ping_sequence: 0,
+                })
+                .is_err()
+        );
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        show.send(crate::show::ShowCommand::SetLockout {
+            enabled: false,
+            reply: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn abort_all_preempts_a_pending_store_snapshot() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
+        let (show, show_task, _show_peers, lockout) =
+            crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            lockout,
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+
+        let (store_reply, store_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::StoreSceneConfigFromCurrentLv1 {
+                internal_scene_id: intro_internal_scene_id(),
+                reply: Some(store_reply),
+            })
+            .await
+            .unwrap();
+        let Some(Lv1Command::GetState {
+            reply: held_snapshot,
+        }) = lv1_rx.recv().await
+        else {
+            panic!("expected held LV1 snapshot request");
+        };
+
+        let (abort_reply, abort_result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::AbortAll { reply: abort_reply })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), store_result)
+                .await
+                .expect("Abort All should cancel the store before snapshot release")
+                .unwrap(),
+            Err("Store scene canceled: Abort All was requested".to_string())
+        );
+        let Some(FadeCommand::AbortAll {
+            reply: Some(fade_reply),
+        }) = fade_commands.recv().await
+        else {
+            panic!("expected Fade abort");
+        };
+        fade_reply.send(Ok(())).unwrap();
+        assert_eq!(abort_result.await.unwrap(), Ok(()));
         assert!(
             held_snapshot
                 .send(Lv1StateSnapshot {
