@@ -520,6 +520,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                 if operation.generation == active_generation
                     && runtime_generation.current().await == operation.generation
                 {
+                    if completion.settings.is_none()
+                        && settings_revision == operation.settings_revision
+                    {
+                        break;
+                    }
                     if let Some(recovered_settings) = completion.settings
                         && settings_revision == operation.settings_revision
                     {
@@ -5720,6 +5725,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_lag_settings_failure_stops_actor() {
+        let event_bus = AppEventBus::new(1);
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (settings, mut settings_commands) = tokio::sync::mpsc::channel(1);
+        let (handle, task, _peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            settings,
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        task.spawn();
+
+        for generation in 10..30 {
+            event_bus.publish(AppEvent::Runtime(
+                crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                    generation,
+                },
+            ));
+        }
+        let SettingsCommand::GetSettings { reply } =
+            tokio::time::timeout(Duration::from_secs(1), settings_commands.recv())
+                .await
+                .expect("lag recovery should request settings")
+                .expect("settings mailbox should remain open")
+        else {
+            panic!("expected settings snapshot request");
+        };
+        drop(reply);
+        yield_to_actor().await;
+
+        let (reply, _response) = oneshot::channel();
+        assert!(
+            handle
+                .send(ScenesCommand::InitialProjectionState { reply })
+                .await
+                .is_err(),
+            "failed lag recovery must stop the actor rather than later reuse stale policy"
+        );
+    }
+
+    #[tokio::test]
     async fn pending_lag_lv1_snapshot_is_canceled_by_disconnect() {
         let event_bus = AppEventBus::new(1);
         let runtime_generation = RuntimeGeneration::new();
@@ -5934,6 +5984,15 @@ mod tests {
                         "Scene recall automation stopped because current settings are unavailable",
                     )
         }));
+        yield_to_actor().await;
+        let (reply, _response) = oneshot::channel();
+        assert!(
+            handle
+                .send(ScenesCommand::InitialProjectionState { reply })
+                .await
+                .is_err(),
+            "failed lag recovery must stop the actor rather than later reuse stale policy"
+        );
         drop(peers);
         drop(handle);
         server.await.unwrap();
