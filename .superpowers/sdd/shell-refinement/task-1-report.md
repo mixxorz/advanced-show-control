@@ -7,7 +7,7 @@ Commit: this report is included in the task commit; the commit hash is reported 
 ## Scope completed
 
 - Removed `MainTab::Events`, the Events tab, and its placeholder only.
-- Added projected Connected/Connecting/Disconnected presentation mapping with green `STATUS_CUED`, amber `STATUS_WARNING`, and red `STATUS_DANGER` dots while retaining `CONNECTED`, `CONNECTING`, and `OFFLINE` labels.
+- Added projected Connected/Connecting/Disconnected presentation mapping with green `STATUS_CUED`, amber `STATUS_WARNING`, and red `STATUS_DANGER` dots while retaining neutral-primary `CONNECTED`, `CONNECTING`, and `OFFLINE` labels.
 - Converted the console chooser to one GPUI Kit component button with its built-in trailing dropdown caret and the existing connection-dialog callback.
 - Allocated approximately 14% of the footer to GO, made the button fill most of that section, and gave CUED/CURRENT/MODE/TIME equal zero-basis growth.
 - Preserved the existing GO callback, single-flight guard, disabled-state guards, session-menu behavior, modals, projector state, actors, event infrastructure, generation handling, recall, and safety behavior.
@@ -51,7 +51,7 @@ Inspected every affected generated PNG:
 Direct normalized comparison of `dist/visual/native-shell-ready.png` with `/Users/mixxorz/Downloads/Codex Image Sep 14, 2026, 01_18_47 AM.png`:
 
 - Navigation order: aligned, except Events is intentionally absent per the approved design.
-- Connection status: aligned; an inline circular green dot precedes `CONNECTED`. The offline capture shows the corresponding red dot, and the pure mapping test covers amber Connecting.
+- Connection status: aligned; an inline circular green dot precedes a neutral-primary `CONNECTED` label. The offline capture shows the corresponding red dot with neutral-primary `OFFLINE`, and the pure mapping test covers the amber dot and neutral-primary `CONNECTING` label.
 - Console chooser: aligned; the console name and trailing down-caret are one button.
 - GO prominence: aligned; GO is substantially larger and fills its dedicated footer section.
 - Footer distribution: aligned; GO occupies about 14%, and the four status cells divide the remainder evenly.
@@ -65,7 +65,7 @@ Intentional differences from the reference:
 - The headless visual harness includes a command-failure notification in connected captures.
 - Native/headless window chrome and exact typography differ from the external reference.
 
-The site screenshot was copied from the final ready capture; both files had SHA-256 `cd8fa0b7f6b687af865927851638ac10c0dd6da020322e1425d333000254519b` at synchronization.
+The site screenshot was copied from the final follow-up ready capture; both files had SHA-256 `de31d7e8ce6ecd9866843cf9a630bf06b6d89a03fcd072360e2500752905f2a5` at synchronization.
 
 ## Final verification
 
@@ -105,6 +105,36 @@ The only notice was the existing Rust future-incompatibility warning for depende
 - `site/docs/application-shell.md`
 - `site/docs/assets/screenshots/application-shell.png`
 - `.superpowers/sdd/shell-refinement/task-1-report.md`
+
+## Whole-branch review follow-up
+
+The final whole-branch review requested two fixes, completed in a separate follow-up commit:
+
+- The visual harness now sends `MENU_NEW_SHORTCUT` and checks the dispatcher increment immediately after closing the startup dialog. It checks `NewShow` and `Quit` action availability at that same point, before any synthetic pointer click. Only after that regression is proven does the harness click the console chooser, assert that the existing dialog opens, and dismiss it.
+- Connection presentation now maps a separate neutral `CONSOLE_PRIMARY` label color for all three states. Green, amber, and red remain exclusive to the 8 px status dot.
+
+Follow-up RED evidence:
+
+- `cargo nextest run -p advanced-show-control native_ui::shell::tests` failed with three tuple-size mismatches because the test required label, dot color, and neutral label color while `connection_presentation` still returned only label and status color.
+- The reordered `make visual-test` passed before the rendering change, confirming that the immediate-shortcut and chooser checks remained behaviorally valid while establishing the required interaction order.
+
+Follow-up GREEN evidence:
+
+- `cargo nextest run -p advanced-show-control native_ui::shell::tests` passed 3/3 after adding neutral label color to the mapping and rendering.
+- `make visual-test` passed with the shortcut assertion before any chooser click and with the chooser interaction still covered separately.
+- All nine affected captures were regenerated and inspected. Connected and offline labels are neutral, status colors remain on dots only, and navigation, GO geometry, menu, modal, SAFE, and footer behavior remain unchanged.
+- The final ready capture was compared directly with the supplied reference. The connection treatment now matches the reference more closely; previously documented intentional differences remain Events removal, projected fixture content, the harness notification, and native/headless chrome and typography.
+
+Follow-up final verification passed as one fresh chain:
+
+```text
+cargo nextest run -p advanced-show-control native_ui::shell::tests
+cargo fmt --all -- --check
+make check
+make visual-test
+```
+
+The focused suite passed 3/3, the production suite passed 554/554, the development-tool suite passed 28/28, formatting/Clippy/builds passed, and the reviewed visual signatures passed.
 
 ## Concerns
 

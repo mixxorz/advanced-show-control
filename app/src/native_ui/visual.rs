@@ -146,7 +146,15 @@ mod macos {
             window.render_frame(cx);
             assert!(window.is_action_available(&NewShow, cx));
             assert!(window.is_action_available(&Quit, cx));
+            window.press(MENU_NEW_SHORTCUT, cx);
+        })?;
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_new_shortcut + 1,
+            "New Session shortcut did not dispatch immediately after the startup dialog closed"
+        );
 
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
             let top_bar = window.find("top-bar").bounds();
             let session_menu = window.find("session-menu").bounds();
             let scenes_tab = window.find("tab-Scenes").bounds();
@@ -192,12 +200,7 @@ mod macos {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             assert!(!window.has_active_dialog(cx));
-            window.press(MENU_NEW_SHORTCUT, cx);
         })?;
-        anyhow::ensure!(
-            observed_dispatcher.dispatched_count() == dispatched_before_new_shortcut + 1,
-            "New Session shortcut did not dispatch immediately after the startup dialog closed"
-        );
         let ready = cx.capture_screenshot(window.into())?;
         ready
             .save(output_dir.join("native-shell-ready.png"))

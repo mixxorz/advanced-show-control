@@ -190,7 +190,7 @@ impl AppShell {
 
 impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (connection_label, connection_color) =
+        let (connection_label, connection_color, connection_label_color) =
             connection_presentation(&self.snapshot.connection);
         let console_name = console_display_name(
             &self.snapshot.connection,
@@ -253,7 +253,7 @@ impl Render for AppShell {
                                     .flex()
                                     .items_center()
                                     .gap_2()
-                                    .text_color(rgb(connection_color))
+                                    .text_color(rgb(connection_label_color))
                                     .child(
                                         div()
                                             .id("connection-status-dot")
@@ -436,11 +436,11 @@ fn resolve_cued_scene(snapshot: &AppViewState) -> Option<&crate::scenes::SceneCo
         .find(|scene| scene.internal_scene_id == entry.scene_internal_id)
 }
 
-fn connection_presentation(connection: &AppConnectionState) -> (&'static str, u32) {
+fn connection_presentation(connection: &AppConnectionState) -> (&'static str, u32, u32) {
     match connection {
-        AppConnectionState::Connected => ("CONNECTED", STATUS_CUED),
-        AppConnectionState::Connecting => ("CONNECTING", STATUS_WARNING),
-        AppConnectionState::Disconnected => ("OFFLINE", STATUS_DANGER),
+        AppConnectionState::Connected => ("CONNECTED", STATUS_CUED, CONSOLE_PRIMARY),
+        AppConnectionState::Connecting => ("CONNECTING", STATUS_WARNING, CONSOLE_PRIMARY),
+        AppConnectionState::Disconnected => ("OFFLINE", STATUS_DANGER, CONSOLE_PRIMARY),
     }
 }
 
@@ -484,23 +484,23 @@ mod tests {
     use chrono::NaiveTime;
 
     use super::{
-        AppConnectionState, STATUS_CUED, STATUS_DANGER, STATUS_WARNING, TimeDisplayFormat,
-        connection_presentation, console_display_name, format_time,
+        AppConnectionState, CONSOLE_PRIMARY, STATUS_CUED, STATUS_DANGER, STATUS_WARNING,
+        TimeDisplayFormat, connection_presentation, console_display_name, format_time,
     };
 
     #[test]
     fn connection_presentation_maps_projected_state_to_label_and_status_color() {
         assert_eq!(
             connection_presentation(&AppConnectionState::Connected),
-            ("CONNECTED", STATUS_CUED)
+            ("CONNECTED", STATUS_CUED, CONSOLE_PRIMARY)
         );
         assert_eq!(
             connection_presentation(&AppConnectionState::Connecting),
-            ("CONNECTING", STATUS_WARNING)
+            ("CONNECTING", STATUS_WARNING, CONSOLE_PRIMARY)
         );
         assert_eq!(
             connection_presentation(&AppConnectionState::Disconnected),
-            ("OFFLINE", STATUS_DANGER)
+            ("OFFLINE", STATUS_DANGER, CONSOLE_PRIMARY)
         );
     }
 
