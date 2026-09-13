@@ -5569,6 +5569,46 @@ mod tests {
         handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn cached_empty_scene_list_is_authoritative_at_peer_handoff() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        task.spawn();
+        let document = intro_scene_document();
+        let scene_id = document.scene_configs[0].internal_scene_id;
+        crate::session::tests::replace_scenes(&handle, document, 1).await;
+
+        event_bus.publish_lv1(1, Lv1Event::SceneListChanged(Vec::new()));
+        yield_to_actor().await;
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        let state = state.await.unwrap();
+        assert_eq!(state.ready_generation, Some(1));
+        assert_eq!(state.scene_configs.len(), 1);
+        assert_eq!(state.scene_configs[0].internal_scene_id, scene_id);
+        assert_eq!(state.scene_configs[0].scene_index, None);
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn scene_list_changed_updates_existing_scene_configs() {
         let event_bus = AppEventBus::default();
