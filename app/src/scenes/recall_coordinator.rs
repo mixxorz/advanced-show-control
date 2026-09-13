@@ -9,7 +9,7 @@ use crate::fade::{
     RecallReadinessError, RecallReadinessRequest, SameSceneRecallBehavior,
 };
 use crate::lv1::{
-    ConnectionStatus, Lv1ActorError, Lv1Command, Lv1Connection, Lv1StateSnapshot, SceneState,
+    ConnectionStatus, Lv1Command, Lv1Connection, Lv1StateSnapshot, RecallSceneDispatch, SceneState,
 };
 use crate::runtime::errors::AppCommandError;
 use crate::runtime::events::AppEventBus;
@@ -24,6 +24,27 @@ pub(super) const RECALL_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) const SCENE_CHANGED_SETTLE_DELAY: Duration = Duration::from_millis(25);
 pub(super) const LATE_CANCELED_OBSERVATION_CAPACITY: usize = 8;
 pub(super) const LATE_CANCELED_OBSERVATION_TTL: Duration = Duration::from_secs(5);
+
+pub(super) struct PendingRecallAdmission {
+    internal_scene_id: Uuid,
+    reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
+}
+
+pub(super) struct PendingRecallDispatch {
+    queued: QueuedRecall,
+}
+
+pub(super) struct PreparedRecallDispatch {
+    queued: QueuedRecall,
+    generation: u64,
+    result: RecallSceneResult,
+}
+
+impl PreparedRecallDispatch {
+    pub fn scene_index(&self) -> i32 {
+        self.result.lv1_scene_index
+    }
+}
 
 pub(super) struct QueuedRecall {
     request_id: Uuid,
@@ -73,6 +94,10 @@ enum RecallDeadlineKind {
 impl RecallDeadline {
     pub fn at(&self) -> Instant {
         self.at
+    }
+
+    pub fn is_safety(&self) -> bool {
+        matches!(self.kind, RecallDeadlineKind::Safety)
     }
 }
 
@@ -221,8 +246,9 @@ pub(super) struct BeforeFadeHandoff {
  * @cc [owner:mixxorz,label:architecture;safety] recall-coordinator-owns-runtime-state
  * The app-lifetime Scenes actor MUST own exactly one synchronous `RecallCoordinator`. All explicit
  * recall FIFO phases, pending scene observations, late-cancellation suppression, readiness
- * receivers, and post-readiness interval state MUST be mutated through this coordinator; it MUST
- * NOT spawn work or outlive the owning actor turn.
+ * receivers, and post-readiness interval state MUST be mutated through this coordinator. It MUST
+ * NOT spawn work or outlive the owning actor; coordinator-issued operation tokens MAY outlive one
+ * actor turn only while held by the actor's current pending operation.
  */
 #[derive(Default)]
 pub(super) struct RecallCoordinator {
@@ -306,6 +332,10 @@ impl RecallCoordinator {
 
     fn is_idle(&self) -> bool {
         self.in_flight.is_none()
+    }
+
+    fn has_dispatchable_recall(&self) -> bool {
+        self.is_idle() && !self.waiting.is_empty()
     }
 
     /**
@@ -810,179 +840,183 @@ impl RecallCoordinator {
 
     /**
      * @cc [owner:mixxorz,label:product] explicit-recall-admission-reply
-     * Explicit recall admission MUST reject invalid or over-capacity requests before enqueueing;
+     * Explicit recall admission MUST use one coordinator-issued token while the actor polls its
+     * fresh LV1 snapshot. Completion MUST reject invalid or over-capacity requests before enqueueing;
      * an admitted caller reply MUST remain pending until that request is actually dispatched or
-     * canceled.
+     * canceled. Cancellation MUST consume the token and reject its caller before late completion.
      */
-    pub async fn admit_explicit_recall(
-        &mut self,
-        lockout: &ShowLockoutReader,
-        lv1: &Lv1Connection,
-        recall_state: &ScenesState,
+    pub fn begin_admission(
+        &self,
         internal_scene_id: Uuid,
         reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
-    ) {
+    ) -> PendingRecallAdmission {
         tracing::debug!(
             event = "scene_recall_requested",
             internal_scene_id = %internal_scene_id,
             "Scene recall requested"
         );
+        PendingRecallAdmission {
+            internal_scene_id,
+            reply,
+        }
+    }
 
-        let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                lv1.if_current(|| log_explicit_recall_blocked(internal_scene_id, &error))
-                    .await;
-                let _ = reply.send(Err(error));
-                return;
-            }
-        };
-        let scene_document = recall_state.snapshot();
-        if let Err(error) =
-            validate_explicit_recall(lockout, &scene_document, &lv1_snapshot, internal_scene_id)
-        {
-            log_explicit_recall_blocked(internal_scene_id, &error);
-            let _ = reply.send(Err(error));
-            return;
+    pub fn finish_admission(
+        &mut self,
+        admission: PendingRecallAdmission,
+        lockout: &ShowLockoutReader,
+        scene_document: &SceneDocument,
+        snapshot: &Lv1StateSnapshot,
+    ) -> bool {
+        if let Err(error) = validate_explicit_recall(
+            lockout,
+            scene_document,
+            snapshot,
+            admission.internal_scene_id,
+        ) {
+            log_explicit_recall_blocked(admission.internal_scene_id, &error);
+            let _ = admission.reply.send(Err(error));
+            return self.has_dispatchable_recall();
         }
         if self.is_full() {
             tracing::warn!(
                 event = "scene_recall_queue_full",
-                internal_scene_id = %internal_scene_id,
+                internal_scene_id = %admission.internal_scene_id,
                 capacity = RECALL_QUEUE_CAPACITY,
                 "Scene recall blocked because the recall queue is full"
             );
-            let _ = reply.send(Err(AppCommandError::RecallQueueFull));
-            return;
+            let _ = admission.reply.send(Err(AppCommandError::RecallQueueFull));
+            return self.has_dispatchable_recall();
         }
-
         self.waiting.push_back(QueuedRecall {
             request_id: Uuid::new_v4(),
-            internal_scene_id,
-            reply,
+            internal_scene_id: admission.internal_scene_id,
+            reply: admission.reply,
         });
-        if self.is_idle() {
-            self.dispatch_next(lockout, lv1, recall_state).await;
-        }
+        self.has_dispatchable_recall()
+    }
+
+    pub fn fail_admission(
+        &mut self,
+        admission: PendingRecallAdmission,
+        error: AppCommandError,
+    ) -> bool {
+        log_explicit_recall_blocked(admission.internal_scene_id, &error);
+        let _ = admission.reply.send(Err(error));
+        self.has_dispatchable_recall()
+    }
+
+    pub fn cancel_admission(&mut self, admission: PendingRecallAdmission, reason: &str) {
+        let _ = admission
+            .reply
+            .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
+        self.cancel(reason, true);
     }
 
     /**
      * @cc [owner:mixxorz,label:safety] queued-recall-fresh-dispatch
      * Each FIFO request MUST obtain and validate a fresh connected LV1 snapshot and exact scene
-     * identity, then recheck lockout inside the generation-fenced LV1 dispatch. Invalid requests
+     * identity, then recheck lockout inside the generation-fenced LV1 dispatch. The actor MUST poll
+     * snapshot and dispatch requests through one current coordinator-issued token. Invalid requests
      * may fail individually, but stale generation, lockout, or dispatch loss MUST cancel later
-     * intent.
+     * intent, and stale token completion MUST have no effect.
      */
-    pub async fn dispatch_next(
+    pub fn begin_dispatch(&mut self) -> Option<PendingRecallDispatch> {
+        self.is_idle()
+            .then(|| self.take_next())
+            .flatten()
+            .map(|queued| PendingRecallDispatch { queued })
+    }
+
+    pub fn prepare_dispatch(
         &mut self,
+        dispatch: PendingRecallDispatch,
+        generation: u64,
         lockout: &ShowLockoutReader,
-        lv1: &Lv1Connection,
-        recall_state: &ScenesState,
-    ) {
-        let generation = lv1.generation();
-        while let Some(queued) = self.take_next() {
-            let lv1_snapshot = match explicit_recall_lv1_snapshot(lv1).await {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    let (reason, clear_late) = if error == AppCommandError::StaleGeneration {
-                        ("LV1 connection generation changed", true)
-                    } else {
-                        ("LV1 state is unavailable", false)
-                    };
-                    let _ = queued
-                        .reply
-                        .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
-                    self.cancel(reason, !clear_late);
-                    if clear_late {
-                        self.clear_late_observations();
-                    }
-                    return;
-                }
-            };
-            let scene_document = recall_state.snapshot();
-            let result = match validate_explicit_recall(
-                lockout,
-                &scene_document,
-                &lv1_snapshot,
-                queued.internal_scene_id,
-            ) {
-                Ok(result) => result,
-                Err(error) => {
-                    log_explicit_recall_blocked(queued.internal_scene_id, &error);
-                    let _ = queued.reply.send(Err(error));
-                    continue;
-                }
-            };
-
-            let dispatch = lv1
-                .request_checked(
-                    |reply| Lv1Command::RecallScene {
-                        scene_index: result.lv1_scene_index,
-                        reply: Some(reply),
-                    },
-                    || {
-                        if lockout.current() {
-                            Err(AppCommandError::RecallCanceled(
-                                "lockout was enabled".to_string(),
-                            ))
-                        } else {
-                            Ok(())
-                        }
-                    },
-                )
-                .await
-                .and_then(|result| {
-                    result.map_err(|error| match error {
-                        Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
-                        other => AppCommandError::CommandFailed(other.to_string()),
-                    })
-                });
-            let dispatch = match dispatch {
-                Ok(dispatch) => dispatch,
-                Err(AppCommandError::StaleGeneration) => {
-                    let reason = "LV1 connection generation changed";
-                    let _ = queued
-                        .reply
-                        .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
-                    self.cancel(reason, false);
-                    self.clear_late_observations();
-                    return;
-                }
-                Err(AppCommandError::RecallCanceled(reason)) if reason == "lockout was enabled" => {
-                    let _ = queued
-                        .reply
-                        .send(Err(AppCommandError::RecallCanceled(reason.clone())));
-                    self.cancel(&reason, true);
-                    return;
-                }
-                Err(error) => {
-                    log_explicit_recall_blocked(queued.internal_scene_id, &error);
-                    let _ = queued.reply.send(Err(error));
-                    self.cancel("LV1 recall command is unavailable", true);
-                    return;
-                }
-            };
-
-            tracing::debug!(
-                event = "scene_recall_command_sent",
-                internal_scene_id = %result.scene.internal_scene_id,
-                scene_index = result.scene.scene_index,
-                scene_name = %result.scene.scene_name,
-                "Scene recall command sent: {}",
-                result.scene.scene_name
-            );
-            self.in_flight = Some(InFlightRecall {
-                request_id: queued.request_id,
+        scene_document: &SceneDocument,
+        snapshot: &Lv1StateSnapshot,
+    ) -> Result<PreparedRecallDispatch, ()> {
+        match validate_explicit_recall(
+            lockout,
+            scene_document,
+            snapshot,
+            dispatch.queued.internal_scene_id,
+        ) {
+            Ok(result) => Ok(PreparedRecallDispatch {
+                queued: dispatch.queued,
                 generation,
-                result: result.clone(),
-                phase: InFlightPhase::AwaitingObservation {
-                    dispatch_sequence: dispatch.scene_observation_sequence,
-                    deadline: Instant::now() + RECALL_READINESS_TIMEOUT,
-                },
-            });
-            let _ = queued.reply.send(Ok(result));
-            return;
+                result,
+            }),
+            Err(error) => {
+                log_explicit_recall_blocked(dispatch.queued.internal_scene_id, &error);
+                let _ = dispatch.queued.reply.send(Err(error));
+                Err(())
+            }
         }
+    }
+
+    pub fn finish_dispatch(
+        &mut self,
+        prepared: PreparedRecallDispatch,
+        dispatch: Result<RecallSceneDispatch, AppCommandError>,
+    ) {
+        let dispatch = match dispatch {
+            Ok(dispatch) => dispatch,
+            Err(AppCommandError::StaleGeneration) => {
+                self.cancel_prepared_dispatch(prepared, "LV1 connection generation changed", false);
+                self.clear_late_observations();
+                return;
+            }
+            Err(AppCommandError::RecallCanceled(reason)) if reason == "lockout was enabled" => {
+                self.cancel_prepared_dispatch(prepared, &reason, true);
+                return;
+            }
+            Err(error) => {
+                log_explicit_recall_blocked(prepared.queued.internal_scene_id, &error);
+                let _ = prepared.queued.reply.send(Err(error));
+                self.cancel("LV1 recall command is unavailable", true);
+                return;
+            }
+        };
+        tracing::debug!(
+            event = "scene_recall_command_sent",
+            internal_scene_id = %prepared.result.scene.internal_scene_id,
+            scene_index = prepared.result.scene.scene_index,
+            scene_name = %prepared.result.scene.scene_name,
+            "Scene recall command sent: {}",
+            prepared.result.scene.scene_name
+        );
+        self.in_flight = Some(InFlightRecall {
+            request_id: prepared.queued.request_id,
+            generation: prepared.generation,
+            result: prepared.result.clone(),
+            phase: InFlightPhase::AwaitingObservation {
+                dispatch_sequence: dispatch.scene_observation_sequence,
+                deadline: Instant::now() + RECALL_READINESS_TIMEOUT,
+            },
+        });
+        let _ = prepared.queued.reply.send(Ok(prepared.result));
+    }
+
+    pub fn cancel_pending_dispatch(&mut self, dispatch: PendingRecallDispatch, reason: &str) {
+        let _ = dispatch
+            .queued
+            .reply
+            .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
+        self.cancel(reason, true);
+    }
+
+    pub fn cancel_prepared_dispatch(
+        &mut self,
+        prepared: PreparedRecallDispatch,
+        reason: &str,
+        emit_log: bool,
+    ) {
+        let _ = prepared
+            .queued
+            .reply
+            .send(Err(AppCommandError::RecallCanceled(reason.to_string())));
+        self.cancel(reason, emit_log);
     }
 
     fn exact_queue_readiness(
@@ -1132,19 +1166,6 @@ async fn send_fade_checked(
     }
     lv1.ensure_current().await?;
     result
-}
-
-async fn explicit_recall_lv1_snapshot(
-    lv1: &Lv1Connection,
-) -> Result<Lv1StateSnapshot, AppCommandError> {
-    lv1.request(|reply| Lv1Command::GetState { reply })
-        .await
-        .map_err(|error| match error {
-            AppCommandError::Lv1Unavailable => AppCommandError::CommandFailed(
-                "Recall blocked: LV1 state is unavailable".to_string(),
-            ),
-            other => other,
-        })
 }
 
 fn validate_explicit_recall(
