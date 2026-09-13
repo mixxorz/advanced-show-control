@@ -1,4 +1,8 @@
-use gpui_kit::component::{Disableable as _, IconName, button::Button, menu::DropdownMenu as _};
+use gpui_kit::component::{
+    Disableable as _, IconName,
+    button::{Button, ButtonVariants as _},
+    menu::DropdownMenu as _,
+};
 use gpui_kit::{App, FocusHandle, IntoElement, KeyBinding, Styled as _, Window, actions, px, rgb};
 #[cfg(target_os = "macos")]
 use gpui_kit::{Menu, MenuItem, SystemMenuType};
@@ -71,6 +75,7 @@ pub fn session_menu_button(
     on_open_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     Button::new("session-menu")
+        .ghost()
         .accessibility_label("Session menu")
         .icon(IconName::Menu)
         .size(px(50.))
