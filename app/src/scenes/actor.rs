@@ -231,11 +231,13 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut cues = crate::cue_lists::operations::CueLists::new(event_bus.clone());
     let mut cue_commands_open = true;
     let mut scene_commands_open = true;
+    let mut held_scene_command: Option<ScenesCommand> = None;
     let mut recall_coordinator = RecallCoordinator::default();
     let mut settings = initial_settings;
     let mut lockout_open = true;
     let mut pending_snapshot: Option<PendingSnapshotOperation> = None;
     let mut pending_lag_recovery: Option<PendingLagRecovery> = None;
+    let mut pending_abort: Option<PendingAbortOperation> = None;
     let mut settings_revision = 0_u64;
     let mut scene_list_revision = 0_u64;
 
@@ -278,7 +280,7 @@ async fn run_scenes_actor(task: ScenesTask) {
         };
         tokio::select! {
             biased;
-            command = cue_commands.recv(), if pending_snapshot.is_none() && cue_commands_open && !cues.recall_pending() => {
+            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -294,12 +296,33 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
             }
             () = cues.complete_recall() => {}
-            command = command_rx.recv(), if pending_snapshot.is_none() && scene_commands_open => {
+            command = async {
+                match held_scene_command.take() {
+                    Some(command) => Some(command),
+                    None => command_rx.recv().await,
+                }
+            }, if pending_snapshot.is_none() && scene_commands_open && (pending_abort.is_none() || held_scene_command.is_none()) => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
                 };
+                if pending_abort.is_some() {
+                    if matches!(command, ScenesCommand::Shutdown) {
+                        break;
+                    }
+                    held_scene_command = Some(command);
+                    continue;
+                }
                 let command = match command {
+                    ScenesCommand::AbortAll { reply } => {
+                        recall_coordinator.cancel("Abort All was requested", true);
+                        pending_abort = Some(PendingAbortOperation::new(
+                            active_generation,
+                            peers.handles(active_generation).map(|handles| handles.fade),
+                            reply,
+                        ));
+                        continue;
+                    }
                     ScenesCommand::GetSessionDocument { reply } => {
                         let _ = reply.send(crate::session::SessionDocument {
                             scenes: recall_state.snapshot(), cue_lists: cues.state.document(),
@@ -429,6 +452,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
                         pending_lag_recovery = None;
+                        if let Some(operation) = pending_abort.take() {
+                            operation.cancel(AppCommandError::FadeUnavailable);
+                        }
                         scene_list_revision = scene_list_revision.wrapping_add(1);
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: LV1 disconnected");
@@ -448,6 +474,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
                         pending_lag_recovery = None;
+                        if let Some(operation) = pending_abort.take() {
+                            operation.cancel(AppCommandError::StaleGeneration);
+                        }
                         scene_list_revision = scene_list_revision.wrapping_add(1);
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: LV1 generation changed");
@@ -469,6 +498,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                         drain_retained_events(&mut events);
                         let current_generation = runtime_generation.current().await;
                         if current_generation != active_generation {
+                            if let Some(operation) = pending_abort.take() {
+                                operation.cancel(AppCommandError::StaleGeneration);
+                            }
                             scene_list_revision = scene_list_revision.wrapping_add(1);
                             transition_scene_generation(
                                 &mut active_generation,
@@ -505,6 +537,27 @@ async fn run_scenes_actor(task: ScenesTask) {
                         break;
                     }
                 }
+            }
+            completion = async {
+                pending_abort
+                    .as_mut()
+                    .expect("enabled abort branch has an operation")
+                    .future
+                    .as_mut()
+                    .await
+            }, if pending_abort.is_some() => {
+                let mut operation = pending_abort
+                    .take()
+                    .expect("completed abort operation exists");
+                let result = if operation.generation == active_generation
+                    && runtime_generation.current().await == operation.generation
+                    && peers.handles(active_generation).is_some()
+                {
+                    completion
+                } else {
+                    Err(AppCommandError::StaleGeneration)
+                };
+                operation.reply(result);
             }
             completion = async {
                 pending_lag_recovery
@@ -647,6 +700,9 @@ async fn run_scenes_actor(task: ScenesTask) {
 
     if let Some(operation) = pending_snapshot {
         operation.cancel("Store scene blocked: Scenes actor stopped");
+    }
+    if let Some(operation) = pending_abort {
+        operation.cancel(AppCommandError::FadeUnavailable);
     }
     recall_coordinator.cancel("Scenes actor stopped", true);
     recall_coordinator.clear_late_observations();
@@ -1019,32 +1075,63 @@ async fn dispatch_scenes_command(
                 )
                 .await;
         }
-        ScenesCommand::AbortAll { reply } => {
-            recall_coordinator.cancel("Abort All was requested", true);
-            let result = match peers.handles(generation) {
-                None => Err(AppCommandError::FadeUnavailable),
-                Some(peer_handles) => {
-                    let (fade_reply, fade_result) = oneshot::channel();
-                    match peer_handles
-                        .fade
-                        .send(FadeCommand::AbortAll {
-                            reply: Some(fade_reply),
-                        })
-                        .await
-                    {
-                        Ok(()) => fade_result
-                            .await
-                            .map_err(|_| AppCommandError::ReplyChannelClosed)
-                            .and_then(|result| result),
-                        Err(_) => Err(AppCommandError::FadeUnavailable),
-                    }
-                }
-            };
-            let _ = reply.send(result);
+        ScenesCommand::AbortAll { .. } => {
+            unreachable!("abort operations are started by the actor loop")
         }
         ScenesCommand::Shutdown => return ScenesCommandDispatch::Shutdown,
     }
     ScenesCommandDispatch::Continue
+}
+
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] abort-all-pending-operation
+ * Abort All MUST synchronously cancel coordinated recall intent before its Fade request begins.
+ * Fade mailbox admission and acknowledgement MUST run as an actor-owned pending operation while
+ * runtime, LV1, Settings, lockout, and recall-deadline inputs remain serviced. Scene and cue
+ * commands MUST remain FIFO-gated until completion. Generation change, disconnect, or shutdown
+ * MUST drop stale work, and a late acknowledgement MUST NOT be reported as current success.
+ */
+struct PendingAbortOperation {
+    generation: u64,
+    reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
+    future: Pin<Box<dyn Future<Output = Result<(), AppCommandError>> + Send>>,
+}
+
+impl PendingAbortOperation {
+    fn new(
+        generation: u64,
+        fade: Option<FadeEngineHandle>,
+        reply: oneshot::Sender<Result<(), AppCommandError>>,
+    ) -> Self {
+        Self {
+            generation,
+            reply: Some(reply),
+            future: Box::pin(async move {
+                let Some(fade) = fade else {
+                    return Err(AppCommandError::FadeUnavailable);
+                };
+                let (fade_reply, fade_result) = oneshot::channel();
+                fade.send(FadeCommand::AbortAll {
+                    reply: Some(fade_reply),
+                })
+                .await
+                .map_err(|_| AppCommandError::FadeUnavailable)?;
+                fade_result
+                    .await
+                    .map_err(|_| AppCommandError::ReplyChannelClosed)?
+            }),
+        }
+    }
+
+    fn reply(&mut self, result: Result<(), AppCommandError>) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(result);
+        }
+    }
+
+    fn cancel(mut self, error: AppCommandError) {
+        self.reply(Err(error));
+    }
 }
 
 struct PendingLagRecovery {
@@ -2212,6 +2299,106 @@ mod tests {
         assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
         assert_eq!(result.await.unwrap(), Ok(()));
         assert!(fixture.fade_commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn pending_abort_fade_capacity_is_canceled_by_generation_change() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, _lv1_commands) = tokio::sync::mpsc::channel(1);
+        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
+        fade.send(FadeCommand::AbortAll { reply: None })
+            .await
+            .unwrap();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation.clone(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
+        task.spawn();
+
+        let (reply, result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::AbortAll { reply })
+            .await
+            .unwrap();
+        yield_to_actor().await;
+        runtime_generation.set(2).await;
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 2,
+            },
+        ));
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), result)
+                .await
+                .expect("generation change should cancel the held abort")
+                .unwrap(),
+            Err(AppCommandError::StaleGeneration)
+        );
+        assert!(matches!(
+            fade_commands.recv().await,
+            Some(FadeCommand::AbortAll { reply: None })
+        ));
+        assert!(fade_commands.try_recv().is_err());
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_abort_acknowledgement_is_canceled_by_disconnect() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, _lv1_commands) = tokio::sync::mpsc::channel(1);
+        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
+        task.spawn();
+
+        let (reply, result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::AbortAll { reply })
+            .await
+            .unwrap();
+        let Some(FadeCommand::AbortAll {
+            reply: Some(held_ack),
+        }) = tokio::time::timeout(Duration::from_secs(1), fade_commands.recv())
+            .await
+            .expect("Scenes should send Abort All")
+        else {
+            panic!("expected acknowledged Fade abort");
+        };
+
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), result)
+                .await
+                .expect("disconnect should cancel the held acknowledgement")
+                .unwrap(),
+            Err(AppCommandError::FadeUnavailable)
+        );
+        assert!(held_ack.send(Ok(())).is_err());
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
