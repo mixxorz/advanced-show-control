@@ -34,6 +34,26 @@ pub(super) struct PendingRecallDispatch {
     queued: QueuedRecall,
 }
 
+pub(super) struct PreparedSceneObservation {
+    observation: PendingSceneObservation,
+    queue_readiness: Option<QueueReadiness>,
+    skipped_reason: Option<String>,
+}
+
+impl PreparedSceneObservation {
+    pub fn generation(&self) -> u64 {
+        self.observation.generation
+    }
+
+    pub fn scene(&self) -> SceneState {
+        self.observation.scene.clone()
+    }
+
+    pub fn safety_deadline(&self) -> Option<Instant> {
+        self.queue_readiness.map(|readiness| readiness.deadline)
+    }
+}
+
 pub(super) struct PreparedRecallDispatch {
     queued: QueuedRecall,
     generation: u64,
@@ -502,10 +522,11 @@ impl RecallCoordinator {
     #[allow(clippy::too_many_arguments)]
     /**
      * @cc [owner:mixxorz,label:safety] observation-fade-handoff-gates
-     * Before every Fade admission, an accepted observation MUST be validated against fresh exact
-     * LV1 state, current generation, current lockout, linked config, live topology, enabled scopes,
-     * and required targets. The generation, lockout, and absolute readiness deadline MUST be
-     * rechecked after mailbox reservation with no await before command admission.
+     * Before every Fade admission, synchronous prechecks MUST issue one coordinator-owned
+     * observation token while the actor polls fresh exact LV1 state. Continuation MUST validate
+     * current generation, current lockout, linked config, live topology, enabled scopes, and
+     * required targets. The generation, lockout, and absolute readiness deadline MUST be rechecked
+     * after mailbox reservation with no await before command admission.
      */
     /**
      * @cc [owner:mixxorz,label:safety] nonadmitted-recall-side-effects
@@ -513,23 +534,17 @@ impl RecallCoordinator {
      * `RecallSceneFade` or abort an active fade. A queued exact observation still MUST complete the
      * readiness handoff without converting a blocked or skipped policy outcome into fade admission.
      */
-    pub async fn process_scene_observation(
+    pub fn prepare_scene_observation(
         &mut self,
-        lv1: &Lv1Connection,
-        fade: &FadeEngineHandle,
-        event_bus: &AppEventBus,
         recall_state: &mut ScenesState,
         settings: &AppSettings,
-        lockout: &ShowLockoutReader,
-        #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
         observation: PendingSceneObservation,
-    ) {
-        let generation = lv1.generation();
+    ) -> Option<PreparedSceneObservation> {
         let now = Instant::now();
         let queue_readiness = self.exact_queue_readiness(&observation);
         if queue_readiness.is_some_and(|readiness| now >= readiness.deadline) {
             self.cancel("LV1 recall readiness was lost", true);
-            return;
+            return None;
         }
         if queue_readiness.is_none()
             && let Some(suppression) = self
@@ -548,7 +563,7 @@ impl RecallCoordinator {
                 },
                 "Ignored a scene observation while canceled recall suppression is active"
             );
-            return;
+            return None;
         }
 
         let skipped_reason = if recall_state.is_scene_list_edit_suppressed(observation.seen_at)
@@ -566,19 +581,36 @@ impl RecallCoordinator {
         {
             let scene_label = scene_label(&observation.scene);
             tracing::debug!(event = "scene_recall_skipped", scene = %scene_label, reason = %reason, "Scene recall skipped for {scene_label}: {reason}");
-            return;
+            return None;
         }
 
-        if lv1.ensure_current().await.is_err() {
-            return;
-        }
-        let lv1_snapshot = match fresh_lv1_snapshot(
-            lv1,
-            &observation.scene,
-            queue_readiness.map(|readiness| readiness.deadline),
-        )
-        .await
-        {
+        Some(PreparedSceneObservation {
+            observation,
+            queue_readiness,
+            skipped_reason,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn continue_scene_observation(
+        &mut self,
+        lv1: &Lv1Connection,
+        fade: &FadeEngineHandle,
+        event_bus: &AppEventBus,
+        recall_state: &mut ScenesState,
+        settings: &AppSettings,
+        lockout: &ShowLockoutReader,
+        #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
+        prepared: PreparedSceneObservation,
+        snapshot_result: Result<Lv1StateSnapshot, AppCommandError>,
+    ) {
+        let PreparedSceneObservation {
+            observation,
+            queue_readiness,
+            skipped_reason,
+        } = prepared;
+        let generation = lv1.generation();
+        let lv1_snapshot = match snapshot_result {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 if queue_readiness.is_some_and(|readiness| Instant::now() >= readiness.deadline) {
@@ -1207,7 +1239,7 @@ fn scene_label(scene: &SceneState) -> String {
  * seconds, clamped to an existing queued-recall safety deadline when supplied, before returning a
  * timeout error; an LV1 state-request error MUST return immediately rather than continue retrying.
  */
-async fn fresh_lv1_snapshot(
+pub(super) async fn fresh_lv1_snapshot(
     lv1: &Lv1Connection,
     scene: &SceneState,
     safety_deadline: Option<Instant>,
