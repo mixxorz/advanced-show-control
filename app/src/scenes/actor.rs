@@ -22,8 +22,10 @@ use crate::scenes::recall_coordinator::{
     RECALL_READINESS_TIMEOUT,
 };
 use crate::scenes::recall_coordinator::{
-    PendingRecallAdmission, PendingRecallDispatch, PendingSceneObservation, PreparedRecallDispatch,
-    PreparedSceneObservation, RecallCoordinator, fresh_lv1_snapshot,
+    ObservationFadeRequest, ObservationHandoffCompletion, PendingRecallAdmission,
+    PendingRecallDispatch, PendingSceneObservation, PreparedObservationHandoff,
+    PreparedRecallDispatch, PreparedSceneObservation, RecallCoordinator, fresh_lv1_snapshot,
+    send_fade_checked,
 };
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
@@ -244,6 +246,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut pending_recall: Option<PendingExplicitRecallOperation> = None;
     let mut pending_observation_settings: Option<PendingObservationSettings> = None;
     let mut pending_observation_snapshot: Option<PendingObservationSnapshot> = None;
+    let mut pending_observation_handoff: Option<PendingObservationHandoff> = None;
     let mut settings_revision = 0_u64;
     let mut scene_list_revision = 0_u64;
 
@@ -286,7 +289,7 @@ async fn run_scenes_actor(task: ScenesTask) {
         };
         tokio::select! {
             biased;
-            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && cue_commands_open && !cues.recall_pending() => {
+            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -318,12 +321,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => command_rx.recv().await,
                 }
-            }, if pending_snapshot.is_none() && scene_commands_open && ((pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none()) || held_scene_command.is_none()) => {
+            }, if pending_snapshot.is_none() && scene_commands_open && ((pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none()) || held_scene_command.is_none()) => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
                 };
-                if pending_abort.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() {
+                if pending_abort.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() || pending_observation_handoff.is_some() {
                     if matches!(command, ScenesCommand::Shutdown) {
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
@@ -333,7 +336,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         break;
                     }
                     if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
-                        || (pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none())
+                        || (pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none())
                     {
                         held_scene_command = Some(command);
                         continue;
@@ -345,6 +348,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     );
                     pending_observation_settings = None;
                     pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                 }
                 let command = match command {
                     ScenesCommand::AbortAll { reply } => {
@@ -503,6 +507,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         pending_lag_recovery = None;
                         pending_observation_settings = None;
                         pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -532,6 +537,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         pending_lag_recovery = None;
                         pending_observation_settings = None;
                         pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -560,6 +566,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         log_lagged_subscriber("scene-recall", count);
                         pending_observation_settings = None;
                         pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -666,20 +673,45 @@ async fn run_scenes_actor(task: ScenesTask) {
                 let Some(peer_handles) = peers.handles(active_generation) else {
                     continue;
                 };
-                recall_coordinator
-                    .continue_scene_observation(
-                        &peer_handles.lv1,
-                        &peer_handles.fade,
-                        &event_bus,
-                        &mut recall_state,
-                        &settings,
-                        &lockout,
-                        #[cfg(test)]
-                        &mut before_fade_handoff,
-                        operation.prepared,
-                        completion,
-                    )
-                    .await;
+                let Some(prepared) = recall_coordinator.prepare_observation_handoff(
+                    &event_bus,
+                    &mut recall_state,
+                    &settings,
+                    &lockout,
+                    operation.prepared,
+                    completion,
+                ) else {
+                    continue;
+                };
+                pending_observation_handoff = Some(PendingObservationHandoff::new(
+                    peer_handles.lv1,
+                    peer_handles.fade,
+                    event_bus.clone(),
+                    lockout.clone(),
+                    #[cfg(test)]
+                    before_fade_handoff.take(),
+                    prepared,
+                ));
+            }
+            completion = async {
+                pending_observation_handoff
+                    .as_mut()
+                    .expect("enabled observation-handoff branch has an operation")
+                    .future
+                    .as_mut()
+                    .await
+            }, if pending_observation_handoff.is_some() => {
+                let operation = pending_observation_handoff
+                    .take()
+                    .expect("completed observation-handoff operation exists");
+                if operation.generation != active_generation
+                    || runtime_generation.current().await != operation.generation
+                    || scene_library_status != SceneLibraryStatus::Ready
+                    || lockout.current()
+                {
+                    continue;
+                }
+                recall_coordinator.finish_observation_handoff(completion, &event_bus);
             }
             completion = async {
                 pending_recall
@@ -789,6 +821,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 Ok(true) => {
                     pending_observation_settings = None;
                     pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
@@ -800,6 +833,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 Err(_) => {
                     pending_observation_settings = None;
                     pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
@@ -814,6 +848,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 if elapsed.is_safety() {
                     pending_observation_settings = None;
                     pending_observation_snapshot = None;
+                    pending_observation_handoff = None;
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
@@ -835,7 +870,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
             }
-            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() => {
+            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() => {
                 if let Some(observation) = recall_coordinator.take_pending_observation() {
                     pending_observation_settings = Some(PendingObservationSettings::new(
                         observation,
@@ -1581,6 +1616,115 @@ impl PendingObservationSnapshot {
     }
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] settled-observation-fade-pending
+ * Settled-observation Fade mailbox admission and acknowledgement MUST run as an actor-owned
+ * pending operation. The permit path MUST recheck generation, lockout, and readiness deadline
+ * immediately before publication and send. Cancellation MUST drop queued readiness ownership and
+ * prevent late capacity or acknowledgement from committing or reporting current success.
+ */
+struct PendingObservationHandoff {
+    generation: u64,
+    future: Pin<Box<dyn Future<Output = ObservationHandoffCompletion> + Send>>,
+}
+
+impl PendingObservationHandoff {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        lv1: Lv1Connection,
+        fade: FadeEngineHandle,
+        event_bus: AppEventBus,
+        lockout: ShowLockoutReader,
+        #[cfg(test)] before_fade_handoff: Option<BeforeFadeHandoff>,
+        prepared: PreparedObservationHandoff,
+    ) -> Self {
+        let generation = prepared.generation;
+        Self {
+            generation,
+            future: Box::pin(async move {
+                #[cfg(test)]
+                if let Some(BeforeFadeHandoff { reached, resume }) = before_fade_handoff {
+                    let _ = reached.send(());
+                    let _ = resume.await;
+                }
+
+                let PreparedObservationHandoff {
+                    generation,
+                    scene_label,
+                    queued_readiness,
+                    request,
+                } = prepared;
+                let deadline = match &request {
+                    ObservationFadeRequest::Start { readiness, .. }
+                    | ObservationFadeRequest::Wait { readiness, .. } => readiness.deadline,
+                };
+                let publish_bus = event_bus.clone();
+                let publish_label = scene_label.clone();
+                let result = match request {
+                    ObservationFadeRequest::Start {
+                        fade_config,
+                        same_scene_behavior,
+                        readiness,
+                    } => {
+                        let target_count = fade_config.targets.len();
+                        send_fade_checked(
+                            &fade,
+                            &lv1,
+                            &lockout,
+                            deadline,
+                            move || {
+                                tracing::debug!(event = "scene_recall_ready", scene = %publish_label, target_count, "Scene recall ready for {publish_label}");
+                                tracing::debug!(event = "scene_recall_start_requested", scene = %publish_label, "Scene recall start requested for {publish_label}");
+                                publish_bus.publish_scenes(
+                                    generation,
+                                    ScenesEvent::Ready {
+                                        scene_label: publish_label.clone(),
+                                        target_count,
+                                    },
+                                );
+                                publish_bus.publish_scenes(
+                                    generation,
+                                    ScenesEvent::StartRequested {
+                                        scene_label: publish_label,
+                                    },
+                                );
+                            },
+                            |reply| FadeCommand::RecallSceneFade {
+                                config: fade_config,
+                                same_scene_behavior,
+                                readiness,
+                                reply: Some(reply),
+                            },
+                        )
+                        .await
+                    }
+                    ObservationFadeRequest::Wait { scene, readiness } => {
+                        send_fade_checked(
+                            &fade,
+                            &lv1,
+                            &lockout,
+                            deadline,
+                            || {},
+                            |reply| FadeCommand::WaitForRecallReadiness {
+                                scene,
+                                readiness,
+                                reply: Some(reply),
+                            },
+                        )
+                        .await
+                    }
+                };
+                ObservationHandoffCompletion {
+                    result,
+                    queued_readiness,
+                    generation,
+                    scene_label,
+                }
+            }),
+        }
+    }
+}
+
 struct PendingLagRecovery {
     generation: u64,
     settings_revision: u64,
@@ -2255,13 +2399,6 @@ mod tests {
             self.lv1_recalls.try_recv().ok()
         }
 
-        async fn next_fade_command(&mut self) -> QueueFadeCommand {
-            self.fade_commands
-                .recv()
-                .await
-                .expect("expected Fade command")
-        }
-
         fn set_snapshot(&self, snapshot: Lv1StateSnapshot) {
             self.snapshot.send_replace(snapshot);
         }
@@ -2638,7 +2775,8 @@ mod tests {
             },
         ));
         event_bus.publish_lv1(1, Lv1Event::PingReceived { sequence: 12 });
-        resume.send(()).unwrap();
+        yield_to_actor().await;
+        assert!(resume.send(()).is_err());
 
         let waiting_result = waiting.await.unwrap();
         assert!(
@@ -2647,10 +2785,6 @@ mod tests {
                 Err(AppCommandError::RecallCanceled(reason)) if reason == "LV1 recall readiness was lost"
             ),
             "unexpected waiting recall result: {waiting_result:?}"
-        );
-        assert_eq!(
-            fixture.next_fade_command().await,
-            QueueFadeCommand::Recall { duration_ms: 1_000 }
         );
         assert!(fixture.fade_commands.try_recv().is_err());
         assert!(fixture.try_next_lv1_recall().is_none());
@@ -3813,9 +3947,9 @@ mod tests {
             .await
             .unwrap();
         lockout_rx.await.unwrap();
-        resume.send(()).unwrap();
-
         yield_to_actor().await;
+        assert!(resume.send(()).is_err());
+
         assert!(fixture.fade_commands.try_recv().is_err());
         assert!(matches!(
             waiting.await.unwrap(),
@@ -6229,6 +6363,115 @@ mod tests {
                 .is_err()
         );
         handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_settled_observation_fade_capacity_is_canceled_by_disconnect() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx) = tokio::sync::mpsc::channel(1);
+        fade.send(FadeCommand::AbortAll { reply: None })
+            .await
+            .unwrap();
+        let (handoff_reached, handoff_wait) = oneshot::channel();
+        let (resume_handoff, handoff_resume) = oneshot::channel();
+        let (handle, task, peers) = build_scenes_actor_with_before_fade_handoff(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+            BeforeFadeHandoff {
+                reached: handoff_reached,
+                resume: handoff_resume,
+            },
+        );
+        peers.set_peers_for_generation(1, lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish_lv1(1, Lv1Event::SceneChanged(intro_scene()));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        handoff_wait.await.unwrap();
+        resume_handoff.send(()).unwrap();
+        yield_to_actor().await;
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(state.await.unwrap().ready_generation, None);
+        assert!(matches!(
+            fade_rx.recv().await,
+            Some(FadeCommand::AbortAll { .. })
+        ));
+        yield_to_actor().await;
+        assert!(fade_rx.try_recv().is_err());
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_settled_observation_fade_ack_is_canceled_by_disconnect() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, mut fade_rx) = tokio::sync::mpsc::channel(1);
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        event_bus.publish_lv1(1, Lv1Event::SceneChanged(intro_scene()));
+        tokio::time::advance(Duration::from_millis(50)).await;
+        let held_ack = match fade_rx.recv().await {
+            Some(FadeCommand::RecallSceneFade {
+                reply: Some(reply), ..
+            }) => reply,
+            other => panic!("expected held Fade acknowledgement, got {other:?}"),
+        };
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(state.await.unwrap().ready_generation, None);
+        assert!(held_ack.send(Ok(())).is_err());
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]

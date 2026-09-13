@@ -5,7 +5,7 @@ use tokio::time::Instant;
 use uuid::Uuid;
 
 use crate::fade::{
-    FadeCommand, FadeEngineHandle, FadeSceneIdentity, RecallReadinessCancellation,
+    FadeCommand, FadeConfig, FadeEngineHandle, FadeSceneIdentity, RecallReadinessCancellation,
     RecallReadinessError, RecallReadinessRequest, SameSceneRecallBehavior,
 };
 use crate::lv1::{
@@ -52,6 +52,38 @@ impl PreparedSceneObservation {
     pub fn safety_deadline(&self) -> Option<Instant> {
         self.queue_readiness.map(|readiness| readiness.deadline)
     }
+}
+
+pub(super) enum ObservationFadeRequest {
+    Start {
+        fade_config: FadeConfig,
+        same_scene_behavior: SameSceneRecallBehavior,
+        readiness: RecallReadinessRequest,
+    },
+    Wait {
+        scene: FadeSceneIdentity,
+        readiness: RecallReadinessRequest,
+    },
+}
+
+pub(super) struct PreparedObservationHandoff {
+    pub generation: u64,
+    pub scene_label: String,
+    pub queued_readiness: Option<(
+        QueueReadiness,
+        oneshot::Receiver<Result<(), RecallReadinessError>>,
+    )>,
+    pub request: ObservationFadeRequest,
+}
+
+pub(super) struct ObservationHandoffCompletion {
+    pub result: Result<(), AppCommandError>,
+    pub queued_readiness: Option<(
+        QueueReadiness,
+        oneshot::Receiver<Result<(), RecallReadinessError>>,
+    )>,
+    pub generation: u64,
+    pub scene_label: String,
 }
 
 pub(super) struct PreparedRecallDispatch {
@@ -128,7 +160,7 @@ impl RecallReadinessCompletion {
 }
 
 #[derive(Clone, Copy)]
-struct QueueReadiness {
+pub(super) struct QueueReadiness {
     request_id: Uuid,
     generation: u64,
     deadline: Instant,
@@ -525,8 +557,9 @@ impl RecallCoordinator {
      * Before every Fade admission, synchronous prechecks MUST issue one coordinator-owned
      * observation token while the actor polls fresh exact LV1 state. Continuation MUST validate
      * current generation, current lockout, linked config, live topology, enabled scopes, and
-     * required targets. The generation, lockout, and absolute readiness deadline MUST be rechecked
-     * after mailbox reservation with no await before command admission.
+     * required targets, then issue one actor-owned Fade-handoff token. The generation, lockout, and
+     * absolute readiness deadline MUST be rechecked after mailbox reservation with no await before
+     * publication and command admission; completion MUST commit synchronously through the coordinator.
      */
     /**
      * @cc [owner:mixxorz,label:safety] nonadmitted-recall-side-effects
@@ -592,33 +625,27 @@ impl RecallCoordinator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub async fn continue_scene_observation(
+    pub fn prepare_observation_handoff(
         &mut self,
-        lv1: &Lv1Connection,
-        fade: &FadeEngineHandle,
         event_bus: &AppEventBus,
         recall_state: &mut ScenesState,
         settings: &AppSettings,
         lockout: &ShowLockoutReader,
-        #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
         prepared: PreparedSceneObservation,
         snapshot_result: Result<Lv1StateSnapshot, AppCommandError>,
-    ) {
+    ) -> Option<PreparedObservationHandoff> {
         let PreparedSceneObservation {
             observation,
             queue_readiness,
             skipped_reason,
         } = prepared;
-        let generation = lv1.generation();
+        let generation = observation.generation;
         let lv1_snapshot = match snapshot_result {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 if queue_readiness.is_some_and(|readiness| Instant::now() >= readiness.deadline) {
                     self.cancel("LV1 recall readiness was lost", true);
-                    return;
-                }
-                if lv1.ensure_current().await.is_err() {
-                    return;
+                    return None;
                 }
                 event_bus.publish_scenes(
                     generation,
@@ -627,7 +654,7 @@ impl RecallCoordinator {
                         reason: format!("LV1 state is unavailable: {err}"),
                     },
                 );
-                return;
+                return None;
             }
         };
         let scene_config = recall_state
@@ -649,16 +676,13 @@ impl RecallCoordinator {
             })
         };
         let blocked = matches!(&decision, RecallPolicyDecision::Blocked { .. });
+        let scene_label = scene_label(&observation.scene);
 
         match decision {
             RecallPolicyDecision::Start(initial_fade_config) => {
-                #[cfg(test)]
-                if let Some(BeforeFadeHandoff { reached, resume }) = before_fade_handoff.take() {
-                    let _ = reached.send(());
-                    let _ = resume.await;
-                }
-
-                let prepared = if let Some(queue_readiness) = queue_readiness {
+                let (fade_config, readiness, queued_readiness) = if let Some(queue_readiness) =
+                    queue_readiness
+                {
                     let current_lockout = lockout.current();
                     let RecallPolicyDecision::Start(fade_config) =
                         decide_scene_recall(RecallPolicyInput {
@@ -676,13 +700,13 @@ impl RecallCoordinator {
                             },
                             true,
                         );
-                        return;
+                        return None;
                     };
                     let Some((readiness, completion)) =
                         self.prepare_readiness(queue_readiness, Instant::now())
                     else {
                         self.cancel("LV1 recall readiness was lost", true);
-                        return;
+                        return None;
                     };
                     (fade_config, readiness, Some((queue_readiness, completion)))
                 } else {
@@ -692,142 +716,78 @@ impl RecallCoordinator {
                         None,
                     )
                 };
-                let (fade_config, readiness, queued_readiness) = prepared;
-                let scene_label = scene_label(&observation.scene);
-                if lv1
-                    .if_current(|| {
-                        tracing::debug!(event = "scene_recall_ready", scene = %scene_label, target_count = fade_config.targets.len(), "Scene recall ready for {scene_label}");
-                        tracing::debug!(event = "scene_recall_start_requested", scene = %scene_label, "Scene recall start requested for {scene_label}");
-                        event_bus.publish_scenes(
-                            generation,
-                            ScenesEvent::Ready {
-                                scene_label: scene_label.clone(),
-                                target_count: fade_config.targets.len(),
-                            },
-                        );
-                        event_bus.publish_scenes(
-                            generation,
-                            ScenesEvent::StartRequested {
-                                scene_label: scene_label.clone(),
-                            },
-                        );
-                    })
-                    .await
-                    .is_none()
-                {
-                    if queued_readiness.is_some() {
-                        self.cancel("LV1 connection generation changed", false);
-                        self.clear_late_observations();
-                    }
-                    return;
-                }
                 let same_scene_behavior = if settings.same_scene_recall_enabled {
                     SameSceneRecallBehavior::FinishActiveTargets
                 } else {
                     SameSceneRecallBehavior::OverrideMatchingTargets
                 };
-                let deadline = readiness.deadline;
-                let result = send_fade_checked(fade, lv1, lockout, deadline, |reply| {
-                    FadeCommand::RecallSceneFade {
-                        config: fade_config,
-                        same_scene_behavior,
-                        readiness,
-                        reply: Some(reply),
-                    }
-                })
-                .await;
-                self.finish_fade_handoff(
-                    result,
-                    queued_readiness,
-                    lv1,
-                    event_bus,
+                Some(PreparedObservationHandoff {
                     generation,
                     scene_label,
-                )
-                .await;
+                    queued_readiness,
+                    request: ObservationFadeRequest::Start {
+                        fade_config,
+                        same_scene_behavior,
+                        readiness,
+                    },
+                })
             }
             RecallPolicyDecision::Skip { reason } | RecallPolicyDecision::Blocked { reason } => {
-                let scene_label = scene_label(&observation.scene);
-                if lv1
-                    .if_current(|| {
-                        let event = if blocked {
-                            tracing::warn!(
-                                event = "scene_recall_blocked",
-                                scene = %scene_label,
-                                reason = %reason,
-                                "Scene recall blocked for {scene_label}: {reason}"
-                            );
-                            ScenesEvent::Blocked {
-                                scene_label: scene_label.clone(),
-                                reason,
-                            }
-                        } else {
-                            ScenesEvent::Skipped {
-                                scene_label: scene_label.clone(),
-                                reason,
-                            }
-                        };
-                        event_bus.publish_scenes(generation, event);
-                    })
-                    .await
-                    .is_none()
-                {
-                    if queue_readiness.is_some() {
-                        self.cancel("LV1 connection generation changed", false);
-                        self.clear_late_observations();
+                let event = if blocked {
+                    tracing::warn!(
+                        event = "scene_recall_blocked",
+                        scene = %scene_label,
+                        reason = %reason,
+                        "Scene recall blocked for {scene_label}: {reason}"
+                    );
+                    ScenesEvent::Blocked {
+                        scene_label: scene_label.clone(),
+                        reason,
                     }
-                    return;
-                }
-
-                let Some(queue_readiness) = queue_readiness else {
-                    return;
+                } else {
+                    ScenesEvent::Skipped {
+                        scene_label: scene_label.clone(),
+                        reason,
+                    }
                 };
+                event_bus.publish_scenes(generation, event);
+                let queue_readiness = queue_readiness?;
                 let Some((readiness, completion)) =
                     self.prepare_readiness(queue_readiness, Instant::now())
                 else {
                     self.cancel("LV1 recall readiness was lost", true);
-                    return;
+                    return None;
                 };
-                let deadline = readiness.deadline;
-                let result = send_fade_checked(fade, lv1, lockout, deadline, |reply| {
-                    FadeCommand::WaitForRecallReadiness {
+                Some(PreparedObservationHandoff {
+                    generation,
+                    scene_label,
+                    queued_readiness: Some((queue_readiness, completion)),
+                    request: ObservationFadeRequest::Wait {
                         scene: FadeSceneIdentity {
                             index: observation.scene.index,
                             name: observation.scene.name,
                         },
                         readiness,
-                        reply: Some(reply),
-                    }
+                    },
                 })
-                .await;
-                self.finish_fade_handoff(
-                    result,
-                    Some((queue_readiness, completion)),
-                    lv1,
-                    event_bus,
-                    generation,
-                    scene_label,
-                )
-                .await;
             }
         }
     }
 
-    async fn finish_fade_handoff(
+    pub fn finish_observation_handoff(
         &mut self,
-        result: Result<(), AppCommandError>,
-        queued_readiness: Option<(
-            QueueReadiness,
-            oneshot::Receiver<Result<(), RecallReadinessError>>,
-        )>,
-        lv1: &Lv1Connection,
+        completion: ObservationHandoffCompletion,
         event_bus: &AppEventBus,
-        generation: u64,
-        scene_label: String,
     ) {
+        let ObservationHandoffCompletion {
+            result,
+            queued_readiness,
+            generation,
+            scene_label,
+        } = completion;
         match (result, queued_readiness) {
-            (Ok(()), Some((readiness, completion))) => {
-                if !self.accept_readiness(readiness, completion) {
+            (Ok(()), Some((readiness, completed))) => {
+                if !self.accept_readiness(readiness, completed) {
                     self.cancel("LV1 recall readiness was lost", true);
                 }
             }
@@ -837,39 +797,28 @@ impl RecallCoordinator {
                 self.clear_late_observations();
             }
             (Err(error), Some(_)) => {
-                let current = lv1
-                    .if_current(|| {
-                        let reason = match &error {
-                            AppCommandError::RecallCanceled(reason) => reason.as_str(),
-                            _ => "Fade engine is unavailable",
-                        };
-                        self.cancel(reason, true);
-                        event_bus.publish_scenes(
-                            generation,
-                            ScenesEvent::Blocked {
-                                scene_label,
-                                reason: format!("failed to start fade: {error:?}"),
-                            },
-                        );
-                    })
-                    .await;
-                if current.is_none() {
-                    self.cancel("LV1 connection generation changed", false);
-                    self.clear_late_observations();
-                }
+                let reason = match &error {
+                    AppCommandError::RecallCanceled(reason) => reason.as_str(),
+                    _ => "Fade engine is unavailable",
+                };
+                self.cancel(reason, true);
+                event_bus.publish_scenes(
+                    generation,
+                    ScenesEvent::Blocked {
+                        scene_label,
+                        reason: format!("failed to start fade: {error:?}"),
+                    },
+                );
             }
             (Err(AppCommandError::StaleGeneration), None) => {}
             (Err(error), None) => {
-                lv1.if_current(|| {
-                    event_bus.publish_scenes(
-                        generation,
-                        ScenesEvent::Blocked {
-                            scene_label,
-                            reason: format!("failed to start fade: {error:?}"),
-                        },
-                    );
-                })
-                .await;
+                event_bus.publish_scenes(
+                    generation,
+                    ScenesEvent::Blocked {
+                        scene_label,
+                        reason: format!("failed to start fade: {error:?}"),
+                    },
+                );
             }
         }
     }
@@ -1134,11 +1083,12 @@ impl RecallCoordinator {
     }
 }
 
-async fn send_fade_checked(
+pub(super) async fn send_fade_checked(
     fade: &FadeEngineHandle,
     lv1: &Lv1Connection,
     lockout: &ShowLockoutReader,
     deadline: Instant,
+    before_send: impl FnOnce(),
     build_command: impl FnOnce(oneshot::Sender<Result<(), AppCommandError>>) -> FadeCommand,
 ) -> Result<(), AppCommandError> {
     if lockout.current() {
@@ -1181,6 +1131,7 @@ async fn send_fade_checked(
                 "LV1 recall readiness was lost".to_string(),
             ));
         }
+        before_send();
         permit.send(build_command(reply));
         Ok(())
     })
