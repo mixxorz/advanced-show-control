@@ -1,9 +1,9 @@
-use gpui_kit::component::{Disableable as _, IconName, menu::DropdownMenu as _};
-use gpui_kit::{App, FocusHandle, IntoElement, KeyBinding, Window, actions};
+use gpui_kit::component::{Disableable as _, IconName, button::Button, menu::DropdownMenu as _};
+use gpui_kit::{App, FocusHandle, IntoElement, KeyBinding, Styled as _, Window, actions, px, rgb};
 #[cfg(target_os = "macos")]
 use gpui_kit::{Menu, MenuItem, SystemMenuType};
 
-use super::button::bordered_button;
+use super::theme::CONSOLE_LINE;
 
 pub const MENU_NEW_SHORTCUT: &str = if cfg!(target_os = "macos") {
     "cmd-n"
@@ -70,9 +70,14 @@ pub fn session_menu_button(
     disabled: bool,
     on_open_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    bordered_button("session-menu")
+    Button::new("session-menu")
         .accessibility_label("Session menu")
         .icon(IconName::Menu)
+        .size(px(50.))
+        .border_0()
+        .border_r_1()
+        .border_color(rgb(CONSOLE_LINE))
+        .rounded_none()
         .disabled(disabled)
         .dropdown_menu(move |menu, _, _| {
             menu.action_context(action_context.clone())

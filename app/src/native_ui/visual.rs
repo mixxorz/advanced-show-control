@@ -146,6 +146,15 @@ mod macos {
             window.render_frame(cx);
             assert!(window.is_action_available(&NewShow, cx));
             assert!(window.is_action_available(&Quit, cx));
+
+            let top_bar = window.find("top-bar").bounds();
+            let session_menu = window.find("session-menu").bounds();
+            let scenes_tab = window.find("tab-Scenes").bounds();
+            assert_eq!(session_menu.size.width, session_menu.size.height);
+            assert_eq!(session_menu.top(), top_bar.top() + px(1.));
+            assert_eq!(session_menu.bottom(), top_bar.bottom() - px(1.));
+            assert_eq!(session_menu.right(), scenes_tab.left());
+
             window.press(MENU_NEW_SHORTCUT, cx);
         })?;
         anyhow::ensure!(

@@ -6,8 +6,8 @@ use gpui_kit::base::Button as BaseButton;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::{
-    Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render, Styled as _, Window,
-    div, prelude::FluentBuilder as _, px, rgb,
+    Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Styled as _, TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::projector::{AppConnectionState, AppFadeState, AppViewState};
@@ -229,15 +229,17 @@ impl Render for AppShell {
             .text_color(rgb(CONSOLE_PRIMARY))
             .child(
                 div()
+                    .id("top-bar")
+                    .test_support()
                     .mx_3()
                     .mt_3()
                     .flex()
-                    .items_center()
+                    .items_stretch()
                     .border_1()
                     .border_color(rgb(CONSOLE_LINE))
                     .bg(rgb(CONSOLE_CHROME))
                     .child(
-                        div().flex().flex_1().children([
+                        div().flex().flex_1().items_stretch().children([
                             session_menu_button(self.action_context.clone(), trigger_disabled, {
                                 let entity = cx.entity();
                                 move |open, _, cx| {
