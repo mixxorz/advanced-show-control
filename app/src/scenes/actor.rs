@@ -1,4 +1,6 @@
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -230,6 +232,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut recall_coordinator = RecallCoordinator::default();
     let mut settings = initial_settings;
     let mut lockout_open = true;
+    let mut pending_snapshot: Option<PendingSnapshotOperation> = None;
 
     // Recall timing windows:
     //
@@ -269,7 +272,28 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
         };
         tokio::select! {
-            command = cue_commands.recv(), if cue_commands_open && !cues.recall_pending() => {
+            completion = async {
+                pending_snapshot
+                    .as_mut()
+                    .expect("enabled pending snapshot branch has an operation")
+                    .future
+                    .as_mut()
+                    .await
+            }, if pending_snapshot.is_some() => {
+                let operation = pending_snapshot
+                    .take()
+                    .expect("completed pending snapshot operation exists");
+                finish_pending_snapshot(
+                    operation,
+                    completion,
+                    active_generation,
+                    &runtime_generation,
+                    &scene_library_status,
+                    &mut recall_state,
+                    &event_bus,
+                ).await;
+            }
+            command = cue_commands.recv(), if pending_snapshot.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -285,7 +309,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
             }
             () = cues.complete_recall() => {}
-            command = command_rx.recv(), if scene_commands_open => {
+            command = command_rx.recv(), if pending_snapshot.is_none() && scene_commands_open => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
@@ -312,6 +336,26 @@ async fn run_scenes_actor(task: ScenesTask) {
                             })
                         }).await.unwrap_or_else(|| Err("LV1 generation is no longer current".into()));
                         let _ = reply.send(result);
+                        continue;
+                    }
+                    ScenesCommand::StoreSceneConfigFromCurrentLv1 { internal_scene_id, reply } => {
+                        if scene_library_status != SceneLibraryStatus::Ready {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Err(AppCommandError::ScenesUnavailable.to_string()));
+                            }
+                            continue;
+                        }
+                        let Some(peer_handles) = peers.handles(active_generation) else {
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Err(AppCommandError::Lv1Unavailable.to_string()));
+                            }
+                            continue;
+                        };
+                        pending_snapshot = Some(PendingSnapshotOperation::store(
+                            peer_handles.lv1,
+                            internal_scene_id,
+                            reply,
+                        ));
                         continue;
                     }
                     command => command,
@@ -397,6 +441,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                         settings = updated_settings;
                     }
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
+                        if let Some(operation) = pending_snapshot.take() {
+                            operation.cancel("Store scene blocked: LV1 disconnected");
+                        }
                         cached_scene_list = None;
                         scene_library_status = SceneLibraryStatus::AwaitingSceneList;
                         recall_state.mark_scene_library_unavailable();
@@ -411,6 +458,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                         );
                     }
                     Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
+                        if let Some(operation) = pending_snapshot.take() {
+                            operation.cancel("Store scene blocked: LV1 generation changed");
+                        }
                         transition_scene_generation(
                             &mut active_generation,
                             event_generation,
@@ -562,6 +612,9 @@ async fn run_scenes_actor(task: ScenesTask) {
         }
     }
 
+    if let Some(operation) = pending_snapshot {
+        operation.cancel("Store scene blocked: Scenes actor stopped");
+    }
     recall_coordinator.cancel("Scenes actor stopped", true);
     recall_coordinator.clear_late_observations();
 }
@@ -599,6 +652,80 @@ fn transition_scene_generation(
         peers.clear_peers_for_generation(previous_generation);
     }
     publish_scene_state_changed(event_bus, *active_generation, recall_state, false);
+}
+
+struct PendingSnapshotOperation {
+    generation: u64,
+    internal_scene_id: uuid::Uuid,
+    reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
+    future: Pin<Box<dyn Future<Output = Result<Lv1StateSnapshot, String>> + Send>>,
+}
+
+impl PendingSnapshotOperation {
+    fn store(
+        lv1: Lv1Connection,
+        internal_scene_id: uuid::Uuid,
+        reply: Option<oneshot::Sender<Result<ScenesCommandResult, String>>>,
+    ) -> Self {
+        let generation = lv1.generation();
+        Self {
+            generation,
+            internal_scene_id,
+            reply,
+            future: Box::pin(async move {
+                lv1.request(|reply| Lv1Command::GetState { reply })
+                    .await
+                    .map_err(|_| "Store scene blocked: LV1 state is unavailable".to_string())
+            }),
+        }
+    }
+
+    fn cancel(mut self, reason: &str) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Err(reason.to_string()));
+        }
+    }
+}
+
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] store-snapshot-pending-operation
+ * A store-from-LV1 state request MUST run as the Scenes actor's single pending snapshot operation.
+ * While it is pending the actor MUST continue consuming runtime and LV1 facts, lockout changes,
+ * and recall deadlines. Disconnect, generation change, or actor shutdown MUST drop the request and
+ * reject its caller before a late snapshot can mutate or publish scene state.
+ */
+async fn finish_pending_snapshot(
+    mut operation: PendingSnapshotOperation,
+    result: Result<Lv1StateSnapshot, String>,
+    active_generation: u64,
+    runtime_generation: &RuntimeGeneration,
+    scene_library_status: &SceneLibraryStatus,
+    state: &mut ScenesState,
+    event_bus: &AppEventBus,
+) {
+    let result = match result {
+        Ok(snapshot)
+            if operation.generation == active_generation
+                && runtime_generation.current().await == operation.generation
+                && *scene_library_status == SceneLibraryStatus::Ready
+                && snapshot.connection == ConnectionStatus::Connected =>
+        {
+            let changed = state
+                .store_scene_config(operation.internal_scene_id, &snapshot.channels)
+                .map_err(|error| error.to_string());
+            changed.map(|changed| {
+                if changed {
+                    publish_scene_state_changed(event_bus, operation.generation, state, true);
+                }
+                ScenesCommandResult { changed }
+            })
+        }
+        Ok(_) => Err("Store scene blocked: scene library is unavailable".to_string()),
+        Err(error) => Err(error),
+    };
+    if let Some(reply) = operation.reply.take() {
+        let _ = reply.send(result);
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -834,32 +961,8 @@ async fn dispatch_scenes_command(
                 let _ = reply.send(result);
             }
         }
-        ScenesCommand::StoreSceneConfigFromCurrentLv1 {
-            internal_scene_id,
-            reply,
-        } => {
-            if *scene_library_status != SceneLibraryStatus::Ready {
-                if let Some(reply) = reply {
-                    let _ = reply.send(Err(AppCommandError::ScenesUnavailable.to_string()));
-                }
-                return ScenesCommandDispatch::Continue;
-            }
-            let result = match peers.handles(generation) {
-                Some(peer_handles) => {
-                    store_scene_config_from_current_lv1(
-                        &peer_handles.lv1,
-                        event_bus,
-                        scene_library_status,
-                        recall_state,
-                        internal_scene_id,
-                    )
-                    .await
-                }
-                None => Err(AppCommandError::Lv1Unavailable.to_string()),
-            };
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+        ScenesCommand::StoreSceneConfigFromCurrentLv1 { .. } => {
+            unreachable!("store snapshot operations are started by the actor loop")
         }
         ScenesCommand::RecallScene {
             internal_scene_id,
@@ -1035,40 +1138,6 @@ fn copy_scene_settings(
     Ok(ScenesCommandResult {
         changed: result.contents_changed,
     })
-}
-
-/**
- * @cc [owner:mixxorz,label:safety] capture-fresh-ready-generation
- * Store-from-LV1 MUST mutate or publish only from a connected snapshot while the scene library is
- * `Ready` and the snapshot's connection generation remains current after the awaited state read.
- */
-async fn store_scene_config_from_current_lv1(
-    lv1: &Lv1Connection,
-    event_bus: &AppEventBus,
-    scene_library_status: &SceneLibraryStatus,
-    state: &mut ScenesState,
-    internal_scene_id: uuid::Uuid,
-) -> Result<ScenesCommandResult, String> {
-    let generation = lv1.generation();
-    let snapshot = lv1
-        .request(|reply| Lv1Command::GetState { reply })
-        .await
-        .map_err(|_| "Store scene blocked: LV1 state is unavailable".to_string())?;
-    if snapshot.connection != ConnectionStatus::Connected {
-        return Err("Store scene blocked: LV1 state is unavailable".to_string());
-    }
-    lv1.if_current(|| {
-        if *scene_library_status != SceneLibraryStatus::Ready {
-            return Err("Store scene blocked: scene library is unavailable".to_string());
-        }
-        let changed = state.store_scene_config(internal_scene_id, &snapshot.channels)?;
-        if changed {
-            publish_scene_state_changed(event_bus, generation, state, true);
-        }
-        Ok(ScenesCommandResult { changed })
-    })
-    .await
-    .unwrap_or_else(|| Err("Store scene blocked: scene library is unavailable".to_string()))
 }
 
 #[cfg(test)]
@@ -4488,6 +4557,79 @@ mod tests {
 
         scenes.send(ScenesCommand::Shutdown).await.unwrap();
         }).await.expect("recall checks should complete without sending a locked-out command");
+    }
+
+    #[tokio::test]
+    async fn pending_store_snapshot_is_canceled_by_disconnect_before_lv1_replies() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let (show, show_task, _show_peers, lockout) =
+            crate::show::build_show_actor(event_bus.clone());
+        show_task.spawn();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            lockout,
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+
+        let (reply, result) = oneshot::channel();
+        handle
+            .send(ScenesCommand::StoreSceneConfigFromCurrentLv1 {
+                internal_scene_id: intro_internal_scene_id(),
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        let Some(Lv1Command::GetState {
+            reply: held_snapshot,
+        }) = lv1_rx.recv().await
+        else {
+            panic!("expected held LV1 snapshot request");
+        };
+
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), result)
+                .await
+                .expect("disconnect should cancel before snapshot release")
+                .unwrap(),
+            Err("Store scene blocked: LV1 disconnected".to_string())
+        );
+        assert!(
+            held_snapshot
+                .send(Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: vec![scene_entry(1, "Intro")],
+                    channels: Vec::new(),
+                    ping_sequence: 0,
+                })
+                .is_err()
+        );
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        show.send(crate::show::ShowCommand::SetLockout {
+            enabled: false,
+            reply: None,
+        })
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
