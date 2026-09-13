@@ -91,7 +91,7 @@ Scenes preserves its document—durable config UUIDs, selection, and settings cl
 2. `AwaitingSceneList`: peers exist but no authoritative scene list exists.
 3. `Ready`: accepted peers and the active generation's scene list exist.
 
-Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available.
+Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available. Because a connected LV1 snapshot may still contain its initial empty scene-list value, an empty uncached list at peer handoff leaves Scenes in `AwaitingSceneList`. A same-generation `SceneListChanged` fact establishes the authoritative list, including a legitimately empty library.
 
 Scenes owns an eight-request FIFO for ASC-originated explicit recalls through its private `RecallCoordinator`; this is a deep synchronous module inside the sole app-lifetime Scenes actor, not another actor. The coordinator owns FIFO and in-flight phases, pending observations, late-canceled suppression, the Fade readiness receiver, and configured post-readiness interval state. Each caller reply remains held until that request actually dispatches, rather than merely entering the FIFO.
 

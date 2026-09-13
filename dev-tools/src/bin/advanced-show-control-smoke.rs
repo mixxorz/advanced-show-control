@@ -291,14 +291,25 @@ impl Runner<'_> {
     }
 
     async fn startup_auto_connect(&mut self) -> Result<(), String> {
+        let scene_a = self.scene_a;
+        let scene_b = self.scene_b;
+        let before = self
+            .wait_state("pre-reconnect scene configs", move |state| {
+                find_config(state, scene_a).is_some() && find_config(state, scene_b).is_some()
+            })
+            .await?;
+        let expected_scene_configs = before.scene_configs;
+
         self.commands.disconnect_lv1().await?;
         self.wait_state("LV1 disconnect", |state| {
             state.connection == AppConnectionState::Disconnected
         })
         .await?;
         self.commands.startup_auto_connect_lv1().await?;
-        self.wait_state("startup auto-connect", |state| {
+        self.wait_state("reconnected scene configs", |state| {
             state.connection == AppConnectionState::Connected
+                && state.scene_count > 0
+                && state.scene_configs == expected_scene_configs
         })
         .await?;
         self.resolve_scenes().await

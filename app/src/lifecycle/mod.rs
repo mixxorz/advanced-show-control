@@ -521,9 +521,11 @@ impl AppLifecycle {
     /**
      * @cc [owner:mixxorz,label:safety;ordering] accepted-connect-readiness-order
      * A connected candidate MUST first have Show metadata accepted for its generation, then install
-     * that generation's Scene peers, then deliver `RuntimePeersReady` with the confirmed initial
-     * scene list. Any rejection or unavailable Scenes actor MUST clean up only the candidate and
-     * return an error; connected success MUST remain generation-fenced after all awaits.
+     * that generation's Scene peers, then deliver `RuntimePeersReady` with the initial snapshot's
+     * scene-list view. An empty view does not prove that LV1 has delivered its scene list; Scenes
+     * MUST remain responsible for deciding when that list is authoritative. Any rejection or
+     * unavailable Scenes actor MUST clean up only the candidate and return an error; connected
+     * success MUST remain generation-fenced after all awaits.
      */
     /**
      * @cc [owner:mixxorz,label:reliability] remembered-identity-best-effort
@@ -1095,7 +1097,7 @@ mod tests {
     use super::*;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::fade::FadeEngineHandle;
-    use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
+    use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::scenes::ScenesCommand;
 
@@ -1330,6 +1332,20 @@ mod tests {
         }
     }
 
+    fn test_scene_list() -> Vec<SceneListEntry> {
+        vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }]
+    }
+
+    fn connected_snapshot_with_scene_list() -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            scene_list: test_scene_list(),
+            ..connected_snapshot()
+        }
+    }
+
     fn connecting_snapshot() -> Lv1StateSnapshot {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connecting,
@@ -1503,7 +1519,7 @@ mod tests {
 
         let generation = lifecycle.begin_connecting().await.unwrap();
         let runtime_generation = lifecycle.current_runtime_generation().await;
-        let lv1 = fake_lv1_handle(connected_snapshot());
+        let lv1 = fake_lv1_handle(connected_snapshot_with_scene_list());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
         let started_runtime = started_runtime_for_test(
@@ -2027,7 +2043,7 @@ mod tests {
                     .scenes
                     .send(ScenesCommand::RuntimePeersReady {
                         generation: newer_generation,
-                        initial_scene_list: vec![],
+                        initial_scene_list: test_scene_list(),
                         reply,
                     })
                     .await
@@ -3100,7 +3116,7 @@ mod tests {
             .scenes_handle()
             .send(ScenesCommand::RuntimePeersReady {
                 generation: accepted_generation,
-                initial_scene_list: vec![],
+                initial_scene_list: test_scene_list(),
                 reply: ready_reply,
             })
             .await

@@ -29,8 +29,10 @@ pub enum ScenesCommand {
     },
     /// @cc [owner:mixxorz,label:safety] runtime-readiness-handoff
     /// Readiness MUST be accepted only when the supplied generation is still authoritative and a
-    /// complete peer pair for that generation is installed; a same-generation scene list cached
-    /// before handoff MUST supersede the initial list supplied by lifecycle.
+    /// complete peer pair for that generation is installed. A same-generation scene-list fact
+    /// cached before handoff MUST supersede the initial snapshot list supplied by lifecycle,
+    /// including when that fact confirms an empty library. An empty uncached initial snapshot MUST
+    /// leave Scenes awaiting an authoritative scene-list fact rather than unlinking stored configs.
     RuntimePeersReady {
         generation: u64,
         initial_scene_list: Vec<crate::lv1::SceneListEntry>,

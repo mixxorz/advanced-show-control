@@ -1142,9 +1142,17 @@ async fn dispatch_scenes_command(
                     if ready_generation != generation || peers.handles(generation).is_none() {
                         return Err(AppCommandError::ScenesUnavailable);
                     }
-                    let scene_list = cached_scene_list.take().unwrap_or(initial_scene_list);
-                    apply_scene_list(recall_state, event_bus, generation, scene_list);
-                    *scene_library_status = SceneLibraryStatus::Ready;
+                    let scene_list = match cached_scene_list.take() {
+                        Some(cached) => Some(cached),
+                        None if initial_scene_list.is_empty() => None,
+                        None => Some(initial_scene_list),
+                    };
+                    if let Some(scene_list) = scene_list {
+                        apply_scene_list(recall_state, event_bus, generation, scene_list);
+                        *scene_library_status = SceneLibraryStatus::Ready;
+                    } else {
+                        *scene_library_status = SceneLibraryStatus::AwaitingSceneList;
+                    }
                     Ok(())
                 })
                 .await
@@ -5499,6 +5507,68 @@ mod tests {
         handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
 
+    #[tokio::test]
+    async fn reconnect_waits_for_authoritative_scene_list_before_realigning_configs() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation.clone(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            fake_settings_handle(AppSettings::default()),
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
+        task.spawn();
+        let document = intro_scene_document();
+        let scene_id = document.scene_configs[0].internal_scene_id;
+        crate::session::tests::replace_scenes(&handle, document, 1).await;
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+        while events.try_recv().is_ok() {}
+
+        runtime_generation.set(2).await;
+        event_bus.publish_runtime_generation_changed(2);
+        let disconnected = next_scene_state_changed_for_generation(&mut events, 2).await;
+        assert_eq!(disconnected.ready_generation, None);
+        assert_eq!(disconnected.scene_configs.len(), 1);
+        assert_eq!(disconnected.scene_configs[0].scene_index, Some(1));
+
+        let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        peers.set_peers_for_generation(2, crate::lv1::test_actor_handle(lv1_tx), fade);
+        mark_runtime_peers_ready_with_list(&handle, 2, Vec::new()).await;
+
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        let awaiting_scene_list = state.await.unwrap();
+        assert_eq!(awaiting_scene_list.ready_generation, None);
+        assert_eq!(awaiting_scene_list.scene_configs.len(), 1);
+        assert_eq!(
+            awaiting_scene_list.scene_configs[0].internal_scene_id,
+            scene_id
+        );
+        assert_eq!(awaiting_scene_list.scene_configs[0].scene_index, Some(1));
+
+        while events.try_recv().is_ok() {}
+        event_bus.publish_lv1(2, Lv1Event::SceneListChanged(vec![scene_entry(1, "Intro")]));
+        let reconnected = next_scene_state_changed_for_generation(&mut events, 2).await;
+        assert_eq!(reconnected.ready_generation, Some(2));
+        assert_eq!(reconnected.scene_configs.len(), 1);
+        assert_eq!(reconnected.scene_configs[0].internal_scene_id, scene_id);
+        assert_eq!(reconnected.scene_configs[0].scene_index, Some(1));
+
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
     #[tokio::test(start_paused = true)]
     async fn scene_list_changed_updates_existing_scene_configs() {
         let event_bus = AppEventBus::default();
@@ -6045,7 +6115,8 @@ mod tests {
         );
         peers.set_peers_for_generation(1, lv1, fade);
         task.spawn();
-        mark_runtime_peers_ready(&handle, 1).await;
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(3, "Song 2 -- Changed")])
+            .await;
 
         crate::session::tests::replace_scenes(
             &handle,
@@ -6202,7 +6273,16 @@ mod tests {
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
         task.spawn();
-        mark_runtime_peers_ready(&handle, 1).await;
+        mark_runtime_peers_ready_with_list(
+            &handle,
+            1,
+            vec![
+                scene_entry(1, "Intro"),
+                scene_entry(2, "Verse"),
+                scene_entry(3, "Chorus"),
+            ],
+        )
+        .await;
 
         let source_id = uuid::Uuid::from_u128(1);
         let destination_id = uuid::Uuid::from_u128(2);
