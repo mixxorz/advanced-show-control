@@ -196,11 +196,13 @@ fn build_scenes_actor_with_before_fade_handoff(
 
 /**
  * @cc [owner:mixxorz,label:safety] event-bus-lag-fails-closed
- * On event-bus lag, the actor MUST drain queued facts, reconcile the active generation, cancel
- * queued recall intent without aborting Fade, clear pending observations and runtime readiness,
- * refresh Settings, and restore readiness only from a fresh connected snapshot for current peers.
- * If Settings cannot be refreshed, recall automation MUST stop rather than continue with stale
- * policy.
+ * On event-bus lag, the actor MUST synchronously drain queued facts, reconcile the active
+ * generation, cancel queued recall intent without aborting Fade, and clear pending observations
+ * and runtime readiness. Settings refresh and the optional fresh connected LV1 snapshot MUST run
+ * as one actor-owned pending operation polled by the main select. Generation change, disconnect,
+ * or newer lag MUST cancel stale recovery, and completion MUST NOT overwrite Settings or scene-list
+ * facts observed after recovery began. If Settings cannot be refreshed, recall automation MUST
+ * remain stopped rather than continue with stale policy.
  */
 async fn run_scenes_actor(task: ScenesTask) {
     let ScenesTask {
@@ -233,6 +235,9 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut settings = initial_settings;
     let mut lockout_open = true;
     let mut pending_snapshot: Option<PendingSnapshotOperation> = None;
+    let mut pending_lag_recovery: Option<PendingLagRecovery> = None;
+    let mut settings_revision = 0_u64;
+    let mut scene_list_revision = 0_u64;
 
     // Recall timing windows:
     //
@@ -376,6 +381,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             event = events.recv() => {
                 match event {
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::SceneListChanged(scene_list) }) if event_generation == active_generation => {
+                        scene_list_revision = scene_list_revision.wrapping_add(1);
                         let cached_before_ready = runtime_generation
                             .if_current(event_generation, || {
                                 match scene_library_status {
@@ -418,9 +424,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                         }
                     }
                     Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
+                        settings_revision = settings_revision.wrapping_add(1);
                         settings = updated_settings;
                     }
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
+                        pending_lag_recovery = None;
+                        scene_list_revision = scene_list_revision.wrapping_add(1);
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: LV1 disconnected");
                         }
@@ -438,6 +447,8 @@ async fn run_scenes_actor(task: ScenesTask) {
                         );
                     }
                     Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
+                        pending_lag_recovery = None;
+                        scene_list_revision = scene_list_revision.wrapping_add(1);
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: LV1 generation changed");
                         }
@@ -458,6 +469,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         drain_retained_events(&mut events);
                         let current_generation = runtime_generation.current().await;
                         if current_generation != active_generation {
+                            scene_list_revision = scene_list_revision.wrapping_add(1);
                             transition_scene_generation(
                                 &mut active_generation,
                                 current_generation,
@@ -479,37 +491,52 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &recall_state,
                             false,
                         );
-                        let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
-                            break;
-                        };
-                        settings = updated_settings;
-                        let Some(peer_handles) = peers.handles(active_generation) else {
-                            continue;
-                        };
-                        let Ok(snapshot) = peer_handles
-                            .lv1
-                            .request(|reply| Lv1Command::GetState { reply })
-                            .await
-                        else {
-                            continue;
-                        };
-                        if peers.handles(active_generation).is_none() {
-                            continue;
-                        }
-                        if let Some(scene_list) = authoritative_scene_list(&snapshot) {
-                            apply_scene_list(
-                                &mut recall_state,
-                                &event_bus,
-                                active_generation,
-                                scene_list,
-                            );
-                            scene_library_status = SceneLibraryStatus::Ready;
-                        }
+                        pending_lag_recovery = Some(PendingLagRecovery::new(
+                            active_generation,
+                            settings_revision,
+                            scene_list_revision,
+                            settings_handle.clone(),
+                            peers.handles(active_generation).map(|handles| handles.lv1),
+                        ));
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         recall_coordinator.cancel("scene recall event stream closed", true);
                         recall_coordinator.clear_late_observations();
                         break;
+                    }
+                }
+            }
+            completion = async {
+                pending_lag_recovery
+                    .as_mut()
+                    .expect("enabled lag-recovery branch has an operation")
+                    .future
+                    .as_mut()
+                    .await
+            }, if pending_lag_recovery.is_some() => {
+                let operation = pending_lag_recovery
+                    .take()
+                    .expect("completed lag-recovery operation exists");
+                if operation.generation == active_generation
+                    && runtime_generation.current().await == operation.generation
+                {
+                    if let Some(recovered_settings) = completion.settings
+                        && settings_revision == operation.settings_revision
+                    {
+                        settings = recovered_settings;
+                    }
+                    if scene_list_revision == operation.scene_list_revision
+                        && peers.handles(active_generation).is_some()
+                        && let Some(snapshot) = completion.snapshot
+                        && let Some(scene_list) = authoritative_scene_list(&snapshot)
+                    {
+                        apply_scene_list(
+                            &mut recall_state,
+                            &event_bus,
+                            active_generation,
+                            scene_list,
+                        );
+                        scene_library_status = SceneLibraryStatus::Ready;
                     }
                 }
             }
@@ -1015,29 +1042,65 @@ async fn dispatch_scenes_command(
     ScenesCommandDispatch::Continue
 }
 
+struct PendingLagRecovery {
+    generation: u64,
+    settings_revision: u64,
+    scene_list_revision: u64,
+    future: Pin<Box<dyn Future<Output = LagRecoveryCompletion> + Send>>,
+}
+
+struct LagRecoveryCompletion {
+    settings: Option<AppSettings>,
+    snapshot: Option<Lv1StateSnapshot>,
+}
+
+impl PendingLagRecovery {
+    fn new(
+        generation: u64,
+        settings_revision: u64,
+        scene_list_revision: u64,
+        settings_handle: SettingsHandle,
+        lv1: Option<Lv1Connection>,
+    ) -> Self {
+        Self {
+            generation,
+            settings_revision,
+            scene_list_revision,
+            future: Box::pin(async move {
+                let settings = request_recovery_settings(&settings_handle).await;
+                let snapshot = match (&settings, lv1) {
+                    (Some(_), Some(lv1)) => lv1
+                        .request(|reply| Lv1Command::GetState { reply })
+                        .await
+                        .ok(),
+                    _ => None,
+                };
+                LagRecoveryCompletion { settings, snapshot }
+            }),
+        }
+    }
+}
+
 async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<AppSettings> {
+    request_recovery_settings(settings_handle).await
+}
+
+async fn request_recovery_settings(settings_handle: &SettingsHandle) -> Option<AppSettings> {
     let (reply, rx) = oneshot::channel();
-    if settings_handle
+    let result = match settings_handle
         .send(SettingsCommand::GetSettings { reply })
         .await
-        .is_err()
     {
+        Ok(()) => rx.await.ok(),
+        Err(_) => None,
+    };
+    if result.is_none() {
         tracing::error!(
             event = "scene_recall_settings_unavailable",
             "Scene recall automation stopped because current settings are unavailable"
         );
-        return None;
     }
-    match rx.await {
-        Ok(settings) => Some(settings),
-        Err(_) => {
-            tracing::error!(
-                event = "scene_recall_settings_unavailable",
-                "Scene recall automation stopped because current settings are unavailable"
-            );
-            None
-        }
-    }
+    result
 }
 
 fn authoritative_scene_list(
@@ -5593,6 +5656,138 @@ mod tests {
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         drop(peers);
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_lag_settings_refresh_is_canceled_by_generation_change() {
+        let event_bus = AppEventBus::new(1);
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (settings, mut settings_commands) = tokio::sync::mpsc::channel(1);
+        let (lv1, _lv1_commands) = tokio::sync::mpsc::channel(1);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation.clone(),
+            event_bus.clone(),
+            event_bus.subscribe(),
+            settings,
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
+        task.spawn();
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+
+        for generation in 10..30 {
+            event_bus.publish(AppEvent::Runtime(
+                crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                    generation,
+                },
+            ));
+        }
+        let SettingsCommand::GetSettings {
+            reply: held_settings,
+        } = tokio::time::timeout(Duration::from_secs(1), settings_commands.recv())
+            .await
+            .expect("lag recovery should request settings")
+            .expect("settings mailbox should remain open")
+        else {
+            panic!("expected settings snapshot request");
+        };
+
+        runtime_generation.set(2).await;
+        event_bus.publish(AppEvent::Runtime(
+            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                generation: 2,
+            },
+        ));
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), state)
+                .await
+                .expect("generation fact should remain responsive")
+                .unwrap()
+                .ready_generation,
+            None
+        );
+        assert!(held_settings.send(AppSettings::default()).is_err());
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pending_lag_lv1_snapshot_is_canceled_by_disconnect() {
+        let event_bus = AppEventBus::new(1);
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let settings = fake_settings_handle(AppSettings::default());
+        let (lv1, mut lv1_commands) = tokio::sync::mpsc::channel(1);
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            settings,
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
+        task.spawn();
+        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
+
+        for generation in 10..30 {
+            event_bus.publish(AppEvent::Runtime(
+                crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                    generation,
+                },
+            ));
+        }
+        let Lv1Command::GetState {
+            reply: held_snapshot,
+        } = tokio::time::timeout(Duration::from_secs(1), lv1_commands.recv())
+            .await
+            .expect("lag recovery should request LV1 state")
+            .expect("LV1 mailbox should remain open")
+        else {
+            panic!("expected LV1 snapshot request");
+        };
+
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), state)
+                .await
+                .expect("disconnect fact should remain responsive")
+                .unwrap()
+                .ready_generation,
+            None
+        );
+        assert!(
+            held_snapshot
+                .send(Lv1StateSnapshot {
+                    connection: ConnectionStatus::Connected,
+                    scene: None,
+                    scene_list: vec![scene_entry(1, "Intro")],
+                    channels: Vec::new(),
+                    ping_sequence: 0,
+                })
+                .is_err()
+        );
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
     }
 
     #[tokio::test(start_paused = true)]
