@@ -17,13 +17,23 @@ struct ProjectorTest {
 
 impl ProjectorTest {
     fn new(events: AppEventBus) -> Self {
+        Self::with_runtime_source(
+            events,
+            crate::lifecycle::AppLifecycle::default().runtime_snapshot_source(),
+        )
+    }
+
+    fn with_runtime_source(
+        events: AppEventBus,
+        runtime_source: crate::lifecycle::RuntimeSnapshotSource,
+    ) -> Self {
         let (sink, snapshots) = projection_channel();
         let (logs, log_rx) = broadcast::channel(8);
         let task = spawn_projector(ProjectorInputs {
             sink,
             generation: 0,
             state: events.state(),
-            runtime_source: crate::lifecycle::AppLifecycle::default().runtime_snapshot_source(),
+            runtime_source,
             events: events.subscribe(),
             logs: log_rx,
         });
@@ -224,6 +234,54 @@ async fn bus_lag_resets_live_state_without_losing_latest_app_state() {
     );
     assert!(snapshot.lockout);
     assert_eq!(snapshot.cue_lists[0].name, "Main");
+}
+
+#[tokio::test]
+async fn lag_recovery_keeps_log_input_responsive_and_replays_post_cutoff_facts() {
+    let events = AppEventBus::new(1);
+    let (lv1, mut commands) = tokio::sync::mpsc::channel(1);
+    let runtime_source = crate::lifecycle::RuntimeSnapshotSource::with_lv1_for_test(
+        crate::lv1::test_actor_handle(lv1),
+    );
+    let mut test = ProjectorTest::with_runtime_source(events, runtime_source);
+    test.snapshot().await;
+
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.events
+        .publish_lv1(0, Lv1Event::PingReceived { sequence: 1 });
+    let Some(Lv1Command::GetState { reply }) = commands.recv().await else {
+        panic!("lag recovery should request authoritative LV1 state");
+    };
+
+    test.events.publish_lv1(0, Lv1Event::Connected);
+    test.logs
+        .send(UiLogEvent {
+            severity: LogSeverity::Info,
+            message: "during recovery".into(),
+        })
+        .unwrap();
+    let snapshot = test.snapshot().await;
+    assert!(
+        snapshot
+            .logs
+            .iter()
+            .any(|log| log.message == "during recovery")
+    );
+
+    reply
+        .send(crate::lv1::Lv1StateSnapshot {
+            connection: ConnectionStatus::Disconnected,
+            scene: None,
+            scene_list: vec![],
+            channels: vec![],
+            ping_sequence: 0,
+        })
+        .unwrap();
+    let snapshot = test.snapshot().await;
+    assert_eq!(
+        snapshot.connection,
+        crate::projector::AppConnectionState::Connected
+    );
 }
 
 #[tokio::test]

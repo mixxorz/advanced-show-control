@@ -132,6 +132,26 @@ impl RuntimeSnapshotSource {
     pub async fn current_generation(&self) -> u64 {
         self.generation.current().await
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_lv1_for_test(lv1: Lv1ActorHandle) -> Self {
+        let generation = RuntimeGeneration::default();
+        let (fade, _fade_rx) = tokio::sync::mpsc::channel(1);
+        Self {
+            inner: Arc::new(Mutex::new(LifecycleInner {
+                generation: generation.clone(),
+                connecting: false,
+                runtime: Some(InstalledRuntime {
+                    generation: 0,
+                    lv1,
+                    fade,
+                }),
+                projection_sink: None,
+                projector: None,
+            })),
+            generation,
+        }
+    }
 }
 
 #[derive(Clone)]

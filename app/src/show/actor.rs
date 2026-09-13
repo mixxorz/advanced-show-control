@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -153,7 +155,9 @@ fn build_show_actor_with_state(
 
 /// @cc [owner:mixxorz,label:reliability] show-event-lag-fails-dirty
 /// If the Show event subscriber lags, the actor MUST conservatively mark the show dirty and publish
-/// the full Show projection rather than assuming no persisted edit was missed.
+/// the full Show projection rather than assuming no persisted edit was missed. While its single
+/// actor-owned persistence operation is pending, the actor MUST consume facts without accepting the
+/// next command, and a persisted edit observed during a successful operation MUST remain dirty.
 async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -163,26 +167,93 @@ async fn run_show_actor(
     lockout_tx: watch::Sender<bool>,
     backup_dir: std::path::PathBuf,
 ) {
+    let mut pending: Option<PendingShowOperation> = None;
     loop {
-        tokio::select! {
-            command = rx.recv() => {
-                let Some(command) = command else { break; };
-                handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
-                publish_lockout_if_changed(&lockout_tx, &state);
+        if let Some(operation) = pending.as_mut() {
+            tokio::select! {
+                completion = &mut operation.future => {
+                    let dirty_during_wait = operation.dirty_during_wait;
+                    finish_pending_operation(
+                        completion,
+                        dirty_during_wait,
+                        &mut state,
+                        &event_bus,
+                    );
+                    publish_lockout_if_changed(&lockout_tx, &state);
+                    pending = None;
+                }
+                event = events.recv() => {
+                    let Some(dirtied) = handle_show_event(event, &mut state, &event_bus) else {
+                        break;
+                    };
+                    operation.dirty_during_wait |= dirtied;
+                }
             }
-            event = events.recv() => {
-                match event {
-                    Ok(event) => handle_app_event(event, &mut state, &event_bus),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("show-actor", count);
-                        state.mark_dirty();
-                        publish_state_changed(&event_bus, &state);
+        } else {
+            tokio::select! {
+                command = rx.recv() => {
+                    let Some(command) = command else { break; };
+                    pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+                    publish_lockout_if_changed(&lockout_tx, &state);
+                }
+                event = events.recv() => {
+                    if handle_show_event(event, &mut state, &event_bus).is_none() {
+                        break;
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
         }
     }
+}
+
+fn handle_show_event(
+    event: Result<AppEvent, tokio::sync::broadcast::error::RecvError>,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) -> Option<bool> {
+    match event {
+        Ok(event) => {
+            let dirtied = matches!(
+                event,
+                AppEvent::Scenes {
+                    event: crate::scenes::ScenesEvent::StateChanged {
+                        persisted_scene_edit: true,
+                        ..
+                    },
+                    ..
+                } | AppEvent::CueLists(_)
+            );
+            handle_app_event(event, state, event_bus);
+            Some(dirtied)
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+            log_lagged_subscriber("show-actor", count);
+            state.mark_dirty();
+            publish_state_changed(event_bus, state);
+            Some(true)
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+    }
+}
+
+struct PendingShowOperation {
+    future: Pin<Box<dyn Future<Output = PendingShowCompletion> + Send>>,
+    dirty_during_wait: bool,
+}
+
+enum PendingShowCompletion {
+    New {
+        result: Result<NewShowFileResult, String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<NewShowFileResult, String>>>,
+    },
+    Save {
+        result: Result<(std::path::PathBuf, String), String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<ShowCommandResult, String>>>,
+    },
+    Load {
+        result: Result<PreparedLoad, String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<LoadShowFileResult, String>>>,
+    },
 }
 
 /// @cc [owner:mixxorz,label:safety] lockout-watch-follows-command-state
@@ -257,7 +328,7 @@ async fn handle_command(
     event_bus: &AppEventBus,
     peers: &ShowActorPeers,
     backup_dir: &std::path::Path,
-) {
+) -> Option<PendingShowOperation> {
     match command {
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
@@ -273,58 +344,67 @@ async fn handle_command(
             }
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
-            let result = async {
-                let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
-                let scene_configs = crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list);
-                let selected_scene_internal_id = scene_configs
-                    .first()
-                    .map(|scene| scene.internal_scene_id.to_string());
-                let scene_document = SceneDocument {
-                    scene_configs,
-                    selected_scene_internal_id: selected_scene_internal_id.clone(),
-                };
-                validate_lv1_snapshot(peers, expected_generation, &lv1).await?;
-                replace_session_document(
-                    peers,
-                    SessionDocument {
-                        scenes: scene_document,
-                        cue_lists: CueListDocument::default(),
-                    },
-                    expected_generation,
-                )
-                .await?;
-                state.reset_for_new_show();
-                publish_state_changed(event_bus, state);
-                tracing::info!(event = "session_created", "New session created");
-                Ok(NewShowFileResult {
-                    selected_scene_internal_id,
-                })
-            }
-            .await;
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+            let peers = peers.clone();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
+                        let scene_configs =
+                            crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list);
+                        let selected_scene_internal_id = scene_configs
+                            .first()
+                            .map(|scene| scene.internal_scene_id.to_string());
+                        validate_lv1_snapshot(&peers, expected_generation, &lv1).await?;
+                        replace_session_document(
+                            &peers,
+                            SessionDocument {
+                                scenes: SceneDocument {
+                                    scene_configs,
+                                    selected_scene_internal_id: selected_scene_internal_id.clone(),
+                                },
+                                cue_lists: CueListDocument::default(),
+                            },
+                            expected_generation,
+                        )
+                        .await?;
+                        Ok(NewShowFileResult {
+                            selected_scene_internal_id,
+                        })
+                    }
+                    .await;
+                    PendingShowCompletion::New { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
-            let result = async {
-                let saved_at = crate::time::current_timestamp_millis();
-                let document = current_session_document(peers).await?;
-                let file = crate::show::show_file::export_show_file(
-                    document.scenes,
-                    document.cue_lists,
-                    state.lockout(),
-                    saved_at.clone(),
-                );
-                write_show_file(&path, &file, backup_dir)?;
-                state.mark_saved(path, saved_at);
-                publish_state_changed(event_bus, state);
-                tracing::info!(event = "session_saved", "Session saved");
-                Ok(ShowCommandResult { changed: true })
-            }
-            .await;
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+            let peers = peers.clone();
+            let backup_dir = backup_dir.to_path_buf();
+            let lockout = state.lockout();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let saved_at = crate::time::current_timestamp_millis();
+                        let document = current_session_document(&peers).await?;
+                        let file = crate::show::show_file::export_show_file(
+                            document.scenes,
+                            document.cue_lists,
+                            lockout,
+                            saved_at.clone(),
+                        );
+                        let write_path = path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            write_show_file(&write_path, &file, &backup_dir)
+                        })
+                        .await
+                        .map_err(|error| format!("Session save task failed: {error}"))??;
+                        Ok((path, saved_at))
+                    }
+                    .await;
+                    PendingShowCompletion::Save { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
         }
         ShowCommand::SetDiscoveredLv1Systems { systems, reply } => {
             let changed = state.set_discovered_lv1_systems(systems);
@@ -356,21 +436,92 @@ async fn handle_command(
             let _ = reply.send(outcome);
         }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
-            let result = async {
-                let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
-                let mut file = read_show_file(&path)?;
-                load_show_file_from_dto(
-                    state,
-                    event_bus,
-                    peers,
-                    path,
-                    &mut file,
-                    &lv1,
-                    expected_generation,
-                )
-                .await
+            let peers = peers.clone();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
+                        let read_path = path.clone();
+                        let mut file =
+                            tokio::task::spawn_blocking(move || read_show_file(&read_path))
+                                .await
+                                .map_err(|error| format!("Session load task failed: {error}"))??;
+                        prepare_load_show_file(&peers, path, &mut file, &lv1, expected_generation)
+                            .await
+                    }
+                    .await;
+                    PendingShowCompletion::Load { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
+        }
+    }
+    None
+}
+
+/// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
+/// A successful load MUST adopt the imported path, saved timestamp, and lockout, and MUST remain
+/// clean only when no scene-ID generation, LV1 scene alignment, cue reconciliation, or persisted
+/// edit consumed while the operation was pending changed the imported persisted document.
+fn finish_pending_operation(
+    completion: PendingShowCompletion,
+    dirty_during_wait: bool,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) {
+    match completion {
+        PendingShowCompletion::New { result, reply } => {
+            if result.is_ok() {
+                state.reset_for_new_show();
+                if dirty_during_wait {
+                    state.mark_dirty();
+                }
+                publish_state_changed(event_bus, state);
+                tracing::info!(event = "session_created", "New session created");
             }
-            .await;
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+        PendingShowCompletion::Save { result, reply } => {
+            let result = result.map(|(path, saved_at)| {
+                state.mark_saved(path, saved_at);
+                if dirty_during_wait {
+                    state.mark_dirty();
+                }
+                publish_state_changed(event_bus, state);
+                tracing::info!(event = "session_saved", "Session saved");
+                ShowCommandResult { changed: true }
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+        PendingShowCompletion::Load { result, reply } => {
+            let result = result.map(|prepared| {
+                state.set_lockout(prepared.lockout);
+                state.mark_saved(prepared.path, prepared.saved_at.clone());
+                if prepared.should_mark_dirty || dirty_during_wait {
+                    state.mark_dirty();
+                }
+                publish_state_changed(event_bus, state);
+                if prepared.alignment_changed {
+                    tracing::debug!(
+                        event = "session_scene_alignment",
+                        "{}",
+                        crate::scenes::scene_alignment_diagnostic(
+                            &prepared.imported_scene_configs,
+                            &prepared.aligned_scene_configs,
+                            &prepared.lv1_scene_list
+                        )
+                    );
+                }
+                tracing::info!(event = "session_opened", "Session loaded");
+                LoadShowFileResult {
+                    selected_scene_internal_id: prepared.selected_scene_internal_id,
+                    saved_at: prepared.saved_at,
+                }
+            });
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
@@ -448,20 +599,25 @@ fn map_app_command_error(error: AppCommandError) -> String {
     }
 }
 
-/// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
-/// A successful load MUST adopt the imported path, saved timestamp, and lockout, and MUST remain
-/// clean only when no scene-ID generation, LV1 scene alignment, or cue reconciliation changed the
-/// imported persisted document. The published Show projection's dirty state MUST account for the
-/// reconciled document returned by the replacement commit.
-async fn load_show_file_from_dto(
-    state: &mut ShowState,
-    event_bus: &AppEventBus,
+struct PreparedLoad {
+    path: std::path::PathBuf,
+    saved_at: String,
+    lockout: bool,
+    selected_scene_internal_id: Option<String>,
+    should_mark_dirty: bool,
+    alignment_changed: bool,
+    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
+    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
+    lv1_scene_list: Vec<crate::lv1::SceneListEntry>,
+}
+
+async fn prepare_load_show_file(
     peers: &ShowActorPeers,
     path: std::path::PathBuf,
     file: &mut super::show_file::ShowFile,
     lv1: &Lv1StateSnapshot,
     expected_generation: u64,
-) -> Result<LoadShowFileResult, String> {
+) -> Result<PreparedLoad, String> {
     let imported = import_show_file(file, lv1)?;
     let saved_at = file.saved_at.clone();
     let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
@@ -497,27 +653,16 @@ async fn load_show_file_from_dto(
     )
     .await?;
     should_mark_dirty |= committed.cue_lists != imported_cue_list_snapshot;
-    state.set_lockout(imported.lockout);
-    state.mark_saved(path, saved_at.clone());
-    if should_mark_dirty {
-        state.mark_dirty();
-    }
-    publish_state_changed(event_bus, state);
-    if alignment_changed {
-        tracing::debug!(
-            event = "session_scene_alignment",
-            "{}",
-            crate::scenes::scene_alignment_diagnostic(
-                &imported_scene_configs,
-                &aligned_scene_configs,
-                &lv1.scene_list
-            )
-        );
-    }
-    tracing::info!(event = "session_opened", "Session loaded");
-    Ok(LoadShowFileResult {
-        selected_scene_internal_id,
+    Ok(PreparedLoad {
+        path,
         saved_at,
+        lockout: imported.lockout,
+        selected_scene_internal_id,
+        should_mark_dirty,
+        alignment_changed,
+        imported_scene_configs,
+        aligned_scene_configs,
+        lv1_scene_list: lv1.scene_list.clone(),
     })
 }
 
@@ -586,8 +731,9 @@ mod tests {
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
-    use crate::scenes::{SceneConfig, SceneScopeToggles};
+    use crate::scenes::{SceneConfig, SceneDocument, SceneScopeToggles};
     use crate::scenes::{ScenesCommand, build_scenes_actor};
+    use crate::session::SessionDocument;
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::commands::ShowCommand;
     use crate::show::handle::ShowStateHandle;
@@ -1592,6 +1738,62 @@ mod tests {
             result.selected_scene_internal_id,
             selected_scene_internal_id
         );
+    }
+
+    #[tokio::test]
+    async fn pending_save_consumes_persisted_edits_without_accepting_another_command() {
+        let root = TestDir::new("pending-save");
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (show, task, peers, _lockout) = build_show_actor(event_bus.clone());
+        let (scenes, mut scene_commands) = tokio::sync::mpsc::channel(8);
+        peers.set_scenes(scenes);
+        task.with_backup_dir(root.path().join("backups")).spawn();
+
+        let path = root.path().join("pending.ascs");
+        let (save_reply, save_response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SaveShowFileAs {
+            path,
+            reply: Some(save_reply),
+        })
+        .await
+        .unwrap();
+        let Some(ScenesCommand::GetSessionDocument {
+            reply: document_reply,
+        }) = scene_commands.recv().await
+        else {
+            panic!("save should request the session document");
+        };
+
+        let (lockout_reply, mut lockout_response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLockout {
+            enabled: true,
+            reply: Some(lockout_reply),
+        })
+        .await
+        .unwrap();
+        event_bus.publish(crate::runtime::events::AppEvent::CueLists(
+            CueListsProjectionState::default(),
+        ));
+
+        let dirty_state = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            recv_file_metadata_event(&mut events),
+        )
+        .await
+        .expect("persisted edits should be consumed while save waits");
+        assert!(dirty_state.show_file_dirty);
+        assert!(lockout_response.try_recv().is_err());
+
+        document_reply
+            .send(SessionDocument {
+                scenes: SceneDocument::empty(),
+                cue_lists: CueListDocument::default(),
+            })
+            .unwrap();
+        save_response.await.unwrap().unwrap();
+        assert!(lockout_response.await.unwrap().changed);
+        assert!(current_show_state(&show).await.show_file_dirty);
     }
 
     #[tokio::test]

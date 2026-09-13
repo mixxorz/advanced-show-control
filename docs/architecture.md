@@ -99,7 +99,7 @@ Fade feedback remains active during readiness. A manual fader override beyond th
 
 ## Show, Cue Lists, and Persistence
 
-`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show subscribes during construction, so edits cannot fall into a gap before its task starts. It observes these app-lifetime facts without generation filtering, marks dirty, and publishes its full projection without redundant reason tags. On Show event-bus lag it conservatively marks the file dirty.
+`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show subscribes during construction, so edits cannot fall into a gap before its task starts. It observes these app-lifetime facts without generation filtering, marks dirty, and publishes its full projection without redundant reason tags. While one new, save, or load operation is pending, Show keeps command serialization but continues consuming facts; persisted edits observed during the operation remain dirty after completion. On Show event-bus lag it conservatively marks the file dirty.
 
 Persistence shares the scene domain's channel targets, channel references, and scope toggles directly; there is no duplicate file-only model or conversion for those values. The file scene wrapper remains distinct because legacy files may omit the durable scene UUID.
 
@@ -125,7 +125,7 @@ The projector accepts LV1/Fade facts only for its active generation. It receives
 
 Every emitted `AppViewState` has a monotonically increasing `state_version`. The GPUI bridge applies a snapshot only when its version is newer than the latest accepted version; command completion and projection delivery may arrive out of order and must not overwrite newer UI state.
 
-On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded and falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
+On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded; retained-state and log inputs remain responsive, while post-cutoff generation facts wait in an actor-owned bounded queue for ordered replay. Queue overflow establishes a new cutoff and restarts recovery. Recovery falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
 
 ## Debug Smoke Boundary
 

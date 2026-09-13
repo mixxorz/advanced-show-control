@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
 use tokio::sync::{broadcast, watch};
@@ -12,6 +15,7 @@ use crate::runtime::events::{AppEvent, RuntimeLifecycleEvent, log_lagged_subscri
 use super::ProjectionCache;
 
 pub const PROJECTOR_INTERVAL: Duration = Duration::from_millis(100);
+const MAX_PENDING_RECOVERY_EVENTS: usize = 4_096;
 
 #[derive(Clone)]
 pub struct ProjectionSink {
@@ -87,8 +91,9 @@ pub struct ProjectorInputs {
 /**
  * @cc [owner:mixxorz,label:reliability;consistency] lag-recovery-event-cutoff
  * When event lag is detected, the projector MUST discard facts already queued before starting its
- * bounded authoritative recovery. Facts arriving after that drain, including during recovery, MAY
- * remain queued and be processed normally after recovery subject to generation filtering.
+ * bounded authoritative recovery. Facts arriving after that drain, including during recovery, MUST
+ * enter an actor-owned bounded queue and be processed after recovery subject to generation
+ * filtering. Queue overflow MUST establish a new cutoff and restart bounded recovery.
  */
 pub fn spawn_projector(inputs: ProjectorInputs) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -107,39 +112,89 @@ pub fn spawn_projector(inputs: ProjectorInputs) -> tokio::task::JoinHandle<()> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
         let mut dirty = true;
+        let mut recovery: Option<PendingProjectorRecovery> = None;
         loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    if dirty {
-                        let snapshot = cache.build_snapshot(&state.borrow_and_update());
-                        sink.publish(snapshot);
-                        dirty = false;
-                    }
-                }
-                changed = state.changed() => {
-                    if changed.is_err() { break; }
-                    dirty = true;
-                }
-                received = events.recv() => match received {
-                    Ok(event) => dirty |= apply_projector_event(&mut cache, &event),
-                    Err(broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("projector", count);
-                        drain_retained_events(&mut events);
-                        if !recover_projector_after_lag(&mut cache, &runtime_source).await {
-                            tracing::warn!(event = "projector_resync_timeout", "Projector resynchronization timed out; showing disconnected state");
+            if let Some(pending) = recovery.as_mut() {
+                tokio::select! {
+                    result = &mut pending.future => {
+                        let queued_events = std::mem::take(&mut pending.queued_events);
+                        let restart = pending.restart_required;
+                        if restart {
+                            let mut next = start_projector_recovery(runtime_source.clone());
+                            next.queued_events = queued_events;
+                            recovery = Some(next);
+                        } else {
+                            apply_recovery_result(&mut cache, result);
+                            for event in queued_events {
+                                apply_projector_event(&mut cache, &event);
+                            }
+                            recovery = None;
                         }
                         dirty = true;
                     }
-                    Err(broadcast::error::RecvError::Closed) => break,
-                },
-                received = logs.recv() => match received {
-                    Ok(ui_log) => {
-                        cache.append_log(ui_log);
+                    _ = interval.tick() => {
+                        if dirty {
+                            let snapshot = cache.build_snapshot(&state.borrow_and_update());
+                            sink.publish(snapshot);
+                            dirty = false;
+                        }
+                    }
+                    changed = state.changed() => {
+                        if changed.is_err() { break; }
                         dirty = true;
                     }
-                    Err(broadcast::error::RecvError::Lagged(_)) => dirty = true,
-                    Err(broadcast::error::RecvError::Closed) => break,
-                },
+                    received = events.recv() => match received {
+                        Ok(event) => pending.push_event(event),
+                        Err(broadcast::error::RecvError::Lagged(count)) => {
+                            log_lagged_subscriber("projector", count);
+                            drain_retained_events(&mut events);
+                            pending.queued_events.clear();
+                            pending.restart_required = true;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                    received = logs.recv() => match received {
+                        Ok(ui_log) => {
+                            cache.append_log(ui_log);
+                            dirty = true;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => dirty = true,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                }
+            } else {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if dirty {
+                            let snapshot = cache.build_snapshot(&state.borrow_and_update());
+                            sink.publish(snapshot);
+                            dirty = false;
+                        }
+                    }
+                    changed = state.changed() => {
+                        if changed.is_err() { break; }
+                        dirty = true;
+                    }
+                    received = events.recv() => match received {
+                        Ok(event) => dirty |= apply_projector_event(&mut cache, &event),
+                        Err(broadcast::error::RecvError::Lagged(count)) => {
+                            log_lagged_subscriber("projector", count);
+                            drain_retained_events(&mut events);
+                            cache.reset_generation_scoped_state();
+                            recovery = Some(start_projector_recovery(runtime_source.clone()));
+                            dirty = true;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                    received = logs.recv() => match received {
+                        Ok(ui_log) => {
+                            cache.append_log(ui_log);
+                            dirty = true;
+                        }
+                        Err(broadcast::error::RecvError::Lagged(_)) => dirty = true,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
+                }
             }
         }
     })
@@ -153,15 +208,44 @@ fn drain_retained_events(events: &mut broadcast::Receiver<AppEvent>) {
 }
 
 /// @cc [owner:mixxorz,label:reliability;generation;fallback] lag-recovery-fails-disconnected
-/// Recovery MUST clear generation-bound cache state and apply an authoritative connected LV1
-/// snapshot only if its captured generation still equals the current generation. It MUST be bounded;
-/// unavailable, disconnected, stale, or timed-out LV1 state falls back to disconnected/Idle live
-/// projection without discarding retained app state or logs.
+/// Recovery MUST remain bounded, preserve responsive retained-state and log reception, and apply an
+/// authoritative connected LV1 snapshot only if its captured generation still equals the current
+/// generation. Unavailable, disconnected, stale, or timed-out LV1 state falls back to
+/// disconnected/Idle live projection without discarding retained app state or logs.
+struct PendingProjectorRecovery {
+    future: Pin<Box<dyn Future<Output = ProjectorRecoveryResult> + Send>>,
+    queued_events: VecDeque<AppEvent>,
+    restart_required: bool,
+}
+
+impl PendingProjectorRecovery {
+    fn push_event(&mut self, event: AppEvent) {
+        if self.queued_events.len() == MAX_PENDING_RECOVERY_EVENTS {
+            self.queued_events.clear();
+            self.restart_required = true;
+        }
+        self.queued_events.push_back(event);
+    }
+}
+
+struct ProjectorRecoveryResult {
+    generation: Option<u64>,
+    snapshot: Option<(u64, crate::lv1::Lv1StateSnapshot)>,
+    timed_out: bool,
+}
+
+fn start_projector_recovery(runtime_source: RuntimeSnapshotSource) -> PendingProjectorRecovery {
+    PendingProjectorRecovery {
+        future: Box::pin(recover_projector_after_lag(runtime_source)),
+        queued_events: VecDeque::new(),
+        restart_required: false,
+    }
+}
+
 async fn recover_projector_after_lag(
-    cache: &mut ProjectionCache,
-    runtime_source: &RuntimeSnapshotSource,
-) -> bool {
-    let recovery = tokio::time::timeout(Duration::from_millis(500), async {
+    runtime_source: RuntimeSnapshotSource,
+) -> ProjectorRecoveryResult {
+    match tokio::time::timeout(Duration::from_millis(500), async {
         let runtime_snapshot = runtime_source.connected_lv1().await;
         let authoritative_snapshot = if let Some((generation, lv1)) = runtime_snapshot {
             let (reply, response) = tokio::sync::oneshot::channel();
@@ -178,27 +262,45 @@ async fn recover_projector_after_lag(
             None
         };
         let current_generation = runtime_source.current_generation().await;
-        cache.reset_for_generation(current_generation);
-        if let Some((generation, snapshot)) = authoritative_snapshot
-            && generation == current_generation
-        {
-            cache.apply_lv1_snapshot(generation, snapshot);
-        }
+        (current_generation, authoritative_snapshot)
     })
-    .await;
-    if recovery.is_err() {
-        match tokio::time::timeout(
-            Duration::from_millis(50),
-            runtime_source.current_generation(),
-        )
-        .await
-        {
-            Ok(generation) => cache.reset_for_generation(generation),
-            Err(_) => cache.reset_generation_scoped_state(),
-        }
-        return false;
+    .await
+    {
+        Ok((generation, snapshot)) => ProjectorRecoveryResult {
+            generation: Some(generation),
+            snapshot,
+            timed_out: false,
+        },
+        Err(_) => ProjectorRecoveryResult {
+            generation: tokio::time::timeout(
+                Duration::from_millis(50),
+                runtime_source.current_generation(),
+            )
+            .await
+            .ok(),
+            snapshot: None,
+            timed_out: true,
+        },
     }
-    true
+}
+
+fn apply_recovery_result(cache: &mut ProjectionCache, result: ProjectorRecoveryResult) {
+    if let Some(generation) = result.generation {
+        cache.reset_for_generation(generation);
+        if let Some((snapshot_generation, snapshot)) = result.snapshot
+            && snapshot_generation == generation
+        {
+            cache.apply_lv1_snapshot(snapshot_generation, snapshot);
+        }
+    } else {
+        cache.reset_generation_scoped_state();
+    }
+    if result.timed_out {
+        tracing::warn!(
+            event = "projector_resync_timeout",
+            "Projector resynchronization timed out; showing disconnected state"
+        );
+    }
 }
 
 /// @cc [owner:mixxorz,label:architecture;generation] projector-event-routing
