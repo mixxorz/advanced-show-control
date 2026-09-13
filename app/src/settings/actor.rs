@@ -114,8 +114,9 @@ async fn run_settings_actor(
 /**
  * @cc [owner:mixxorz,label:safety] remembered-identity-generation-gate
  * `SetLastConnectedLv1` MUST publish a changed identity only while `expected_generation` is current,
- * checking both before staging and atomically around publication. Stale work MUST return success as
- * a no-op, leave memory and `settings.json` unchanged, and clean up its unpublished staged file.
+ * checking before preparation and atomically fencing only the final rename and in-memory commit.
+ * Stale work MUST return success as a no-op, leave memory and `settings.json` unchanged, and clean up
+ * its unpublished staged file. Serialization and staged-file preparation MUST run off the actor task.
  */
 async fn handle_command(
     command: SettingsCommand,
@@ -128,7 +129,18 @@ async fn handle_command(
             let _ = reply.send(state.settings());
         }
         SettingsCommand::ReplaceSettings { settings, reply } => {
-            let result = match state.replace_settings(settings) {
+            let staging_state = state.clone();
+            let staged =
+                tokio::task::spawn_blocking(move || staging_state.stage_settings(settings))
+                    .await
+                    .map_err(|error| format!("Settings preparation task failed: {error}"))
+                    .and_then(|result| result);
+            let result = match staged {
+                Ok(Some(staged)) => state.publish_staged(staged).map(|()| true),
+                Ok(None) => Ok(false),
+                Err(error) => Err(error),
+            };
+            let result = match result {
                 Ok(changed) => {
                     if changed {
                         let settings = state.settings();
@@ -168,13 +180,26 @@ async fn handle_command(
                 return;
             }
 
-            let result = match state.stage_last_connected_lv1(identity) {
+            let staging_state = state.clone();
+            #[cfg(test)]
+            let gate = set_last_connected_lv1_gate.take();
+            let staged = tokio::task::spawn_blocking(move || {
+                let staged = staging_state.stage_last_connected_lv1(identity);
+                #[cfg(test)]
+                if let Some(gate) = gate {
+                    let _ = gate.received.send(());
+                    let _ = gate.release.blocking_recv();
+                }
+                staged
+            })
+            .await
+            .map_err(|error| format!("Settings preparation task failed: {error}"))
+            .and_then(|result| result);
+
+            let result = match staged {
                 Ok(Some(staged)) => {
-                    #[cfg(test)]
-                    if let Some(gate) = set_last_connected_lv1_gate.take() {
-                        let _ = gate.received.send(());
-                        let _ = gate.release.await;
-                    }
+                    // Keep only the atomic rename and in-memory update inside the generation fence;
+                    // serialization, temporary-file writes, and sync completed before acquiring it.
                     runtime_generation
                         .if_current(expected_generation, || state.publish_staged(staged))
                         .await
@@ -459,7 +484,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn actor_publishes_staged_last_connected_lv1_for_current_generation() {
+    async fn actor_prepares_identity_off_runtime_and_publishes_for_current_generation() {
         let event_bus = AppEventBus::default();
         let dir = temp_settings_dir("connected-identity");
         let (handle, task, _) = build_settings_actor(dir.clone(), event_bus);
