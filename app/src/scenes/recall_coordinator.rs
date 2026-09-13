@@ -123,6 +123,10 @@ pub(super) struct PendingSceneObservation {
 }
 
 impl PendingSceneObservation {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     fn new(generation: u64, sequence: u64, scene: SceneState, now: Instant) -> Self {
         Self {
             generation,

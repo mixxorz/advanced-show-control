@@ -22,7 +22,8 @@ use crate::scenes::recall_coordinator::{
     RECALL_READINESS_TIMEOUT,
 };
 use crate::scenes::recall_coordinator::{
-    PendingRecallAdmission, PendingRecallDispatch, PreparedRecallDispatch, RecallCoordinator,
+    PendingRecallAdmission, PendingRecallDispatch, PendingSceneObservation, PreparedRecallDispatch,
+    RecallCoordinator,
 };
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
@@ -241,6 +242,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut pending_lag_recovery: Option<PendingLagRecovery> = None;
     let mut pending_abort: Option<PendingAbortOperation> = None;
     let mut pending_recall: Option<PendingExplicitRecallOperation> = None;
+    let mut pending_observation_settings: Option<PendingObservationSettings> = None;
     let mut settings_revision = 0_u64;
     let mut scene_list_revision = 0_u64;
 
@@ -283,7 +285,7 @@ async fn run_scenes_actor(task: ScenesTask) {
         };
         tokio::select! {
             biased;
-            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && cue_commands_open && !cues.recall_pending() => {
+            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -315,12 +317,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => command_rx.recv().await,
                 }
-            }, if pending_snapshot.is_none() && scene_commands_open && ((pending_abort.is_none() && pending_recall.is_none()) || held_scene_command.is_none()) => {
+            }, if pending_snapshot.is_none() && scene_commands_open && ((pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none()) || held_scene_command.is_none()) => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
                 };
-                if pending_abort.is_some() || pending_recall.is_some() {
+                if pending_abort.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() {
                     if matches!(command, ScenesCommand::Shutdown) {
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
@@ -330,7 +332,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         break;
                     }
                     if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
-                        || pending_recall.is_none()
+                        || (pending_recall.is_none() && pending_observation_settings.is_none())
                     {
                         held_scene_command = Some(command);
                         continue;
@@ -340,6 +342,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         &mut recall_coordinator,
                         "session was replaced",
                     );
+                    pending_observation_settings = None;
                 }
                 let command = match command {
                     ScenesCommand::AbortAll { reply } => {
@@ -496,6 +499,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
                         pending_lag_recovery = None;
+                        pending_observation_settings = None;
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -523,6 +527,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
                         pending_lag_recovery = None;
+                        pending_observation_settings = None;
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -549,6 +554,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("scene-recall", count);
+                        pending_observation_settings = None;
                         cancel_pending_explicit_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
@@ -596,6 +602,46 @@ async fn run_scenes_actor(task: ScenesTask) {
                         break;
                     }
                 }
+            }
+            recovered_settings = async {
+                pending_observation_settings
+                    .as_mut()
+                    .expect("enabled observation-settings branch has an operation")
+                    .future
+                    .as_mut()
+                    .await
+            }, if pending_observation_settings.is_some() => {
+                let operation = pending_observation_settings
+                    .take()
+                    .expect("completed observation-settings operation exists");
+                let Some(recovered_settings) = recovered_settings else {
+                    break;
+                };
+                if operation.generation != active_generation
+                    || runtime_generation.current().await != operation.generation
+                    || scene_library_status != SceneLibraryStatus::Ready
+                {
+                    continue;
+                }
+                if settings_revision == operation.settings_revision {
+                    settings = recovered_settings;
+                }
+                let Some(peer_handles) = peers.handles(active_generation) else {
+                    continue;
+                };
+                recall_coordinator
+                    .process_scene_observation(
+                        &peer_handles.lv1,
+                        &peer_handles.fade,
+                        &event_bus,
+                        &mut recall_state,
+                        &settings,
+                        &lockout,
+                        #[cfg(test)]
+                        &mut before_fade_handoff,
+                        operation.observation,
+                    )
+                    .await;
             }
             completion = async {
                 pending_recall
@@ -703,6 +749,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
             lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
                 Ok(true) => {
+                    pending_observation_settings = None;
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
@@ -712,6 +759,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
                 Ok(false) => {}
                 Err(_) => {
+                    pending_observation_settings = None;
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
@@ -724,6 +772,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             _ = recall_timer, if recall_deadline.is_some() => {
                 let elapsed = recall_deadline.expect("enabled recall timer has a deadline");
                 if elapsed.is_safety() {
+                    pending_observation_settings = None;
                     cancel_pending_explicit_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
@@ -745,31 +794,13 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
             }
-            _ = pending_scene_settle, if pending_scene_deadline.is_some() => {
+            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_observation_settings.is_none() => {
                 if let Some(observation) = recall_coordinator.take_pending_observation() {
-                    let Some(updated_settings) = refresh_settings_after_lag(&settings_handle).await else {
-                        break;
-                    };
-                    if settings != updated_settings {
-                        settings = updated_settings;
-                    }
-                    let Some(peer_handles) = peers.handles(active_generation) else {
-                        let _ = observation;
-                        continue;
-                    };
-                    recall_coordinator
-                        .process_scene_observation(
-                            &peer_handles.lv1,
-                            &peer_handles.fade,
-                            &event_bus,
-                            &mut recall_state,
-                            &settings,
-                            &lockout,
-                            #[cfg(test)]
-                            &mut before_fade_handoff,
-                            observation,
-                        )
-                        .await;
+                    pending_observation_settings = Some(PendingObservationSettings::new(
+                        observation,
+                        settings_revision,
+                        settings_handle.clone(),
+                    ));
                 }
             }
             completion = recall_coordinator.readiness_completion() => {
@@ -1452,6 +1483,35 @@ impl PendingAbortOperation {
     }
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] settled-observation-settings-pending
+ * A settled scene observation's Settings refresh MUST be an actor-owned pending operation polled
+ * by the main select. Runtime, LV1, Settings, lockout, and recall-deadline inputs MUST remain
+ * responsive while it is pending. Cancellation MUST drop the observation token, and completion
+ * MUST be generation-fenced and MUST NOT overwrite a newer Settings fact.
+ */
+struct PendingObservationSettings {
+    generation: u64,
+    settings_revision: u64,
+    observation: PendingSceneObservation,
+    future: Pin<Box<dyn Future<Output = Option<AppSettings>> + Send>>,
+}
+
+impl PendingObservationSettings {
+    fn new(
+        observation: PendingSceneObservation,
+        settings_revision: u64,
+        settings_handle: SettingsHandle,
+    ) -> Self {
+        Self {
+            generation: observation.generation(),
+            settings_revision,
+            observation,
+            future: Box::pin(async move { request_recovery_settings(&settings_handle).await }),
+        }
+    }
+}
+
 struct PendingLagRecovery {
     generation: u64,
     settings_revision: u64,
@@ -1489,10 +1549,6 @@ impl PendingLagRecovery {
             }),
         }
     }
-}
-
-async fn refresh_settings_after_lag(settings_handle: &SettingsHandle) -> Option<AppSettings> {
-    request_recovery_settings(settings_handle).await
 }
 
 async fn request_recovery_settings(settings_handle: &SettingsHandle) -> Option<AppSettings> {
@@ -5979,6 +6035,60 @@ mod tests {
         let (_config, behavior) = next_fade_command(&mut fade_rx).await;
         assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
 
+        handle.send(ScenesCommand::Shutdown).await.unwrap();
+        drop(peers);
+        server.await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_settled_observation_settings_is_canceled_by_disconnect() {
+        let event_bus = AppEventBus::default();
+        let runtime_generation = RuntimeGeneration::new();
+        runtime_generation.set(1).await;
+        let (settings, mut settings_commands) = tokio::sync::mpsc::channel(1);
+        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
+        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
+        let (handle, task, peers) = build_scenes_actor(
+            1,
+            runtime_generation,
+            event_bus.clone(),
+            event_bus.subscribe(),
+            settings,
+            AppSettings::default(),
+            test_lockout_reader(),
+        );
+        peers.set_peers_for_generation(1, lv1, fade);
+        task.spawn();
+        install_scene_document(&handle, intro_scene_document()).await;
+        release_lv1.send(()).unwrap();
+        arm_recall_state(&event_bus).await;
+
+        let SettingsCommand::GetSettings {
+            reply: held_settings,
+        } = settings_commands.recv().await.unwrap()
+        else {
+            panic!("expected held settled-observation Settings request");
+        };
+        event_bus.publish_lv1(
+            1,
+            Lv1Event::Disconnected {
+                reason: "test disconnect".to_string(),
+            },
+        );
+        let (reply, state) = oneshot::channel();
+        handle
+            .send(ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), state)
+                .await
+                .expect("disconnect should release the gated scene mailbox")
+                .unwrap()
+                .ready_generation,
+            None
+        );
+        assert!(held_settings.send(AppSettings::default()).is_err());
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         drop(peers);
         server.await.unwrap();
