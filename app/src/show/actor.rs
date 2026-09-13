@@ -355,9 +355,10 @@ fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool)
  * @cc [owner:mixxorz,label:persistence] show-persistence-orchestration
  * Save MUST obtain one combined Scenes/Cue Lists `SessionDocument`, write it with current lockout,
  * and mark path/timestamp clean only after the write succeeds; save MUST NOT require LV1. New and
- * load MUST require a connected, generation-current LV1 scene snapshot and replace both documents
- * before updating Show metadata. Any pre-commit read, validation, write, or replacement error MUST
- * be returned without reporting success or applying the corresponding Show metadata transition.
+ * load MUST require a connected, generation-current LV1 snapshot with an authoritative scene list
+ * and replace both documents before updating Show metadata. Any pre-commit read, validation,
+ * write, or replacement error MUST be returned without reporting success or applying the
+ * corresponding Show metadata transition.
  */
 async fn handle_command(
     command: ShowCommand,
@@ -386,8 +387,11 @@ async fn handle_command(
                 future: Box::pin(async move {
                     let result = async {
                         let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
+                        let scene_list = lv1.scene_list.as_deref().ok_or_else(|| {
+                            "New session blocked: LV1 scene list is not loaded".to_string()
+                        })?;
                         let scene_configs =
-                            crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list);
+                            crate::scenes::align_scene_configs(Vec::new(), scene_list);
                         let selected_scene_internal_id = scene_configs
                             .first()
                             .map(|scene| scene.internal_scene_id.to_string());
@@ -625,7 +629,8 @@ async fn get_lv1_state(lv1: &Lv1Connection) -> Result<Lv1StateSnapshot, AppComma
 
 /// @cc [owner:mixxorz,label:safety] replacement-revalidates-lv1-scene-list
 /// Before new/load commits a replacement, the installed LV1 peer MUST still be the expected
-/// generation, connected, and report the same scene list used to construct the replacement.
+/// generation, connected, and report the same authoritative scene list used to construct the
+/// replacement. A missing scene list MUST fail validation even when both snapshots report `None`.
 async fn validate_lv1_snapshot(
     peers: &ShowActorPeers,
     expected_generation: u64,
@@ -639,7 +644,15 @@ async fn validate_lv1_snapshot(
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err("LV1 is no longer connected".to_string());
     }
-    if snapshot.scene_list != expected_snapshot.scene_list {
+    let expected_scene_list = expected_snapshot
+        .scene_list
+        .as_ref()
+        .ok_or_else(|| "LV1 scene list was not loaded".to_string())?;
+    let scene_list = snapshot
+        .scene_list
+        .as_ref()
+        .ok_or_else(|| "LV1 scene list is no longer loaded".to_string())?;
+    if scene_list != expected_scene_list {
         return Err("LV1 scene list changed during show replacement".to_string());
     }
     Ok(())
@@ -690,8 +703,12 @@ fn load_show_file_for_lv1(
     let mut file = read_show_file(path)?;
     let imported = import_show_file(&mut file, lv1)?;
     let imported_scene_configs = imported.snapshot.scene_configs;
+    let scene_list = lv1
+        .scene_list
+        .as_deref()
+        .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?;
     let aligned_scene_configs =
-        crate::scenes::align_scene_configs(imported_scene_configs.clone(), &lv1.scene_list);
+        crate::scenes::align_scene_configs(imported_scene_configs.clone(), scene_list);
     let alignment_changed = aligned_scene_configs != imported_scene_configs;
     Ok(PreparedLoadImport {
         saved_at: file.saved_at,
@@ -758,7 +775,10 @@ async fn prepare_load_show_file(
         alignment_changed,
         imported_scene_configs,
         aligned_scene_configs,
-        lv1_scene_list: lv1.scene_list.clone(),
+        lv1_scene_list: lv1
+            .scene_list
+            .clone()
+            .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?,
     })
 }
 
@@ -839,7 +859,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: scenes,
+            scene_list: Some(scenes),
             channels: Vec::new(),
             ping_sequence: 0,
         }
@@ -1760,6 +1780,31 @@ mod tests {
 
         assert_eq!(rx.await.unwrap().unwrap_err(), "LV1 actor is unavailable");
         assert!(events.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn new_show_rejects_unknown_lv1_scene_list() {
+        let event_bus = AppEventBus::default();
+        let (show, peers) = show_actor(event_bus);
+        let mut snapshot = lv1_snapshot(Vec::new());
+        snapshot.scene_list = None;
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(crate::lv1::Lv1Command::GetState { reply }) = lv1_rx.recv().await {
+                let _ = reply.send(snapshot);
+            }
+        });
+        peers.set_lv1(0, crate::lv1::test_actor_handle(lv1_tx));
+
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.await.unwrap().unwrap_err(),
+            "New session blocked: LV1 scene list is not loaded"
+        );
     }
 
     #[tokio::test]

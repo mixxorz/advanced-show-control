@@ -30,12 +30,12 @@ pub enum ScenesCommand {
     /// @cc [owner:mixxorz,label:safety] runtime-readiness-handoff
     /// Readiness MUST be accepted only when the supplied generation is still authoritative and a
     /// complete peer pair for that generation is installed. A same-generation scene-list fact
-    /// cached before handoff MUST supersede the initial snapshot list supplied by lifecycle,
-    /// including when that fact confirms an empty library. An empty uncached initial snapshot MUST
-    /// leave Scenes awaiting an authoritative scene-list fact rather than unlinking stored configs.
+    /// cached before handoff MUST supersede the initial snapshot value supplied by lifecycle.
+    /// `None` MUST leave Scenes awaiting a scene-list fact; every `Some` value is authoritative,
+    /// including `Some(Vec::new())` for an empty library.
     RuntimePeersReady {
         generation: u64,
-        initial_scene_list: Vec<crate::lv1::SceneListEntry>,
+        initial_scene_list: Option<Vec<crate::lv1::SceneListEntry>>,
         reply: oneshot::Sender<Result<(), AppCommandError>>,
     },
     SetSceneDuration {
@@ -146,8 +146,11 @@ pub fn validate_recall_scene_request(
         return Err("Recall blocked: LV1 is disconnected".to_string());
     }
 
-    let lv1_scene = lv1
+    let scene_list = lv1
         .scene_list
+        .as_ref()
+        .ok_or_else(|| "Recall blocked: LV1 scene list is unavailable".to_string())?;
+    let lv1_scene = scene_list
         .iter()
         .find(|candidate| candidate.index == scene_index && candidate.name == scene.scene_name)
         .ok_or_else(|| "Recall blocked: scene identity mismatch".to_string())?;
@@ -183,7 +186,8 @@ mod tests {
             scene_list: vec![SceneListEntry {
                 index: 1,
                 name: "Intro".to_string(),
-            }],
+            }]
+            .into(),
             channels: Vec::new(),
             ping_sequence: 0,
         }
@@ -200,6 +204,21 @@ mod tests {
         let result = validate_recall_scene_request(false, &scenes, &lv1_snapshot(), id).unwrap();
 
         assert_eq!(result.lv1_scene_index, 1);
+    }
+
+    #[test]
+    fn validate_recall_scene_request_rejects_unknown_scene_list() {
+        let id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        let scenes = SceneDocument {
+            selected_scene_internal_id: None,
+            scene_configs: vec![scene_config(id, Some(1))],
+        };
+        let mut snapshot = lv1_snapshot();
+        snapshot.scene_list = None;
+
+        let err = validate_recall_scene_request(false, &scenes, &snapshot, id).unwrap_err();
+
+        assert_eq!(err, "Recall blocked: LV1 scene list is unavailable");
     }
 
     #[test]

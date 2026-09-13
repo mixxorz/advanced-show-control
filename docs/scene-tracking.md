@@ -16,7 +16,7 @@ New LV1 scenes receive default linked configs. Deleted or ambiguous old links be
 
 Selection and the settings clipboard survive reconnect. The LV1-derived library does not: `AwaitingPeers`, `AwaitingSceneList`, and `Ready` gate live operations. Link, capture/store, and recall require `Ready`; document-only edits do not.
 
-A connected LV1 snapshot can temporarily contain an empty scene list before LV1 sends its scene-list notification. On connection handoff, ASC therefore treats an uncached empty snapshot list as provisional and remains in `AwaitingSceneList`. A `SceneListChanged` fact is authoritative even when the reported library is empty. This distinction prevents reconnect from unlinking every stored config and then adding default linked copies when the real list arrives.
+Scene-list readiness is explicit in the LV1 snapshot. `None` means the current transport session has not supplied a valid scene-list notification. `Some(Vec::new())` means LV1 supplied an authoritative empty library. Connection handoff and lag recovery reconcile only from `Some`; otherwise ASC remains in `AwaitingSceneList`. A same-generation `SceneListChanged` fact is also authoritative, including when its list is empty. This prevents reconnect from applying uninitialized or stale scene data.
 
 ## Cue-List Coordination
 

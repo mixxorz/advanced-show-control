@@ -293,6 +293,10 @@ async fn wait_for_attempt_gate(gate: &Option<std::sync::Arc<tokio::sync::Notify>
     }
 }
 
+/// @cc [owner:mixxorz,label:safety;state;connection] transport-session-scene-list-reset
+/// The scene-list mirror MUST be unknown before the first valid scene-list notification of each
+/// transport session. Disconnect MUST clear the prior session's list before disconnected state is
+/// published or another connection attempt can expose a snapshot.
 async fn run_actor(
     host: String,
     port: u16,
@@ -357,6 +361,7 @@ async fn run_actor(
 
         state.connection = ConnectionStatus::Disconnected;
         state.scene = None;
+        state.scene_list = None;
         state.channels.clear();
         state.scene_buf = Default::default();
         state.diagnose(format!("disconnected: {disconnected}"));

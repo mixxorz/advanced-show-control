@@ -455,7 +455,7 @@ async fn get_state_returns_snapshot_with_current_values() {
             name: "Outro".to_string()
         })
     );
-    assert_eq!(snapshot.scene_list.len(), 1);
+    assert_eq!(snapshot.scene_list.as_ref().unwrap().len(), 1);
     assert_eq!(snapshot.channels.len(), 1);
     let channel = &snapshot.channels[0];
     assert_eq!((channel.gain_db, channel.muted), (-6.0, true));
@@ -821,6 +821,18 @@ async fn actor_resets_ping_sequence_after_reconnecting() {
             stream
                 .write_all(&make_lv1_frame("/handshake", &[OscArg::Int(1)]))
                 .unwrap();
+            if connection_index == 0 {
+                stream
+                    .write_all(&make_lv1_frame(
+                        "/Notify/SceneList",
+                        &[
+                            OscArg::Int(1),
+                            OscArg::Int(1),
+                            OscArg::String("Intro".to_string()),
+                        ],
+                    ))
+                    .unwrap();
+            }
             stream
                 .write_all(&make_lv1_frame("/ping", &ping_args))
                 .unwrap();
@@ -863,15 +875,20 @@ async fn actor_resets_ping_sequence_after_reconnecting() {
     let mut events = event_bus.subscribe();
     let handle = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus, 7);
     let mut sequences = Vec::new();
+    let mut saw_first_scene_list = false;
 
     tokio::time::timeout(std::time::Duration::from_secs(8), async {
         while sequences.len() < 2 {
-            if let AppEvent::Lv1 {
-                event: Lv1Event::PingReceived { sequence },
-                ..
-            } = events.recv().await.unwrap()
-            {
-                sequences.push(sequence);
+            match events.recv().await.unwrap() {
+                AppEvent::Lv1 {
+                    event: Lv1Event::PingReceived { sequence },
+                    ..
+                } => sequences.push(sequence),
+                AppEvent::Lv1 {
+                    event: Lv1Event::SceneListChanged(scene_list),
+                    ..
+                } if scene_list.len() == 1 => saw_first_scene_list = true,
+                _ => {}
             }
         }
     })
@@ -883,8 +900,10 @@ async fn actor_resets_ping_sequence_after_reconnecting() {
     let snapshot = rx.await.unwrap();
     release_server_tx.send(()).unwrap();
 
+    assert!(saw_first_scene_list);
     assert_eq!(sequences, vec![1, 1]);
     assert_eq!(snapshot.ping_sequence, 1);
+    assert_eq!(snapshot.scene_list, None);
 }
 
 #[tokio::test]

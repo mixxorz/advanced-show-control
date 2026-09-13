@@ -1142,11 +1142,7 @@ async fn dispatch_scenes_command(
                     if ready_generation != generation || peers.handles(generation).is_none() {
                         return Err(AppCommandError::ScenesUnavailable);
                     }
-                    let scene_list = match cached_scene_list.take() {
-                        Some(cached) => Some(cached),
-                        None if initial_scene_list.is_empty() => None,
-                        None => Some(initial_scene_list),
-                    };
+                    let scene_list = cached_scene_list.take().or(initial_scene_list);
                     if let Some(scene_list) = scene_list {
                         apply_scene_list(recall_state, event_bus, generation, scene_list);
                         *scene_library_status = SceneLibraryStatus::Ready;
@@ -1863,7 +1859,10 @@ async fn request_recovery_settings(settings_handle: &SettingsHandle) -> Option<A
 fn authoritative_scene_list(
     snapshot: &Lv1StateSnapshot,
 ) -> Option<Vec<crate::lv1::SceneListEntry>> {
-    (snapshot.connection == ConnectionStatus::Connected).then(|| snapshot.scene_list.clone())
+    if snapshot.connection != ConnectionStatus::Connected {
+        return None;
+    }
+    snapshot.scene_list.clone()
 }
 
 fn drain_retained_events(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
@@ -2054,7 +2053,8 @@ mod tests {
                         index: scene.scene_index.unwrap(),
                         name: scene.scene_name.clone(),
                     })
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 channels: vec![],
                 ping_sequence: 10,
             };
@@ -2207,7 +2207,8 @@ mod tests {
                         index: scene.scene_index.unwrap(),
                         name: scene.scene_name.clone(),
                     })
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 channels: vec![],
                 ping_sequence: 10,
             };
@@ -2382,7 +2383,8 @@ mod tests {
                         index: scene.scene_index.unwrap(),
                         name: scene.scene_name.clone(),
                     })
-                    .collect(),
+                    .collect::<Vec<_>>()
+                    .into(),
                 channels: vec![],
                 ping_sequence: 10,
             };
@@ -2660,7 +2662,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -2821,7 +2823,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3087,7 +3089,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3145,7 +3147,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3208,7 +3210,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3269,7 +3271,8 @@ mod tests {
                 scene_entry(1, "Intro"),
                 scene_entry(2, "Verse"),
                 scene_entry(3, "Chorus"),
-            ],
+            ]
+            .into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3325,7 +3328,8 @@ mod tests {
                 scene_entry(1, "Intro"),
                 scene_entry(2, "Verse"),
                 scene_entry(3, "Chorus"),
-            ],
+            ]
+            .into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3503,7 +3507,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -3603,7 +3607,8 @@ mod tests {
                 scene_entry(1, "Intro"),
                 scene_entry(2, "Renamed"),
                 scene_entry(3, "Chorus"),
-            ],
+            ]
+            .into(),
             channels: vec![],
             ping_sequence: 10,
         });
@@ -3997,7 +4002,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -4150,7 +4155,7 @@ mod tests {
         let (snapshot, snapshot_rx) = tokio::sync::watch::channel(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![],
             ping_sequence: 10,
         });
@@ -4322,7 +4327,7 @@ mod tests {
         let snapshot = |scene| Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene,
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: Vec::new(),
             ping_sequence: 10,
         };
@@ -4483,7 +4488,7 @@ mod tests {
                 .send(Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
                     scene: None,
-                    scene_list: vec![scene_entry(1, "Intro")],
+                    scene_list: vec![scene_entry(1, "Intro")].into(),
                     channels: Vec::new(),
                     ping_sequence: 10,
                 })
@@ -4524,7 +4529,7 @@ mod tests {
                         let _ = reply.send(Lv1StateSnapshot {
                             connection: ConnectionStatus::Connected,
                             scene: None,
-                            scene_list: vec![scene_entry(1, "Intro")],
+                            scene_list: vec![scene_entry(1, "Intro")].into(),
                             channels: vec![],
                             ping_sequence: 10,
                         });
@@ -4599,7 +4604,7 @@ mod tests {
         let snapshot = || Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: vec![scene_entry(1, "Intro")],
+            scene_list: vec![scene_entry(1, "Intro")].into(),
             channels: Vec::new(),
             ping_sequence: 10,
         };
@@ -4744,7 +4749,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -4789,7 +4794,7 @@ mod tests {
         let snapshot = Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(verse.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -4968,7 +4973,7 @@ mod tests {
         let snapshot = Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: Some(verse.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")],
+            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
             channels: vec![crate::lv1::ChannelInfo {
                 group: 0,
                 channel: 0,
@@ -5267,7 +5272,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Disconnected,
             scene: None,
-            scene_list: vec![scene_entry(1, "Intro")],
+            scene_list: vec![scene_entry(1, "Intro")].into(),
             channels: vec![],
             ping_sequence: 10,
         });
@@ -5280,7 +5285,7 @@ mod tests {
         fixture.set_snapshot(Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: vec![scene_entry(1, "Renamed")],
+            scene_list: vec![scene_entry(1, "Renamed")].into(),
             channels: vec![],
             ping_sequence: 10,
         });
@@ -5300,11 +5305,20 @@ mod tests {
     }
 
     #[test]
-    fn connected_empty_snapshot_is_authoritative_but_disconnected_list_is_not() {
+    fn connected_snapshot_requires_a_received_scene_list_to_be_authoritative() {
+        let unknown = Lv1StateSnapshot {
+            connection: ConnectionStatus::Connected,
+            scene: None,
+            scene_list: None,
+            channels: Vec::new(),
+            ping_sequence: 0,
+        };
+        assert_eq!(authoritative_scene_list(&unknown), None);
+
         let connected = Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: Vec::new(),
+            scene_list: Some(Vec::new()),
             channels: Vec::new(),
             ping_sequence: 0,
         };
@@ -5313,7 +5327,7 @@ mod tests {
         let disconnected = Lv1StateSnapshot {
             connection: ConnectionStatus::Disconnected,
             scene: None,
-            scene_list: vec![scene_entry(1, "Stale")],
+            scene_list: vec![scene_entry(1, "Stale")].into(),
             channels: Vec::new(),
             ping_sequence: 0,
         };
@@ -5542,7 +5556,7 @@ mod tests {
         let (lv1_tx, _lv1_rx) = tokio::sync::mpsc::channel(1);
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
         peers.set_peers_for_generation(2, crate::lv1::test_actor_handle(lv1_tx), fade);
-        mark_runtime_peers_ready_with_list(&handle, 2, Vec::new()).await;
+        mark_runtime_peers_ready_without_scene_list(&handle, 2).await;
 
         let (reply, state) = oneshot::channel();
         handle
@@ -5759,7 +5773,7 @@ mod tests {
             let snapshot = || Lv1StateSnapshot {
                 connection: ConnectionStatus::Connected,
                 scene: None,
-                scene_list: vec![scene_entry(1, "Intro")],
+                scene_list: vec![scene_entry(1, "Intro")].into(),
                 channels: Vec::new(),
                 ping_sequence: 0,
             };
@@ -5915,7 +5929,7 @@ mod tests {
                 .send(Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
                     scene: None,
-                    scene_list: vec![scene_entry(1, "Intro")],
+                    scene_list: vec![scene_entry(1, "Intro")].into(),
                     channels: Vec::new(),
                     ping_sequence: 0,
                 })
@@ -5996,7 +6010,7 @@ mod tests {
                 .send(Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
                     scene: None,
-                    scene_list: vec![scene_entry(1, "Intro")],
+                    scene_list: vec![scene_entry(1, "Intro")].into(),
                     channels: Vec::new(),
                     ping_sequence: 0,
                 })
@@ -6080,7 +6094,7 @@ mod tests {
                 .send(Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
                     scene: None,
-                    scene_list: vec![scene_entry(1, "Intro")],
+                    scene_list: vec![scene_entry(1, "Intro")].into(),
                     channels: vec![crate::lv1::ChannelInfo {
                         group: 0,
                         channel: 1,
@@ -6126,7 +6140,8 @@ mod tests {
                         scene_list: vec![SceneListEntry {
                             index: 3,
                             name: "Song 2 -- Changed".to_string(),
-                        }],
+                        }]
+                        .into(),
                         channels: vec![crate::lv1::ChannelInfo {
                             group: 0,
                             channel: 2,
@@ -6853,7 +6868,7 @@ mod tests {
                         index: 1,
                         name: "Intro".to_string(),
                     }),
-                    scene_list: vec![scene_entry(1, "Intro")],
+                    scene_list: vec![scene_entry(1, "Intro")].into(),
                     channels: Vec::new(),
                     ping_sequence: 0,
                 })
@@ -7479,7 +7494,7 @@ mod tests {
                 .send(Lv1StateSnapshot {
                     connection: ConnectionStatus::Connected,
                     scene: None,
-                    scene_list: vec![scene_entry(1, "Intro")],
+                    scene_list: vec![scene_entry(1, "Intro")].into(),
                     channels: Vec::new(),
                     ping_sequence: 0,
                 })
@@ -8248,7 +8263,8 @@ mod tests {
                 scene_list: vec![crate::lv1::SceneListEntry {
                     index: 1,
                     name: "Intro".to_string(),
-                }],
+                }]
+                .into(),
                 channels: vec![crate::lv1::ChannelInfo {
                     group: 0,
                     channel: 2,
@@ -8314,7 +8330,7 @@ mod tests {
                     index: 2,
                     name: "Wrong".to_string(),
                 }),
-                scene_list: Vec::new(),
+                scene_list: Some(Vec::new()),
                 channels: vec![crate::lv1::ChannelInfo {
                     group: 0,
                     channel: 2,
@@ -8571,6 +8587,18 @@ mod tests {
         handle: &ScenesHandle,
         generation: u64,
         initial_scene_list: Vec<SceneListEntry>,
+    ) {
+        mark_runtime_peers_ready_with_snapshot(handle, generation, Some(initial_scene_list)).await;
+    }
+
+    async fn mark_runtime_peers_ready_without_scene_list(handle: &ScenesHandle, generation: u64) {
+        mark_runtime_peers_ready_with_snapshot(handle, generation, None).await;
+    }
+
+    async fn mark_runtime_peers_ready_with_snapshot(
+        handle: &ScenesHandle,
+        generation: u64,
+        initial_scene_list: Option<Vec<SceneListEntry>>,
     ) {
         let (reply, response) = oneshot::channel();
         handle

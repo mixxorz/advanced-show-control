@@ -185,7 +185,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene,
-            scene_list: Vec::new(),
+            scene_list: Some(Vec::new()),
             channels,
             ping_sequence: 0,
         }

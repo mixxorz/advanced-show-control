@@ -74,7 +74,8 @@ impl Session {
                         name: scene.scene_name.clone(),
                     })
                 })
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
             channels: vec![],
             ping_sequence: 0,
         };

@@ -1712,7 +1712,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: vec![],
+            scene_list: vec![].into(),
             channels,
             ping_sequence,
         }
@@ -1878,7 +1878,7 @@ mod tests {
                         let _ = reply.send(Lv1StateSnapshot {
                             connection: ConnectionStatus::Connected,
                             scene: None,
-                            scene_list: vec![],
+                            scene_list: vec![].into(),
                             channels: vec![],
                             ping_sequence: 0,
                         });
@@ -2234,7 +2234,7 @@ mod tests {
                         let _ = reply.send(Lv1StateSnapshot {
                             connection: ConnectionStatus::Connected,
                             scene: None,
-                            scene_list: vec![],
+                            scene_list: vec![].into(),
                             channels: vec![],
                             ping_sequence: 0,
                         });

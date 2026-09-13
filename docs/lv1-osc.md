@@ -142,7 +142,7 @@ Active width values come from `/Notify/PanArcWidth`.
 | ------------- | ------------------- | ---------------------------------------------------- | ------------- |
 | LV1 to client | `/Notify/SceneList` | `i:<count> (i:<scene-index> s:<scene-name>) x count` | Scene catalog |
 
-The scene list is the catalog of LV1 scenes by index and name.
+The scene list is the catalog of LV1 scenes by index and name. The connection-local state mirror keeps it unavailable until the current transport session receives a valid `/Notify/SceneList`; a valid zero-count notification is an authoritative empty catalog. Disconnect clears the mirrored catalog so a later transport session cannot expose stale scene identity.
 
 ### Current scene name
 

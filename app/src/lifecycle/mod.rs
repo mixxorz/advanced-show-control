@@ -522,10 +522,10 @@ impl AppLifecycle {
      * @cc [owner:mixxorz,label:safety;ordering] accepted-connect-readiness-order
      * A connected candidate MUST first have Show metadata accepted for its generation, then install
      * that generation's Scene peers, then deliver `RuntimePeersReady` with the initial snapshot's
-     * scene-list view. An empty view does not prove that LV1 has delivered its scene list; Scenes
-     * MUST remain responsible for deciding when that list is authoritative. Any rejection or
-     * unavailable Scenes actor MUST clean up only the candidate and return an error; connected
-     * success MUST remain generation-fenced after all awaits.
+     * scene-list readiness unchanged. `None` MUST NOT establish scene-library readiness;
+     * `Some(Vec::new())` MUST remain an authoritative empty library. Any rejection or unavailable
+     * Scenes actor MUST clean up only the candidate and return an error; connected success MUST
+     * remain generation-fenced after all awaits.
      */
     /**
      * @cc [owner:mixxorz,label:reliability] remembered-identity-best-effort
@@ -1326,7 +1326,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: vec![],
+            scene_list: None,
             channels: vec![],
             ping_sequence: 0,
         }
@@ -1341,7 +1341,7 @@ mod tests {
 
     fn connected_snapshot_with_scene_list() -> Lv1StateSnapshot {
         Lv1StateSnapshot {
-            scene_list: test_scene_list(),
+            scene_list: Some(test_scene_list()),
             ..connected_snapshot()
         }
     }
@@ -1350,7 +1350,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connecting,
             scene: None,
-            scene_list: vec![],
+            scene_list: None,
             channels: vec![],
             ping_sequence: 0,
         }
@@ -1360,7 +1360,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Disconnected,
             scene: None,
-            scene_list: vec![],
+            scene_list: None,
             channels: vec![],
             ping_sequence: 0,
         }
@@ -1545,6 +1545,57 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.await.unwrap().ready_generation, Some(generation));
+    }
+
+    #[tokio::test]
+    async fn accepted_connection_without_scene_list_keeps_scenes_awaiting_notification() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let runtime_generation = lifecycle.current_runtime_generation().await;
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            runtime_generation,
+            event_bus.clone(),
+            lv1,
+            fade,
+            None,
+        )
+        .await;
+
+        lifecycle
+            .finish_connect_transaction(
+                identity(Some("uuid-1"), Some("localhost"), "127.0.0.1"),
+                started_runtime,
+            )
+            .await
+            .unwrap();
+
+        let (reply, state) = tokio::sync::oneshot::channel();
+        lifecycle
+            .scenes
+            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(state.await.unwrap().ready_generation, None);
+
+        while events.try_recv().is_ok() {}
+        event_bus.publish_lv1(generation, Lv1Event::SceneListChanged(Vec::new()));
+        loop {
+            if let AppEvent::Scenes {
+                generation: event_generation,
+                event: crate::scenes::ScenesEvent::StateChanged { state, .. },
+            } = events.recv().await.unwrap()
+                && event_generation == generation
+                && state.ready_generation == Some(generation)
+            {
+                break;
+            }
+        }
     }
 
     #[tokio::test]
@@ -2043,7 +2094,7 @@ mod tests {
                     .scenes
                     .send(ScenesCommand::RuntimePeersReady {
                         generation: newer_generation,
-                        initial_scene_list: test_scene_list(),
+                        initial_scene_list: Some(test_scene_list()),
                         reply,
                     })
                     .await
@@ -3116,7 +3167,7 @@ mod tests {
             .scenes_handle()
             .send(ScenesCommand::RuntimePeersReady {
                 generation: accepted_generation,
-                initial_scene_list: test_scene_list(),
+                initial_scene_list: Some(test_scene_list()),
                 reply: ready_reply,
             })
             .await
@@ -3231,7 +3282,7 @@ mod tests {
             panic!("Show should request the newer LV1 state");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 state reply should send");
         let Lv1Command::GetState { reply } =
             tokio::time::timeout(std::time::Duration::from_millis(100), newer_rx.recv())
@@ -3242,7 +3293,7 @@ mod tests {
             panic!("Show should revalidate with GetState");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 revalidation reply should send");
         assert!(result.await.unwrap().is_ok());
     }
@@ -3524,7 +3575,7 @@ mod tests {
             panic!("expected Show to request newer LV1 state");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 state reply should send");
         let Lv1Command::GetState { reply } =
             tokio::time::timeout(std::time::Duration::from_millis(100), newer_lv1_rx.recv())
@@ -3535,7 +3586,7 @@ mod tests {
             panic!("Show should revalidate with GetState");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 revalidation reply should send");
         show_rx
             .await

@@ -54,7 +54,7 @@ A connect transaction:
 2. constructs LV1 and Fade for that generation and installs their handles only if still current;
 3. starts LV1/Fade, waits up to ten seconds for the generation's `Connected` fact when the first responsive snapshot is still `Connecting`, confirms connectivity with a fresh snapshot, and updates connected-LV1 metadata;
 4. installs Scenes' accepted generation peers; then
-5. sends `ScenesCommand::RuntimePeersReady` with the initial scene list.
+5. sends `ScenesCommand::RuntimePeersReady` with the initial snapshot's optional authoritative scene list.
 
 `Scenes` is created once at app startup with an event subscription, `SettingsHandle`, initial settings, and `ShowLockoutReader`. The lockout reader is a latest-value dependency, avoiding a reverse Show mailbox dependency. Scene recall refreshes settings at settled observation boundaries and fails closed if settings are unavailable.
 
@@ -91,7 +91,7 @@ Scenes preserves its document—durable config UUIDs, selection, and settings cl
 2. `AwaitingSceneList`: peers exist but no authoritative scene list exists.
 3. `Ready`: accepted peers and the active generation's scene list exist.
 
-Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available. Because a connected LV1 snapshot may still contain its initial empty scene-list value, an empty uncached list at peer handoff leaves Scenes in `AwaitingSceneList`. A same-generation `SceneListChanged` fact establishes the authoritative list, including a legitimately empty library.
+Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available. The LV1 snapshot represents scene-list readiness explicitly: `None` means the current transport session has not supplied the list, while `Some(Vec::new())` is an authoritative empty library. Peer handoff and lag recovery leave Scenes in `AwaitingSceneList` for `None` and reconcile only from `Some` or a same-generation `SceneListChanged` fact.
 
 Scenes owns an eight-request FIFO for ASC-originated explicit recalls through its private `RecallCoordinator`; this is a deep synchronous module inside the sole app-lifetime Scenes actor, not another actor. The coordinator owns FIFO and in-flight phases, pending observations, late-canceled suppression, the Fade readiness receiver, and configured post-readiness interval state. Each caller reply remains held until that request actually dispatches, rather than merely entering the FIFO.
 
@@ -115,7 +115,7 @@ Fade feedback remains active during readiness. A manual fader override beyond th
 
 Persistence shares the scene domain's channel targets, channel references, and scope toggles directly; there is no duplicate file-only model or conversion for those values. The file scene wrapper remains distinct because legacy files may omit the durable scene UUID.
 
-New and load require a currently connected LV1 snapshot to initialize or align scenes against the live scene list. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
+New and load require a currently connected LV1 snapshot with an authoritative scene list to initialize or align scenes. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
 
 Replacement commits both documents and returns the reconciled result in one owner turn. Generation validation surrounds only this synchronous commit, never mailbox waits or file I/O. A `SessionReplacement` ticket serializes timeout cancellation with commit: a canceled request cannot apply later, and a committed request remains successful even if its acknowledgement arrives late. There are no old-document snapshots, compensating replacements, or rollback protocol. Replacement cancels queued recall intent and pending cue advancement without aborting an active fade.
 

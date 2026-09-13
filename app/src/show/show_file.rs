@@ -88,15 +88,16 @@ pub fn export_show_file(
 }
 
 /// @cc [owner:mixxorz,label:persistence] import-schema-and-identity-policy
-/// Import MUST reject an empty LV1 scene list and unsupported schemas. Schema 1 MUST import with an
-/// empty cue document; supported files MUST preserve scene configuration content and existing durable
-/// IDs, generate IDs only when absent, and report whether generation occurred so load can stay dirty.
+/// Import MUST reject a missing or empty LV1 scene list and unsupported schemas. Schema 1 MUST
+/// import with an empty cue document; supported files MUST preserve scene configuration content and
+/// existing durable IDs, generate IDs only when absent, and report whether generation occurred so
+/// load can stay dirty.
 /// Missing or unlinked scenes MUST NOT be discarded at this DTO boundary.
 pub fn import_show_file(
     file: &mut ShowFile,
     lv1: &Lv1StateSnapshot,
 ) -> Result<ImportedShowFile, String> {
-    if lv1.scene_list.is_empty() {
+    if lv1.scene_list.as_ref().is_none_or(Vec::is_empty) {
         return Err("Open a session after LV1 scenes are loaded".to_string());
     }
 
@@ -245,7 +246,8 @@ mod tests {
                 scene_list: vec![SceneListEntry {
                     index: 1,
                     name: "Intro".to_string(),
-                }],
+                }]
+                .into(),
                 channels: Vec::new(),
                 ping_sequence: 0,
             },
@@ -294,7 +296,8 @@ mod tests {
             scene_list: vec![SceneListEntry {
                 index: 1,
                 name: "Intro".to_string(),
-            }],
+            }]
+            .into(),
             channels: Vec::new(),
             ping_sequence: 0,
         };
@@ -335,7 +338,8 @@ mod tests {
             scene_list: vec![SceneListEntry {
                 index: 1,
                 name: "Intro".to_string(),
-            }],
+            }]
+            .into(),
             channels: Vec::new(),
             ping_sequence: 0,
         };
@@ -377,7 +381,8 @@ mod tests {
             scene_list: vec![SceneListEntry {
                 index: 1,
                 name: "Intro".to_string(),
-            }],
+            }]
+            .into(),
             channels: Vec::new(),
             ping_sequence: 0,
         };

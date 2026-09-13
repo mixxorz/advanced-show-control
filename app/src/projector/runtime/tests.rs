@@ -272,7 +272,7 @@ async fn lag_recovery_keeps_log_input_responsive_and_replays_post_cutoff_facts()
         .send(crate::lv1::Lv1StateSnapshot {
             connection: ConnectionStatus::Disconnected,
             scene: None,
-            scene_list: vec![],
+            scene_list: None,
             channels: vec![],
             ping_sequence: 0,
         })
@@ -295,7 +295,7 @@ fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
             crate::lv1::Lv1StateSnapshot {
                 connection: ConnectionStatus::Connected,
                 scene: None,
-                scene_list: vec![],
+                scene_list: vec![].into(),
                 channels: vec![],
                 ping_sequence: 0,
             },
