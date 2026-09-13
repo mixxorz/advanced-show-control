@@ -26,7 +26,7 @@ Enable **Extensive diagnostics** only while you investigate a problem. When it i
 2. Press the key combination you want.
 3. Confirm the displayed shortcut.
 
-Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when needed. Pressing a modifier by itself keeps capture open. `Tab` can be used as a shortcut. A shortcut cannot duplicate the other action or **New Session**, **Open Session...**, **Save Session**, **Save As...**, or **Quit**. Quit is `Cmd+Q` on macOS and `Alt+F4` on Windows.
+Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when needed. Pressing a modifier by itself keeps capture open. `Tab` can be used as a shortcut. A shortcut cannot duplicate the other action or **New Session**, **Open Session…**, **Save Session**, **Save Session As…**, or **Quit**. Quit is `Cmd+Q` on macOS and `Alt+F4` on Windows.
 
 Shortcuts do not operate while you are entering text or working in a dialog. Holding a shortcut does not repeat CUE or GO. A shortcut does not bypass **SAFE**, connection checks, or the LV1 scene number-and-name check.
 

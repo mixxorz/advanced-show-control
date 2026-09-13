@@ -19,7 +19,7 @@ mod macos {
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     use super::super::cues::CueListsView;
-    use super::super::menu::{self, NewShow, Quit};
+    use super::super::menu::{self, MENU_NEW_SHORTCUT, NewShow, Quit};
     use super::super::scenes::ScenesView;
     use super::super::settings_view::SettingsView;
     use super::super::{
@@ -141,11 +141,17 @@ mod macos {
         })?;
         cx.advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
+        let dispatched_before_new_shortcut = observed_dispatcher.dispatched_count();
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             assert!(window.is_action_available(&NewShow, cx));
             assert!(window.is_action_available(&Quit, cx));
+            window.press(MENU_NEW_SHORTCUT, cx);
         })?;
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_new_shortcut + 1,
+            "New Session shortcut did not dispatch immediately after the startup dialog closed"
+        );
         let ready = cx.capture_screenshot(window.into())?;
         ready
             .save(output_dir.join("native-shell-ready.png"))

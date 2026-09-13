@@ -7,9 +7,9 @@
 | Command | Shortcut |
 | --- | --- |
 | **New Session** | `CmdOrCtrl+N` |
-| **Open Session...** | `CmdOrCtrl+O` |
+| **Open Session…** | `CmdOrCtrl+O` |
 | **Save Session** | `CmdOrCtrl+S` |
-| **Save As...** | `CmdOrCtrl+Shift+S` |
+| **Save Session As…** | `CmdOrCtrl+Shift+S` |
 | **Quit** | `Cmd+Q` on macOS; `Alt+F4` on Windows |
 
 ## GO and CUE
