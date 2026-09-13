@@ -169,7 +169,12 @@ mod macos {
         cx.update_window(window.into(), |_, window, cx| {
             window.click("session-menu", cx);
             window.render_frame(cx);
-            assert!(window.try_find("popup-menu").is_some());
+            let frame = window.find("session-menu-frame").bounds();
+            let popup = window.find("popup-menu").bounds();
+            assert_eq!(frame.top() + px(1.), popup.top());
+            assert_eq!(frame.left() + px(1.), popup.left());
+            assert_eq!(frame.bottom() - px(1.), popup.bottom());
+            assert_eq!(frame.right() - px(1.), popup.right());
         })?;
         let session_menu = cx.capture_screenshot(window.into())?;
         session_menu

@@ -1,13 +1,20 @@
+use std::rc::Rc;
+
 use gpui_kit::component::{
-    Disableable as _, IconName,
+    ActiveTheme as _, Disableable as _, IconName,
     button::{Button, ButtonVariants as _},
-    menu::DropdownMenu as _,
+    menu::PopupMenu,
+    popover::Popover,
 };
-use gpui_kit::{App, FocusHandle, IntoElement, KeyBinding, Styled as _, Window, actions, px, rgb};
+use gpui_kit::{
+    Anchor, App, DismissEvent, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
+    IntoElement, KeyBinding, ParentElement as _, RenderOnce, StyleRefinement, Styled as _,
+    TestSupportExt as _, Window, actions, div, px, rgb,
+};
 #[cfg(target_os = "macos")]
 use gpui_kit::{Menu, MenuItem, SystemMenuType};
 
-use super::theme::CONSOLE_LINE;
+use super::theme::{CONSOLE_LINE, CONSOLE_LINE_STRONG};
 
 pub const MENU_NEW_SHORTCUT: &str = if cfg!(target_os = "macos") {
     "cmd-n"
@@ -74,7 +81,7 @@ pub fn session_menu_button(
     disabled: bool,
     on_open_change: impl Fn(&bool, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    Button::new("session-menu")
+    let mut trigger = Button::new("session-menu")
         .ghost()
         .accessibility_label("Session menu")
         .icon(IconName::Menu)
@@ -83,19 +90,89 @@ pub fn session_menu_button(
         .border_r_1()
         .border_color(rgb(CONSOLE_LINE))
         .rounded_none()
-        .disabled(disabled)
-        .dropdown_menu(move |menu, _, _| {
-            menu.action_context(action_context.clone())
-                .menu("New Session", Box::new(NewShow))
-                .menu("New from Template…", Box::new(NewShowFromTemplate))
-                .menu("Open Session…", Box::new(OpenShow))
-                .separator()
-                .menu("Save Session", Box::new(SaveShow))
-                .menu("Save Session As…", Box::new(SaveShowAs))
-                .separator()
-                .menu("Quit", Box::new(Quit))
-        })
-        .on_open_change(on_open_change)
+        .disabled(disabled);
+    let trigger_style = trigger.style().clone();
+
+    SessionMenuPopover {
+        trigger,
+        trigger_style,
+        action_context,
+        on_open_change: Rc::new(on_open_change),
+    }
+}
+
+type OpenChange = dyn Fn(&bool, &mut Window, &mut App);
+
+#[derive(IntoElement)]
+struct SessionMenuPopover {
+    trigger: Button,
+    trigger_style: StyleRefinement,
+    action_context: FocusHandle,
+    on_open_change: Rc<OpenChange>,
+}
+
+#[derive(Default)]
+struct SessionMenuState {
+    menu: Option<Entity<PopupMenu>>,
+}
+
+impl RenderOnce for SessionMenuPopover {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let menu_state =
+            window.use_keyed_state("session-menu-state", cx, |_, _| SessionMenuState::default());
+        let action_context = self.action_context;
+
+        Popover::new("session-menu-popover")
+            .anchor(Anchor::TopLeft)
+            .appearance(false)
+            .overlay_closable(false)
+            .trigger(self.trigger)
+            .trigger_style(self.trigger_style)
+            .on_open_change(move |open, window, cx| (self.on_open_change)(open, window, cx))
+            .content(move |_, window, cx| {
+                let menu = match menu_state.read(cx).menu.clone() {
+                    Some(menu) => menu,
+                    None => {
+                        let action_context = action_context.clone();
+                        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+                            menu.action_context(action_context)
+                                .menu("New Session", Box::new(NewShow))
+                                .menu("New from Template…", Box::new(NewShowFromTemplate))
+                                .menu("Open Session…", Box::new(OpenShow))
+                                .separator()
+                                .menu("Save Session", Box::new(SaveShow))
+                                .menu("Save Session As…", Box::new(SaveShowAs))
+                                .separator()
+                                .menu("Quit", Box::new(Quit))
+                        });
+                        menu_state.update(cx, |state, _| state.menu = Some(menu.clone()));
+                        menu.focus_handle(cx).focus(window, cx);
+
+                        let popover_state = cx.entity();
+                        window
+                            .subscribe(&menu, cx, {
+                                let menu_state = menu_state.clone();
+                                move |_, _: &DismissEvent, window, cx| {
+                                    popover_state.update(cx, |state, cx| {
+                                        state.dismiss(window, cx);
+                                    });
+                                    menu_state.update(cx, |state, _| state.menu = None);
+                                }
+                            })
+                            .detach();
+                        menu
+                    }
+                };
+
+                div()
+                    .id("session-menu-frame")
+                    .test_support()
+                    .border_1()
+                    .border_color(rgb(CONSOLE_LINE_STRONG))
+                    .rounded(cx.theme().radius)
+                    .child(menu)
+            })
+    }
 }
 
 #[cfg(target_os = "macos")]
