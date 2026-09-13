@@ -22,6 +22,8 @@ const TARGET_B: f64 = 0.0;
 const GAIN_TOLERANCE: f64 = 0.5;
 const SAME_SCENE_DURATION: Duration = Duration::from_secs(6);
 const RECALL_GATE_SETTLE: Duration = Duration::from_millis(2_100);
+const CONFIGURED_RECALL_INTERVAL: Duration = Duration::from_secs(1);
+const RECALL_INTERVAL_TOLERANCE: Duration = Duration::from_millis(100);
 const SMOKE_APP_IDENTIFIER: &str = "com.advancedshowcontrol.debug";
 
 /// @cc [owner:mixxorz,label:safety] smoke-config-isolation
@@ -193,6 +195,10 @@ impl Runner<'_> {
             .await?;
         self.test("rapid-scene-recall-queue", |this| {
             Box::pin(this.rapid_recall())
+        })
+        .await?;
+        self.test("configured-scene-recall-interval", |this| {
+            Box::pin(this.configured_recall_interval())
         })
         .await?;
         self.test("fade-starts", |this| Box::pin(this.fade_starts()))
@@ -413,6 +419,50 @@ impl Runner<'_> {
         Ok(())
     }
 
+    async fn configured_recall_interval(&mut self) -> Result<(), String> {
+        self.set_asc_recall_interval(CONFIGURED_RECALL_INTERVAL)
+            .await?;
+        let result = async {
+            let first_commands = self.commands.clone();
+            let second_commands = self.commands.clone();
+            let first_scene = self.scene_a;
+            let second_scene = self.scene_b;
+            let (first, second) = tokio::join!(
+                async move {
+                    let result = first_commands.recall_scene(first_scene).await;
+                    (result, Instant::now())
+                },
+                async move {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                    let result = second_commands.recall_scene(second_scene).await;
+                    (result, Instant::now())
+                }
+            );
+            first.0?;
+            second.0?;
+            let observed_interval = second.1.saturating_duration_since(first.1);
+            if observed_interval + RECALL_INTERVAL_TOLERANCE < CONFIGURED_RECALL_INTERVAL {
+                return Err(format!(
+                    "queued recall dispatched after {}ms; configured interval is {}ms",
+                    observed_interval.as_millis(),
+                    CONFIGURED_RECALL_INTERVAL.as_millis()
+                ));
+            }
+            self.wait_state("interval-delayed Smoke B recall", |state| {
+                state
+                    .current_scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.name == SMOKE_B)
+            })
+            .await?;
+            Ok(())
+        }
+        .await;
+        let cleanup = self.set_asc_recall_interval(Duration::ZERO).await;
+        result?;
+        cleanup
+    }
+
     async fn prepare_fades(&mut self) -> Result<(), String> {
         self.new_session().await?;
         self.raw_reset(0, TARGET_A).await?;
@@ -531,6 +581,22 @@ impl Runner<'_> {
             self.commands.recall_scene(scene_id).await?;
             self.wait_gain(target, TIMEOUT).await?;
         }
+        Ok(())
+    }
+
+    async fn set_asc_recall_interval(&mut self, interval: Duration) -> Result<(), String> {
+        let interval_ms = interval.as_millis() as u64;
+        let mut settings = self
+            .projections
+            .latest()
+            .ok_or("projected settings unavailable")?
+            .settings;
+        settings.asc_recall_interval_ms = interval_ms;
+        self.commands.replace_app_settings(settings).await?;
+        self.wait_state("projected ASC recall interval", |state| {
+            state.settings.asc_recall_interval_ms == interval_ms
+        })
+        .await?;
         Ok(())
     }
 
