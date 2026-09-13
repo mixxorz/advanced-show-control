@@ -4,7 +4,6 @@ use crate::projector::AppViewState;
 pub enum MainTab {
     Scenes,
     CueLists,
-    Events,
     Logs,
     Settings,
 }

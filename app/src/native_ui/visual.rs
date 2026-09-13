@@ -150,11 +150,48 @@ mod macos {
             let top_bar = window.find("top-bar").bounds();
             let session_menu = window.find("session-menu").bounds();
             let scenes_tab = window.find("tab-Scenes").bounds();
+            let cue_lists_tab = window.find("tab-Cue Lists").bounds();
+            let logs_tab = window.find("tab-Logs").bounds();
             assert_eq!(session_menu.size.width, session_menu.size.height);
             assert_eq!(session_menu.top(), top_bar.top() + px(1.));
             assert_eq!(session_menu.bottom(), top_bar.bottom() - px(1.));
             assert_eq!(session_menu.right(), scenes_tab.left());
+            assert!(window.try_find("tab-Events").is_none());
+            assert_eq!(cue_lists_tab.right(), logs_tab.left());
 
+            let connection_dot = window.find("connection-status-dot").bounds();
+            let connection_label = window.find("connection-status-label").bounds();
+            assert_eq!(connection_dot.size, size(px(8.), px(8.)));
+            assert_eq!(connection_dot.center().y, connection_label.center().y);
+
+            let console_chooser = window.find("open-connection").bounds();
+            assert!(console_chooser.size.width >= px(144.));
+
+            let bottom_status = window.find("bottom-status").bounds();
+            let go_cell = window.find("go-cell").bounds();
+            let go = window.find("go").bounds();
+            assert!(go_cell.size.width >= bottom_status.size.width * 0.13);
+            assert!(go_cell.size.width <= bottom_status.size.width * 0.15);
+            assert!(go.size.width >= go_cell.size.width * 0.80);
+            assert!(go.size.height >= go_cell.size.height * 0.75);
+            let status_cells = [
+                window.find("status-cued").bounds(),
+                window.find("status-current").bounds(),
+                window.find("status-mode").bounds(),
+                window.find("status-time").bounds(),
+            ];
+            for cell in status_cells.iter().skip(1) {
+                assert!((cell.size.width - status_cells[0].size.width).abs() <= px(1.));
+            }
+
+            window.click("open-connection", cx);
+            assert!(window.has_active_dialog(cx));
+            window.press("escape", cx);
+        })?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
             window.press(MENU_NEW_SHORTCUT, cx);
         })?;
         anyhow::ensure!(

@@ -2,12 +2,12 @@ use std::cell::Cell;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gpui_kit::base::Button as BaseButton;
+use gpui_kit::base::{Button as BaseButton, StyledExt as _};
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::{
     Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Styled as _, TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px, rgb,
+    Styled as _, TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px, relative, rgb,
 };
 
 use crate::projector::{AppConnectionState, AppFadeState, AppViewState};
@@ -182,14 +182,6 @@ impl AppShell {
         match self.active_tab {
             MainTab::Scenes => self.scenes.clone().into_any_element(),
             MainTab::CueLists => self.cue_lists.clone().into_any_element(),
-            MainTab::Events => div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .text_color(rgb(CONSOLE_MUTED))
-                .child("Events")
-                .into_any_element(),
             MainTab::Logs => self.logs.clone().into_any_element(),
             MainTab::Settings => self.settings.clone().into_any_element(),
         }
@@ -198,16 +190,8 @@ impl AppShell {
 
 impl Render for AppShell {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let connection_label = match self.snapshot.connection {
-            AppConnectionState::Connected => "CONNECTED",
-            AppConnectionState::Connecting => "CONNECTING",
-            AppConnectionState::Disconnected => "OFFLINE",
-        };
-        let connection_color = match self.snapshot.connection {
-            AppConnectionState::Connected => STATUS_CUED,
-            AppConnectionState::Connecting => CONSOLE_SECONDARY,
-            AppConnectionState::Disconnected => STATUS_DANGER,
-        };
+        let (connection_label, connection_color) =
+            connection_presentation(&self.snapshot.connection);
         let console_name = console_display_name(
             &self.snapshot.connection,
             self.snapshot
@@ -253,7 +237,6 @@ impl Render for AppShell {
                             self.tab(MainTab::Scenes, "Scenes", cx).into_any_element(),
                             self.tab(MainTab::CueLists, "Cue Lists", cx)
                                 .into_any_element(),
-                            self.tab(MainTab::Events, "Events", cx).into_any_element(),
                             self.tab(MainTab::Logs, "Logs", cx).into_any_element(),
                             self.tab(MainTab::Settings, "Settings", cx)
                                 .into_any_element(),
@@ -267,23 +250,39 @@ impl Render for AppShell {
                             .px_4()
                             .child(
                                 div()
+                                    .flex()
+                                    .items_center()
+                                    .gap_2()
                                     .text_color(rgb(connection_color))
-                                    .child(connection_label),
+                                    .child(
+                                        div()
+                                            .id("connection-status-dot")
+                                            .test_support()
+                                            .size(px(8.))
+                                            .rounded_full()
+                                            .bg(rgb(connection_color)),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("connection-status-label")
+                                            .test_support()
+                                            .child(connection_label),
+                                    ),
                             )
                             .child(
-                                BaseButton::new("open-connection")
+                                bordered_button("open-connection")
                                     .accessibility_label("Open LV1 connection")
+                                    .label(console_name.to_uppercase())
+                                    .dropdown_caret(true)
                                     .disabled(actions_blocked)
                                     .min_w(px(144.))
                                     .px_3()
                                     .py_2()
-                                    .border_1()
                                     .border_color(rgb(CONSOLE_LINE))
                                     .cursor_pointer()
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         (this.open_connection)(window, cx);
-                                    }))
-                                    .child(console_name.to_uppercase()),
+                                    })),
                             )
                             .child(
                                 bordered_button("toggle-lockout")
@@ -355,8 +354,11 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
     let entity = cx.entity();
 
     div()
+        .id("bottom-status")
+        .test_support()
         .mx_3()
         .mb_3()
+        .h(px(72.))
         .flex()
         .items_stretch()
         .border_1()
@@ -364,15 +366,21 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
         .bg(rgb(CONSOLE_CHROME))
         .child(
             div()
+                .id("go-cell")
+                .test_support()
                 .flex()
-                .flex_1()
+                .flex_none()
+                .w(relative(0.14))
                 .items_center()
-                .p_3()
+                .p_2()
                 .border_r_1()
                 .border_color(rgb(CONSOLE_LINE))
                 .child(
                     bordered_button("go")
                         .primary()
+                        .size_full()
+                        .text_xl()
+                        .font_semibold()
                         .accessibility_label("Recall cued scene")
                         .label("GO")
                         .disabled(!can_go)
@@ -428,6 +436,14 @@ fn resolve_cued_scene(snapshot: &AppViewState) -> Option<&crate::scenes::SceneCo
         .find(|scene| scene.internal_scene_id == entry.scene_internal_id)
 }
 
+fn connection_presentation(connection: &AppConnectionState) -> (&'static str, u32) {
+    match connection {
+        AppConnectionState::Connected => ("CONNECTED", STATUS_CUED),
+        AppConnectionState::Connecting => ("CONNECTING", STATUS_WARNING),
+        AppConnectionState::Disconnected => ("OFFLINE", STATUS_DANGER),
+    }
+}
+
 fn console_display_name(connection: &AppConnectionState, host: Option<&str>) -> String {
     match connection {
         AppConnectionState::Disconnected => "CONNECT CONSOLE".to_owned(),
@@ -451,10 +467,14 @@ fn format_time(time: chrono::NaiveTime, format: &TimeDisplayFormat) -> String {
 
 fn status_cell(label: &'static str, value: &str, color: u32) -> impl IntoElement {
     div()
-        .flex_1()
+        .id(format!("status-{}", label.to_ascii_lowercase()))
+        .test_support()
+        .flex_basis(px(0.))
+        .flex_grow_1()
         .p_3()
-        .border_r_1()
-        .border_color(rgb(CONSOLE_LINE))
+        .when(label != "TIME", |cell| {
+            cell.border_r_1().border_color(rgb(CONSOLE_LINE))
+        })
         .child(div().text_xs().text_color(rgb(CONSOLE_MUTED)).child(label))
         .child(div().text_color(rgb(color)).child(value.to_string()))
 }
@@ -463,7 +483,26 @@ fn status_cell(label: &'static str, value: &str, color: u32) -> impl IntoElement
 mod tests {
     use chrono::NaiveTime;
 
-    use super::{AppConnectionState, TimeDisplayFormat, console_display_name, format_time};
+    use super::{
+        AppConnectionState, STATUS_CUED, STATUS_DANGER, STATUS_WARNING, TimeDisplayFormat,
+        connection_presentation, console_display_name, format_time,
+    };
+
+    #[test]
+    fn connection_presentation_maps_projected_state_to_label_and_status_color() {
+        assert_eq!(
+            connection_presentation(&AppConnectionState::Connected),
+            ("CONNECTED", STATUS_CUED)
+        );
+        assert_eq!(
+            connection_presentation(&AppConnectionState::Connecting),
+            ("CONNECTING", STATUS_WARNING)
+        );
+        assert_eq!(
+            connection_presentation(&AppConnectionState::Disconnected),
+            ("OFFLINE", STATUS_DANGER)
+        );
+    }
 
     #[test]
     fn console_display_name_is_actionable_while_offline() {

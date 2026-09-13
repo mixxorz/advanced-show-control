@@ -6,9 +6,9 @@ The application shell keeps the controls you need during a show in one place: co
 
 ## Top bar
 
-The square burger button immediately before **Scenes** opens the session menu. Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**. The **Events** tab is visible in v2, but event automation is not yet available.
+The square burger button immediately before **Scenes** opens the session menu. Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**.
 
-The connection indicator shows **Connected**, **Connecting**, or **Offline**. Select the console name to open **Connect to LV1** or change consoles.
+The connection indicator shows a green, amber, or red dot beside **Connected**, **Connecting**, or **Offline**, respectively. Select the console-name button and its trailing arrow to open **Connect to LV1** or change consoles.
 
 If LV1 disconnects, the status changes to **Offline**. Open **Connect to LV1**, select the intended available console, and wait for **Connected** before recalling a scene.
 
@@ -24,7 +24,7 @@ If you want to use **Mode** to watch a fade finish, wait until the fade is compl
 
 ## Bottom status bar
 
-The bottom bar shows the information you need before **GO**:
+The larger **GO** section occupies the left side of the bottom bar. The remaining width is divided evenly among the information you need before **GO**:
 
 | Item | What it shows |
 | --- | --- |
