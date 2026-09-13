@@ -284,6 +284,65 @@ async fn lag_recovery_keeps_log_input_responsive_and_replays_post_cutoff_facts()
     );
 }
 
+#[test]
+fn recovery_result_revalidates_current_generation_before_applying_snapshot() {
+    let mut cache = ProjectionCache::new();
+    cache.set_active_generation(1);
+    let result = ProjectorRecoveryResult {
+        generation: Some(1),
+        snapshot: Some((
+            1,
+            crate::lv1::Lv1StateSnapshot {
+                connection: ConnectionStatus::Connected,
+                scene: None,
+                scene_list: vec![],
+                channels: vec![],
+                ping_sequence: 0,
+            },
+        )),
+        timed_out: false,
+    };
+
+    apply_recovery_result(&mut cache, result, 2);
+
+    let snapshot = cache.build_snapshot(&Default::default());
+    assert_eq!(
+        snapshot.connection,
+        crate::projector::AppConnectionState::Disconnected
+    );
+}
+
+#[tokio::test]
+async fn recovery_queue_overflow_establishes_a_new_cutoff() {
+    let runtime_source = crate::lifecycle::AppLifecycle::default().runtime_snapshot_source();
+    let mut pending = start_projector_recovery(runtime_source);
+    for sequence in 0..=MAX_PENDING_RECOVERY_EVENTS as u64 {
+        pending.push_event(AppEvent::Lv1 {
+            generation: 0,
+            event: Lv1Event::PingReceived { sequence },
+        });
+    }
+
+    assert!(pending.restart_required);
+    assert_eq!(pending.queued_events.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn recovery_timeout_returns_disconnected_fallback() {
+    let (lv1, _commands) = tokio::sync::mpsc::channel(1);
+    let runtime_source = crate::lifecycle::RuntimeSnapshotSource::with_lv1_for_test(
+        crate::lv1::test_actor_handle(lv1),
+    );
+    let recovery = tokio::spawn(recover_projector_after_lag(runtime_source));
+    tokio::task::yield_now().await;
+    tokio::time::advance(Duration::from_millis(501)).await;
+
+    let result = recovery.await.unwrap();
+    assert!(result.timed_out);
+    assert_eq!(result.generation, Some(0));
+    assert!(result.snapshot.is_none());
+}
+
 #[tokio::test]
 async fn settings_state_changes_are_projected() {
     let mut test = ProjectorTest::new(AppEventBus::default());

@@ -124,7 +124,8 @@ pub fn spawn_projector(inputs: ProjectorInputs) -> tokio::task::JoinHandle<()> {
                             next.queued_events = queued_events;
                             recovery = Some(next);
                         } else {
-                            apply_recovery_result(&mut cache, result);
+                            let current_generation = runtime_source.current_generation().await;
+                            apply_recovery_result(&mut cache, result, current_generation);
                             for event in queued_events {
                                 apply_projector_event(&mut cache, &event);
                             }
@@ -284,16 +285,17 @@ async fn recover_projector_after_lag(
     }
 }
 
-fn apply_recovery_result(cache: &mut ProjectionCache, result: ProjectorRecoveryResult) {
-    if let Some(generation) = result.generation {
-        cache.reset_for_generation(generation);
-        if let Some((snapshot_generation, snapshot)) = result.snapshot
-            && snapshot_generation == generation
-        {
-            cache.apply_lv1_snapshot(snapshot_generation, snapshot);
-        }
-    } else {
-        cache.reset_generation_scoped_state();
+fn apply_recovery_result(
+    cache: &mut ProjectionCache,
+    result: ProjectorRecoveryResult,
+    current_generation: u64,
+) {
+    cache.reset_for_generation(current_generation);
+    if result.generation == Some(current_generation)
+        && let Some((snapshot_generation, snapshot)) = result.snapshot
+        && snapshot_generation == current_generation
+    {
+        cache.apply_lv1_snapshot(snapshot_generation, snapshot);
     }
     if result.timed_out {
         tracing::warn!(

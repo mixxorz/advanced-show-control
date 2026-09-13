@@ -442,11 +442,13 @@ async fn handle_command(
                     let result = async {
                         let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
                         let read_path = path.clone();
-                        let mut file =
-                            tokio::task::spawn_blocking(move || read_show_file(&read_path))
-                                .await
-                                .map_err(|error| format!("Session load task failed: {error}"))??;
-                        prepare_load_show_file(&peers, path, &mut file, &lv1, expected_generation)
+                        let lv1_for_import = lv1.clone();
+                        let imported = tokio::task::spawn_blocking(move || {
+                            load_show_file_for_lv1(&read_path, &lv1_for_import)
+                        })
+                        .await
+                        .map_err(|error| format!("Session load task failed: {error}"))??;
+                        prepare_load_show_file(&peers, path, imported, &lv1, expected_generation)
                             .await
                     }
                     .await;
@@ -599,6 +601,17 @@ fn map_app_command_error(error: AppCommandError) -> String {
     }
 }
 
+struct PreparedLoadImport {
+    saved_at: String,
+    lockout: bool,
+    selected_scene_internal_id: Option<String>,
+    generated_internal_scene_ids: bool,
+    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
+    imported_cue_list_snapshot: CueListDocument,
+    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
+    alignment_changed: bool,
+}
+
 struct PreparedLoad {
     path: std::path::PathBuf,
     saved_at: String,
@@ -611,22 +624,49 @@ struct PreparedLoad {
     lv1_scene_list: Vec<crate::lv1::SceneListEntry>,
 }
 
-async fn prepare_load_show_file(
-    peers: &ShowActorPeers,
-    path: std::path::PathBuf,
-    file: &mut super::show_file::ShowFile,
+/// @cc [owner:mixxorz,label:performance;persistence] load-import-off-actor-runtime
+/// Reading, importing, and aligning a show file MUST be suitable for execution on a blocking worker;
+/// the Show actor's Tokio runtime task MUST receive only the completed import or its error.
+fn load_show_file_for_lv1(
+    path: &std::path::Path,
     lv1: &Lv1StateSnapshot,
-    expected_generation: u64,
-) -> Result<PreparedLoad, String> {
-    let imported = import_show_file(file, lv1)?;
-    let saved_at = file.saved_at.clone();
-    let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
+) -> Result<PreparedLoadImport, String> {
+    let mut file = read_show_file(path)?;
+    let imported = import_show_file(&mut file, lv1)?;
     let imported_scene_configs = imported.snapshot.scene_configs;
-    let imported_cue_list_snapshot = imported.cue_list_snapshot.clone();
     let aligned_scene_configs =
         crate::scenes::align_scene_configs(imported_scene_configs.clone(), &lv1.scene_list);
     let alignment_changed = aligned_scene_configs != imported_scene_configs;
-    let mut should_mark_dirty = imported.generated_internal_scene_ids || alignment_changed;
+    Ok(PreparedLoadImport {
+        saved_at: file.saved_at,
+        lockout: imported.lockout,
+        selected_scene_internal_id: imported.selected_scene_internal_id,
+        generated_internal_scene_ids: imported.generated_internal_scene_ids,
+        imported_scene_configs,
+        imported_cue_list_snapshot: imported.cue_list_snapshot,
+        aligned_scene_configs,
+        alignment_changed,
+    })
+}
+
+async fn prepare_load_show_file(
+    peers: &ShowActorPeers,
+    path: std::path::PathBuf,
+    imported: PreparedLoadImport,
+    lv1: &Lv1StateSnapshot,
+    expected_generation: u64,
+) -> Result<PreparedLoad, String> {
+    let PreparedLoadImport {
+        saved_at,
+        lockout,
+        selected_scene_internal_id,
+        generated_internal_scene_ids,
+        imported_scene_configs,
+        imported_cue_list_snapshot,
+        aligned_scene_configs,
+        alignment_changed,
+    } = imported;
+    let mut should_mark_dirty = generated_internal_scene_ids || alignment_changed;
     let selected_scene_internal_id = selected_scene_internal_id
         .filter(|selected| {
             aligned_scene_configs
@@ -647,7 +687,7 @@ async fn prepare_load_show_file(
         peers,
         SessionDocument {
             scenes: scene_document,
-            cue_lists: imported.cue_list_snapshot,
+            cue_lists: imported_cue_list_snapshot.clone(),
         },
         expected_generation,
     )
@@ -656,7 +696,7 @@ async fn prepare_load_show_file(
     Ok(PreparedLoad {
         path,
         saved_at,
-        lockout: imported.lockout,
+        lockout,
         selected_scene_internal_id,
         should_mark_dirty,
         alignment_changed,
