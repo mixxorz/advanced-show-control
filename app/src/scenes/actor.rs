@@ -288,7 +288,6 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
         };
         tokio::select! {
-            biased;
             command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
@@ -335,6 +334,30 @@ async fn run_scenes_actor(task: ScenesTask) {
                         );
                         break;
                     }
+                    if pending_abort.is_none()
+                        && matches!(&command, ScenesCommand::AbortAll { .. })
+                    {
+                        let ScenesCommand::AbortAll { reply } = command else {
+                            unreachable!("matched Abort All command");
+                        };
+                        cancel_pending_explicit_recall(
+                            pending_recall.take(),
+                            &mut recall_coordinator,
+                            "Abort All was requested",
+                        );
+                        pending_observation_settings = None;
+                        pending_observation_snapshot = None;
+                        pending_observation_handoff = None;
+                        recall_coordinator.cancel("Abort All was requested", true);
+                        pending_abort = Some(PendingAbortOperation::new(
+                            active_generation,
+                            peers.handles(active_generation).map(|handles| {
+                                (handles.lv1, handles.fade)
+                            }),
+                            reply,
+                        ));
+                        continue;
+                    }
                     if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
                         || (pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none())
                     {
@@ -355,7 +378,9 @@ async fn run_scenes_actor(task: ScenesTask) {
                         recall_coordinator.cancel("Abort All was requested", true);
                         pending_abort = Some(PendingAbortOperation::new(
                             active_generation,
-                            peers.handles(active_generation).map(|handles| handles.fade),
+                            peers.handles(active_generation).map(|handles| {
+                                (handles.lv1, handles.fade)
+                            }),
                             reply,
                         ));
                         continue;
@@ -880,13 +905,16 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
             }
             completion = recall_coordinator.readiness_completion() => {
-                if runtime_generation.current().await == completion.generation()
-                    && recall_coordinator.handle_readiness_completion(
-                        completion,
-                        Duration::from_millis(settings.asc_recall_interval_ms.min(10_000)),
-                        tokio::time::Instant::now(),
-                    )
-                    && pending_recall.is_none()
+                if runtime_generation.current().await != completion.generation() {
+                    recall_coordinator.cancel("LV1 connection generation changed", false);
+                    recall_coordinator.clear_late_observations();
+                    continue;
+                }
+                if recall_coordinator.handle_readiness_completion(
+                    completion,
+                    Duration::from_millis(settings.asc_recall_interval_ms.min(10_000)),
+                    tokio::time::Instant::now(),
+                ) && pending_recall.is_none()
                 {
                     pending_recall = start_next_recall_dispatch(
                         &mut recall_coordinator,
@@ -1513,7 +1541,8 @@ async fn finish_pending_explicit_recall(
  * Abort All MUST synchronously cancel coordinated recall intent before its Fade request begins.
  * Fade mailbox admission and acknowledgement MUST run as an actor-owned pending operation while
  * runtime, LV1, Settings, lockout, and recall-deadline inputs remain serviced. Scene and cue
- * commands MUST remain FIFO-gated until completion. Generation change, disconnect, or shutdown
+ * commands MUST remain FIFO-gated until completion. Generation MUST be rechecked after Fade
+ * mailbox reservation and immediately before sending. Generation change, disconnect, or shutdown
  * MUST drop stale work, and a late acknowledgement MUST NOT be reported as current success.
  */
 struct PendingAbortOperation {
@@ -1525,25 +1554,33 @@ struct PendingAbortOperation {
 impl PendingAbortOperation {
     fn new(
         generation: u64,
-        fade: Option<FadeEngineHandle>,
+        peers: Option<(Lv1Connection, FadeEngineHandle)>,
         reply: oneshot::Sender<Result<(), AppCommandError>>,
     ) -> Self {
         Self {
             generation,
             reply: Some(reply),
             future: Box::pin(async move {
-                let Some(fade) = fade else {
+                let Some((lv1, fade)) = peers else {
                     return Err(AppCommandError::FadeUnavailable);
                 };
+                let permit = fade
+                    .reserve()
+                    .await
+                    .map_err(|_| AppCommandError::FadeUnavailable)?;
                 let (fade_reply, fade_result) = oneshot::channel();
-                fade.send(FadeCommand::AbortAll {
-                    reply: Some(fade_reply),
+                lv1.if_current(|| {
+                    permit.send(FadeCommand::AbortAll {
+                        reply: Some(fade_reply),
+                    });
                 })
                 .await
-                .map_err(|_| AppCommandError::FadeUnavailable)?;
-                fade_result
+                .ok_or(AppCommandError::StaleGeneration)?;
+                let result = fade_result
                     .await
-                    .map_err(|_| AppCommandError::ReplyChannelClosed)?
+                    .map_err(|_| AppCommandError::ReplyChannelClosed)?;
+                lv1.ensure_current().await?;
+                result
             }),
         }
     }
