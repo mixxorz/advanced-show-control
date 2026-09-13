@@ -538,9 +538,19 @@ impl RecallCoordinator {
         if lv1.ensure_current().await.is_err() {
             return;
         }
-        let lv1_snapshot = match fresh_lv1_snapshot(lv1, &observation.scene).await {
+        let lv1_snapshot = match fresh_lv1_snapshot(
+            lv1,
+            &observation.scene,
+            queue_readiness.map(|readiness| readiness.deadline),
+        )
+        .await
+        {
             Ok(snapshot) => snapshot,
             Err(err) => {
+                if queue_readiness.is_some_and(|readiness| Instant::now() >= readiness.deadline) {
+                    self.cancel("LV1 recall readiness was lost", true);
+                    return;
+                }
                 if lv1.ensure_current().await.is_err() {
                     return;
                 }
@@ -1169,14 +1179,18 @@ fn scene_label(scene: &SceneState) -> String {
  * @cc [owner:mixxorz,label:safety] fresh-scene-snapshot-exactness
  * Fresh-state acquisition MUST return only a connected snapshot whose current scene exactly
  * matches both the requested index and name. Mismatch or disconnection MUST retry for at most two
- * seconds before returning a timeout error; an LV1 state-request error MUST return immediately
- * rather than continue retrying.
+ * seconds, clamped to an existing queued-recall safety deadline when supplied, before returning a
+ * timeout error; an LV1 state-request error MUST return immediately rather than continue retrying.
  */
 async fn fresh_lv1_snapshot(
     lv1: &Lv1Connection,
     scene: &SceneState,
+    safety_deadline: Option<Instant>,
 ) -> Result<Lv1StateSnapshot, AppCommandError> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let fresh_state_deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = safety_deadline
+        .map(|safety_deadline| safety_deadline.min(fresh_state_deadline))
+        .unwrap_or(fresh_state_deadline);
     loop {
         let snapshot = tokio::time::timeout_at(
             deadline,
@@ -1192,7 +1206,7 @@ async fn fresh_lv1_snapshot(
         if Instant::now() >= deadline {
             return Err(fresh_scene_timeout(scene));
         }
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        tokio::time::sleep_until((Instant::now() + Duration::from_millis(10)).min(deadline)).await;
     }
 }
 
@@ -1238,7 +1252,8 @@ mod tests {
             index: 1,
             name: "Intro".to_string(),
         };
-        let request = tokio::spawn(async move { fresh_lv1_snapshot(&connection, &scene).await });
+        let request =
+            tokio::spawn(async move { fresh_lv1_snapshot(&connection, &scene, None).await });
         let _stalled_request = commands.recv().await.expect("expected state request");
 
         tokio::time::advance(Duration::from_secs(2) + Duration::from_millis(1)).await;
@@ -1247,6 +1262,36 @@ mod tests {
         assert!(
             request.is_finished(),
             "state request exceeded its two-second bound"
+        );
+        assert!(matches!(
+            request.await.unwrap(),
+            Err(AppCommandError::CommandFailed(message))
+                if message == "timed out waiting for fresh LV1 scene to match recalled scene 1: Intro"
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn fresh_scene_snapshot_respects_existing_safety_deadline() {
+        let authority = crate::runtime::generation::RuntimeGeneration::new();
+        authority.set(1).await;
+        let (tx, mut commands) = tokio::sync::mpsc::channel(1);
+        let connection = Lv1Connection::new(crate::lv1::test_actor_handle(tx), authority, 1);
+        let scene = SceneState {
+            index: 1,
+            name: "Intro".to_string(),
+        };
+        let safety_deadline = Instant::now() + Duration::from_millis(100);
+        let request = tokio::spawn(async move {
+            fresh_lv1_snapshot(&connection, &scene, Some(safety_deadline)).await
+        });
+        let _stalled_request = commands.recv().await.expect("expected state request");
+
+        tokio::time::advance(Duration::from_millis(101)).await;
+        tokio::task::yield_now().await;
+
+        assert!(
+            request.is_finished(),
+            "state request exceeded the queued recall safety deadline"
         );
         assert!(matches!(
             request.await.unwrap(),

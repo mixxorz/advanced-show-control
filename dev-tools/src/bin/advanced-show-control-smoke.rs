@@ -427,17 +427,24 @@ impl Runner<'_> {
             let second_commands = self.commands.clone();
             let first_scene = self.scene_a;
             let second_scene = self.scene_b;
-            let (first, second) = tokio::join!(
-                async move {
-                    let result = first_commands.recall_scene(first_scene).await;
-                    (result, Instant::now())
+            let (first, second) = tokio::time::timeout(
+                TIMEOUT + CONFIGURED_RECALL_INTERVAL + Duration::from_secs(2),
+                async {
+                    tokio::join!(
+                        async move {
+                            let result = first_commands.recall_scene(first_scene).await;
+                            (result, Instant::now())
+                        },
+                        async move {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            let result = second_commands.recall_scene(second_scene).await;
+                            (result, Instant::now())
+                        }
+                    )
                 },
-                async move {
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    let result = second_commands.recall_scene(second_scene).await;
-                    (result, Instant::now())
-                }
-            );
+            )
+            .await
+            .map_err(|_| "configured recall interval commands timed out".to_string())?;
             first.0?;
             second.0?;
             let observed_interval = second.1.saturating_duration_since(first.1);
