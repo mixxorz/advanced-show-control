@@ -720,7 +720,7 @@ impl Runner<'_> {
             .recall_scene(self.scene_b)
             .await
             .expect_err("lockout recall unexpectedly succeeded");
-        if !error.to_lowercase().contains("blocked") {
+        if !is_lockout_rejection(&error) {
             return Err(format!("unexpected lockout error: {error}"));
         }
         self.commands.set_lockout(false).await?;
@@ -762,6 +762,11 @@ impl Runner<'_> {
             .join("logs")
             .join(format!("debug-smoke-{name}-{}.ascs", Uuid::new_v4()))
     }
+}
+
+fn is_lockout_rejection(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("blocked") || (error.contains("canceled") && error.contains("lockout"))
 }
 
 fn new_session_ready(state: &AppViewState, selected: Uuid) -> bool {
@@ -826,6 +831,19 @@ mod tests {
         );
         assert_eq!(smoke.parent(), production.parent());
         assert_ne!(smoke, production);
+    }
+
+    #[test]
+    fn lockout_check_accepts_blocked_or_race_canceled_recall() {
+        assert!(is_lockout_rejection(
+            "Recall blocked: show lockout is enabled"
+        ));
+        assert!(is_lockout_rejection(
+            "Scene recall canceled: lockout was enabled"
+        ));
+        assert!(!is_lockout_rejection(
+            "Scene recall canceled: connection changed"
+        ));
     }
 
     #[test]
