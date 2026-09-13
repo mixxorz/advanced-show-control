@@ -130,9 +130,10 @@ pub fn build_engine(
 /**
  * @cc [owner:mixxorz,label:safety;reliability] responsive-during-write-admission
  * The engine MUST own at most one pending LV1 write admission and MUST continue processing LV1
- * feedback, pings, disconnect, generation change, and readiness deadlines while mailbox capacity is
- * unavailable. Tick proposals MUST NOT mutate expected values or completion state before admission;
- * targets canceled by feedback while admission is pending MUST be omitted from the admitted batch.
+ * feedback, pings, disconnect, generation change, Abort All, and readiness deadlines while mailbox
+ * capacity is unavailable. Abort All MUST cancel the pending proposal before it can write. Tick
+ * proposals MUST NOT mutate expected values or completion state before admission; targets canceled
+ * by feedback while admission is pending MUST be omitted from the admitted batch.
  */
 /**
  * @cc [owner:mixxorz,label:product;safety] successful-tick-terminal-order
@@ -158,6 +159,7 @@ async fn run_engine(
     let mut tick_interval: Option<tokio::time::Interval> = None;
     let mut fade_completed_emitted = false;
     let mut pending_write: Option<PendingWrite> = None;
+    let mut deferred_commands = VecDeque::new();
 
     loop {
         let accepts_new_work = pending_write.is_none();
@@ -172,9 +174,12 @@ async fn run_engine(
         };
         let command_fut = async {
             if accepts_new_work {
-                cmd_rx.recv().await
+                match deferred_commands.pop_front() {
+                    Some(command) => Some(command),
+                    None => cmd_rx.recv().await,
+                }
             } else {
-                std::future::pending::<Option<FadeCommand>>().await
+                cmd_rx.recv().await
             }
         };
         let readiness_deadline = [
@@ -204,7 +209,32 @@ async fn run_engine(
 
         tokio::select! {
             biased;
+            _ = readiness_timeout_fut => {
+                handle_readiness_timeout(
+                    &mut state,
+                    &mut tick_interval,
+                    &mut fade_completed_emitted,
+                );
+                cancel_expired_pending_write(&mut pending_write);
+            }
+
             cmd = command_fut => {
+                if pending_write.is_some() {
+                    match cmd {
+                        None => break,
+                        Some(FadeCommand::AbortAll { reply }) => {
+                            cancel_pending_write_for_abort(&mut pending_write);
+                            state.cancel_all_in_place(RecallReadinessCancellation::Aborted);
+                            tick_interval = None;
+                            state.fan_out(FadeEvent::FadeAborted);
+                            if let Some(reply) = reply {
+                                let _ = reply.send(Ok(()));
+                            }
+                        }
+                        Some(command) => deferred_commands.push_back(command),
+                    }
+                    continue;
+                }
                 match cmd {
                     None => break,
                     Some(FadeCommand::RecallSceneFade { config, same_scene_behavior, readiness, reply }) => {
@@ -295,6 +325,18 @@ async fn run_engine(
                 }
             }
 
+            Some(admission) = pending_admission_fut => {
+                let pending = pending_write.take().expect("ready admission requires pending write");
+                finish_pending_write(
+                    &connection,
+                    &mut state,
+                    &mut tick_interval,
+                    &mut fade_completed_emitted,
+                    pending.kind,
+                    admission,
+                ).await;
+            }
+
             app_event = app_events.recv() => {
                 let effect = process_app_event(
                     app_event,
@@ -312,27 +354,6 @@ async fn run_engine(
                 if effect == AppEventEffect::StreamClosed {
                     break;
                 }
-            }
-
-            _ = readiness_timeout_fut => {
-                handle_readiness_timeout(
-                    &mut state,
-                    &mut tick_interval,
-                    &mut fade_completed_emitted,
-                );
-                cancel_expired_pending_write(&mut pending_write);
-            }
-
-            Some(admission) = pending_admission_fut => {
-                let pending = pending_write.take().expect("ready admission requires pending write");
-                finish_pending_write(
-                    &connection,
-                    &mut state,
-                    &mut tick_interval,
-                    &mut fade_completed_emitted,
-                    pending.kind,
-                    admission,
-                ).await;
             }
 
             _ = tick_fut => {
@@ -650,6 +671,21 @@ fn cancel_pending_write(pending: &mut Option<PendingWrite>, effect: AppEventEffe
     let error = snapshot_wait_cancellation(effect).unwrap_or(AppCommandError::FadeUnavailable);
     if let Some(reply) = reply {
         let _ = reply.send(Err(error));
+    }
+}
+
+fn cancel_pending_write_for_abort(pending: &mut Option<PendingWrite>) {
+    let Some(PendingWrite {
+        kind: PendingWriteKind::ZeroDuration { reply, .. },
+        ..
+    }) = pending.take()
+    else {
+        return;
+    };
+    if let Some(reply) = reply {
+        let _ = reply.send(Err(AppCommandError::RecallCanceled(
+            "Abort All was requested".to_string(),
+        )));
     }
 }
 
@@ -3035,6 +3071,41 @@ mod tests {
         assert_eq!(result.await.unwrap(), Ok(()));
     }
 
+    #[tokio::test]
+    async fn abort_all_preempts_pending_zero_duration_write_admission() {
+        let mut fixture = ConnectionFixture::new().await;
+        let result = fixture.request(false, 0).await;
+        let snapshot_reply = fixture.snapshot_request().await;
+        fixture.fill_mailbox().await;
+        snapshot_reply.send(connected_snapshot(0, vec![])).unwrap();
+        tokio::task::yield_now().await;
+
+        let (abort_reply, aborted) = oneshot::channel();
+        fixture
+            .engine
+            .send(FadeCommand::AbortAll {
+                reply: Some(abort_reply),
+            })
+            .await
+            .unwrap();
+        fixture.release_mailbox(false).await;
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), aborted)
+                .await
+                .expect("Abort All must be processed while write admission waits")
+                .unwrap(),
+            Ok(())
+        );
+        assert_eq!(
+            result.await.unwrap(),
+            Err(AppCommandError::RecallCanceled(
+                "Abort All was requested".to_string()
+            ))
+        );
+        assert!(fixture.commands.try_recv().is_err());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn zero_duration_write_deadline_expires_while_mailbox_capacity_is_unavailable() {
         let mut fixture = ConnectionFixture::new().await;
@@ -3235,6 +3306,67 @@ mod tests {
                 .iter()
                 .any(|write| write.parameter == Lv1WriteParameter::Width)
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn abort_all_preempts_pending_tick_write_admission() {
+        let mut fixture = ConnectionFixture::new().await;
+        let result = fixture.request(false, 100).await;
+        fixture
+            .snapshot_request()
+            .await
+            .send(connected_snapshot(0, vec![]))
+            .unwrap();
+        assert_eq!(result.await.unwrap(), Ok(()));
+        fixture.fill_mailbox().await;
+        fixture.release_readiness();
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+
+        let (abort_reply, aborted) = oneshot::channel();
+        fixture
+            .engine
+            .send(FadeCommand::AbortAll {
+                reply: Some(abort_reply),
+            })
+            .await
+            .unwrap();
+        fixture.release_mailbox(false).await;
+        assert_eq!(aborted.await.unwrap(), Ok(()));
+
+        assert!(fixture.commands.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn ready_pending_admission_wins_over_continuous_app_events() {
+        let mut fixture = ConnectionFixture::with_bus_capacity(100_001).await;
+        let result = fixture.request(false, 100).await;
+        fixture
+            .snapshot_request()
+            .await
+            .send(connected_snapshot(0, vec![]))
+            .unwrap();
+        assert_eq!(result.await.unwrap(), Ok(()));
+        fixture.fill_mailbox().await;
+        fixture.release_readiness();
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tokio::task::yield_now().await;
+        for channel in 0..100_000 {
+            fixture.bus.publish(AppEvent::Lv1 {
+                generation: 7,
+                event: Lv1Event::MuteChanged {
+                    group: 0,
+                    channel,
+                    muted: false,
+                },
+            });
+        }
+
+        fixture.release_mailbox(false).await;
+        assert!(matches!(
+            fixture.commands.recv().await,
+            Some(Lv1Command::WriteBatch(writes)) if !writes.is_empty()
+        ));
     }
 
     #[tokio::test(start_paused = true)]
