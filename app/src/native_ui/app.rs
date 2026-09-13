@@ -5,8 +5,9 @@ use std::time::Duration;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{Root, WindowExt as _};
 use gpui_kit::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, PathPromptOptions, PromptLevel, Render, Styled as _, Window, div,
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, PathPromptOptions, PromptLevel, Render, Styled as _, Window,
+    div,
 };
 use tokio::sync::mpsc;
 
@@ -18,9 +19,9 @@ use super::keyboard::{
     InteractionState, RoutedAction, global_key_context, normalized_physical_key, route_action,
 };
 use super::logs::LogsView;
-use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, SaveShow, SaveShowAs};
+use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow, SaveShowAs};
 #[cfg(target_os = "macos")]
-use super::menu::{Hide, HideOthers, Quit};
+use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
 use super::shell::AppShell;
@@ -29,6 +30,7 @@ use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 pub struct AppRoot {
     presentation: PresentationState,
     dispatcher: CommandDispatcher,
+    focus: FocusHandle,
     shell: Entity<AppShell>,
     cue_lists: Entity<CueListsView>,
     connection: Rc<RefCell<ConnectionState>>,
@@ -38,6 +40,10 @@ pub struct AppRoot {
 }
 
 impl AppRoot {
+    /// @cc [owner:mixxorz,label:accessibility;keyboard] session-action-focus
+    /// AppRoot MUST establish a live tracked action context before a startup dialog can open. After
+    /// that dialog closes, fixed session and Quit shortcuts and in-app session-menu actions MUST
+    /// reach AppRoot without requiring another pointer or focus event.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         dispatcher: CommandDispatcher,
@@ -50,6 +56,8 @@ impl AppRoot {
         cx: &mut Context<Self>,
     ) -> Self {
         dispatcher.bridge_projections(projections);
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         let initial = AppViewState::default();
         let connection = Rc::new(RefCell::new(ConnectionState::startup()));
         let latest_snapshot = Rc::new(RefCell::new(initial.clone()));
@@ -66,6 +74,7 @@ impl AppRoot {
                 settings,
                 cx.new(|_| LogsView::new(initial)),
                 go_command_id.clone(),
+                focus.clone(),
                 move |window, cx| {
                     open_connection_state.borrow_mut().open_manual();
                     if !window.has_active_dialog(cx) {
@@ -97,6 +106,7 @@ impl AppRoot {
         Self {
             presentation: PresentationState::default(),
             dispatcher,
+            focus,
             shell,
             cue_lists,
             connection,
@@ -456,7 +466,6 @@ impl AppRoot {
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
         if self.shell.read(cx).shortcut_capture_active(cx) {
             cx.propagate();
@@ -468,7 +477,8 @@ impl AppRoot {
     /// @cc [owner:mixxorz,label:safety;keyboard] go-shortcut-routing
     /// A matching GO keydown MUST be consumed, but MUST dispatch at most one recall while a prior
     /// GO recall is unsettled and only when the projected active cue resolves to a projected scene.
-    /// Repeats and key events owned by editable controls or dialogs MUST NOT dispatch.
+    /// Repeats and key events owned by editable controls, dialogs, or an open session menu MUST NOT
+    /// dispatch.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let custom_modal_open = self.shell.read(cx).modal_open(cx);
         if custom_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
@@ -479,7 +489,9 @@ impl AppRoot {
             return;
         }
         let interaction = InteractionState {
-            modal_open: window.has_active_dialog(cx) || custom_modal_open,
+            modal_open: window.has_active_dialog(cx)
+                || custom_modal_open
+                || self.shell.read(cx).session_menu_open(),
             editable_focused: event.prefer_character_input,
         };
         let capture_active = self.shell.read(cx).shortcut_capture_active(cx);
@@ -562,17 +574,18 @@ impl Render for AppRoot {
             .relative()
             .size_full()
             .key_context(global_key_context())
+            .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_new_show))
             .on_action(cx.listener(Self::on_new_show_from_template))
             .on_action(cx.listener(Self::on_open_show))
             .on_action(cx.listener(Self::on_save_show))
-            .on_action(cx.listener(Self::on_save_show_as));
+            .on_action(cx.listener(Self::on_save_show_as))
+            .on_action(cx.listener(Self::on_quit));
         #[cfg(target_os = "macos")]
         let root = root
             .on_action(cx.listener(Self::on_hide))
-            .on_action(cx.listener(Self::on_hide_others))
-            .on_action(cx.listener(Self::on_quit));
+            .on_action(cx.listener(Self::on_hide_others));
         root.on_key_down(cx.listener(Self::on_key_down))
             .child(self.shell.clone())
             .children(Root::render_sheet_layer(window, cx))

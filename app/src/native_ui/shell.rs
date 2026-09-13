@@ -6,8 +6,8 @@ use gpui_kit::base::Button as BaseButton;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, rgb,
+    Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render, Styled as _, Window,
+    div, prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::projector::{AppConnectionState, AppFadeState, AppViewState};
@@ -16,6 +16,7 @@ use crate::settings::TimeDisplayFormat;
 use super::button::bordered_button;
 use super::cues::CueListsView;
 use super::logs::LogsView;
+use super::menu::session_menu_button;
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
 use super::theme::{
@@ -35,6 +36,8 @@ pub struct AppShell {
     settings: Entity<SettingsView>,
     logs: Entity<LogsView>,
     go_command_id: Rc<Cell<Option<u64>>>,
+    action_context: FocusHandle,
+    session_menu_open: bool,
     open_connection: Box<OpenConnection>,
 }
 
@@ -48,6 +51,7 @@ impl AppShell {
         settings: Entity<SettingsView>,
         logs: Entity<LogsView>,
         go_command_id: Rc<Cell<Option<u64>>>,
+        action_context: FocusHandle,
         open_connection: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -71,12 +75,18 @@ impl AppShell {
             settings,
             logs,
             go_command_id,
+            action_context,
+            session_menu_open: false,
             open_connection: Box::new(open_connection),
         }
     }
 
     pub fn active_tab(&self) -> MainTab {
         self.active_tab
+    }
+
+    pub fn session_menu_open(&self) -> bool {
+        self.session_menu_open
     }
 
     pub fn modal_open(&self, cx: &gpui_kit::App) -> bool {
@@ -142,7 +152,7 @@ impl AppShell {
         BaseButton::new(format!("tab-{label}"))
             .accessibility_label(format!("{label} tab"))
             .selected(active)
-            .disabled(self.modal_open(cx))
+            .disabled(self.modal_open(cx) || self.session_menu_open)
             .px_5()
             .py_4()
             .border_b_2()
@@ -206,7 +216,8 @@ impl Render for AppShell {
                 .and_then(|identity| identity.host.as_deref()),
         );
         let lockout = self.snapshot.lockout;
-        let actions_blocked = self.modal_open(cx) || self.shortcut_capture_active(cx);
+        let trigger_disabled = self.modal_open(cx) || self.shortcut_capture_active(cx);
+        let actions_blocked = trigger_disabled || self.session_menu_open;
         let lockout_dispatcher = self.dispatcher.clone();
         let abort_dispatcher = self.dispatcher.clone();
 
@@ -227,6 +238,16 @@ impl Render for AppShell {
                     .bg(rgb(CONSOLE_CHROME))
                     .child(
                         div().flex().flex_1().children([
+                            session_menu_button(self.action_context.clone(), trigger_disabled, {
+                                let entity = cx.entity();
+                                move |open, _, cx| {
+                                    entity.update(cx, |shell, cx| {
+                                        shell.session_menu_open = *open;
+                                        cx.notify();
+                                    });
+                                }
+                            })
+                            .into_any_element(),
                             self.tab(MainTab::Scenes, "Scenes", cx).into_any_element(),
                             self.tab(MainTab::CueLists, "Cue Lists", cx)
                                 .into_any_element(),
@@ -325,6 +346,7 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
     let can_go = cued.is_some()
         && shell.go_command_id.get().is_none()
         && !shell.modal_open(cx)
+        && !shell.session_menu_open
         && !shell.shortcut_capture_active(cx);
     let go_dispatcher = shell.dispatcher.clone();
     let go_command_id = shell.go_command_id.clone();

@@ -506,6 +506,7 @@ fn fixed_shortcut_conflicts() -> Vec<(&'static str, KeyboardShortcut)> {
         ("Open Session", fixed_file_shortcut("O", false)),
         ("Save Session", fixed_file_shortcut("S", false)),
         ("Save As", fixed_file_shortcut("S", true)),
+        ("Quit Advanced Show Control", fixed_quit_shortcut()),
     ];
     #[cfg(target_os = "macos")]
     let conflicts = {
@@ -516,14 +517,22 @@ fn fixed_shortcut_conflicts() -> Vec<(&'static str, KeyboardShortcut)> {
                 fixed_macos_shortcut("H", false),
             ),
             ("Hide Others", fixed_macos_shortcut("H", true)),
-            (
-                "Quit Advanced Show Control",
-                fixed_macos_shortcut("Q", false),
-            ),
         ]);
         conflicts
     };
     conflicts
+}
+
+fn fixed_quit_shortcut() -> KeyboardShortcut {
+    KeyboardShortcut {
+        key: if cfg!(target_os = "macos") { "Q" } else { "F4" }.into(),
+        modifiers: crate::settings::KeyboardShortcutModifiers {
+            shift: false,
+            control: false,
+            alt: !cfg!(target_os = "macos"),
+            meta: cfg!(target_os = "macos"),
+        },
+    }
 }
 
 fn fixed_file_shortcut(key: &str, shift: bool) -> KeyboardShortcut {
@@ -602,6 +611,19 @@ mod tests {
         );
         assert_eq!(save.modifiers.meta, cfg!(target_os = "macos"));
         assert_eq!(save.modifiers.control, !cfg!(target_os = "macos"));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn non_macos_quit_shortcut_is_reserved() {
+        assert_eq!(
+            shortcut_conflict_label(
+                ShortcutAction::Go,
+                &fixed_quit_shortcut(),
+                &AppSettings::default()
+            ),
+            Some("Quit Advanced Show Control")
+        );
     }
 
     #[cfg(target_os = "macos")]

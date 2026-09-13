@@ -26,8 +26,8 @@ If the console appears as **Unavailable**, check the network connection and wait
 
 A session stores your scene fades and cue lists in an `.ascs` file.
 
-1. Choose **File > New Session**.
-2. Choose **File > Save Session**.
+1. Open the burger menu in the top bar and select **New Session**.
+2. Open the burger menu again and select **Save Session**.
 3. Name the session and save it.
 
 Advanced Show Control does not yet warn you before closing or replacing a session with unsaved changes. Save after each change you want to keep.

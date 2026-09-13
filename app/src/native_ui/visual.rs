@@ -19,6 +19,7 @@ mod macos {
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     use super::super::cues::CueListsView;
+    use super::super::menu::{NewShow, Quit};
     use super::super::scenes::ScenesView;
     use super::super::settings_view::SettingsView;
     use super::super::{
@@ -138,11 +139,33 @@ mod macos {
         })?;
         cx.advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.is_action_available(&NewShow, cx));
+            assert!(window.is_action_available(&Quit, cx));
+        })?;
         let ready = cx.capture_screenshot(window.into())?;
         ready
             .save(output_dir.join("native-shell-ready.png"))
             .context("failed to save ready-state screenshot")?;
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("session-menu", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
+        })?;
+        let session_menu = cx.capture_screenshot(window.into())?;
+        session_menu
+            .save(output_dir.join("native-session-menu.png"))
+            .context("failed to save session-menu screenshot")?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("escape", cx);
+        })?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_none());
+        })?;
 
         let mut tab_captures = Vec::new();
         let mut cue_manager_capture = None;
@@ -274,7 +297,8 @@ mod macos {
         })?;
 
         let dimensions = ready.dimensions();
-        for image in std::iter::once(&connection)
+        for image in [&connection, &session_menu]
+            .into_iter()
             .chain(tab_captures.iter())
             .chain(cue_manager_capture.iter())
             .chain([&safe, &scene_overwrite])
@@ -287,7 +311,7 @@ mod macos {
             "native screenshot has the wrong aspect ratio: {dimensions:?}"
         );
         anyhow::ensure!(
-            ready != safe,
+            ready != safe && ready != session_menu,
             "distinct projected states rendered identically"
         );
         anyhow::ensure!(
@@ -305,6 +329,11 @@ mod macos {
                 "native-shell-ready",
                 visual_signature!(ready),
                 include_bytes!("visual_snapshots/native-shell-ready.rgb").as_slice(),
+            ),
+            (
+                "native-session-menu",
+                visual_signature!(session_menu),
+                include_bytes!("visual_snapshots/native-session-menu.rgb").as_slice(),
             ),
             (
                 "native-cue-lists",

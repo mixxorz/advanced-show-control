@@ -6,7 +6,7 @@ The application shell keeps the controls you need during a show in one place: co
 
 ## Top bar
 
-Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**. The **Events** tab is visible in v2, but event automation is not yet available.
+The square burger button immediately before **Scenes** opens the session menu. Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**. The **Events** tab is visible in v2, but event automation is not yet available.
 
 The connection indicator shows **Connected**, **Connecting**, or **Offline**. Select the console name to open **Connect to LV1** or change consoles.
 
@@ -41,13 +41,15 @@ If you move a fader during a fade, **Mode** may return to **Ready** while other 
 
 ## Sessions
 
-Sessions store scene fades and cue lists in `.ascs` files.
+Sessions store scene fades and cue lists in `.ascs` files. Open the burger menu in the top bar to use these commands:
 
 | Command | Shortcut |
 | --- | --- |
 | **New Session** | `CmdOrCtrl+N` |
-| **Open Session...** | `CmdOrCtrl+O` |
+| **New from Template…** | None |
+| **Open Session…** | `CmdOrCtrl+O` |
 | **Save Session** | `CmdOrCtrl+S` |
-| **Save As...** | `CmdOrCtrl+Shift+S` |
+| **Save Session As…** | `CmdOrCtrl+Shift+S` |
+| **Quit** | `Cmd+Q` on macOS; `Alt+F4` on Windows |
 
 An asterisk in the window title marks unsaved changes. Version 2 does not ask before you create, open, or close a session with unsaved changes, so save before continuing.

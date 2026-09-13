@@ -30,7 +30,7 @@ If **GO** is enabled but the setting is unlinked, the recall is refused and the 
 
 ## Session cannot be opened or saved
 
-Open an `.ascs` file through **File > Open Session...**. Use **Save Session** or **Save As...** to choose a path for a new session. If the title has an asterisk, save before you open, create, or close a session.
+Open the burger menu in the top bar and select **Open Session…** to open an `.ascs` file. Use **Save Session** or **Save Session As…** from the same menu to choose a path for a new session. If the title has an asterisk, save before you open, create, or close a session.
 
 ## No visible log explains a failure
 
