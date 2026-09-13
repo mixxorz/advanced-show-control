@@ -27,4 +27,14 @@ impl Lv1ActorHandle {
             .await
             .map_err(|_| Lv1ActorError::CommandChannelClosed)
     }
+
+    pub(crate) async fn reserve_owned(
+        &self,
+    ) -> Result<mpsc::OwnedPermit<Lv1Command>, Lv1ActorError> {
+        self.tx
+            .clone()
+            .reserve_owned()
+            .await
+            .map_err(|_| Lv1ActorError::CommandChannelClosed)
+    }
 }
