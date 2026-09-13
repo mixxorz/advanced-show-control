@@ -156,8 +156,11 @@ fn build_show_actor_with_state(
 /// @cc [owner:mixxorz,label:reliability] show-event-lag-fails-dirty
 /// If the Show event subscriber lags, the actor MUST conservatively mark the show dirty and publish
 /// the full Show projection rather than assuming no persisted edit was missed. While its single
-/// actor-owned persistence operation is pending, the actor MUST consume facts without accepting the
-/// next command, and a persisted edit observed during a successful operation MUST remain dirty.
+/// actor-owned persistence operation is pending, the actor MUST consume facts, generation-fenced
+/// connection-metadata commands, and read-only state/path commands. On receiving any other command,
+/// it MUST hold only that command and stop polling the mailbox until persistence completes so later
+/// commands cannot bypass it. A persisted edit observed during a successful operation MUST remain
+/// dirty.
 async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -168,6 +171,8 @@ async fn run_show_actor(
     backup_dir: std::path::PathBuf,
 ) {
     let mut pending: Option<PendingShowOperation> = None;
+    let mut deferred_command = None;
+    let mut command_channel_drained = false;
     loop {
         if let Some(operation) = pending.as_mut() {
             tokio::select! {
@@ -182,6 +187,35 @@ async fn run_show_actor(
                     publish_lockout_if_changed(&lockout_tx, &state);
                     pending = None;
                 }
+                command = rx.recv(), if deferred_command.is_none() && !command_channel_drained => {
+                    let Some(command) = command else {
+                        command_channel_drained = true;
+                        continue;
+                    };
+                    match command {
+                        ShowCommand::CurrentShowFilePath { reply } => {
+                            let _ = reply.send(state.current_show_file_path());
+                        }
+                        ShowCommand::InitialProjectionState { reply } => {
+                            let _ = reply.send(state.projection_state());
+                        }
+                        ShowCommand::SetLv1ConnectionIfCurrent {
+                            identity,
+                            expected_generation,
+                            reply,
+                        } => {
+                            set_lv1_connection_if_current(
+                                identity,
+                                expected_generation,
+                                reply,
+                                &mut state,
+                                &event_bus,
+                                &peers,
+                            ).await;
+                        }
+                        command => deferred_command = Some(command),
+                    }
+                }
                 event = events.recv() => {
                     let Some(dirtied) = handle_show_event(event, &mut state, &event_bus) else {
                         break;
@@ -189,6 +223,9 @@ async fn run_show_actor(
                     operation.dirty_during_wait |= dirtied;
                 }
             }
+        } else if let Some(command) = deferred_command.take() {
+            pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+            publish_lockout_if_changed(&lockout_tx, &state);
         } else {
             tokio::select! {
                 command = rx.recv() => {
@@ -418,22 +455,15 @@ async fn handle_command(
             expected_generation,
             reply,
         } => {
-            let outcome = peers
-                .runtime_generation
-                .if_current(expected_generation, || {
-                    let changed = state.set_lv1_connection(identity);
-                    publish_if_changed(event_bus, state, changed);
-                    super::CompleteConnectionOutcome {
-                        accepted: true,
-                        changed,
-                    }
-                })
-                .await
-                .unwrap_or(super::CompleteConnectionOutcome {
-                    accepted: false,
-                    changed: false,
-                });
-            let _ = reply.send(outcome);
+            set_lv1_connection_if_current(
+                identity,
+                expected_generation,
+                reply,
+                state,
+                event_bus,
+                peers,
+            )
+            .await;
         }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
             let peers = peers.clone();
@@ -459,6 +489,32 @@ async fn handle_command(
         }
     }
     None
+}
+
+async fn set_lv1_connection_if_current(
+    identity: Option<crate::connection_state::Lv1SystemIdentity>,
+    expected_generation: u64,
+    reply: tokio::sync::oneshot::Sender<super::CompleteConnectionOutcome>,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    peers: &ShowActorPeers,
+) {
+    let outcome = peers
+        .runtime_generation
+        .if_current(expected_generation, || {
+            let changed = state.set_lv1_connection(identity);
+            publish_if_changed(event_bus, state, changed);
+            super::CompleteConnectionOutcome {
+                accepted: true,
+                changed,
+            }
+        })
+        .await
+        .unwrap_or(super::CompleteConnectionOutcome {
+            accepted: false,
+            changed: false,
+        });
+    let _ = reply.send(outcome);
 }
 
 /// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
@@ -1781,6 +1837,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pending_save_allows_disconnect_metadata_to_complete_promptly() {
+        let root = TestDir::new("pending-save-disconnect");
+        let event_bus = AppEventBus::default();
+        let (show, task, peers, _lockout) = build_show_actor(event_bus);
+        let (scenes, mut scene_commands) = tokio::sync::mpsc::channel(8);
+        peers.set_scenes(scenes);
+        task.with_backup_dir(root.path().join("backups")).spawn();
+
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1".to_string()),
+            address: "127.0.0.1".to_string(),
+            port: 50_000,
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: Some(identity),
+            expected_generation: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(response.await.unwrap().changed);
+
+        show.send(ShowCommand::SaveShowFileAs {
+            path: root.path().join("pending.ascs"),
+            reply: None,
+        })
+        .await
+        .unwrap();
+        let Some(ScenesCommand::GetSessionDocument { .. }) = scene_commands.recv().await else {
+            panic!("save should request the session document");
+        };
+
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: None,
+            expected_generation: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_millis(100), response)
+            .await
+            .expect("disconnect metadata must not wait for pending persistence")
+            .unwrap();
+        assert!(outcome.accepted);
+        assert!(outcome.changed);
+    }
+
+    #[tokio::test]
     async fn pending_save_consumes_persisted_edits_without_accepting_another_command() {
         let root = TestDir::new("pending-save");
         let event_bus = AppEventBus::default();
@@ -1812,6 +1920,14 @@ mod tests {
         })
         .await
         .unwrap();
+        let (connection_reply, mut connection_response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: None,
+            expected_generation: 0,
+            reply: connection_reply,
+        })
+        .await
+        .unwrap();
         event_bus.publish(crate::runtime::events::AppEvent::CueLists(
             CueListsProjectionState::default(),
         ));
@@ -1824,6 +1940,7 @@ mod tests {
         .expect("persisted edits should be consumed while save waits");
         assert!(dirty_state.show_file_dirty);
         assert!(lockout_response.try_recv().is_err());
+        assert!(connection_response.try_recv().is_err());
 
         document_reply
             .send(SessionDocument {
@@ -1833,6 +1950,7 @@ mod tests {
             .unwrap();
         save_response.await.unwrap().unwrap();
         assert!(lockout_response.await.unwrap().changed);
+        assert!(connection_response.await.unwrap().accepted);
         assert!(current_show_state(&show).await.show_file_dirty);
     }
 
