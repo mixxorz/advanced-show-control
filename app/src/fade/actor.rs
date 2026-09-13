@@ -326,6 +326,22 @@ async fn run_engine(
             }
 
             Some(admission) = pending_admission_fut => {
+                let effect = drain_ready_app_events(
+                    &mut app_events,
+                    &mut EventContext {
+                        generation,
+                        state: &mut state,
+                        tick_interval: &mut tick_interval,
+                        fade_completed_emitted: &mut fade_completed_emitted,
+                    },
+                );
+                if effect != AppEventEffect::Continue {
+                    cancel_pending_write(&mut pending_write, effect.clone());
+                    if effect == AppEventEffect::StreamClosed {
+                        break;
+                    }
+                    continue;
+                }
                 let pending = pending_write.take().expect("ready admission requires pending write");
                 finish_pending_write(
                     &connection,
@@ -892,6 +908,38 @@ async fn await_snapshot_with_facts<T>(
             },
         }
     }
+}
+
+/// Process the facts that were already queued when a write reservation became ready. This keeps a
+/// published disconnect or generation transition ahead of the write without letting a continuously
+/// producing event stream starve write progress.
+fn drain_ready_app_events(
+    app_events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    context: &mut EventContext<'_>,
+) -> AppEventEffect {
+    let mut remaining = app_events.len();
+    while remaining > 0 {
+        let event = match app_events.try_recv() {
+            Ok(event) => {
+                remaining -= 1;
+                Ok(event)
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
+                let skipped = usize::try_from(count).unwrap_or(usize::MAX).max(1);
+                remaining = remaining.saturating_sub(skipped);
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(count))
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Closed) => {
+                return AppEventEffect::StreamClosed;
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty) => break,
+        };
+        let effect = process_app_event(event, Instant::now(), context);
+        if effect != AppEventEffect::Continue {
+            return effect;
+        }
+    }
+    AppEventEffect::Continue
 }
 
 fn apply_elapsed_readiness_timeout(context: &mut EventContext<'_>) {

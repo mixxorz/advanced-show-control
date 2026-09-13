@@ -272,27 +272,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
         };
         tokio::select! {
-            completion = async {
-                pending_snapshot
-                    .as_mut()
-                    .expect("enabled pending snapshot branch has an operation")
-                    .future
-                    .as_mut()
-                    .await
-            }, if pending_snapshot.is_some() => {
-                let operation = pending_snapshot
-                    .take()
-                    .expect("completed pending snapshot operation exists");
-                finish_pending_snapshot(
-                    operation,
-                    completion,
-                    active_generation,
-                    &runtime_generation,
-                    &scene_library_status,
-                    &mut recall_state,
-                    &event_bus,
-                ).await;
-            }
+            biased;
             command = cue_commands.recv(), if pending_snapshot.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
@@ -532,6 +512,27 @@ async fn run_scenes_actor(task: ScenesTask) {
                         break;
                     }
                 }
+            }
+            completion = async {
+                pending_snapshot
+                    .as_mut()
+                    .expect("enabled pending snapshot branch has an operation")
+                    .future
+                    .as_mut()
+                    .await
+            }, if pending_snapshot.is_some() => {
+                let operation = pending_snapshot
+                    .take()
+                    .expect("completed pending snapshot operation exists");
+                finish_pending_snapshot(
+                    operation,
+                    completion,
+                    active_generation,
+                    &runtime_generation,
+                    &scene_library_status,
+                    &mut recall_state,
+                    &event_bus,
+                ).await;
             }
             lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
                 Ok(true) => {
