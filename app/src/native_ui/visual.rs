@@ -19,7 +19,7 @@ mod macos {
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     use super::super::cues::CueListsView;
-    use super::super::menu::{NewShow, Quit};
+    use super::super::menu::{self, NewShow, Quit};
     use super::super::scenes::ScenesView;
     use super::super::settings_view::SettingsView;
     use super::super::{
@@ -76,6 +76,7 @@ mod macos {
         let (ui_events, receiver) = ui_event_channel();
         let dispatcher =
             CommandDispatcher::new(runtime.handle(), runtime.commands(), ui_events.clone());
+        let observed_dispatcher = dispatcher.clone();
 
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
@@ -85,6 +86,7 @@ mod macos {
         cx.update(|cx| {
             gpui_kit::init(cx);
             theme::install(cx).expect("bundled native theme must install");
+            menu::install(cx);
         });
 
         let window = cx
@@ -165,7 +167,26 @@ mod macos {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("popup-menu").is_none());
+            window.click("tab-Cue Lists", cx);
+            window.click("select-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.click("session-menu", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
         })?;
+        let dispatched_before_shortcuts = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("space", cx);
+            window.press("c", cx);
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_shortcuts,
+            "GO or Cue dispatched while the session menu was open"
+        );
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("escape", cx);
+        })?;
+        cx.run_until_parked();
 
         let mut tab_captures = Vec::new();
         let mut cue_manager_capture = None;

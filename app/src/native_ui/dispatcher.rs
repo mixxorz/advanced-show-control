@@ -83,6 +83,11 @@ impl CommandDispatcher {
             + 1
     }
 
+    #[cfg(feature = "debug-tools")]
+    pub(crate) fn dispatched_count(&self) -> u64 {
+        self.next_command_id.load(Ordering::Relaxed)
+    }
+
     pub fn dispatch<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
