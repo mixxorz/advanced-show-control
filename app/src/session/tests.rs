@@ -44,7 +44,9 @@ struct Session {
     cues: CueListsHandle,
     scenes: crate::scenes::ScenesHandle,
     events: AppEventBus,
+    lv1_snapshot: tokio::sync::watch::Sender<crate::lv1::Lv1StateSnapshot>,
     recalls: tokio::sync::mpsc::Receiver<crate::lv1::Lv1Command>,
+    fade_commands: tokio::sync::mpsc::Receiver<crate::fade::FadeCommand>,
     _show: crate::show::ShowStateHandle,
     generation: crate::runtime::generation::RuntimeGeneration,
 }
@@ -80,13 +82,14 @@ impl Session {
             ping_sequence: 0,
         };
         let initial_scene_list = snapshot.scene_list.clone();
+        let (lv1_snapshot, snapshot_rx) = tokio::sync::watch::channel(snapshot);
         let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
         let (recall_tx, recalls) = tokio::sync::mpsc::channel(8);
         tokio::spawn(async move {
             while let Some(command) = lv1_rx.recv().await {
                 match command {
                     crate::lv1::Lv1Command::GetState { reply } => {
-                        let _ = reply.send(snapshot.clone());
+                        let _ = reply.send(snapshot_rx.borrow().clone());
                     }
                     command => {
                         let _ = recall_tx.send(command).await;
@@ -105,7 +108,7 @@ impl Session {
             lockout,
         );
         let cues = task.cue_lists_handle();
-        let (fade, _commands) = tokio::sync::mpsc::channel(8);
+        let (fade, fade_commands) = tokio::sync::mpsc::channel(8);
         let lv1 = crate::lv1::test_actor_handle(lv1_tx);
         peers.set_peers_for_generation(0, lv1.clone(), fade);
         show_peers.set_lv1(0, lv1);
@@ -115,7 +118,9 @@ impl Session {
             cues,
             scenes,
             events,
+            lv1_snapshot,
             recalls,
+            fade_commands,
             _show,
             generation,
         };
@@ -206,6 +211,27 @@ impl Session {
             .await
             .unwrap();
         (replacement, response)
+    }
+
+    async fn finish_recall_readiness(&mut self, sequence: u64, scene: crate::lv1::SceneState) {
+        let mut snapshot = self.lv1_snapshot.borrow().clone();
+        snapshot.scene = Some(scene.clone());
+        snapshot.ping_sequence = sequence;
+        self.lv1_snapshot.send_replace(snapshot);
+        self.events.publish_lv1(
+            0,
+            crate::lv1::Lv1Event::SceneChanged(crate::lv1::SceneObservation { sequence, scene }),
+        );
+        let crate::fade::FadeCommand::WaitForRecallReadiness {
+            mut readiness,
+            reply: Some(reply),
+            ..
+        } = self.fade_commands.recv().await.unwrap()
+        else {
+            panic!("expected Fade readiness wait");
+        };
+        reply.send(Ok(())).unwrap();
+        readiness.completion.take().unwrap().send(Ok(())).unwrap();
     }
 
     async fn document(&self) -> CueListDocument {
@@ -480,6 +506,148 @@ async fn cue_advances_only_after_successful_lv1_dispatch() {
 }
 
 #[tokio::test]
+async fn multiple_go_requests_queue_while_the_first_recall_is_unsettled() {
+    let scene_ids = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+    let configs = scene_ids
+        .iter()
+        .enumerate()
+        .map(|(offset, id)| {
+            let mut config = scene(*id);
+            config.scene_index = Some(offset as i32 + 1);
+            config.scene_name = format!("Scene {}", offset + 1);
+            config
+        })
+        .collect();
+    let mut session = Session::with_scenes(configs).await;
+    let first = session.cue(scene_ids[0]).await;
+    let mut entries = Vec::new();
+    for (insert_index, scene_internal_id) in scene_ids.iter().copied().enumerate().skip(1) {
+        let (reply, response) = oneshot::channel();
+        session
+            .cues
+            .send(CueListsCommand::AddSceneToActiveCueList {
+                scene_internal_id,
+                insert_index,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+        entries.push(response.await.unwrap().unwrap().entry.unwrap());
+    }
+
+    let mut responses = Vec::new();
+    for _ in 0..3 {
+        let (reply, response) = oneshot::channel();
+        session
+            .cues
+            .send(CueListsCommand::RecallCuedCue { reply })
+            .await
+            .unwrap();
+        responses.push(response);
+    }
+
+    for response in &mut responses {
+        assert_eq!(
+            response.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        );
+    }
+    let expected_entries = [first.id, entries[0].id, entries[1].id];
+    let expected_next_entries = [Some(entries[0].id), Some(entries[1].id), None];
+    for offset in 0..3 {
+        let crate::lv1::Lv1Command::RecallScene {
+            scene_index,
+            reply: Some(reply),
+        } = session.recalls.recv().await.unwrap()
+        else {
+            panic!("expected LV1 recall");
+        };
+        assert_eq!(scene_index, offset as i32 + 1);
+        assert!(session.recalls.try_recv().is_err());
+        reply
+            .send(Ok(crate::lv1::RecallSceneDispatch {
+                scene_observation_sequence: offset as u64,
+            }))
+            .unwrap();
+        assert_eq!(
+            responses.remove(0).await.unwrap().unwrap(),
+            CueRecallResult {
+                recalled_entry_id: expected_entries[offset],
+                next_cued_entry_id: expected_next_entries[offset],
+            }
+        );
+        if offset < 2 {
+            session
+                .finish_recall_readiness(
+                    offset as u64 + 1,
+                    crate::lv1::SceneState {
+                        index: offset as i32 + 1,
+                        name: format!("Scene {}", offset + 1),
+                    },
+                )
+                .await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn abort_all_cancels_active_and_queued_go_requests() {
+    let id = Uuid::new_v4();
+    let mut config = scene(id);
+    config.scene_index = Some(1);
+    let mut session = Session::with_scenes(vec![config]).await;
+    session.cue(id).await;
+
+    let mut recalls = Vec::new();
+    for _ in 0..3 {
+        let (reply, recalled) = oneshot::channel();
+        session
+            .cues
+            .send(CueListsCommand::RecallCuedCue { reply })
+            .await
+            .unwrap();
+        recalls.push(recalled);
+    }
+    let crate::lv1::Lv1Command::RecallScene {
+        reply: Some(dispatch),
+        ..
+    } = session.recalls.recv().await.unwrap()
+    else {
+        panic!("expected recall");
+    };
+
+    let (reply, aborted) = oneshot::channel();
+    session
+        .scenes
+        .send(ScenesCommand::AbortAll { reply })
+        .await
+        .unwrap();
+    let crate::fade::FadeCommand::AbortAll { reply: Some(reply) } =
+        session.fade_commands.recv().await.unwrap()
+    else {
+        panic!("expected Fade abort");
+    };
+    reply.send(Ok(())).unwrap();
+    assert_eq!(aborted.await.unwrap(), Ok(()));
+
+    for recalled in recalls {
+        assert!(matches!(
+            recalled.await.unwrap(),
+            Err(crate::runtime::errors::AppCommandError::RecallCanceled(reason))
+                if reason == "Abort All was requested"
+        ));
+    }
+    assert!(
+        dispatch
+            .send(Ok(crate::lv1::RecallSceneDispatch {
+                scene_observation_sequence: 0,
+            }))
+            .is_err()
+    );
+    assert!(session.recalls.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn session_replacement_returns_one_reconciled_document() {
     let session = Session::new().await;
     let id = Uuid::new_v4();
@@ -544,12 +712,16 @@ async fn replacement_queued_during_recall_dispatch_preserves_the_replacement_doc
     let mut session = Session::with_scenes(vec![config]).await;
     session.cue(id).await;
     let original = session.snapshot().await;
-    let (reply, recalled) = oneshot::channel();
-    session
-        .cues
-        .send(CueListsCommand::RecallCuedCue { reply })
-        .await
-        .unwrap();
+    let mut recalls = Vec::new();
+    for _ in 0..3 {
+        let (reply, recalled) = oneshot::channel();
+        session
+            .cues
+            .send(CueListsCommand::RecallCuedCue { reply })
+            .await
+            .unwrap();
+        recalls.push(recalled);
+    }
     let crate::lv1::Lv1Command::RecallScene {
         reply: Some(dispatch),
         ..
@@ -558,13 +730,22 @@ async fn replacement_queued_during_recall_dispatch_preserves_the_replacement_doc
         panic!("expected recall");
     };
     let (_, replaced) = session.replace(original.clone(), 0).await;
-    dispatch
-        .send(Ok(crate::lv1::RecallSceneDispatch {
-            scene_observation_sequence: 0,
-        }))
-        .unwrap();
     assert_eq!(replaced.await.unwrap().unwrap(), original);
-    let _ = recalled.await.unwrap();
+    assert!(
+        dispatch
+            .send(Ok(crate::lv1::RecallSceneDispatch {
+                scene_observation_sequence: 0,
+            }))
+            .is_err()
+    );
+    for recalled in recalls {
+        assert!(matches!(
+            recalled.await.unwrap(),
+            Err(crate::runtime::errors::AppCommandError::RecallCanceled(reason))
+                if reason == "session was replaced"
+        ));
+    }
+    assert!(session.recalls.try_recv().is_err());
     assert_eq!(session.snapshot().await, original);
 }
 

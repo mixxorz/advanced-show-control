@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -242,6 +243,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut recall_state = ScenesState::default();
     let mut cues = crate::cue_lists::operations::CueLists::new(event_bus.clone());
     let mut cue_commands_open = true;
+    let mut retained_cue_commands = VecDeque::new();
     let mut scene_commands_open = true;
     let mut held_scene_command: Option<ScenesCommand> = None;
     let mut recall_coordinator = RecallCoordinator::default();
@@ -494,7 +496,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
             }
-            command = cue_commands.recv(), if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
+            command = async {
+                match retained_cue_commands.pop_front() {
+                    Some(command) => Some(command),
+                    None => cue_commands.recv().await,
+                }
+            }, if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -561,6 +568,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                         pending_observation_snapshot = None;
                         pending_observation_handoff = None;
                         recall_coordinator.cancel("Abort All was requested", true);
+                        cancel_queued_cue_recalls(
+                            &mut cue_commands,
+                            &mut retained_cue_commands,
+                            "Abort All was requested",
+                        );
                         pending_abort = Some(PendingAbortOperation::new(
                             active_generation,
                             peers.handles(active_generation).map(|handles| {
@@ -591,6 +603,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                 let command = match command {
                     ScenesCommand::AbortAll { reply } => {
                         recall_coordinator.cancel("Abort All was requested", true);
+                        cancel_queued_cue_recalls(
+                            &mut cue_commands,
+                            &mut retained_cue_commands,
+                            "Abort All was requested",
+                        );
                         pending_abort = Some(PendingAbortOperation::new(
                             active_generation,
                             peers.handles(active_generation).map(|handles| {
@@ -611,6 +628,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                             replacement.commit(|document| {
                                 recall_coordinator.cancel("session was replaced", true);
                                 cues.cancel_recall();
+                                cancel_queued_cue_recalls(
+                                    &mut cue_commands,
+                                    &mut retained_cue_commands,
+                                    "session was replaced",
+                                );
                                 recall_state.replace_snapshot_for_session(document.scenes);
                                 cues.state.replace_document(document.cue_lists, recall_state.scene_configs().iter().map(|scene| scene.internal_scene_id));
                                 event_bus.publish(AppEvent::SessionReplaced {
@@ -1106,6 +1128,26 @@ enum ScenesCommandDispatch {
     Shutdown,
 }
 
+fn cancel_queued_cue_recalls(
+    commands: &mut mpsc::Receiver<crate::cue_lists::CueListsCommand>,
+    retained: &mut VecDeque<crate::cue_lists::CueListsCommand>,
+    reason: &str,
+) {
+    while let Ok(command) = commands.try_recv() {
+        retained.push_back(command);
+    }
+    let mut preserved = VecDeque::new();
+    while let Some(command) = retained.pop_front() {
+        match command {
+            crate::cue_lists::CueListsCommand::RecallCuedCue { reply } => {
+                let _ = reply.send(Err(AppCommandError::RecallCanceled(reason.to_string())));
+            }
+            command => preserved.push_back(command),
+        }
+    }
+    *retained = preserved;
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_scenes_command(
     command: ScenesCommand,
@@ -1575,7 +1617,8 @@ async fn finish_pending_explicit_recall(
 
 /**
  * @cc [owner:mixxorz,label:safety;reliability] abort-all-pending-operation
- * Abort All MUST synchronously cancel coordinated recall intent before its Fade request begins.
+ * Abort All MUST synchronously cancel coordinated recall intent and every already-admitted queued
+ * cue recall before its Fade request begins, while preserving the order of non-recall cue commands.
  * Fade mailbox admission and acknowledgement MUST run as an actor-owned pending operation while
  * runtime, LV1, Settings, lockout, and recall-deadline inputs remain serviced. Scene and cue
  * commands MUST remain FIFO-gated until completion. Generation MUST be rechecked after Fade

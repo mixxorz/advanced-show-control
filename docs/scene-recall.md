@@ -10,9 +10,11 @@ ASC supports two recall paths.
 
 ### ASC-originated recall
 
-A Recall command or cue-list GO enters the Scenes actor's eight-request FIFO. Before admission and again before dispatch, Scenes obtains fresh LV1 state and validates the current connection generation, lockout, scene-library availability, and the requested config's exact LV1 index and name.
+A Recall command or a resolved cue-list GO enters the Scenes actor's eight-request FIFO. Before admission and again before dispatch, Scenes obtains fresh LV1 state and validates the current connection generation, lockout, scene-library availability, and the requested config's exact LV1 index and name.
 
-The caller's command reply remains pending while the request waits in the FIFO. A successful reply means the LV1 recall command was dispatched. It does not mean Fade readiness or the configured recall interval has completed.
+The caller's command reply remains pending while the request waits for cue resolution or in the recall FIFO. A successful reply means the LV1 recall command was dispatched. It does not mean Fade readiness or the configured recall interval has completed. Cue-list GO advances the cue only after that successful dispatch, so additional GO commands resolve in order against each newly advanced cue.
+
+GO accepts additional distinct presses while earlier GO commands are unsettled, up to eight unsettled commands. The pointer handler ignores platform-reported follow-up clicks in a multi-click sequence, and the keyboard handler ignores held-key repeats. These presentation guards prevent accidental or unbounded submission; backend recall validation and cancellation remain authoritative.
 
 ### LV1-originated recall
 
