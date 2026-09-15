@@ -1,7 +1,7 @@
 use gpui_kit::{
     Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _, px,
-    rgb,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
+    prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::projector::{AppViewState, LogSeverity};
@@ -34,15 +34,14 @@ impl LogsView {
 
 impl Render for LogsView {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        let entries = self.snapshot.logs.iter().map(|entry| {
+        let entries = self.snapshot.logs.iter().enumerate().map(|(index, entry)| {
             let severity_color = match entry.severity {
                 LogSeverity::Info => rgb(CONSOLE_PRIMARY),
                 LogSeverity::Warning => rgb(STATUS_WARNING),
                 LogSeverity::Error => rgb(STATUS_DANGER),
             };
             div()
-                .grid()
-                .grid_cols(3)
+                .flex()
                 .gap_3()
                 .py_2()
                 .border_b_1()
@@ -51,16 +50,28 @@ impl Render for LogsView {
                 .text_sm()
                 .child(
                     div()
+                        .id(format!("log-timestamp-{index}"))
+                        .test_support()
+                        .w(px(176.))
+                        .flex_shrink_0()
                         .text_color(rgb(CONSOLE_MUTED))
                         .child(entry.timestamp.clone()),
                 )
                 .child(
                     div()
+                        .id(format!("log-severity-{index}"))
+                        .test_support()
+                        .w(px(88.))
+                        .flex_shrink_0()
                         .text_color(severity_color)
                         .child(format!("{:?}", entry.severity).to_uppercase()),
                 )
                 .child(
                     div()
+                        .id(format!("log-message-{index}"))
+                        .test_support()
+                        .flex_1()
+                        .min_w_0()
                         .font_family("Fira Sans")
                         .text_color(rgb(CONSOLE_PRIMARY))
                         .child(entry.message.clone()),

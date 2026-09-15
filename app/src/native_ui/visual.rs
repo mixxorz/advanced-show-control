@@ -174,6 +174,7 @@ mod macos {
 
             let console_chooser = window.find("open-connection").bounds();
             assert!(console_chooser.size.width >= px(144.));
+            assert!(window.try_find("scene-x-fade").is_some());
 
             let bottom_status = window.find("bottom-status").bounds();
             let go_cell = window.find("go-cell").bounds();
@@ -264,7 +265,25 @@ mod macos {
                 .save(output_dir.join(file_name))
                 .with_context(|| format!("failed to save {file_name}"))?;
             tab_captures.push(image);
+            if selector == "tab-Logs" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    let timestamp = window.find("log-timestamp-0").bounds();
+                    let severity = window.find("log-severity-0").bounds();
+                    let message = window.find("log-message-0").bounds();
+                    assert_eq!(timestamp.size.width, px(176.));
+                    assert_eq!(severity.size.width, px(88.));
+                    assert_eq!(timestamp.right() + px(12.), severity.left());
+                    assert_eq!(severity.right() + px(12.), message.left());
+                    assert!(message.size.width > timestamp.size.width);
+                })?;
+            }
             if selector == "tab-Settings" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("sensitivity").is_some());
+                    assert!(window.try_find("same-scene-threshold").is_some());
+                })?;
                 cx.update_window(window.into(), |_, window, cx| {
                     window.scroll(
                         "settings-view",

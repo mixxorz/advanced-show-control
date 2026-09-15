@@ -1,15 +1,17 @@
 use gpui_kit::base::Button as BaseButton;
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::{
-    AnyElement, Context, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString,
-    TestSupportExt as _, Window, div, prelude::*, px, rgb,
+    AnyElement, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString,
+    Subscription, TestSupportExt as _, Window, div, prelude::*, px, rgb,
 };
 
 use crate::projector::AppViewState;
 use crate::settings::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 use super::CommandDispatcher;
-use super::keyboard::{CaptureResult, ShortcutCapture, shortcuts_equal};
+use super::keyboard::{CaptureResult, ShortcutCapture, normalized_physical_key, shortcuts_equal};
+use super::numeric_control::editable_numeric_control;
 use super::panel::panel_header;
 use super::theme::{
     ACCENT_ORANGE, CONSOLE_CONTROL, CONSOLE_CONTROL_HOVER, CONSOLE_LINE, CONSOLE_MUTED,
@@ -22,6 +24,21 @@ enum ShortcutAction {
     Cue,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NumericSetting {
+    Sensitivity,
+    SameSceneThreshold,
+}
+
+impl NumericSetting {
+    const fn index(self) -> usize {
+        match self {
+            Self::Sensitivity => 0,
+            Self::SameSceneThreshold => 1,
+        }
+    }
+}
+
 pub struct SettingsView {
     snapshot: AppViewState,
     draft: Option<AppSettings>,
@@ -31,15 +48,45 @@ pub struct SettingsView {
     capture: ShortcutCapture,
     capture_action: Option<ShortcutAction>,
     shortcut_conflict: Option<(ShortcutAction, String)>,
+    sensitivity_input: Entity<InputState>,
+    threshold_input: Entity<InputState>,
+    numeric_identity: (u8, u64),
+    numeric_edit_revisions: [u64; 2],
+    _numeric_subscriptions: Vec<Subscription>,
 }
 
 impl SettingsView {
     pub fn new(
         snapshot: AppViewState,
         dispatcher: CommandDispatcher,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let numeric_identity = (
+            snapshot.settings.fader_override_sensitivity,
+            snapshot.settings.same_scene_recall_threshold_ms,
+        );
+        let sensitivity_input =
+            cx.new(|cx| InputState::new(window, cx).default_value(numeric_identity.0.to_string()));
+        let threshold_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(format_threshold_ms(numeric_identity.1))
+        });
+        let numeric_subscriptions = vec![
+            cx.subscribe_in(
+                &sensitivity_input,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    this.handle_numeric_event(NumericSetting::Sensitivity, event, window, cx)
+                },
+            ),
+            cx.subscribe_in(
+                &threshold_input,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    this.handle_numeric_event(NumericSetting::SameSceneThreshold, event, window, cx)
+                },
+            ),
+        ];
         Self {
             snapshot,
             draft: None,
@@ -49,6 +96,11 @@ impl SettingsView {
             capture: ShortcutCapture::default(),
             capture_action: None,
             shortcut_conflict: None,
+            sensitivity_input,
+            threshold_input,
+            numeric_identity,
+            numeric_edit_revisions: [0; 2],
+            _numeric_subscriptions: numeric_subscriptions,
         }
     }
 
@@ -71,7 +123,7 @@ impl SettingsView {
     pub fn set_snapshot(
         &mut self,
         snapshot: AppViewState,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if self.draft.as_ref() == Some(&snapshot.settings) {
@@ -79,6 +131,27 @@ impl SettingsView {
             self.pending_command_id = None;
         }
         self.snapshot = snapshot;
+        let numeric_identity = (
+            self.settings().fader_override_sensitivity,
+            self.settings().same_scene_recall_threshold_ms,
+        );
+        if numeric_identity.0 != self.numeric_identity.0 {
+            self.reset_numeric(
+                NumericSetting::Sensitivity,
+                numeric_identity.0.to_string(),
+                window,
+                cx,
+            );
+        }
+        if numeric_identity.1 != self.numeric_identity.1 {
+            self.reset_numeric(
+                NumericSetting::SameSceneThreshold,
+                format_threshold_ms(numeric_identity.1),
+                window,
+                cx,
+            );
+        }
+        self.numeric_identity = numeric_identity;
         cx.notify();
     }
 
@@ -96,10 +169,17 @@ impl SettingsView {
         cx.notify();
     }
 
-    pub fn command_finished(&mut self, command_id: u64, failed: bool, cx: &mut Context<Self>) {
+    pub fn command_finished(
+        &mut self,
+        command_id: u64,
+        failed: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if failed && self.pending_command_id == Some(command_id) {
             self.draft = None;
             self.pending_command_id = None;
+            self.sync_numeric_inputs(window, cx);
             cx.notify();
         }
     }
@@ -175,48 +255,183 @@ impl SettingsView {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn stepper(
+    fn numeric_input(&self, setting: NumericSetting) -> &Entity<InputState> {
+        match setting {
+            NumericSetting::Sensitivity => &self.sensitivity_input,
+            NumericSetting::SameSceneThreshold => &self.threshold_input,
+        }
+    }
+
+    fn handle_numeric_event(
+        &mut self,
+        setting: NumericSetting,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            InputEvent::PressEnter { .. } => self.commit_numeric(setting, window, cx),
+            InputEvent::Blur => {
+                let revision = self.numeric_edit_revisions[setting.index()];
+                cx.on_next_frame(window, move |this, window, cx| {
+                    if this.numeric_edit_revisions[setting.index()] == revision {
+                        this.commit_numeric(setting, window, cx);
+                    }
+                });
+            }
+            InputEvent::Change => cx.notify(),
+            _ => {}
+        }
+    }
+
+    fn commit_numeric(
+        &mut self,
+        setting: NumericSetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = self.numeric_input(setting).read(cx).value().to_string();
+        let mut settings = self.settings().clone();
+        let formatted = match setting {
+            NumericSetting::Sensitivity => {
+                let Some(value) = normalize_sensitivity(&draft) else {
+                    self.discard_numeric(setting, window, cx);
+                    return;
+                };
+                settings.fader_override_sensitivity = value;
+                value.to_string()
+            }
+            NumericSetting::SameSceneThreshold => {
+                let Some(value) = normalize_threshold_ms(&draft) else {
+                    self.discard_numeric(setting, window, cx);
+                    return;
+                };
+                settings.same_scene_recall_threshold_ms = value;
+                format_threshold_ms(value)
+            }
+        };
+        self.numeric_edit_revisions[setting.index()] =
+            self.numeric_edit_revisions[setting.index()].wrapping_add(1);
+        self.reset_numeric(setting, formatted, window, cx);
+        if &settings != self.settings() {
+            self.numeric_identity = (
+                settings.fader_override_sensitivity,
+                settings.same_scene_recall_threshold_ms,
+            );
+            self.replace(settings, cx);
+        }
+    }
+
+    fn step_numeric(
+        &mut self,
+        setting: NumericSetting,
+        direction: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let draft = self.numeric_input(setting).read(cx).value().to_string();
+        let current = self.settings().clone();
+        let mut next = current.clone();
+        let formatted = match setting {
+            NumericSetting::Sensitivity => {
+                let value =
+                    stepped_sensitivity(&draft, current.fader_override_sensitivity, direction);
+                next.fader_override_sensitivity = value;
+                value.to_string()
+            }
+            NumericSetting::SameSceneThreshold => {
+                let value =
+                    stepped_threshold_ms(&draft, current.same_scene_recall_threshold_ms, direction);
+                next.same_scene_recall_threshold_ms = value;
+                format_threshold_ms(value)
+            }
+        };
+        self.numeric_edit_revisions[setting.index()] =
+            self.numeric_edit_revisions[setting.index()].wrapping_add(1);
+        self.reset_numeric(setting, formatted, window, cx);
+        if next != current {
+            self.numeric_identity = (
+                next.fader_override_sensitivity,
+                next.same_scene_recall_threshold_ms,
+            );
+            self.replace(next, cx);
+        }
+    }
+
+    fn discard_numeric(
+        &mut self,
+        setting: NumericSetting,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.numeric_edit_revisions[setting.index()] =
+            self.numeric_edit_revisions[setting.index()].wrapping_add(1);
+        let value = match setting {
+            NumericSetting::Sensitivity => self.settings().fader_override_sensitivity.to_string(),
+            NumericSetting::SameSceneThreshold => {
+                format_threshold_ms(self.settings().same_scene_recall_threshold_ms)
+            }
+        };
+        self.reset_numeric(setting, value, window, cx);
+    }
+
+    fn reset_numeric(
         &self,
+        setting: NumericSetting,
+        value: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.numeric_input(setting)
+            .update(cx, |input, cx| input.set_value(value, window, cx));
+    }
+
+    fn sync_numeric_inputs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let identity = (
+            self.settings().fader_override_sensitivity,
+            self.settings().same_scene_recall_threshold_ms,
+        );
+        self.reset_numeric(
+            NumericSetting::Sensitivity,
+            identity.0.to_string(),
+            window,
+            cx,
+        );
+        self.reset_numeric(
+            NumericSetting::SameSceneThreshold,
+            format_threshold_ms(identity.1),
+            window,
+            cx,
+        );
+        self.numeric_identity = identity;
+    }
+
+    fn numeric_row(
+        &self,
+        setting: NumericSetting,
         id: &'static str,
         label: &'static str,
-        value: String,
         can_decrease: bool,
         can_increase: bool,
-        decrease: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
-        increase: impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static,
+        cx: &mut Context<Self>,
     ) -> AnyElement {
         setting_row(
             label,
-            div()
-                .flex()
-                .items_center()
-                .child(
-                    control_button(
-                        format!("{id}-decrease"),
-                        "−",
-                        format!("Decrease {label}"),
-                        can_decrease,
-                    )
-                    .on_click(decrease),
-                )
-                .child(
-                    div()
-                        .w(px(86.))
-                        .text_center()
-                        .font_family("Fira Code")
-                        .child(value),
-                )
-                .child(
-                    control_button(
-                        format!("{id}-increase"),
-                        "+",
-                        format!("Increase {label}"),
-                        can_increase,
-                    )
-                    .on_click(increase),
-                )
-                .into_any_element(),
+            editable_numeric_control(
+                id,
+                label,
+                self.numeric_input(setting),
+                can_decrease,
+                can_increase,
+                cx.listener(move |this, _, window, cx| this.step_numeric(setting, -1, window, cx)),
+                cx.listener(move |this, _, window, cx| this.step_numeric(setting, 1, window, cx)),
+                cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                    if normalized_physical_key(&event.keystroke) == "Escape" {
+                        this.discard_numeric(setting, window, cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            ),
         )
     }
 
@@ -274,6 +489,12 @@ impl SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let settings = self.settings().clone();
+        let sensitivity_draft = self.sensitivity_input.read(cx).value().to_string();
+        let sensitivity_base = normalize_sensitivity(&sensitivity_draft)
+            .unwrap_or(settings.fader_override_sensitivity);
+        let threshold_draft = self.threshold_input.read(cx).value().to_string();
+        let threshold_base = normalize_threshold_ms(&threshold_draft)
+            .unwrap_or(settings.same_scene_recall_threshold_ms);
         div()
             .id("settings-view")
             .test_support()
@@ -358,24 +579,13 @@ impl Render for SettingsView {
                             )
                             .into_any_element(),
                     ))
-                    .child(self.stepper(
+                    .child(self.numeric_row(
+                        NumericSetting::Sensitivity,
                         "sensitivity",
                         "Fader override sensitivity",
-                        settings.fader_override_sensitivity.to_string(),
-                        settings.fader_override_sensitivity > 1,
-                        settings.fader_override_sensitivity < 10,
-                        cx.listener(|this, _, _, cx| {
-                            this.update(cx, |s| {
-                                s.fader_override_sensitivity =
-                                    s.fader_override_sensitivity.saturating_sub(1).max(1)
-                            })
-                        }),
-                        cx.listener(|this, _, _, cx| {
-                            this.update(cx, |s| {
-                                s.fader_override_sensitivity =
-                                    s.fader_override_sensitivity.saturating_add(1).min(10)
-                            })
-                        }),
+                        sensitivity_base > 1,
+                        sensitivity_base < 10,
+                        cx,
                     ))
                     .child(self.toggle_row(
                         "same-scene",
@@ -385,26 +595,13 @@ impl Render for SettingsView {
                             this.update(cx, |s| s.same_scene_recall_enabled = *checked)
                         }),
                     ))
-                    .child(self.stepper(
+                    .child(self.numeric_row(
+                        NumericSetting::SameSceneThreshold,
                         "same-scene-threshold",
                         "Same scene recall threshold",
-                        format!("{} ms", settings.same_scene_recall_threshold_ms),
-                        settings.same_scene_recall_threshold_ms > 0,
-                        settings.same_scene_recall_threshold_ms < 5_000,
-                        cx.listener(|this, _, _, cx| {
-                            this.update(cx, |s| {
-                                s.same_scene_recall_threshold_ms =
-                                    s.same_scene_recall_threshold_ms.saturating_sub(100)
-                            })
-                        }),
-                        cx.listener(|this, _, _, cx| {
-                            this.update(cx, |s| {
-                                s.same_scene_recall_threshold_ms = s
-                                    .same_scene_recall_threshold_ms
-                                    .saturating_add(100)
-                                    .min(5_000)
-                            })
-                        }),
+                        threshold_base > 0,
+                        threshold_base < 5_000,
+                        cx,
                     ))
                     .child(self.toggle_row(
                         "diagnostics",
@@ -446,6 +643,51 @@ fn setting_row(label: &'static str, control: AnyElement) -> AnyElement {
         )
         .child(control)
         .into_any_element()
+}
+
+fn parse_clamped_unsigned(draft: &str, min: u64, max: u64) -> Option<u64> {
+    let value = draft.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    let parsed = value.bytes().fold(0_u64, |parsed, byte| {
+        parsed
+            .saturating_mul(10)
+            .saturating_add(u64::from(byte - b'0'))
+    });
+    Some(parsed.clamp(min, max))
+}
+
+fn normalize_sensitivity(draft: &str) -> Option<u8> {
+    parse_clamped_unsigned(draft, 1, 10).map(|value| value as u8)
+}
+
+fn normalize_threshold_ms(draft: &str) -> Option<u64> {
+    let lowercase = draft.trim().to_ascii_lowercase();
+    let value = lowercase.strip_suffix("ms").unwrap_or(&lowercase);
+    parse_clamped_unsigned(value, 0, 5_000)
+}
+
+fn stepped_sensitivity(draft: &str, current: u8, direction: i64) -> u8 {
+    let value = normalize_sensitivity(draft).unwrap_or(current);
+    if direction > 0 {
+        value.saturating_add(1).min(10)
+    } else {
+        value.saturating_sub(1).max(1)
+    }
+}
+
+fn stepped_threshold_ms(draft: &str, current: u64, direction: i64) -> u64 {
+    let value = normalize_threshold_ms(draft).unwrap_or(current);
+    if direction > 0 {
+        value.saturating_add(100).min(5_000)
+    } else {
+        value.saturating_sub(100)
+    }
+}
+
+fn format_threshold_ms(value: u64) -> String {
+    format!("{value} ms")
 }
 
 fn control_button(
@@ -585,6 +827,38 @@ fn format_shortcut(shortcut: &KeyboardShortcut) -> SharedString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_settings_accept_typed_units_and_clamp_to_domain_ranges() {
+        assert_eq!(normalize_sensitivity(" 4 "), Some(4));
+        assert_eq!(normalize_sensitivity("0"), Some(1));
+        assert_eq!(normalize_sensitivity("99"), Some(10));
+        assert_eq!(normalize_sensitivity("999"), Some(10));
+        assert_eq!(normalize_sensitivity("999999999999999999999999"), Some(10));
+        assert_eq!(normalize_sensitivity("2.5"), None);
+        assert_eq!(normalize_sensitivity("-1"), None);
+
+        assert_eq!(normalize_threshold_ms(" 1200 ms "), Some(1_200));
+        assert_eq!(normalize_threshold_ms("750MS"), Some(750));
+        assert_eq!(normalize_threshold_ms("9999"), Some(5_000));
+        assert_eq!(
+            normalize_threshold_ms("999999999999999999999999 ms"),
+            Some(5_000)
+        );
+        assert_eq!(normalize_threshold_ms("1.5 ms"), None);
+        assert_eq!(normalize_threshold_ms("-100"), None);
+    }
+
+    #[test]
+    fn numeric_setting_steps_use_the_typed_draft_or_current_value() {
+        assert_eq!(stepped_sensitivity("4", 9, 1), 5);
+        assert_eq!(stepped_sensitivity("invalid", 9, -1), 8);
+        assert_eq!(stepped_sensitivity("10", 9, 1), 10);
+
+        assert_eq!(stepped_threshold_ms("1200 ms", 500, 1), 1_300);
+        assert_eq!(stepped_threshold_ms("invalid", 500, -1), 400);
+        assert_eq!(stepped_threshold_ms("0", 500, -1), 0);
+    }
 
     #[test]
     fn conflicts_require_key_case_equivalence_and_exact_modifiers() {

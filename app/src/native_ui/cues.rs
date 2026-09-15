@@ -544,26 +544,9 @@ impl CueListsView {
         let selected = self.selected_entry_id == Some(entry.id);
         let scene_name = scene.map_or("Missing scene", |scene| scene.scene_name.as_str());
         let display_name: SharedString = scene_name.to_string().into();
-        let color = if current {
-            theme::STATUS_CURRENT
-        } else if cued {
-            theme::STATUS_CUED
-        } else if missing {
-            theme::STATUS_WARNING
-        } else {
-            theme::CONSOLE_PRIMARY
-        };
-        let left_border = if current {
-            theme::STATUS_CURRENT
-        } else if cued {
-            theme::STATUS_CUED
-        } else if selected {
-            theme::ACCENT_ORANGE
-        } else if missing {
-            theme::STATUS_WARNING
-        } else {
-            theme::CONSOLE_PANEL
-        };
+        let highlight = cue_entry_highlight(selected, cued, current, missing);
+        let color = highlight.unwrap_or(theme::CONSOLE_PRIMARY);
+        let left_border = highlight.unwrap_or(theme::CONSOLE_PANEL);
         let entry_id = entry.id;
         let drag_name = display_name.clone();
         let select_entity = cx.entity();
@@ -1173,6 +1156,20 @@ impl StableId for CueList {
     }
 }
 
+fn cue_entry_highlight(selected: bool, cued: bool, current: bool, missing: bool) -> Option<u32> {
+    if selected {
+        Some(theme::ACCENT_ORANGE)
+    } else if cued {
+        Some(theme::STATUS_CUED)
+    } else if current {
+        Some(theme::STATUS_CURRENT)
+    } else if missing {
+        Some(theme::STATUS_WARNING)
+    } else {
+        None
+    }
+}
+
 fn reordered_ids<T: StableId>(items: &[T], from: Uuid, to: Uuid) -> Option<Vec<Uuid>> {
     if from == to {
         return None;
@@ -1198,6 +1195,31 @@ mod tests {
             id: id(entry),
             scene_internal_id: id(scene),
         }
+    }
+
+    #[test]
+    fn cue_entry_highlights_prioritize_selected_then_cued_then_current() {
+        assert_eq!(
+            cue_entry_highlight(true, true, true, false),
+            Some(theme::ACCENT_ORANGE)
+        );
+        assert_eq!(
+            cue_entry_highlight(false, true, true, false),
+            Some(theme::STATUS_CUED)
+        );
+        assert_eq!(
+            cue_entry_highlight(false, false, true, false),
+            Some(theme::STATUS_CURRENT)
+        );
+        assert_eq!(cue_entry_highlight(false, false, false, false), None);
+        assert_eq!(
+            cue_entry_highlight(false, false, false, true),
+            Some(theme::STATUS_WARNING)
+        );
+        assert_eq!(
+            cue_entry_highlight(true, false, false, true),
+            Some(theme::ACCENT_ORANGE)
+        );
     }
 
     #[test]

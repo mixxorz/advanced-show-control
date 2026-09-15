@@ -122,7 +122,7 @@ impl AppShell {
             cue_lists.command_finished(command_id, failed, window, cx)
         });
         self.settings.update(cx, |settings, cx| {
-            settings.command_finished(command_id, failed, cx)
+            settings.command_finished(command_id, failed, window, cx)
         });
     }
 

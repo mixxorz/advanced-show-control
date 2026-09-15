@@ -2,12 +2,13 @@
 
 ## Goal
 
-Refine two native GPUI surfaces without changing backend ownership or safety behavior:
+Refine three native GPUI presentation details without changing backend ownership or safety behavior:
 
 1. Size Logs columns according to their content.
 2. Use one editable numeric-stepper presentation for Settings values and scene X-FADE duration.
+3. Make cue-entry highlights follow the intended operational priority.
 
-Cue-list manager refinement and automatic connection latency are deferred to GitHub issues #73 and #74.
+Broader cue-list manager refinement and automatic connection latency are deferred to GitHub issues #73 and #74.
 
 ## Logs layout
 
@@ -73,6 +74,17 @@ The scene editor replaces its bespoke input and `+1S`/`−1S` buttons with the s
 
 Changing the control's visual shell must not change scene identity handling, actor ownership, or fade behavior.
 
+## Cue-entry highlight priority
+
+Cue entries use one presentation priority consistently for their indicator, text, scene number, and left border:
+
+1. selected: orange;
+2. cued: green;
+3. current scene: blue;
+4. neutral: the default foreground.
+
+A missing scene remains amber when none of the first three states applies. Selection therefore remains visible when an entry is also cued or current, and the green cued state remains visible when its scene is also current. This is a pure presentation decision derived from projected state and local selection; it does not change cue, recall, or scene identity behavior.
+
 ## Error handling and state synchronization
 
 Invalid text never dispatches a command. The field resets to its current authoritative or optimistic formatted value. Backend Settings normalization and Scenes duration validation remain authoritative.
@@ -83,9 +95,9 @@ The shared helper does not hold domain state and cannot mutate actor-owned value
 
 Use the repository's allowed Rust test styles:
 
-- **Pure unit tests:** Settings parsers, formatters, and stepping; existing X-FADE parsing/stepping behavior; any extracted shared presentation decisions that are meaningful without GPUI.
-- **Native GPUI component tests:** type and commit both Settings numeric fields, reject invalid drafts, exercise step buttons, and verify X-FADE uses equivalent typed/step interactions through rendered controls. Tests interact through GPUI controls and command adapters rather than private actor mutation.
-- **Native visual tests:** inspect and update the Logs and Settings snapshots, plus an X-FADE-containing scene view if the existing fixture exposes the control.
+- **Pure unit tests:** Settings parsers, formatters, and stepping; existing X-FADE parsing/stepping behavior; cue-entry highlight precedence; any extracted shared presentation decisions that are meaningful without GPUI.
+- **Native GPUI component tests:** type, commit, and step through the shared editable control using rendered GPUI interactions. Caller-specific parser and command decisions remain covered by pure tests rather than testing GPUI framework behavior repeatedly.
+- **Native visual tests:** inspect the Logs and Settings snapshots, assert the shared controls are present in Settings and an X-FADE-containing scene view, and verify the Logs column geometry.
 
 Run targeted `cargo nextest` checks during development, then `make check` and `make visual-test` before completion.
 
@@ -94,5 +106,5 @@ Run targeted `cargo nextest` checks during development, then `make check` and `m
 - Sorting, resizing, filtering, or virtualizing Logs.
 - Changes to Settings ranges, defaults, persistence format, or command ownership.
 - Changes to X-FADE duration rules or fade execution.
-- Cue-list manager changes (#73).
+- Cue-list manager layout and workflow changes (#73).
 - Automatic connection-latency changes (#74).

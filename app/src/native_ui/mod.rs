@@ -7,6 +7,7 @@ mod entry;
 mod keyboard;
 mod logs;
 pub mod menu;
+mod numeric_control;
 mod panel;
 mod runtime;
 mod scene_library;

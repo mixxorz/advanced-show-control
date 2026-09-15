@@ -104,9 +104,9 @@ impl CommandDispatcher {
         command_id
     }
 
-    /// Enqueues commands that must reach their owner in user-action order. Settings replacements use
-    /// this lane so complete-object edits compose, and file actions use it so a subsequent Save sees
-    /// the authoritative result of the preceding New, Open, or template load.
+    /// Enqueues commands that must reach their owner in user-action order. Settings replacements and
+    /// scene-duration edits use this lane so successive drafts compose, and file actions use it so a
+    /// subsequent Save sees the authoritative result of the preceding New, Open, or template load.
     pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
