@@ -27,6 +27,19 @@ impl ShowState {
     /// saved timestamp, and dirty state without altering discovery or connected-LV1 metadata.
     pub(crate) fn reset_for_new_show(&mut self) {
         self.clear();
+        self.reset_file_metadata();
+    }
+
+    /// @cc [owner:mixxorz,label:persistence] template-show-metadata-reset
+    /// After a template document has committed, the derived show MUST preserve the imported lockout
+    /// while clearing the template path, saved timestamp, and dirty state so normal Save cannot
+    /// overwrite the template without a new path selection.
+    pub(crate) fn reset_for_new_show_from_template(&mut self, lockout: bool) {
+        self.lockout = lockout;
+        self.reset_file_metadata();
+    }
+
+    fn reset_file_metadata(&mut self) {
         self.show_file_path = None;
         self.show_file_dirty = false;
         self.show_file_last_saved_at = None;

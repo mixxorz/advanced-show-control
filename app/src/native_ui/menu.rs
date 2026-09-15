@@ -26,7 +26,15 @@ pub const MENU_SAVE_AS_SHORTCUT: &str = if cfg!(target_os = "macos") {
 actions!(
     advanced_show_control,
     [
-        About, Hide, HideOthers, NewShow, OpenShow, Quit, SaveShow, SaveShowAs
+        About,
+        Hide,
+        HideOthers,
+        NewShow,
+        NewShowFromTemplate,
+        OpenShow,
+        Quit,
+        SaveShow,
+        SaveShowAs
     ]
 );
 
@@ -55,6 +63,7 @@ pub fn install(cx: &mut App) {
 fn file_menu() -> Menu {
     Menu::new("File").items([
         MenuItem::action("New Session", NewShow),
+        MenuItem::action("New from Template…", NewShowFromTemplate),
         MenuItem::action("Open Session…", OpenShow),
         MenuItem::separator(),
         MenuItem::action("Save Session", SaveShow),
@@ -88,6 +97,29 @@ mod tests {
             "ctrl-s"
         };
         assert_eq!(MENU_SAVE_SHORTCUT, expected);
+    }
+
+    #[test]
+    fn file_menu_exposes_new_from_template() {
+        let menu = file_menu();
+        let action_names = menu
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                MenuItem::Action { name, .. } => Some(name.as_ref()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            action_names,
+            [
+                "New Session",
+                "New from Template…",
+                "Open Session…",
+                "Save Session",
+                "Save Session As…",
+            ]
+        );
     }
 
     #[cfg(target_os = "macos")]

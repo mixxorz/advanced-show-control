@@ -18,6 +18,10 @@ pub enum ShowCommand {
     NewShowFileFromCurrentLv1 {
         reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
     },
+    NewShowFileFromTemplate {
+        path: std::path::PathBuf,
+        reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
+    },
     SaveShowFileAs {
         path: std::path::PathBuf,
         reply: Option<oneshot::Sender<Result<ShowCommandResult, String>>>,
