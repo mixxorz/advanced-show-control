@@ -397,6 +397,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Recall a scene">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#readiness-and-successive-recalls" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Readiness and successive recalls
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -743,6 +760,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Recall a scene">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#readiness-and-successive-recalls" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Readiness and successive recalls
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -874,6 +908,10 @@
 <p>LV1 recalls the scene first. When the recalled number and name match, Advanced Show Control moves the controls in scope from their current positions to the stored targets.</p>
 <p>If the number or name does not match, the fade does not start. Correct the scene link or select the intended scene, then try again.</p>
 <p>Moving a fader during a fade gives you control of that fader; the other scoped controls may continue moving. If LV1 disconnects, the fade stops. Reconnect and confirm the console state before recalling again.</p>
+<h3 id="readiness-and-successive-recalls">Readiness and successive recalls<a class="headerlink" href="#readiness-and-successive-recalls" title="Permanent link">&para;</a></h3>
+<p>After LV1 reports the exact recalled scene, Advanced Show Control confirms it with fresh connected state and waits for two newer LV1 keepalive responses. This readiness check shows that LV1 has resumed normal control communication after processing the scene recall; it does not wait for the fade to finish.</p>
+<p>Active fades pause during the readiness check. When it succeeds, remaining targets resume; targets selected for same-scene finishing complete on the next update. Fades started by different scenes can remain active together: targets from the new scene replace matching controls, while non-overlapping targets from earlier scenes continue.</p>
+<p>For successive recalls sent by Advanced Show Control, the optional <a href="../settings/#asc-recall-interval">ASC recall interval</a> begins after readiness succeeds. The next queued recall waits for that interval, even when an earlier fade is still running. A readiness failure stops paused fades and cancels the remaining queued recalls rather than continuing with uncertain LV1 state.</p>
 <h2 id="link-a-missing-scene">Link a missing scene<a class="headerlink" href="#link-a-missing-scene" title="Permanent link">&para;</a></h2>
 <p>When an LV1 scene can no longer be found, its scene fade becomes unlinked. Its fade time and scope are retained, but <strong>Store</strong> and <strong>Recall</strong> are unavailable.</p>
 <p><img alt="An unlinked scene fade with linking controls." src="../assets/screenshots/scenes-unlinked.png" /></p>
