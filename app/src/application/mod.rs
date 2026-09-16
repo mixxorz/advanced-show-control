@@ -26,8 +26,8 @@ use crate::show::{
 
 /// Cloneable access to the app-lifetime command owners.
 ///
-/// Generation-scoped Fade access remains behind `AppLifecycle`; fade cancellation deliberately
-/// routes through Scenes so the existing safety and cancellation policy cannot be bypassed.
+/// Generation-scoped Fade access remains behind `AppLifecycle`; hosts issue commands through the
+/// app-lifetime owners rather than accessing generation-scoped actors directly.
 #[derive(Clone)]
 pub struct ApplicationCommandContext {
     lifecycle: AppLifecycle,

@@ -3864,7 +3864,10 @@ mod tests {
         lockout_rx.await.unwrap();
         assert!(fixture.lockout.changed().await.unwrap());
 
-        assert!(fixture.fade_commands.recv().await.is_some());
+        assert!(matches!(
+            fixture.fade_commands.recv().await,
+            Some(FadeCommand::WaitForRecallReadiness { .. })
+        ));
         yield_to_actor().await;
         assert!(matches!(
             fixture.fade_commands.try_recv(),
@@ -6604,7 +6607,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.await.unwrap().ready_generation, None);
-        assert!(fade_rx.recv().await.is_some());
+        assert!(matches!(
+            fade_rx.recv().await,
+            Some(FadeCommand::WaitForRecallReadiness { .. })
+        ));
         yield_to_actor().await;
         assert!(fade_rx.try_recv().is_err());
 

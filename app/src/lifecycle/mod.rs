@@ -2031,7 +2031,10 @@ mod tests {
             .send(fade_mailbox_probe())
             .await
             .unwrap();
-        assert!(newer_fade_rx.recv().await.is_some());
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
+        ));
         assert!(
             capture
                 .matching("lv1_connected", tracing::Level::INFO)
@@ -2169,7 +2172,10 @@ mod tests {
             .send(fade_mailbox_probe())
             .await
             .unwrap();
-        assert!(newer_fade_rx.recv().await.is_some());
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
+        ));
         let (reply, response) = oneshot::channel();
         lifecycle
             .scenes
@@ -3225,7 +3231,10 @@ mod tests {
             .send(fade_mailbox_probe())
             .await
             .expect("newer fade mailbox should accept commands");
-        assert!(newer_fade_rx.recv().await.is_some());
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
+        ));
 
         let (scenes_reply, scenes_rx) = oneshot::channel();
         lifecycle
@@ -3382,7 +3391,10 @@ mod tests {
             .send(fade_mailbox_probe())
             .await
             .unwrap();
-        assert!(newer_fade_rx.recv().await.is_some());
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
+        ));
         while let Ok(event) = events.try_recv() {
             assert!(matches!(event, AppEvent::Scenes { .. }));
         }
@@ -3555,7 +3567,10 @@ mod tests {
             .send(fade_mailbox_probe())
             .await
             .expect("newer fade mailbox should accept commands");
-        assert!(newer_fade_rx.recv().await.is_some());
+        assert!(matches!(
+            newer_fade_rx.recv().await,
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
+        ));
 
         let (show_reply, show_rx) = oneshot::channel();
         lifecycle
