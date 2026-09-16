@@ -102,11 +102,11 @@ Do not test side-effecting actor behavior by directly mutating actor internals o
 - Do not bypass exact scene identity validation unless the task explicitly changes the matching model.
 - Do not bypass generation guards. Stale tasks must not send fader commands or write misleading UI logs after disconnect or reconnect.
 - Do not send fader commands when LV1 state is unavailable, disconnected, stale, or unsafe.
-- Scene recall automation must validate before aborting an existing fade.
-- Blocked, skipped, or disabled recalls must not abort an existing fade.
+- Scene recall automation must validate before admitting Fade work.
+- Blocked, skipped, or disabled recalls must not alter an existing fade.
 - Use fresh LV1 state for recall automation where event subscriber ordering could otherwise create stale decisions.
 - Make safety blocks visible through logs or UI state.
-- Preserve manual override, abort, overlap/same-scene, and disconnect safety behavior.
+- Preserve manual override, overlap/same-scene, readiness-timeout, and disconnect safety behavior.
 
 ## Verification Commands
 

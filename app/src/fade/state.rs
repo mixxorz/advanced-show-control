@@ -215,11 +215,11 @@ impl EngineState {
         self.readiness_barrier.is_some()
     }
 
-    /// @cc [owner:mixxorz,label:safety] abort-clears-all
-    /// Cancellation MUST synchronously remove all active targets and the readiness barrier, and MUST
-    /// complete an owned readiness waiter with the supplied cancellation reason so later ticks or
-    /// pings cannot revive the canceled work.
-    pub(crate) fn cancel_all_in_place(&mut self, cancellation: RecallReadinessCancellation) {
+    /// @cc [owner:mixxorz,label:safety] safety-cancellation-clears-work
+    /// Runtime safety cancellation MUST synchronously remove all active targets and the readiness
+    /// barrier, and MUST complete an owned readiness waiter with the supplied reason so later ticks
+    /// or pings cannot revive the canceled work.
+    pub(crate) fn cancel_runtime_work(&mut self, cancellation: RecallReadinessCancellation) {
         self.channels.clear();
         if let Some(barrier) = self.readiness_barrier.take()
             && let Some(completion) = barrier.completion

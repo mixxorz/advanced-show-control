@@ -249,17 +249,6 @@ async fn start_fade(engine: &FadeEngineHandle, config: FadeConfig) -> Result<(),
         .map_err(|err| err.to_string())
 }
 
-async fn abort_all(engine: &FadeEngineHandle) -> Result<(), String> {
-    let (reply, rx) = tokio::sync::oneshot::channel();
-    engine
-        .send(FadeCommand::AbortAll { reply: Some(reply) })
-        .await
-        .map_err(|_| "fade command channel closed".to_string())?;
-    rx.await
-        .map_err(|_| "fade reply channel closed".to_string())?
-        .map_err(|err| err.to_string())
-}
-
 #[tokio::test]
 async fn zero_duration_fade_sends_final_gain_without_running_state() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -994,63 +983,6 @@ async fn engine_emits_fade_started_and_completed() {
 
     wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(3), |e| {
         matches!(e, FadeEvent::FadeCompleted)
-    })
-    .await;
-}
-
-#[tokio::test]
-async fn engine_abort_all_stops_fade() {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    let port = listener.local_addr().unwrap().port();
-
-    tokio::task::spawn_blocking(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .write_all(&lv1_frame("/handshake", &[OscArg::Int(1)]))
-            .unwrap();
-        stream
-            .write_all(&lv1_frame("/Channels", &channels_args()))
-            .unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(5));
-    });
-
-    let event_bus = AppEventBus::default();
-    let lv1 = build_and_spawn_actor("127.0.0.1".to_string(), port, event_bus.clone(), 0);
-    let (_command_bus, engine) = spawn_runtime_for_test(lv1.clone(), event_bus.clone()).await;
-    let mut app_events = event_bus.subscribe();
-
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let _ = start_fade(
-        &engine,
-        FadeConfig {
-            scene: FadeSceneIdentity {
-                index: 1,
-                name: "Intro".to_string(),
-            },
-            targets: vec![FadeTarget {
-                group: 0,
-                channel: 0,
-                parameter: FadeParameter::FaderDb,
-                target: -30.0,
-            }],
-            duration_ms: 10_000,
-            curve: FadeCurve::Linear,
-        },
-    )
-    .await;
-
-    wait_for_app_fade_event(
-        &mut app_events,
-        std::time::Duration::from_millis(500),
-        |e| matches!(e, FadeEvent::FadeStarted),
-    )
-    .await;
-
-    let _ = abort_all(&engine).await;
-
-    wait_for_app_fade_event(&mut app_events, std::time::Duration::from_secs(2), |e| {
-        matches!(e, FadeEvent::FadeAborted)
     })
     .await;
 }

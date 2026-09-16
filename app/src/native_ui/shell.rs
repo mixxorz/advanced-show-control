@@ -236,7 +236,6 @@ impl Render for AppShell {
         let lockout = self.snapshot.lockout;
         let actions_blocked = self.modal_open(cx) || self.shortcut_capture_active(cx);
         let lockout_dispatcher = self.dispatcher.clone();
-        let abort_dispatcher = self.dispatcher.clone();
 
         div()
             .size_full()
@@ -300,18 +299,6 @@ impl Render for AppShell {
                                     .on_click(move |_, _, _| {
                                         lockout_dispatcher.dispatch(move |commands| async move {
                                             commands.set_lockout(!lockout).await.map(|_| ())
-                                        });
-                                    }),
-                            )
-                            .child(
-                                bordered_button("abort-all")
-                                    .danger()
-                                    .accessibility_label("Abort all fades")
-                                    .label("ABORT ALL")
-                                    .disabled(actions_blocked)
-                                    .on_click(move |_, _, _| {
-                                        abort_dispatcher.dispatch(|commands| async move {
-                                            commands.abort_all_fades().await
                                         });
                                     }),
                             ),

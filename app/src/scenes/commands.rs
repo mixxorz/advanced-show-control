@@ -95,9 +95,6 @@ pub enum ScenesCommand {
         internal_scene_id: Uuid,
         reply: oneshot::Sender<Result<RecallSceneResult, AppCommandError>>,
     },
-    AbortAll {
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
-    },
     Shutdown,
 }
 

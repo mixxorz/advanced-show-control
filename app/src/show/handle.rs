@@ -8,7 +8,6 @@ mod tests {
     use crate::runtime::events::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
     use crate::scenes::build_scenes_actor;
-    use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::{ShowCommand, ShowFile, ShowFileSafety};
 
     async fn recv_show_event(events: &mut tokio::sync::broadcast::Receiver<AppEvent>) {
@@ -41,18 +40,6 @@ mod tests {
         response.await.unwrap()
     }
 
-    fn fake_settings_handle() -> SettingsHandle {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            while let Some(command) = rx.recv().await {
-                if let SettingsCommand::GetSettings { reply } = command {
-                    let _ = reply.send(AppSettings::default());
-                }
-            }
-        });
-        tx
-    }
-
     #[tokio::test]
     async fn lockout_reader_tracks_the_latest_show_owned_value() {
         let event_bus = AppEventBus::default();
@@ -83,8 +70,6 @@ mod tests {
             RuntimeGeneration::default(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             lockout.clone(),
         );
         peers.set_scenes(scenes);

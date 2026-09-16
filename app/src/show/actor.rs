@@ -948,7 +948,6 @@ mod tests {
     use crate::scenes::{SceneConfig, SceneDocument, SceneScopeToggles};
     use crate::scenes::{ScenesCommand, build_scenes_actor};
     use crate::session::SessionDocument;
-    use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::commands::ShowCommand;
     use crate::show::handle::ShowStateHandle;
     use crate::show::{ShowFile, ShowFileSafety, ShowFileSceneConfig};
@@ -1008,8 +1007,6 @@ mod tests {
             peers.runtime_generation(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         let cue_lists = task.cue_lists_handle();
@@ -1047,8 +1044,6 @@ mod tests {
             generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             lockout,
         );
         let cue_lists = scenes_task.cue_lists_handle();
@@ -1129,8 +1124,6 @@ mod tests {
             peers.runtime_generation(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             lockout,
         );
         peers.set_scenes(scenes.clone());
@@ -1186,18 +1179,6 @@ mod tests {
                 published || staged
             })
             .collect()
-    }
-
-    fn fake_settings_handle() -> SettingsHandle {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            while let Some(command) = rx.recv().await {
-                if let SettingsCommand::GetSettings { reply } = command {
-                    let _ = reply.send(AppSettings::default());
-                }
-            }
-        });
-        tx
     }
 
     async fn get_scene_document(
@@ -1352,8 +1333,6 @@ mod tests {
             peers.runtime_generation(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             lockout,
         );
         let cue_lists = scenes_task.cue_lists_handle();
@@ -1800,8 +1779,6 @@ mod tests {
             RuntimeGeneration::default(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         task.spawn();
@@ -1870,8 +1847,6 @@ mod tests {
             RuntimeGeneration::default(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         let cue_lists = task.cue_lists_handle();
@@ -2021,8 +1996,6 @@ mod tests {
             RuntimeGeneration::default(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         task.spawn();
