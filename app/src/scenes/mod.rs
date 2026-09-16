@@ -3,7 +3,7 @@ mod capture;
 mod commands;
 mod events;
 mod policy;
-mod recall_queue;
+mod recall_coordinator;
 mod scene_alignment;
 mod state;
 mod types;

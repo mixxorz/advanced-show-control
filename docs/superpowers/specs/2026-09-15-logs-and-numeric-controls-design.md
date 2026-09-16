@@ -57,7 +57,16 @@ Settings gains one `InputState` for each numeric field. A successful edit still 
 - an out-of-range integer is clamped;
 - empty, signed-negative, fractional, or nonnumeric input is rejected and reset.
 
-Projected settings remain authoritative. While a complete-object optimistic draft is pending, matching projected state acknowledges it as before. A rejected command restores both numeric inputs from the latest projected settings.
+### ASC recall interval
+
+- display: integer followed by ` ms`;
+- accepted text: a base-10 integer, optionally followed by `ms` in either case, with surrounding whitespace allowed;
+- valid normalized range: 0 through 10000 ms;
+- step: 100 ms;
+- an out-of-range integer is clamped;
+- empty, signed-negative, fractional, or nonnumeric input is rejected and reset.
+
+Projected settings remain authoritative. While a complete-object optimistic draft is pending, matching projected state acknowledges it as before. A rejected command restores all numeric inputs from the latest projected settings.
 
 ## Scene X-FADE behavior
 

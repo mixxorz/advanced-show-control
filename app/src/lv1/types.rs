@@ -57,11 +57,17 @@ pub struct ChannelInfo {
     pub pan_mode: Option<PanMode>,
 }
 
+/**
+ * @cc [owner:mixxorz,label:safety;state] snapshot-scene-list-readiness
+ * `scene_list` MUST be `None` until the current transport session has supplied one successfully
+ * parsed scene-list notification. Every valid notification MUST produce `Some`, including
+ * `Some(Vec::new())` for an authoritative empty library, and disconnect MUST restore `None`.
+ */
 #[derive(Debug, Clone)]
 pub struct Lv1StateSnapshot {
     pub connection: ConnectionStatus,
     pub scene: Option<SceneState>,
-    pub scene_list: Vec<SceneListEntry>,
+    pub scene_list: Option<Vec<SceneListEntry>>,
     pub channels: Vec<ChannelInfo>,
     pub ping_sequence: u64,
 }

@@ -28,6 +28,7 @@ enum ShortcutAction {
 enum NumericSetting {
     Sensitivity,
     SameSceneThreshold,
+    AscRecallInterval,
 }
 
 impl NumericSetting {
@@ -35,6 +36,7 @@ impl NumericSetting {
         match self {
             Self::Sensitivity => 0,
             Self::SameSceneThreshold => 1,
+            Self::AscRecallInterval => 2,
         }
     }
 }
@@ -50,8 +52,9 @@ pub struct SettingsView {
     shortcut_conflict: Option<(ShortcutAction, String)>,
     sensitivity_input: Entity<InputState>,
     threshold_input: Entity<InputState>,
-    numeric_identity: (u8, u64),
-    numeric_edit_revisions: [u64; 2],
+    recall_interval_input: Entity<InputState>,
+    numeric_identity: (u8, u64, u64),
+    numeric_edit_revisions: [u64; 3],
     _numeric_subscriptions: Vec<Subscription>,
 }
 
@@ -65,11 +68,15 @@ impl SettingsView {
         let numeric_identity = (
             snapshot.settings.fader_override_sensitivity,
             snapshot.settings.same_scene_recall_threshold_ms,
+            snapshot.settings.asc_recall_interval_ms,
         );
         let sensitivity_input =
             cx.new(|cx| InputState::new(window, cx).default_value(numeric_identity.0.to_string()));
         let threshold_input = cx.new(|cx| {
-            InputState::new(window, cx).default_value(format_threshold_ms(numeric_identity.1))
+            InputState::new(window, cx).default_value(format_milliseconds(numeric_identity.1))
+        });
+        let recall_interval_input = cx.new(|cx| {
+            InputState::new(window, cx).default_value(format_milliseconds(numeric_identity.2))
         });
         let numeric_subscriptions = vec![
             cx.subscribe_in(
@@ -86,6 +93,13 @@ impl SettingsView {
                     this.handle_numeric_event(NumericSetting::SameSceneThreshold, event, window, cx)
                 },
             ),
+            cx.subscribe_in(
+                &recall_interval_input,
+                window,
+                |this, _, event: &InputEvent, window, cx| {
+                    this.handle_numeric_event(NumericSetting::AscRecallInterval, event, window, cx)
+                },
+            ),
         ];
         Self {
             snapshot,
@@ -98,8 +112,9 @@ impl SettingsView {
             shortcut_conflict: None,
             sensitivity_input,
             threshold_input,
+            recall_interval_input,
             numeric_identity,
-            numeric_edit_revisions: [0; 2],
+            numeric_edit_revisions: [0; 3],
             _numeric_subscriptions: numeric_subscriptions,
         }
     }
@@ -134,6 +149,7 @@ impl SettingsView {
         let numeric_identity = (
             self.settings().fader_override_sensitivity,
             self.settings().same_scene_recall_threshold_ms,
+            self.settings().asc_recall_interval_ms,
         );
         if numeric_identity.0 != self.numeric_identity.0 {
             self.reset_numeric(
@@ -146,7 +162,15 @@ impl SettingsView {
         if numeric_identity.1 != self.numeric_identity.1 {
             self.reset_numeric(
                 NumericSetting::SameSceneThreshold,
-                format_threshold_ms(numeric_identity.1),
+                format_milliseconds(numeric_identity.1),
+                window,
+                cx,
+            );
+        }
+        if numeric_identity.2 != self.numeric_identity.2 {
+            self.reset_numeric(
+                NumericSetting::AscRecallInterval,
+                format_milliseconds(numeric_identity.2),
                 window,
                 cx,
             );
@@ -259,6 +283,7 @@ impl SettingsView {
         match setting {
             NumericSetting::Sensitivity => &self.sensitivity_input,
             NumericSetting::SameSceneThreshold => &self.threshold_input,
+            NumericSetting::AscRecallInterval => &self.recall_interval_input,
         }
     }
 
@@ -307,7 +332,15 @@ impl SettingsView {
                     return;
                 };
                 settings.same_scene_recall_threshold_ms = value;
-                format_threshold_ms(value)
+                format_milliseconds(value)
+            }
+            NumericSetting::AscRecallInterval => {
+                let Some(value) = normalize_recall_interval_ms(&draft) else {
+                    self.discard_numeric(setting, window, cx);
+                    return;
+                };
+                settings.asc_recall_interval_ms = value;
+                format_milliseconds(value)
             }
         };
         self.numeric_edit_revisions[setting.index()] =
@@ -317,6 +350,7 @@ impl SettingsView {
             self.numeric_identity = (
                 settings.fader_override_sensitivity,
                 settings.same_scene_recall_threshold_ms,
+                settings.asc_recall_interval_ms,
             );
             self.replace(settings, cx);
         }
@@ -343,7 +377,13 @@ impl SettingsView {
                 let value =
                     stepped_threshold_ms(&draft, current.same_scene_recall_threshold_ms, direction);
                 next.same_scene_recall_threshold_ms = value;
-                format_threshold_ms(value)
+                format_milliseconds(value)
+            }
+            NumericSetting::AscRecallInterval => {
+                let value =
+                    stepped_recall_interval_ms(&draft, current.asc_recall_interval_ms, direction);
+                next.asc_recall_interval_ms = value;
+                format_milliseconds(value)
             }
         };
         self.numeric_edit_revisions[setting.index()] =
@@ -353,6 +393,7 @@ impl SettingsView {
             self.numeric_identity = (
                 next.fader_override_sensitivity,
                 next.same_scene_recall_threshold_ms,
+                next.asc_recall_interval_ms,
             );
             self.replace(next, cx);
         }
@@ -369,7 +410,10 @@ impl SettingsView {
         let value = match setting {
             NumericSetting::Sensitivity => self.settings().fader_override_sensitivity.to_string(),
             NumericSetting::SameSceneThreshold => {
-                format_threshold_ms(self.settings().same_scene_recall_threshold_ms)
+                format_milliseconds(self.settings().same_scene_recall_threshold_ms)
+            }
+            NumericSetting::AscRecallInterval => {
+                format_milliseconds(self.settings().asc_recall_interval_ms)
             }
         };
         self.reset_numeric(setting, value, window, cx);
@@ -390,6 +434,7 @@ impl SettingsView {
         let identity = (
             self.settings().fader_override_sensitivity,
             self.settings().same_scene_recall_threshold_ms,
+            self.settings().asc_recall_interval_ms,
         );
         self.reset_numeric(
             NumericSetting::Sensitivity,
@@ -399,7 +444,13 @@ impl SettingsView {
         );
         self.reset_numeric(
             NumericSetting::SameSceneThreshold,
-            format_threshold_ms(identity.1),
+            format_milliseconds(identity.1),
+            window,
+            cx,
+        );
+        self.reset_numeric(
+            NumericSetting::AscRecallInterval,
+            format_milliseconds(identity.2),
             window,
             cx,
         );
@@ -495,6 +546,9 @@ impl Render for SettingsView {
         let threshold_draft = self.threshold_input.read(cx).value().to_string();
         let threshold_base = normalize_threshold_ms(&threshold_draft)
             .unwrap_or(settings.same_scene_recall_threshold_ms);
+        let recall_interval_draft = self.recall_interval_input.read(cx).value().to_string();
+        let recall_interval_base = normalize_recall_interval_ms(&recall_interval_draft)
+            .unwrap_or(settings.asc_recall_interval_ms);
         div()
             .id("settings-view")
             .test_support()
@@ -603,6 +657,14 @@ impl Render for SettingsView {
                         threshold_base < 5_000,
                         cx,
                     ))
+                    .child(self.numeric_row(
+                        NumericSetting::AscRecallInterval,
+                        "asc-recall-interval",
+                        "ASC recall interval",
+                        recall_interval_base > 0,
+                        recall_interval_base < 10_000,
+                        cx,
+                    ))
                     .child(self.toggle_row(
                         "diagnostics",
                         "Extensive diagnostics",
@@ -663,9 +725,17 @@ fn normalize_sensitivity(draft: &str) -> Option<u8> {
 }
 
 fn normalize_threshold_ms(draft: &str) -> Option<u64> {
+    normalize_milliseconds(draft, 5_000)
+}
+
+fn normalize_recall_interval_ms(draft: &str) -> Option<u64> {
+    normalize_milliseconds(draft, 10_000)
+}
+
+fn normalize_milliseconds(draft: &str, max: u64) -> Option<u64> {
     let lowercase = draft.trim().to_ascii_lowercase();
     let value = lowercase.strip_suffix("ms").unwrap_or(&lowercase);
-    parse_clamped_unsigned(value, 0, 5_000)
+    parse_clamped_unsigned(value, 0, max)
 }
 
 fn stepped_sensitivity(draft: &str, current: u8, direction: i64) -> u8 {
@@ -678,15 +748,23 @@ fn stepped_sensitivity(draft: &str, current: u8, direction: i64) -> u8 {
 }
 
 fn stepped_threshold_ms(draft: &str, current: u64, direction: i64) -> u64 {
-    let value = normalize_threshold_ms(draft).unwrap_or(current);
+    stepped_milliseconds(draft, current, direction, 5_000)
+}
+
+fn stepped_recall_interval_ms(draft: &str, current: u64, direction: i64) -> u64 {
+    stepped_milliseconds(draft, current, direction, 10_000)
+}
+
+fn stepped_milliseconds(draft: &str, current: u64, direction: i64, max: u64) -> u64 {
+    let value = normalize_milliseconds(draft, max).unwrap_or(current);
     if direction > 0 {
-        value.saturating_add(100).min(5_000)
+        value.saturating_add(100).min(max)
     } else {
         value.saturating_sub(100)
     }
 }
 
-fn format_threshold_ms(value: u64) -> String {
+fn format_milliseconds(value: u64) -> String {
     format!("{value} ms")
 }
 
@@ -847,6 +925,10 @@ mod tests {
         );
         assert_eq!(normalize_threshold_ms("1.5 ms"), None);
         assert_eq!(normalize_threshold_ms("-100"), None);
+
+        assert_eq!(normalize_recall_interval_ms("7500 ms"), Some(7_500));
+        assert_eq!(normalize_recall_interval_ms("12000"), Some(10_000));
+        assert_eq!(normalize_recall_interval_ms("invalid"), None);
     }
 
     #[test]
@@ -858,6 +940,10 @@ mod tests {
         assert_eq!(stepped_threshold_ms("1200 ms", 500, 1), 1_300);
         assert_eq!(stepped_threshold_ms("invalid", 500, -1), 400);
         assert_eq!(stepped_threshold_ms("0", 500, -1), 0);
+
+        assert_eq!(stepped_recall_interval_ms("9900 ms", 0, 1), 10_000);
+        assert_eq!(stepped_recall_interval_ms("invalid", 500, -1), 400);
+        assert_eq!(stepped_recall_interval_ms("0", 500, -1), 0);
     }
 
     #[test]

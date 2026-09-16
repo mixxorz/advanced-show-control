@@ -7,7 +7,7 @@ use std::sync::{
 
 use tokio::sync::mpsc;
 
-use crate::application::ApplicationCommandContext;
+use crate::application::{ApplicationCommandContext, complete_cued_cue_recall};
 use crate::connection_state::Lv1SystemIdentity;
 use crate::lv1::TcpConnectProbeResult;
 use crate::projector::{AppViewState, ProjectionSubscription};
@@ -101,6 +101,31 @@ impl CommandDispatcher {
             let result = command(commands).await;
             let _ = ui_events.send(UiEvent::CommandFinished { command_id, result });
         });
+        command_id
+    }
+
+    /// @cc [owner:mixxorz,label:safety;ordering] ordered-go-dispatch
+    /// A GO command MUST be synchronously admitted to the cue mailbox before this method returns and
+    /// before its response waiter is spawned. Command-started and command-finished events MUST retain
+    /// the same command ID whether admission succeeds or fails.
+    pub fn dispatch_cued_cue_recall(&self) -> u64 {
+        let command_id = self.next_command_id();
+        let _ = self.ui_events.send(UiEvent::CommandStarted { command_id });
+        match self.commands.enqueue_cued_cue_recall() {
+            Ok(response) => {
+                let ui_events = self.ui_events.clone();
+                self.runtime.spawn(async move {
+                    let result = complete_cued_cue_recall(response).await.map(|_| ());
+                    let _ = ui_events.send(UiEvent::CommandFinished { command_id, result });
+                });
+            }
+            Err(error) => {
+                let _ = self.ui_events.send(UiEvent::CommandFinished {
+                    command_id,
+                    result: Err(error),
+                });
+            }
+        }
         command_id
     }
 

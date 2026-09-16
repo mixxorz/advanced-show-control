@@ -24,7 +24,7 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
-use super::shell::AppShell;
+use super::shell::{AppShell, GoSubmissionGuard};
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
 pub struct AppRoot {
@@ -35,7 +35,7 @@ pub struct AppRoot {
     cue_lists: Entity<CueListsView>,
     connection: Rc<RefCell<ConnectionState>>,
     latest_snapshot: Rc<RefCell<AppViewState>>,
-    go_command_id: Rc<Cell<Option<u64>>>,
+    go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     pending_save_command_id: Cell<Option<u64>>,
 }
 
@@ -61,7 +61,7 @@ impl AppRoot {
         let initial = AppViewState::default();
         let connection = Rc::new(RefCell::new(ConnectionState::startup()));
         let latest_snapshot = Rc::new(RefCell::new(initial.clone()));
-        let go_command_id = Rc::new(Cell::new(None));
+        let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
         let open_connection_state = connection.clone();
         let open_snapshot = latest_snapshot.clone();
         let open_dispatcher = dispatcher.clone();
@@ -73,7 +73,7 @@ impl AppRoot {
                 cue_lists.clone(),
                 settings,
                 cx.new(|_| LogsView::new(initial)),
-                go_command_id.clone(),
+                go_submissions.clone(),
                 focus.clone(),
                 move |window, cx| {
                     open_connection_state.borrow_mut().open_manual();
@@ -111,7 +111,7 @@ impl AppRoot {
             cue_lists,
             connection,
             latest_snapshot,
-            go_command_id,
+            go_submissions,
             pending_save_command_id: Cell::new(None),
         }
     }
@@ -187,8 +187,7 @@ impl AppRoot {
                     self.connection.borrow().pending_command_id == Some(command_id);
                 let completed_error = result.as_ref().err().cloned();
                 self.connection.borrow_mut().finish_command(command_id);
-                if self.go_command_id.get() == Some(command_id) {
-                    self.go_command_id.set(None);
+                if self.go_submissions.borrow_mut().finish(command_id) {
                     self.shell.update(cx, |_, cx| cx.notify());
                 }
                 let failed = result.is_err();
@@ -475,10 +474,10 @@ impl AppRoot {
     }
 
     /// @cc [owner:mixxorz,label:safety;keyboard] go-shortcut-routing
-    /// A matching GO keydown MUST be consumed, but MUST dispatch at most one recall while a prior
-    /// GO recall is unsettled and only when the projected active cue resolves to a projected scene.
-    /// Repeats and key events owned by editable controls, dialogs, or an open session menu MUST NOT
-    /// dispatch.
+    /// A matching GO keydown MUST be consumed and each distinct non-held press with a resolvable
+    /// projected cue MUST dispatch while fewer than eight GO commands are unsettled, including while
+    /// earlier recalls are pending. Repeats and key events owned by editable controls, dialogs, or an
+    /// open session menu MUST NOT dispatch.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let custom_modal_open = self.shell.read(cx).modal_open(cx);
         if custom_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
@@ -510,15 +509,13 @@ impl AppRoot {
             RoutedAction::Go => {
                 cx.stop_propagation();
                 if event.is_held
-                    || self.go_command_id.get().is_some()
                     || !self.presentation.cued_scene_is_valid()
+                    || !self.go_submissions.borrow().can_submit()
                 {
                     return;
                 }
-                self.go_command_id
-                    .set(Some(self.dispatcher.dispatch(|commands| async move {
-                        commands.recall_cued_cue().await.map(|_| ())
-                    })));
+                let command_id = self.dispatcher.dispatch_cued_cue_recall();
+                self.go_submissions.borrow_mut().start(command_id);
                 self.shell.update(cx, |_, cx| cx.notify());
             }
             RoutedAction::Cue => {

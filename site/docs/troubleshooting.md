@@ -20,7 +20,7 @@ If **Recall** is unavailable, the setting is unlinked. If LV1 recalls but no fad
 
 ## GO is disabled or refused
 
-If **GO** is disabled, select an active cue list, cue an entry linked to an available scene fade setting, and confirm **Cued**. Wait for a running recall to finish and confirm **SAFE** is off.
+If **GO** is disabled, select an active cue list, cue an entry linked to an available scene fade setting, and confirm **Cued**. Also confirm **SAFE** is off. If eight GO commands are still unsettled, wait for one to dispatch before adding another.
 
 If **GO** is enabled but the setting is unlinked, the recall is refused and the cue remains. Link the setting to the intended LV1 scene, compare its number and name, then use **GO** again. See [Use GO](cue-lists.md#use-go).
 

@@ -26,8 +26,8 @@ use crate::show::{
 
 /// Cloneable access to the app-lifetime command owners.
 ///
-/// Generation-scoped Fade access remains behind `AppLifecycle`; fade cancellation deliberately
-/// routes through Scenes so the existing safety and cancellation policy cannot be bypassed.
+/// Generation-scoped Fade access remains behind `AppLifecycle`; hosts issue commands through the
+/// app-lifetime owners rather than accessing generation-scoped actors directly.
 #[derive(Clone)]
 pub struct ApplicationCommandContext {
     lifecycle: AppLifecycle,
@@ -348,13 +348,6 @@ impl ApplicationCommandContext {
         .await
     }
 
-    pub async fn abort_all_fades(&self) -> Result<(), String> {
-        let result = self
-            .send_scene(|reply| ScenesCommand::AbortAll { reply })
-            .await?;
-        result.map_err(map_app_command_error)
-    }
-
     pub async fn create_cue_list(&self, name: String) -> Result<CueListsCommandResult, String> {
         self.send_cue_mutation(|reply| CueListsCommand::CreateCueList {
             name,
@@ -461,7 +454,15 @@ impl ApplicationCommandContext {
             .send(CueListsCommand::RecallCuedCue { reply })
             .await
             .map_err(|_| cue_lists_unavailable())?;
-        receive(response).await?.map_err(map_app_command_error)
+        complete_cued_cue_recall(response).await
+    }
+
+    /// @cc [owner:mixxorz,label:safety;ordering] ui-go-synchronous-admission
+    /// Each successful call MUST enqueue its GO command before returning so sequential UI callbacks
+    /// preserve press order. A full or closed cue mailbox MUST return an error without creating a
+    /// pending response.
+    pub(crate) fn enqueue_cued_cue_recall(&self) -> Result<PendingCueRecall, String> {
+        enqueue_cued_cue_recall(&self.cue_lists)
     }
 
     async fn send_show(&self, command: ShowCommand) -> Result<(), String> {
@@ -505,6 +506,28 @@ impl ApplicationCommandContext {
     }
 }
 
+pub(crate) type PendingCueRecall =
+    oneshot::Receiver<Result<CueRecallResult, crate::runtime::errors::AppCommandError>>;
+
+fn enqueue_cued_cue_recall(cue_lists: &CueListsHandle) -> Result<PendingCueRecall, String> {
+    let (reply, response) = oneshot::channel();
+    cue_lists
+        .try_send(CueListsCommand::RecallCuedCue { reply })
+        .map_err(|error| match error {
+            tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                map_app_command_error(AppCommandError::RecallQueueFull)
+            }
+            tokio::sync::mpsc::error::TrySendError::Closed(_) => cue_lists_unavailable(),
+        })?;
+    Ok(response)
+}
+
+pub(crate) async fn complete_cued_cue_recall(
+    response: PendingCueRecall,
+) -> Result<CueRecallResult, String> {
+    receive(response).await?.map_err(map_app_command_error)
+}
+
 fn cue_lists_unavailable() -> String {
     map_app_command_error(AppCommandError::CommandFailed(
         "cue lists are unavailable".to_string(),
@@ -539,7 +562,7 @@ mod tests {
             crate::show::build_show_actor(event_bus.clone());
         let settings_dir =
             std::env::temp_dir().join(format!("asc-application-test-{}", Uuid::new_v4()));
-        let (settings, settings_task, initial_settings) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(settings_dir, event_bus.clone());
         let lifecycle = AppLifecycle::new(
             event_bus,
@@ -547,12 +570,54 @@ mod tests {
             show_peers,
             lockout,
             settings.clone(),
-            initial_settings,
         );
         drop(show_task);
         settings_task.spawn();
         let (ui_logs, _) = tokio::sync::broadcast::channel(8);
         ApplicationCommandContext::new(lifecycle, show, settings, ui_logs)
+    }
+
+    #[tokio::test]
+    async fn synchronous_go_enqueue_preserves_submission_order() {
+        let (cue_lists, mut commands) = tokio::sync::mpsc::channel(2);
+        let first_response = enqueue_cued_cue_recall(&cue_lists).unwrap();
+        let second_response = enqueue_cued_cue_recall(&cue_lists).unwrap();
+        let first_id = Uuid::new_v4();
+        let second_id = Uuid::new_v4();
+
+        let CueListsCommand::RecallCuedCue { reply } = commands.recv().await.unwrap() else {
+            panic!("expected first GO command");
+        };
+        reply
+            .send(Ok(CueRecallResult {
+                recalled_entry_id: first_id,
+                next_cued_entry_id: None,
+            }))
+            .unwrap();
+        let CueListsCommand::RecallCuedCue { reply } = commands.recv().await.unwrap() else {
+            panic!("expected second GO command");
+        };
+        reply
+            .send(Ok(CueRecallResult {
+                recalled_entry_id: second_id,
+                next_cued_entry_id: None,
+            }))
+            .unwrap();
+
+        assert_eq!(
+            complete_cued_cue_recall(first_response)
+                .await
+                .unwrap()
+                .recalled_entry_id,
+            first_id
+        );
+        assert_eq!(
+            complete_cued_cue_recall(second_response)
+                .await
+                .unwrap()
+                .recalled_entry_id,
+            second_id
+        );
     }
 
     #[tokio::test]

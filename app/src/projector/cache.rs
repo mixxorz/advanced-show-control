@@ -105,6 +105,7 @@ impl ProjectionCache {
         });
         projection.scenes = snapshot
             .scene_list
+            .unwrap_or_default()
             .into_iter()
             .map(|scene| SceneSummary {
                 index: scene.index,
@@ -518,7 +519,8 @@ mod tests {
                 scene_list: vec![crate::lv1::SceneListEntry {
                     index: 3,
                     name: "Bridge".into(),
-                }],
+                }]
+                .into(),
                 channels: vec![ChannelInfo {
                     group: 0,
                     channel: 1,

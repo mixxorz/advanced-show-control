@@ -283,6 +283,7 @@ mod macos {
                     window.render_frame(cx);
                     assert!(window.try_find("sensitivity").is_some());
                     assert!(window.try_find("same-scene-threshold").is_some());
+                    assert!(window.try_find("asc-recall-interval").is_some());
                 })?;
                 cx.update_window(window.into(), |_, window, cx| {
                     window.scroll(

@@ -1044,7 +1044,6 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
         println!("[warning] group={group} channel={channel} not found in LV1 snapshot");
     }
 
-    let mut failed_loops = Vec::new();
     let steps = pan_family_smoke_steps();
     for stage in ["together", "alternating"] {
         for loop_index in 1..=PAN_FAMILY_SMOKE_DURATIONS_MS.len() {
@@ -1052,7 +1051,6 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
                 .iter()
                 .filter(|step| step.stage == stage && step.loop_index == loop_index)
                 .collect();
-            let mut failed_reason = None;
             for step in loop_steps {
                 let label = format!(
                     "{}-loop-{}-{}-{}ms",
@@ -1079,34 +1077,32 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
                             "reason": reason,
                         }),
                     )?;
-                    let (reply, rx) = oneshot::channel();
-                    if engine
-                        .send(FadeCommand::AbortAll { reply: Some(reply) })
-                        .await
-                        .is_ok()
-                    {
-                        let _ = rx.await;
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    drain_pending_smoke_events(&mut fade_events);
-                    failed_reason = Some(reason);
-                    break;
+                    write_smoke_log_entry(
+                        &log_path,
+                        serde_json::json!({
+                            "event": "smoke_complete",
+                            "failed_loop_count": 1,
+                        }),
+                    )?;
+                    println!("[smoke-complete] 1 loop failed");
+                    println!("[smoke-log] {}", log_path.display());
+                    return Err(format!(
+                        "pan-family smoke test failed; inspect smoke log: {}",
+                        log_path.display()
+                    )
+                    .into());
                 }
             }
 
-            if let Some(reason) = failed_reason {
-                failed_loops.push((stage.to_string(), loop_index, reason));
-            } else {
-                println!("[loop-complete] {stage} loop {loop_index}");
-                write_smoke_log_entry(
-                    &log_path,
-                    serde_json::json!({
-                        "event": "loop_completed",
-                        "stage": stage,
-                        "loop_index": loop_index,
-                    }),
-                )?;
-            }
+            println!("[loop-complete] {stage} loop {loop_index}");
+            write_smoke_log_entry(
+                &log_path,
+                serde_json::json!({
+                    "event": "loop_completed",
+                    "stage": stage,
+                    "loop_index": loop_index,
+                }),
+            )?;
         }
     }
 
@@ -1114,19 +1110,9 @@ async fn run_pan_family_smoke_test(options: PanFamilySmokeOptions) -> AppResult<
         &log_path,
         serde_json::json!({
             "event": "smoke_complete",
-            "failed_loop_count": failed_loops.len(),
+            "failed_loop_count": 0,
         }),
     )?;
-    if !failed_loops.is_empty() {
-        println!("[smoke-complete] {} loop(s) failed", failed_loops.len());
-        println!("[smoke-log] {}", log_path.display());
-        return Err(format!(
-            "pan-family smoke test failed {} loop(s); inspect smoke log: {}",
-            failed_loops.len(),
-            log_path.display()
-        )
-        .into());
-    }
 
     println!("[smoke-complete] all loops passed with no fade override detected");
     println!("[smoke-log] {}", log_path.display());

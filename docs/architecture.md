@@ -11,7 +11,7 @@ The production crate is `app/`. Domain actors and services live under `app/src/`
 | Component   | Lifetime and responsibility                                                                                                                     |
 | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | `lv1`       | Generation-scoped actor. Owns TCP transport/reconnect, OSC, and the LV1 live-state mirror.                                                      |
-| `fade`      | Generation-scoped actor. Owns fade timing, interpolation, readiness, override, abort, overlap, and writes.                                      |
+| `fade`      | Generation-scoped actor. Owns fade timing, interpolation, readiness, override, safety cancellation, overlap, and writes.                       |
 | `scenes`    | One app-lifetime actor/document. Owns configs, selection, clipboard, scene-library reconciliation, capture/link/edit, recall policy, and queue. |
 | `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents and active/cued entries; has no task, peers, or event subscription. |
 | `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
@@ -40,9 +40,9 @@ Show(state)
 Settings(event)
 ```
 
-LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime.
+LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime. The production event bus retains 4,096 facts so normal LV1 parameter bursts do not immediately overrun a temporarily occupied subscriber.
 
-`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not presented UI state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee.
+`Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not presented UI state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee. Fade continues processing relevant LV1 and generation facts while a fresh LV1 snapshot request is pending, so snapshot latency does not suspend readiness, manual override, or disconnect handling.
 
 ## Lifecycle, Connections, and Peers
 
@@ -52,11 +52,11 @@ A connect transaction:
 
 1. advances and publishes the active generation;
 2. constructs LV1 and Fade for that generation and installs their handles only if still current;
-3. starts LV1/Fade, confirms a connected initial LV1 snapshot, and updates connected-LV1 metadata;
+3. starts LV1/Fade, waits up to ten seconds for the generation's `Connected` fact when the first responsive snapshot is still `Connecting`, confirms connectivity with a fresh snapshot, and updates connected-LV1 metadata;
 4. installs Scenes' accepted generation peers; then
-5. sends `ScenesCommand::RuntimePeersReady` with the initial scene list.
+5. sends `ScenesCommand::RuntimePeersReady` with the initial snapshot's optional authoritative scene list.
 
-`Scenes` is created once at app startup with an event subscription, `SettingsHandle`, initial settings, and `ShowLockoutReader`. The lockout reader is a latest-value dependency, avoiding a reverse Show mailbox dependency. Scene recall refreshes settings at settled observation boundaries and fails closed if settings are unavailable.
+`Scenes` is created once at app startup with an event subscription and `ShowLockoutReader`. The lockout reader is a latest-value dependency, avoiding a reverse Show mailbox dependency. Scene recall reads the event bus's retained Settings projection synchronously at settled-observation and lag-recovery boundaries, so it has no Settings mailbox dependency or Settings-unavailability failure mode.
 
 Direct peers are intentional:
 
@@ -71,9 +71,19 @@ Connection completion, failure, and disconnect use one `SetLv1ConnectionIfCurren
 
 Lifecycle runs multicast discovery on a blocking I/O worker, then sends only the resulting system list to Show. A discovery-only mutex serializes refreshes so older results cannot overwrite newer ones; it is independent of connection transitions and Show's mailbox. Lockout commands and generation changes remain responsive while discovery waits on the network. Startup and native UI discovery share this path.
 
-`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. The native UI requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
+`Lv1Actor` owns transport reconnect within its assigned generation. A transport failure clears connection-dependent live state, publishes `Disconnected`, and retries after its reconnect delay. Every timed reconnect delay continues servicing mailbox commands with disconnected outcomes, so state reads and acknowledged commands do not wait for the retry timer. The native UI requests explicit connect/disconnect only; it owns neither transport reconnect nor connection generations.
+
+### Remaining actor responsiveness audit
+
+The production actor loops outside Fade, Scenes, Show, and Projector were audited with these outcomes:
+
+- **LV1:** Connected processing selects between socket reads, writer failures, ping timeout, and mailbox commands, while socket writes run in a dedicated serial writer task. TCP connect and registration attempts are time-bounded and continue returning disconnected mailbox outcomes while pending; registration still must complete before `Connected` is published. Every reconnect delay drains commands with the same disconnected outcomes.
+- **Settings:** Settings replacements and remembered-identity updates remain serial mailbox transactions, so later commands stay queued until persistence, in-memory commit, reply, and any projection complete. Expensive JSON serialization and `StagedFile::prepare` work (temporary-file creation, writing, and `sync_all`) runs on a blocking worker while the actor awaits it. For remembered identity, only the final atomic rename and in-memory commit run inside the existing generation fence; preparation completes before that narrow boundary. Actor construction loads settings before the task starts, so startup loading cannot starve actor inputs.
+- **Lifecycle:** No actor-loop change is warranted because `AppLifecycle` is an orchestration service, not a mailbox or event actor. Its independently callable futures coordinate through narrow transition and discovery locks. Blocking discovery already runs on a blocking worker without holding the transition lock or a domain mailbox, and connection finalization already runs in a detached generation-fenced task.
 
 ## Scenes Library and Recall
+
+This section summarizes runtime ownership and safety boundaries. [Scene Recall Coordination](scene-recall.md) is the detailed source of truth for recall paths, correlation, Fade readiness, overlapping fades, and the ASC recall interval.
 
 Scenes preserves its document—durable config UUIDs, selection, and settings clipboard—across disconnects and generations. Its LV1-derived runtime library is explicitly:
 
@@ -81,35 +91,41 @@ Scenes preserves its document—durable config UUIDs, selection, and settings cl
 2. `AwaitingSceneList`: peers exist but no authoritative scene list exists.
 3. `Ready`: accepted peers and the active generation's scene list exist.
 
-Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available.
+Reconnect clears the runtime library and recall tracking but not the document, selection, or clipboard. Recall, capture/store-from-current-LV1, and link-to-current-LV1-scene require `Ready`; document-only edits remain available. The LV1 snapshot represents scene-list readiness explicitly: `None` means the current transport session has not supplied the list, while `Some(Vec::new())` is an authoritative empty library. Peer handoff and lag recovery leave Scenes in `AwaitingSceneList` for `None` and reconcile only from `Some` or a same-generation `SceneListChanged` fact.
 
-Scenes owns an eight-request FIFO for ASC-originated explicit recalls. Each caller reply remains held until that request actually dispatches, rather than merely entering the queue. After an LV1 recall dispatch, the queue requires an exact matching scene observation with a later `SceneObservation.sequence`, then Fade readiness: two newer `PingReceived` facts in the same generation. One five-second deadline spans observation and readiness. Timeout, disconnect, lockout, generation change, or unsafe recovery cancels queued intent; a bounded late-canceled-observation record suppresses late matching observations, with a five-second fail-closed suppression fallback on overflow.
+Scenes owns an eight-request FIFO for ASC-originated explicit recalls through its private `RecallCoordinator`; this is a deep synchronous module inside the sole app-lifetime Scenes actor, not another actor. The coordinator owns FIFO and in-flight phases, pending observations, late-canceled suppression, the Fade readiness receiver, and configured post-readiness interval state. Each caller reply remains held until that request actually dispatches, rather than merely entering the FIFO.
 
-The in-flight recall owns its Fade readiness receiver directly. The Scenes event loop polls that receiver alongside commands and LV1 facts; canceling the recall drops the receiver. No detached completion-forwarding task or intermediate completion queue survives cancellation. Skipped and blocked observations share the same readiness handoff while retaining distinct diagnostic outcomes.
+Store-from-current-LV1 uses the Scenes actor's single pending snapshot slot. The actor keeps consuming AppEventBus facts, lockout changes, and recall deadlines while that fresh LV1 state request is outstanding; scene and cue command mailboxes remain serialized until it completes. Disconnect or generation change drops the request and rejects the store before a late reply can mutate the document. Lag recovery synchronously fails closed, refreshes policy from retained Settings, and polls an optional fresh LV1 snapshot as an actor-owned pending operation. Generation change, disconnect, or a newer lag cancels stale recovery; a scene-list revision fence prevents completion from overwriting newer facts.
 
-A recall is validated with fresh LV1 state, generation, lockout, exact scene index/name, linked config, live topology, scopes, and stored targets before Fade is admitted. A genuinely blocked, skipped, or disabled pre-admission recall does not abort an active fade. Once a recall is validated and admitted—including no-target, disabled-scope, or zero-duration cases—it enters the readiness protocol; a readiness timeout aborts paused fades and cancels queued recall intent.
+Explicit admission, FIFO dispatch, settled-observation snapshot acquisition, and Fade handoff share one typed actor-owned pending recall transaction. Each phase carries its coordinator token and generation through the same cancellation boundary and select branch. The actor remains responsive to runtime facts, LV1 facts, Settings facts, lockout, and recall deadlines while an external wait is pending. Synchronous observation prechecks use the latest retained Settings projection before starting the exact fresh-snapshot phase. Fade mailbox reservation, generation-fenced publication and send, acknowledgement, and queued readiness-receiver transfer form the final phase. Dropping the transaction cancels its external wait before stale completion can dispatch LV1, publish, admit Fade work, or report current success.
 
-Each Fade engine belongs to exactly one connection generation. Commands and targets carry no independent generation, so a tick produces one checked write batch rather than grouping targets by generation. Rejected writes cancel all its targets without reporting successful completion. Successful start/completion publication is also generation-fenced after awaited requests or writes.
+After an LV1 recall dispatch, the coordinator first awaits an exact matching scene observation with a later `SceneObservation.sequence`, then Fade admission/readiness, and finally the configured post-readiness interval. One fixed five-second safety deadline spans only observation and two-ping readiness. The interval starts only after successful readiness and never gives Fade additional readiness time. A zero interval makes the next FIFO item immediately dispatchable. A nonzero interval remains active even with an empty FIFO, so a request arriving during it waits until the exact boundary before its LV1 dispatch.
+
+The in-flight recall owns its Fade readiness receiver directly. The Scenes event loop polls readiness and interval deadlines alongside commands, lockout, and LV1 facts; canceling the coordinator drops the receiver and cooldown. No detached completion-forwarding task or intermediate completion queue survives cancellation. Timeout, disconnect, lockout, generation or session replacement, and unsafe recovery cancel queued intent and cooldown. Skipped and blocked observations share the same readiness handoff while retaining distinct diagnostic outcomes. The eight most recent canceled exact recall identities suppress matching late observations for up to five seconds; capacity pressure discards the oldest identity and never suppresses unrelated observations.
+
+A recall is validated with fresh LV1 state, generation, lockout, exact scene index/name, linked config, live topology, scopes, and stored targets before Fade is admitted. A genuinely blocked, skipped, or disabled pre-admission recall does not alter an active fade. Once a recall is validated and admitted—including no-target, disabled-scope, or zero-duration cases—it enters the readiness protocol; a readiness timeout removes paused fades and cancels queued recall intent.
+
+Each Fade engine belongs to exactly one connection generation. Commands and targets carry no independent generation, so a tick produces one checked write batch rather than grouping targets by generation. The actor owns at most one pending write proposal while LV1 mailbox capacity is unavailable; it continues processing feedback, pings, disconnects, generation changes, and readiness deadlines, and commits expected values or completion only after admission. Feedback-canceled targets are filtered from the proposal before admission. Rejected writes cancel all its targets without reporting successful completion. Successful start/completion publication is also generation-fenced after awaited requests or writes.
 
 A repeated exact-scene recall is identified by the exact LV1 index/name retained with active targets. With same-scene finishing enabled, matching active targets finish after readiness. With it disabled, matching targets restart from their current interpolated or live values for the configured full duration. Both modes use the same generation-wide two-ping readiness barrier.
 
-Fade feedback remains active during readiness. A manual fader override beyond the fader-law position threshold cancels that fader target; pan requires confirmed consecutive deviations, while balance and width feedback do not cancel targets. A final manual cancellation produces a terminal fade completion. Disconnect, explicit Abort All, and generation change cancel active or paused fades.
+Fade feedback remains active during readiness. A manual fader override beyond the fader-law position threshold cancels that fader target; pan requires confirmed consecutive deviations, while balance and width feedback do not cancel targets. A final manual cancellation produces a terminal fade completion. Disconnect, generation change, actor shutdown, write failure, and readiness timeout cancel affected active or paused work automatically.
 
 ## Show, Cue Lists, and Persistence
 
-`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show subscribes during construction, so edits cannot fall into a gap before its task starts. It observes these app-lifetime facts without generation filtering, marks dirty, and publishes its full projection without redundant reason tags. On Show event-bus lag it conservatively marks the file dirty.
+`Show` does not own scene configs, selection, clipboard, or cue-list documents. It owns show-file path/name, dirty state, save timestamp, lockout, discovery, and connected-LV1 metadata. Scenes distinguishes persisted edits from projection-only updates; every Cue Lists change is a persisted edit. Show subscribes during construction, so edits cannot fall into a gap before its task starts. It observes these app-lifetime facts without generation filtering, marks dirty, and publishes its full projection without redundant reason tags. While one new, save, or load operation is pending, Show continues consuming facts, generation-fenced connection-metadata commands, and read-only state/path commands so lifecycle connection transitions are not blocked by persistence. At the first other command, Show holds that single command and stops polling the mailbox until the operation completes; later safe commands cannot bypass the conflicting command. Persisted edits observed during the operation remain dirty after completion. On Show event-bus lag it conservatively marks the file dirty.
 
 Persistence shares the scene domain's channel targets, channel references, and scope toggles directly; there is no duplicate file-only model or conversion for those values. The file scene wrapper remains distinct because legacy files may omit the durable scene UUID.
 
-New and load require a currently connected LV1 snapshot to initialize or align scenes against the live scene list. New from Template uses the same `.ascs` import, validation, replacement, and LV1 reconciliation path as Open, but clears the source path and saved timestamp after commit so the derived session remains untitled and normal Save prompts for a destination. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; an ordinary load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
+New and load require a currently connected LV1 snapshot with an authoritative scene list to initialize or align scenes. New from Template uses the same `.ascs` import, validation, replacement, and LV1 reconciliation path as Open, but clears the source path and saved timestamp after commit so the derived session remains untitled and normal Save prompts for a destination. Save does not require LV1: it obtains one `SessionDocument` containing scenes and cues from their shared owner before writing. File replacement is not inherently dirty; an ordinary load marks dirty for import normalization, generated IDs, scene alignment, or cue reconciliation.
 
-Replacement commits both documents and returns the reconciled result in one owner turn. Generation validation surrounds only this synchronous commit, never mailbox waits or file I/O. A `SessionReplacement` ticket serializes timeout cancellation with commit: a canceled request cannot apply later, and a committed request remains successful even if its acknowledgement arrives late. There are no old-document snapshots, compensating replacements, or rollback protocol. Replacement cancels queued recall intent and pending cue advancement without aborting an active fade.
+Replacement commits both documents and returns the reconciled result in one owner turn. Generation validation surrounds only this synchronous commit, never mailbox waits or file I/O. A `SessionReplacement` ticket serializes timeout cancellation with commit: a canceled request cannot apply later, and a committed request remains successful even if its acknowledgement arrives late. There are no old-document snapshots, compensating replacements, or rollback protocol. Replacement cancels queued recall intent and pending cue advancement without altering an active fade.
 
 Scenes reconciles configs and directly reconciles cue references when the owned scene identities change. Cue entries survive missing scenes; invalid active/cued references are cleared. Projected scene facts cannot mutate the cue document, and there is no cue subscriber, generation cache, or lag-recovery query. A replacement emits one `SessionReplaced` fact, so the projector applies both documents together rather than presenting a mixed replacement.
 
 Cue recall enters the existing recall queue locally. The owner polls its dispatch reply without a forwarding task, advances only after successful LV1 dispatch, and keeps subsequent cue commands bounded in their mailbox until completion. Scene commands and runtime safety events continue to be processed while a cue awaits queued dispatch.
 
-Settings and session saves share `StagedFile`: it reserves and syncs a temporary file beside the destination, publishes through the platform-specific atomic replacement, and cleans unpublished files on drop. Settings keeps generation validation around publication; session backup naming and retention remain separate policy.
+Settings and session saves share `StagedFile`: it reserves and syncs a temporary file beside the destination, publishes through the platform-specific atomic replacement, and cleans unpublished files on drop. Settings performs serialization and staging on a blocking worker while retaining serial mailbox ordering. Remembered-identity publication keeps only the atomic replacement and in-memory commit inside the generation fence; session backup naming and retention remain separate policy.
 
 Settings loads normalized defaults or persisted values from `settings.json`, saves changed full-object replacements immediately, and publishes `SettingsEvent::StateChanged`. Remembered LV1 identity is private metadata in the same file and is accessed by lifecycle through dedicated commands, not projected as public settings.
 
@@ -123,7 +139,7 @@ The projector accepts LV1/Fade facts only for its active generation. It receives
 
 Every emitted `AppViewState` has a monotonically increasing `state_version`. The GPUI bridge applies a snapshot only when its version is newer than the latest accepted version; command completion and projection delivery may arrive out of order and must not overwrite newer UI state.
 
-On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded and falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
+On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded; retained-state and log inputs remain responsive, while post-cutoff generation facts wait in an actor-owned bounded queue for ordered replay. Queue overflow establishes a new cutoff and restarts recovery. Recovery falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
 
 ## Debug Smoke Boundary
 
@@ -135,8 +151,8 @@ The non-GUI Rust smoke CLI lives in the separate `dev-tools/` crate. It uses pro
 
 - Never send fader commands when LV1 state is unavailable, disconnected, stale, or unsafe.
 - Never bypass generation guards, lockout, fresh-state validation, or exact scene identity.
-- Validate before Fade admission; preserve the pre-admission no-abort rule and the admitted-recall readiness timeout behavior.
-- Preserve manual override, abort, overlap, exact same-scene, and disconnect behavior.
+- Validate before Fade admission; a rejected pre-admission recall must not alter active fades.
+- Preserve manual override, overlap, exact same-scene, readiness-timeout, and disconnect behavior.
 - Make blocked or unsafe outcomes visible through facts, projected state, or complete `tracing` messages.
 
 ## Module Layout

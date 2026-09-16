@@ -1,4 +1,5 @@
-use std::cell::Cell;
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -27,6 +28,33 @@ use super::{CommandDispatcher, MainTab};
 
 type OpenConnection = dyn Fn(&mut Window, &mut gpui_kit::App);
 
+const GO_SUBMISSION_CAPACITY: usize = 8;
+
+/// @cc [owner:mixxorz,label:safety;product] go-outstanding-command-capacity
+/// Pointer and keyboard GO submission MUST share one eight-command capacity guard. Only a matching
+/// command completion may release its slot; unrelated or duplicate completions MUST NOT change the
+/// outstanding count.
+#[derive(Default)]
+pub(super) struct GoSubmissionGuard {
+    command_ids: HashSet<u64>,
+}
+
+impl GoSubmissionGuard {
+    pub fn can_submit(&self) -> bool {
+        self.command_ids.len() < GO_SUBMISSION_CAPACITY
+    }
+
+    pub fn start(&mut self, command_id: u64) {
+        debug_assert!(self.can_submit());
+        let inserted = self.command_ids.insert(command_id);
+        debug_assert!(inserted);
+    }
+
+    pub fn finish(&mut self, command_id: u64) -> bool {
+        self.command_ids.remove(&command_id)
+    }
+}
+
 pub struct AppShell {
     active_tab: MainTab,
     snapshot: AppViewState,
@@ -35,7 +63,7 @@ pub struct AppShell {
     cue_lists: Entity<CueListsView>,
     settings: Entity<SettingsView>,
     logs: Entity<LogsView>,
-    go_command_id: Rc<Cell<Option<u64>>>,
+    go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     action_context: FocusHandle,
     session_menu_open: bool,
     open_connection: Box<OpenConnection>,
@@ -50,7 +78,7 @@ impl AppShell {
         cue_lists: Entity<CueListsView>,
         settings: Entity<SettingsView>,
         logs: Entity<LogsView>,
-        go_command_id: Rc<Cell<Option<u64>>>,
+        go_submissions: Rc<RefCell<GoSubmissionGuard>>,
         action_context: FocusHandle,
         open_connection: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
         cx: &mut Context<Self>,
@@ -74,7 +102,7 @@ impl AppShell {
             cue_lists,
             settings,
             logs,
-            go_command_id,
+            go_submissions,
             action_context,
             session_menu_open: false,
             open_connection: Box::new(open_connection),
@@ -203,7 +231,6 @@ impl Render for AppShell {
         let trigger_disabled = self.modal_open(cx) || self.shortcut_capture_active(cx);
         let actions_blocked = trigger_disabled || self.session_menu_open;
         let lockout_dispatcher = self.dispatcher.clone();
-        let abort_dispatcher = self.dispatcher.clone();
 
         div()
             .size_full()
@@ -296,18 +323,6 @@ impl Render for AppShell {
                                             commands.set_lockout(!lockout).await.map(|_| ())
                                         });
                                     }),
-                            )
-                            .child(
-                                bordered_button("abort-all")
-                                    .danger()
-                                    .accessibility_label("Abort all fades")
-                                    .label("ABORT ALL")
-                                    .disabled(actions_blocked)
-                                    .on_click(move |_, _, _| {
-                                        abort_dispatcher.dispatch(|commands| async move {
-                                            commands.abort_all_fades().await
-                                        });
-                                    }),
                             ),
                     ),
             )
@@ -323,9 +338,11 @@ impl Render for AppShell {
     }
 }
 
-/// @cc [owner:mixxorz,label:safety;product] go-single-flight
-/// GO MUST be disabled without a resolvable cued scene and while a recall is pending, submit at
-/// most one recall concurrently, and clear its pending guard after success or failure.
+/// @cc [owner:mixxorz,label:safety;product] go-submission-guard
+/// GO MUST be disabled without a resolvable cued scene or when eight GO commands are unsettled, but
+/// MUST remain available below that capacity while earlier GO recalls are unsettled. Pointer
+/// multi-click sequences MUST dispatch only their first click so an accidental double-click cannot
+/// enqueue a duplicate recall.
 fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoElement {
     let current = shell
         .snapshot
@@ -345,12 +362,12 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
         ("Ready", STATUS_CUED)
     };
     let can_go = cued.is_some()
-        && shell.go_command_id.get().is_none()
+        && shell.go_submissions.borrow().can_submit()
         && !shell.modal_open(cx)
         && !shell.session_menu_open
         && !shell.shortcut_capture_active(cx);
     let go_dispatcher = shell.dispatcher.clone();
-    let go_command_id = shell.go_command_id.clone();
+    let go_submissions = shell.go_submissions.clone();
     let entity = cx.entity();
 
     div()
@@ -384,14 +401,14 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
                         .accessibility_label("Recall cued scene")
                         .label("GO")
                         .disabled(!can_go)
-                        .on_click(move |_, _, cx| {
-                            if go_command_id.get().is_some() {
+                        .on_click(move |event, _, cx| {
+                            if !should_dispatch_go_click(event.click_count())
+                                || !go_submissions.borrow().can_submit()
+                            {
                                 return;
                             }
-                            let id = go_dispatcher.dispatch(|commands| async move {
-                                commands.recall_cued_cue().await.map(|_| ())
-                            });
-                            go_command_id.set(Some(id));
+                            let command_id = go_dispatcher.dispatch_cued_cue_recall();
+                            go_submissions.borrow_mut().start(command_id);
                             entity.update(cx, |_, cx| cx.notify());
                         }),
                 ),
@@ -452,6 +469,10 @@ fn console_display_name(connection: &AppConnectionState, host: Option<&str>) -> 
     }
 }
 
+fn should_dispatch_go_click(click_count: usize) -> bool {
+    click_count == 1
+}
+
 fn format_time(time: chrono::NaiveTime, format: &TimeDisplayFormat) -> String {
     match format {
         TimeDisplayFormat::TwentyFourHour => time.format("%H:%M:%S").to_string(),
@@ -484,8 +505,9 @@ mod tests {
     use chrono::NaiveTime;
 
     use super::{
-        AppConnectionState, CONSOLE_PRIMARY, STATUS_CUED, STATUS_DANGER, STATUS_WARNING,
-        TimeDisplayFormat, connection_presentation, console_display_name, format_time,
+        AppConnectionState, CONSOLE_PRIMARY, GoSubmissionGuard, STATUS_CUED, STATUS_DANGER,
+        STATUS_WARNING, TimeDisplayFormat, connection_presentation, console_display_name,
+        format_time, should_dispatch_go_click,
     };
 
     #[test]
@@ -502,6 +524,32 @@ mod tests {
             connection_presentation(&AppConnectionState::Disconnected),
             ("OFFLINE", STATUS_DANGER, CONSOLE_PRIMARY)
         );
+    }
+
+    #[test]
+    fn go_submission_guard_allows_eight_unsettled_commands() {
+        let mut guard = GoSubmissionGuard::default();
+
+        for command_id in 1..=super::GO_SUBMISSION_CAPACITY as u64 {
+            assert!(guard.can_submit());
+            guard.start(command_id);
+        }
+        assert!(!guard.can_submit());
+
+        assert!(guard.finish(1));
+        assert!(guard.can_submit());
+        guard.start(9);
+        assert!(!guard.can_submit());
+        assert!(!guard.finish(1));
+        assert!(!guard.finish(99));
+    }
+
+    #[test]
+    fn go_click_guard_rejects_double_click_events_but_accepts_distinct_clicks() {
+        assert!(should_dispatch_go_click(1));
+        assert!(should_dispatch_go_click(1));
+        assert!(!should_dispatch_go_click(2));
+        assert!(!should_dispatch_go_click(3));
     }
 
     #[test]

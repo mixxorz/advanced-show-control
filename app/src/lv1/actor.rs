@@ -1,5 +1,6 @@
 //! LV1 actor runtime.
 
+use std::future::Future;
 use std::time::{Duration, Instant};
 
 use tokio::io::AsyncWriteExt;
@@ -20,9 +21,16 @@ use crate::lv1::osc::OscArg;
 use crate::runtime::events::AppEventBus;
 
 const PING_TIMEOUT: Duration = Duration::from_secs(10);
+const CONNECTION_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(10);
 const RECONNECT_DELAY: Duration = Duration::from_secs(3);
 const WRITER_QUEUE_CAPACITY: usize = 64;
 const PRODUCTION_DEVICE_NAME: &str = "Advanced Show Control";
+
+#[derive(Clone, Default)]
+struct AttemptGates {
+    connect: Option<std::sync::Arc<tokio::sync::Notify>>,
+    registration: Option<std::sync::Arc<tokio::sync::Notify>>,
+}
 
 pub struct Lv1ActorTask {
     host: String,
@@ -30,6 +38,7 @@ pub struct Lv1ActorTask {
     event_bus: AppEventBus,
     generation: u64,
     cmd_rx: mpsc::Receiver<Lv1Command>,
+    attempt_gates: AttemptGates,
 }
 
 impl Lv1ActorTask {
@@ -40,6 +49,7 @@ impl Lv1ActorTask {
             self.event_bus,
             self.generation,
             self.cmd_rx,
+            self.attempt_gates,
         ));
     }
 }
@@ -58,12 +68,36 @@ pub fn build_actor(
         event_bus,
         generation,
         cmd_rx,
+        attempt_gates: AttemptGates::default(),
+    };
+    (handle, task)
+}
+
+#[cfg(test)]
+fn build_actor_with_attempt_gates(
+    host: String,
+    port: u16,
+    event_bus: AppEventBus,
+    generation: u64,
+    connect: Option<std::sync::Arc<tokio::sync::Notify>>,
+    registration: Option<std::sync::Arc<tokio::sync::Notify>>,
+) -> (Lv1ActorHandle, Lv1ActorTask) {
+    let (handle, mut task) = build_actor(host, port, event_bus, generation);
+    task.attempt_gates = AttemptGates {
+        connect,
+        registration,
     };
     (handle, task)
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum DrainCommandsResult {
+    TimedOut,
+    CommandChannelClosed,
+}
+
+enum PendingOperationResult<T> {
+    Completed(T),
     TimedOut,
     CommandChannelClosed,
 }
@@ -205,8 +239,11 @@ fn drain_disconnected_command(
     }
 }
 
+/// @cc [owner:mixxorz,label:responsiveness;connection] reconnect-delay-mailbox-service
+/// Every timed reconnect delay MUST continue draining the command mailbox with disconnected
+/// outcomes so state reads and acknowledged commands do not wait for the retry timer.
+///
 /// Drain pending commands for `duration`, responding to GetState immediately.
-/// Used during reconnect delays so callers are never blocked indefinitely.
 async fn drain_commands_for(
     state: &mut ActorState,
     cmd_rx: &mut mpsc::Receiver<Lv1Command>,
@@ -225,20 +262,61 @@ async fn drain_commands_for(
     }
 }
 
+/// @cc [owner:mixxorz,label:responsiveness;connection;safety] pending-connect-mailbox-service
+/// TCP connect and registration attempts MUST be time-bounded and MUST service the mailbox with
+/// disconnected outcomes while pending. Mailbox closure MUST cancel the pending attempt and stop
+/// the actor; `Connected` MUST remain unpublished until registration succeeds.
+async fn await_pending_operation<T>(
+    operation: impl Future<Output = T>,
+    state: &ActorState,
+    cmd_rx: &mut mpsc::Receiver<Lv1Command>,
+) -> PendingOperationResult<T> {
+    let timeout = tokio::time::sleep(CONNECTION_ATTEMPT_TIMEOUT);
+    tokio::pin!(operation);
+    tokio::pin!(timeout);
+
+    loop {
+        tokio::select! {
+            result = &mut operation => return PendingOperationResult::Completed(result),
+            _ = &mut timeout => return PendingOperationResult::TimedOut,
+            cmd = cmd_rx.recv() => match cmd {
+                Some(cmd) => drain_disconnected_command(cmd, state, Err(Lv1ActorError::NotConnected)),
+                None => return PendingOperationResult::CommandChannelClosed,
+            },
+        }
+    }
+}
+
+async fn wait_for_attempt_gate(gate: &Option<std::sync::Arc<tokio::sync::Notify>>) {
+    if let Some(gate) = gate {
+        gate.notified().await;
+    }
+}
+
+/// @cc [owner:mixxorz,label:safety;state;connection] transport-session-scene-list-reset
+/// The scene-list mirror MUST be unknown before the first valid scene-list notification of each
+/// transport session. Disconnect MUST clear the prior session's list before disconnected state is
+/// published or another connection attempt can expose a snapshot.
 async fn run_actor(
     host: String,
     port: u16,
     event_bus: AppEventBus,
     generation: u64,
     mut cmd_rx: mpsc::Receiver<Lv1Command>,
+    attempt_gates: AttemptGates,
 ) {
     let mut state = ActorState::new(event_bus, generation);
 
     loop {
         let mut client = loop {
-            match Lv1TcpClient::connect(&host, port).await {
-                Ok(c) => break c,
-                Err(_) => {
+            let connect = async {
+                wait_for_attempt_gate(&attempt_gates.connect).await;
+                Lv1TcpClient::connect(&host, port).await
+            };
+            match await_pending_operation(connect, &state, &mut cmd_rx).await {
+                PendingOperationResult::Completed(Ok(client)) => break client,
+                PendingOperationResult::CommandChannelClosed => return,
+                PendingOperationResult::Completed(Err(_)) | PendingOperationResult::TimedOut => {
                     if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
                         == DrainCommandsResult::CommandChannelClosed
                     {
@@ -251,17 +329,21 @@ async fn run_actor(
         state.scene_observation_sequence = 0;
 
         let uuid = uuid::Uuid::new_v4().to_string();
-        if client
-            .register_myfoh(PRODUCTION_DEVICE_NAME, &uuid)
-            .await
-            .is_err()
-        {
-            if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
-                == DrainCommandsResult::CommandChannelClosed
-            {
-                return;
+        let registration = async {
+            wait_for_attempt_gate(&attempt_gates.registration).await;
+            client.register_myfoh(PRODUCTION_DEVICE_NAME, &uuid).await
+        };
+        match await_pending_operation(registration, &state, &mut cmd_rx).await {
+            PendingOperationResult::Completed(Ok(())) => {}
+            PendingOperationResult::CommandChannelClosed => return,
+            PendingOperationResult::Completed(Err(_)) | PendingOperationResult::TimedOut => {
+                if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
+                    == DrainCommandsResult::CommandChannelClosed
+                {
+                    return;
+                }
+                continue;
             }
-            continue;
         }
 
         state.connection = ConnectionStatus::Connected;
@@ -279,6 +361,7 @@ async fn run_actor(
 
         state.connection = ConnectionStatus::Disconnected;
         state.scene = None;
+        state.scene_list = None;
         state.channels.clear();
         state.scene_buf = Default::default();
         state.diagnose(format!("disconnected: {disconnected}"));
@@ -290,7 +373,11 @@ async fn run_actor(
             break;
         }
 
-        tokio::time::sleep(RECONNECT_DELAY).await;
+        if drain_commands_for(&mut state, &mut cmd_rx, RECONNECT_DELAY).await
+            == DrainCommandsResult::CommandChannelClosed
+        {
+            break;
+        }
     }
 }
 
@@ -702,6 +789,116 @@ mod tests {
                 .iter()
                 .any(|event| event.message.as_deref() == Some("parsed /Notify/SceneList scenes=1"))
         );
+    }
+
+    async fn assert_disconnected_state_responds_promptly(handle: &Lv1ActorHandle) {
+        let (reply, response) = oneshot::channel();
+        handle
+            .send(Lv1Command::GetState { reply })
+            .await
+            .expect("state request should enter mailbox");
+        let snapshot = tokio::time::timeout(Duration::from_millis(250), response)
+            .await
+            .expect("state request should not wait for a connection operation")
+            .expect("actor should answer state request");
+        assert_ne!(snapshot.connection, ConnectionStatus::Connected);
+    }
+
+    #[tokio::test]
+    async fn actor_answers_state_requests_while_connect_is_stalled() {
+        let connect_gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let (handle, task) = build_actor_with_attempt_gates(
+            "127.0.0.1".to_string(),
+            9,
+            AppEventBus::default(),
+            0,
+            Some(connect_gate),
+            None,
+        );
+        task.spawn();
+
+        tokio::task::yield_now().await;
+        assert_disconnected_state_responds_promptly(&handle).await;
+    }
+
+    #[tokio::test]
+    async fn actor_answers_state_requests_without_losing_stalled_registration() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let registration_gate = std::sync::Arc::new(tokio::sync::Notify::new());
+        let bus = AppEventBus::default();
+        let mut events = bus.subscribe();
+        let (handle, task) = build_actor_with_attempt_gates(
+            "127.0.0.1".to_string(),
+            port,
+            bus,
+            0,
+            None,
+            Some(registration_gate.clone()),
+        );
+        task.spawn();
+
+        let (_stream, _) = listener.accept().await.unwrap();
+        tokio::task::yield_now().await;
+        assert_disconnected_state_responds_promptly(&handle).await;
+        assert!(
+            events.try_recv().is_err(),
+            "registration must precede Connected"
+        );
+
+        registration_gate.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ) {}
+        })
+        .await
+        .expect("registration future should continue after servicing a command");
+    }
+
+    #[tokio::test]
+    async fn actor_answers_state_requests_during_reconnect_delay() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let bus = AppEventBus::default();
+        let mut events = bus.subscribe();
+        let (handle, task) = build_actor("127.0.0.1".to_string(), port, bus, 0);
+        task.spawn();
+
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    event: Lv1Event::Connected,
+                    ..
+                }
+            ) {}
+        })
+        .await
+        .expect("actor should connect");
+        drop(stream);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !matches!(
+                events.recv().await.unwrap(),
+                AppEvent::Lv1 {
+                    event: Lv1Event::Disconnected { .. },
+                    ..
+                }
+            ) {}
+        })
+        .await
+        .expect("actor should observe transport closure");
+
+        assert_disconnected_state_responds_promptly(&handle).await;
     }
 
     #[tokio::test]

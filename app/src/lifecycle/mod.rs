@@ -24,6 +24,8 @@ use crate::show::{
     ShowStateHandle,
 };
 
+const CONNECTION_READY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// @cc [owner:mixxorz,label:architecture;safety] complete-generation-runtime
 /// An installed runtime MUST bind one generation to both its LV1 and Fade endpoints as one value;
 /// lifecycle state MUST NOT install, clear, or retag either endpoint independently.
@@ -45,6 +47,7 @@ struct BuiltConnectedRuntime {
     runtime: InstalledRuntime,
     lv1_task: crate::lv1::Lv1ActorTask,
     fade_task: crate::fade::FadeEngineTask,
+    lv1_events: tokio::sync::broadcast::Receiver<AppEvent>,
 }
 
 impl BuiltConnectedRuntime {
@@ -53,6 +56,7 @@ impl BuiltConnectedRuntime {
         self.fade_task.spawn();
         StartedConnectedRuntime {
             runtime: self.runtime,
+            lv1_events: self.lv1_events,
             #[cfg(test)]
             before_connection_metadata: None,
         }
@@ -61,6 +65,7 @@ impl BuiltConnectedRuntime {
 
 struct StartedConnectedRuntime {
     runtime: InstalledRuntime,
+    lv1_events: tokio::sync::broadcast::Receiver<AppEvent>,
     #[cfg(test)]
     before_connection_metadata: Option<BeforeConnectionMetadataHook>,
 }
@@ -91,6 +96,7 @@ fn build_connected_runtime(
         },
         lv1_task,
         fade_task,
+        lv1_events: event_bus.subscribe(),
     }
 }
 
@@ -132,6 +138,26 @@ impl RuntimeSnapshotSource {
     pub async fn current_generation(&self) -> u64 {
         self.generation.current().await
     }
+
+    #[cfg(test)]
+    pub(crate) fn with_lv1_for_test(lv1: Lv1ActorHandle) -> Self {
+        let generation = RuntimeGeneration::default();
+        let (fade, _fade_rx) = tokio::sync::mpsc::channel(1);
+        Self {
+            inner: Arc::new(Mutex::new(LifecycleInner {
+                generation: generation.clone(),
+                connecting: false,
+                runtime: Some(InstalledRuntime {
+                    generation: 0,
+                    lv1,
+                    fade,
+                }),
+                projection_sink: None,
+                projector: None,
+            })),
+            generation,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -165,7 +191,6 @@ impl AppLifecycle {
         show_peers: ShowActorPeers,
         lockout: ShowLockoutReader,
         settings: SettingsHandle,
-        initial_settings: crate::settings::AppSettings,
     ) -> Self {
         let runtime_generation = show_peers.runtime_generation();
         let (scenes, scenes_task, scenes_peers) = build_scenes_actor(
@@ -173,8 +198,6 @@ impl AppLifecycle {
             runtime_generation.clone(),
             event_bus.clone(),
             event_bus.subscribe(),
-            settings.clone(),
-            initial_settings,
             lockout.clone(),
         );
         let cue_lists = scenes_task.cue_lists_handle();
@@ -231,11 +254,6 @@ impl AppLifecycle {
         if let Some(hook) = hook {
             hook().await;
         }
-    }
-
-    #[cfg(test)]
-    async fn settings_snapshot(&self) -> Result<crate::settings::AppSettings, String> {
-        Ok(self.event_bus.state().borrow().settings.clone())
     }
 
     /// @cc [owner:mixxorz,label:safety;ordering] begin-connection-generation-first
@@ -424,10 +442,12 @@ impl AppLifecycle {
         result
     }
 
-    /// @cc [owner:mixxorz,label:safety] connected-snapshot-required
-    /// Connection completion MUST request an initial LV1 snapshot and MUST accept the candidate only
-    /// when that snapshot reports `Connected`; command-send failure, reply closure, or any other
-    /// status MUST enter generation-fenced failure finalization and return an error.
+    /// @cc [owner:mixxorz,label:safety;responsiveness] connected-snapshot-required
+    /// Connection completion MUST accept an immediate `Connected` snapshot or wait, for at most ten
+    /// seconds, while an initial `Connecting` snapshot is followed by this generation's `Connected`
+    /// fact on `AppEventBus`. After that fact it MUST confirm a fresh `Connected` snapshot before
+    /// acceptance. `Disconnected`, timeout, supersession, mailbox failure, or reply closure MUST enter
+    /// generation-fenced failure finalization and return an error.
     async fn finish_connect_transaction(
         &self,
         identity: crate::connection_state::Lv1SystemIdentity,
@@ -435,88 +455,47 @@ impl AppLifecycle {
     ) -> Result<ConnectCommandResult, String> {
         let StartedConnectedRuntime {
             runtime,
+            mut lv1_events,
             #[cfg(test)]
             before_connection_metadata,
         } = started_runtime;
         let generation = runtime.generation;
 
-        let (reply, rx) = oneshot::channel();
-        if let Err(error) = runtime.lv1.send(Lv1Command::GetState { reply }).await {
-            return self
-                .finalize_failed_connection(
-                    generation,
-                    identity,
-                    format!("Failed to request initial LV1 state: {error}"),
-                    #[cfg(test)]
-                    before_connection_metadata,
-                )
-                .await;
-        }
-        let initial_snapshot = match rx.await {
-            Ok(snapshot) => snapshot,
-            Err(_) => {
-                return self
-                    .finalize_failed_connection(
-                        generation,
-                        identity,
-                        AppCommandError::ReplyChannelClosed.to_string(),
-                        #[cfg(test)]
-                        before_connection_metadata,
-                    )
-                    .await;
-            }
-        };
-
-        if initial_snapshot.connection != ConnectionStatus::Connected {
-            let lifecycle = self.clone();
-            let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-            let finalizer = tokio::spawn(
-                async move {
-                    lifecycle
+        let initial_snapshot =
+            match wait_for_connected_snapshot(&runtime.lv1, generation, &mut lv1_events).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    return self
                         .finalize_failed_connection(
                             generation,
                             identity,
-                            "LV1 did not connect".to_string(),
+                            error,
                             #[cfg(test)]
                             before_connection_metadata,
                         )
-                        .await
+                        .await;
                 }
-                .with_subscriber(subscriber),
-            );
-            return finalizer
-                .await
-                .map_err(|error| format!("LV1 failure finalizer task failed: {error}"))?;
-        }
+            };
 
-        let lifecycle = self.clone();
-        let subscriber = tracing::dispatcher::get_default(|dispatcher| dispatcher.clone());
-        let finalizer = tokio::spawn(
-            async move {
-                lifecycle
-                    .finalize_connection_metadata(
-                        identity,
-                        runtime,
-                        initial_snapshot,
-                        #[cfg(test)]
-                        before_connection_metadata,
-                    )
-                    .await
-            }
-            .with_subscriber(subscriber),
-        );
-        finalizer
-            .await
-            .map_err(|error| format!("LV1 connection finalizer task failed: {error}"))?
+        self.finalize_connection_metadata(
+            identity,
+            runtime,
+            initial_snapshot,
+            #[cfg(test)]
+            before_connection_metadata,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
     /**
      * @cc [owner:mixxorz,label:safety;ordering] accepted-connect-readiness-order
      * A connected candidate MUST first have Show metadata accepted for its generation, then install
-     * that generation's Scene peers, then deliver `RuntimePeersReady` with the confirmed initial
-     * scene list. Any rejection or unavailable Scenes actor MUST clean up only the candidate and
-     * return an error; connected success MUST remain generation-fenced after all awaits.
+     * that generation's Scene peers, then deliver `RuntimePeersReady` with the initial snapshot's
+     * scene-list readiness unchanged. `None` MUST NOT establish scene-library readiness;
+     * `Some(Vec::new())` MUST remain an authoritative empty library. Any rejection or unavailable
+     * Scenes actor MUST clean up only the candidate and return an error; connected success MUST
+     * remain generation-fenced after all awaits.
      */
     /**
      * @cc [owner:mixxorz,label:reliability] remembered-identity-best-effort
@@ -946,18 +925,92 @@ impl Default for AppLifecycle {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers, lockout) =
             crate::show::build_show_actor(event_bus.clone());
-        let (settings, settings_task, initial_settings) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(std::env::temp_dir(), event_bus.clone());
         show_task.spawn();
         settings_task.spawn();
-        Self::new(
-            event_bus,
-            show,
-            show_peers,
-            lockout,
-            settings,
-            initial_settings,
-        )
+        Self::new(event_bus, show, show_peers, lockout, settings)
+    }
+}
+
+async fn request_lv1_snapshot_before(
+    lv1: &Lv1ActorHandle,
+    deadline: tokio::time::Instant,
+) -> Result<crate::lv1::Lv1StateSnapshot, String> {
+    tokio::time::timeout_at(deadline, async {
+        let (reply, response) = oneshot::channel();
+        lv1.send(Lv1Command::GetState { reply })
+            .await
+            .map_err(|error| format!("Failed to request initial LV1 state: {error}"))?;
+        response
+            .await
+            .map_err(|_| AppCommandError::ReplyChannelClosed.to_string())
+    })
+    .await
+    .map_err(|_| "LV1 did not connect".to_string())?
+}
+
+async fn wait_for_connected_snapshot(
+    lv1: &Lv1ActorHandle,
+    generation: u64,
+    events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+) -> Result<crate::lv1::Lv1StateSnapshot, String> {
+    let deadline = tokio::time::Instant::now() + CONNECTION_READY_TIMEOUT;
+    let initial_snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
+    match initial_snapshot.connection {
+        ConnectionStatus::Connected => return Ok(initial_snapshot),
+        ConnectionStatus::Disconnected => return Err("LV1 did not connect".to_string()),
+        ConnectionStatus::Connecting => {}
+    }
+
+    let timeout = tokio::time::sleep_until(deadline);
+    tokio::pin!(timeout);
+    loop {
+        tokio::select! {
+            _ = &mut timeout => return Err("LV1 did not connect".to_string()),
+            event = events.recv() => match event {
+                Ok(AppEvent::Lv1 {
+                    generation: event_generation,
+                    event: Lv1Event::Connected,
+                }) if event_generation == generation => {
+                    let snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
+                    match snapshot.connection {
+                        ConnectionStatus::Connected => return Ok(snapshot),
+                        ConnectionStatus::Disconnected => {
+                            return Err("LV1 did not connect".to_string());
+                        }
+                        ConnectionStatus::Connecting => {}
+                    }
+                }
+                Ok(AppEvent::Lv1 {
+                    generation: event_generation,
+                    event: Lv1Event::Disconnected { .. },
+                }) if event_generation == generation => {
+                    return Err("LV1 did not connect".to_string());
+                }
+                Ok(AppEvent::Runtime(
+                    crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
+                        generation: active_generation,
+                    },
+                )) if active_generation != generation => {
+                    return Err("LV1 connection was superseded".to_string());
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let snapshot = request_lv1_snapshot_before(lv1, deadline).await?;
+                    match snapshot.connection {
+                        ConnectionStatus::Connected => return Ok(snapshot),
+                        ConnectionStatus::Disconnected => {
+                            return Err("LV1 did not connect".to_string());
+                        }
+                        ConnectionStatus::Connecting => {}
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    return Err("LV1 event stream is closed".to_string());
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -1007,7 +1060,7 @@ mod tests {
     use super::*;
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
     use crate::fade::FadeEngineHandle;
-    use crate::lv1::{Lv1Command, Lv1StateSnapshot, test_actor_handle};
+    use crate::lv1::{Lv1Command, Lv1StateSnapshot, SceneListEntry, test_actor_handle};
     use crate::runtime::events::RuntimeLifecycleEvent;
     use crate::scenes::ScenesCommand;
 
@@ -1024,6 +1077,19 @@ mod tests {
             }
         });
         test_actor_handle(tx)
+    }
+
+    fn fade_mailbox_probe() -> crate::fade::FadeCommand {
+        crate::fade::FadeCommand::WaitForRecallReadiness {
+            scene: crate::fade::FadeSceneIdentity {
+                index: 0,
+                name: "mailbox probe".to_string(),
+            },
+            readiness: crate::fade::RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+            ),
+            reply: None,
+        }
     }
 
     struct TestSettingsDir {
@@ -1083,14 +1149,7 @@ mod tests {
         let (show, show_task, show_peers, lockout) =
             crate::show::build_show_actor(event_bus.clone());
         show_task.spawn();
-        AppLifecycle::new(
-            event_bus,
-            show,
-            show_peers,
-            lockout,
-            settings,
-            crate::settings::AppSettings::default(),
-        )
+        AppLifecycle::new(event_bus, show, show_peers, lockout, settings)
     }
 
     fn lifecycle_for_test(event_bus: AppEventBus) -> LifecycleTestFixture {
@@ -1112,14 +1171,7 @@ mod tests {
             crate::show::build_show_actor(event_bus.clone());
         drop(show_task);
         LifecycleTestFixture {
-            lifecycle: AppLifecycle::new(
-                event_bus,
-                show,
-                show_peers,
-                lockout,
-                settings,
-                crate::settings::AppSettings::default(),
-            ),
+            lifecycle: AppLifecycle::new(event_bus, show, show_peers, lockout, settings),
             _settings_dir: settings_dir,
         }
     }
@@ -1139,7 +1191,6 @@ mod tests {
     async fn started_runtime_for_test(
         lifecycle: &AppLifecycle,
         generation: u64,
-        runtime_generation: RuntimeGeneration,
         event_bus: AppEventBus,
         lv1: Lv1ActorHandle,
         fade: FadeEngineHandle,
@@ -1156,10 +1207,9 @@ mod tests {
                 .is_ok(),
             "test runtime targets should install"
         );
-        let initial_settings = lifecycle.settings_snapshot().await.unwrap();
-        let _ = (runtime_generation, event_bus, initial_settings);
         StartedConnectedRuntime {
             runtime: installed_runtime(generation, lv1, fade),
+            lv1_events: event_bus.subscribe(),
             before_connection_metadata,
         }
     }
@@ -1235,7 +1285,31 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: vec![],
+            scene_list: None,
+            channels: vec![],
+            ping_sequence: 0,
+        }
+    }
+
+    fn test_scene_list() -> Vec<SceneListEntry> {
+        vec![SceneListEntry {
+            index: 1,
+            name: "Intro".to_string(),
+        }]
+    }
+
+    fn connected_snapshot_with_scene_list() -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            scene_list: Some(test_scene_list()),
+            ..connected_snapshot()
+        }
+    }
+
+    fn connecting_snapshot() -> Lv1StateSnapshot {
+        Lv1StateSnapshot {
+            connection: ConnectionStatus::Connecting,
+            scene: None,
+            scene_list: None,
             channels: vec![],
             ping_sequence: 0,
         }
@@ -1245,7 +1319,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Disconnected,
             scene: None,
-            scene_list: vec![],
+            scene_list: None,
             channels: vec![],
             ping_sequence: 0,
         }
@@ -1403,20 +1477,11 @@ mod tests {
         };
 
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
-        let lv1 = fake_lv1_handle(connected_snapshot());
+        let lv1 = fake_lv1_handle(connected_snapshot_with_scene_list());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade, None).await;
 
         let connect_result = lifecycle
             .finish_connect_transaction(identity, started_runtime)
@@ -1430,6 +1495,184 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.await.unwrap().ready_generation, Some(generation));
+    }
+
+    #[tokio::test]
+    async fn accepted_connection_without_scene_list_keeps_scenes_awaiting_notification() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let lv1 = fake_lv1_handle(connected_snapshot());
+        let (fade, _fade_rx) = tokio::sync::mpsc::channel(1);
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus.clone(), lv1, fade, None)
+                .await;
+
+        lifecycle
+            .finish_connect_transaction(
+                identity(Some("uuid-1"), Some("localhost"), "127.0.0.1"),
+                started_runtime,
+            )
+            .await
+            .unwrap();
+
+        let (reply, state) = tokio::sync::oneshot::channel();
+        lifecycle
+            .scenes
+            .send(crate::scenes::ScenesCommand::InitialProjectionState { reply })
+            .await
+            .unwrap();
+        assert_eq!(state.await.unwrap().ready_generation, None);
+
+        while events.try_recv().is_ok() {}
+        event_bus.publish_lv1(generation, Lv1Event::SceneListChanged(Vec::new()));
+        loop {
+            if let AppEvent::Scenes {
+                generation: event_generation,
+                event: crate::scenes::ScenesEvent::StateChanged { state, .. },
+            } = events.recv().await.unwrap()
+                && event_generation == generation
+                && state.ready_generation == Some(generation)
+            {
+                break;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn connection_waits_for_connected_fact_after_initial_connecting_snapshot() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let (lv1_tx, mut lv1_rx) = mpsc::channel(8);
+        let event_bus_for_actor = event_bus.clone();
+        tokio::spawn(async move {
+            let mut first_state = true;
+            while let Some(command) = lv1_rx.recv().await {
+                if let Lv1Command::GetState { reply } = command {
+                    if first_state {
+                        first_state = false;
+                        let _ = reply.send(connecting_snapshot());
+                        event_bus_for_actor.publish(AppEvent::Lv1 {
+                            generation,
+                            event: Lv1Event::Connected,
+                        });
+                    } else {
+                        let _ = reply.send(connected_snapshot());
+                    }
+                }
+            }
+        });
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            event_bus,
+            test_actor_handle(lv1_tx),
+            mpsc::channel(1).0,
+            None,
+        )
+        .await;
+
+        let result = lifecycle
+            .finish_connect_transaction(
+                identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
+                started_runtime,
+            )
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_readiness_timeout_bounds_initial_snapshot_wait() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let (lv1_tx, mut lv1_rx) = mpsc::channel(8);
+        let (requested_tx, requested_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
+                panic!("expected initial state request");
+            };
+            requested_tx.send(()).unwrap();
+            let _reply = reply;
+            std::future::pending::<()>().await;
+        });
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            event_bus,
+            test_actor_handle(lv1_tx),
+            mpsc::channel(1).0,
+            None,
+        )
+        .await;
+        let lifecycle_for_connect = lifecycle.lifecycle.clone();
+        let connect = tokio::spawn(async move {
+            lifecycle_for_connect
+                .finish_connect_transaction(
+                    identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
+                    started_runtime,
+                )
+                .await
+        });
+
+        requested_rx.await.unwrap();
+        tokio::time::advance(CONNECTION_READY_TIMEOUT).await;
+        assert_eq!(connect.await.unwrap().unwrap_err(), "LV1 did not connect");
+        assert!(lifecycle.current_lv1().await.is_none());
+        assert_eq!(lifecycle.active_generation().await, generation + 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn connection_readiness_timeout_bounds_confirmation_snapshot_wait() {
+        let event_bus = AppEventBus::default();
+        let lifecycle = lifecycle_for_test(event_bus.clone());
+        let generation = lifecycle.begin_connecting().await.unwrap();
+        let (lv1_tx, mut lv1_rx) = mpsc::channel(8);
+        let (confirmation_tx, confirmation_rx) = oneshot::channel();
+        let event_bus_for_actor = event_bus.clone();
+        tokio::spawn(async move {
+            let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
+                panic!("expected initial state request");
+            };
+            reply.send(connecting_snapshot()).unwrap();
+            event_bus_for_actor.publish(AppEvent::Lv1 {
+                generation,
+                event: Lv1Event::Connected,
+            });
+            let Some(Lv1Command::GetState { reply }) = lv1_rx.recv().await else {
+                panic!("expected confirmation state request");
+            };
+            confirmation_tx.send(()).unwrap();
+            let _reply = reply;
+            std::future::pending::<()>().await;
+        });
+        let started_runtime = started_runtime_for_test(
+            &lifecycle,
+            generation,
+            event_bus,
+            test_actor_handle(lv1_tx),
+            mpsc::channel(1).0,
+            None,
+        )
+        .await;
+        let lifecycle_for_connect = lifecycle.lifecycle.clone();
+        let connect = tokio::spawn(async move {
+            lifecycle_for_connect
+                .finish_connect_transaction(
+                    identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35"),
+                    started_runtime,
+                )
+                .await
+        });
+
+        confirmation_rx.await.unwrap();
+        tokio::time::advance(CONNECTION_READY_TIMEOUT).await;
+        assert_eq!(connect.await.unwrap().unwrap_err(), "LV1 did not connect");
+        assert!(lifecycle.current_lv1().await.is_none());
+        assert_eq!(lifecycle.active_generation().await, generation + 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1450,8 +1693,6 @@ mod tests {
             runtime_generation.clone(),
             event_bus.clone(),
             event_bus.subscribe(),
-            lifecycle.settings.clone(),
-            lifecycle.settings_snapshot().await.unwrap(),
             lifecycle.lockout.clone(),
         );
         newer_task.spawn();
@@ -1497,16 +1738,8 @@ mod tests {
                     let _ = flip_tx.send(());
                 })
             }));
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            hook,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade, hook).await;
 
         let result = lifecycle
             .finish_connect_transaction(
@@ -1573,7 +1806,6 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = mpsc::channel(1);
         let lifecycle_for_hook = lifecycle.clone();
@@ -1584,16 +1816,8 @@ mod tests {
                 })
             }))
             .await;
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade_tx,
-            None,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade_tx, None).await;
 
         let result = lifecycle
             .finish_connect_transaction(
@@ -1618,7 +1842,6 @@ mod tests {
         let mut events = event_bus.subscribe();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let (candidate_lv1_tx, mut candidate_lv1_rx) = mpsc::channel(8);
         let (candidate_lv1_closed_tx, candidate_lv1_closed_rx) = oneshot::channel();
         tokio::spawn(async move {
@@ -1643,7 +1866,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             test_actor_handle(candidate_lv1_tx),
             candidate_fade_tx,
@@ -1708,12 +1930,12 @@ mod tests {
             .current_fade()
             .await
             .unwrap()
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .unwrap();
         assert!(matches!(
             newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { .. })
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
         ));
         assert!(
             capture
@@ -1748,7 +1970,6 @@ mod tests {
         });
         let lifecycle = lifecycle_for_test_with_show(event_bus.clone(), show);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let (candidate_lv1_tx, mut candidate_lv1_rx) = mpsc::channel(8);
         let (candidate_lv1_closed_tx, candidate_lv1_closed_rx) = oneshot::channel();
         tokio::spawn(async move {
@@ -1787,7 +2008,7 @@ mod tests {
                     .scenes
                     .send(ScenesCommand::RuntimePeersReady {
                         generation: newer_generation,
-                        initial_scene_list: vec![],
+                        initial_scene_list: Some(test_scene_list()),
                         reply,
                     })
                     .await
@@ -1799,7 +2020,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             test_actor_handle(candidate_lv1_tx),
             candidate_fade_tx,
@@ -1849,12 +2069,12 @@ mod tests {
             .current_fade()
             .await
             .unwrap()
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .unwrap();
         assert!(matches!(
             newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { .. })
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
         ));
         let (reply, response) = oneshot::channel();
         lifecycle
@@ -1892,7 +2112,6 @@ mod tests {
         drop(show_rx);
         let lifecycle = lifecycle_for_test_with_show(event_bus.clone(), show);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let (candidate_lv1_tx, mut candidate_lv1_rx) = mpsc::channel(8);
         let (candidate_lv1_closed_tx, candidate_lv1_closed_rx) = oneshot::channel();
         tokio::spawn(async move {
@@ -1907,7 +2126,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             test_actor_handle(candidate_lv1_tx),
             candidate_fade_tx,
@@ -2016,7 +2234,6 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(disconnected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
@@ -2029,7 +2246,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             lifecycle.event_bus.clone(),
             lv1,
             fade,
@@ -2057,7 +2273,6 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(disconnected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let current_identity = identity(Some("uuid-current"), Some("LV1-FOH"), "192.168.1.37");
@@ -2065,7 +2280,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             lifecycle.event_bus.clone(),
             lv1,
             fade_tx,
@@ -2111,67 +2325,11 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn accepted_failure_cleanup_survives_outer_cancellation() {
-        let event_bus = AppEventBus::default();
-        let mut events = event_bus.subscribe();
-        let lifecycle = lifecycle_for_test(event_bus.clone());
-        let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
-        while events.try_recv().is_ok() {}
-        let (reached_tx, reached_rx) = oneshot::channel();
-        let (release_tx, release_rx) = oneshot::channel();
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            fake_lv1_handle(disconnected_snapshot()),
-            mpsc::channel(1).0,
-            Some(Box::new(move |_| {
-                Box::pin(async move {
-                    reached_tx.send(()).unwrap();
-                    release_rx.await.unwrap();
-                })
-            })),
-        )
-        .await;
-        let lifecycle_for_task = lifecycle.clone();
-        let outer = tokio::spawn(async move {
-            lifecycle_for_task
-                .finish_connect_transaction(
-                    identity(Some("uuid-failed"), Some("LV1-FOH"), "192.168.1.35"),
-                    started_runtime,
-                )
-                .await
-        });
-
-        reached_rx.await.unwrap();
-        outer.abort();
-        release_tx.send(()).unwrap();
-        loop {
-            if matches!(events.recv().await.unwrap(), AppEvent::Runtime(
-                RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation }
-            ) if event_generation == generation + 1)
-            {
-                break;
-            }
-        }
-        assert!(
-            lifecycle
-                .runtime_snapshot_source()
-                .connected_lv1()
-                .await
-                .is_none()
-        );
-    }
-
     #[tokio::test]
     async fn initial_get_state_send_failure_cleans_up_without_clearing_newer_runtime() {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let (old_lv1_tx, old_lv1_rx) = mpsc::channel(1);
         drop(old_lv1_rx);
         let lifecycle_for_hook = lifecycle.clone();
@@ -2180,7 +2338,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             test_actor_handle(old_lv1_tx),
             mpsc::channel(1).0,
@@ -2224,7 +2381,6 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let (old_lv1_tx, mut old_lv1_rx) = mpsc::channel(1);
         tokio::spawn(async move {
             if let Some(Lv1Command::GetState { reply }) = old_lv1_rx.recv().await {
@@ -2237,7 +2393,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             test_actor_handle(old_lv1_tx),
             mpsc::channel(1).0,
@@ -2281,13 +2436,11 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let (old_lv1_tx, mut old_lv1_rx) = mpsc::channel(1);
         let old_lv1 = test_actor_handle(old_lv1_tx);
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             old_lv1,
             mpsc::channel(1).0,
@@ -2331,6 +2484,12 @@ mod tests {
         old_state_reply
             .send(disconnected_snapshot())
             .expect("pending GetState should be released");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), old_lv1_rx.recv())
+                .await
+                .expect("detached finalizer should release the old runtime")
+                .is_none()
+        );
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
                 let (reply, rx) = oneshot::channel();
@@ -2355,7 +2514,6 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let lv1_for_assertion = lv1.clone();
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
@@ -2370,7 +2528,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             lv1,
             fade,
@@ -2403,20 +2560,11 @@ mod tests {
         let event_bus = AppEventBus::default();
         let lifecycle = lifecycle_for_test(event_bus.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade, None).await;
 
         let result = lifecycle
             .finish_connect_transaction(
@@ -2484,7 +2632,7 @@ mod tests {
             .unwrap();
     }
 
-    #[tokio::test(flavor = "current_thread")]
+    #[tokio::test(start_paused = true)]
     async fn connect_lv1_system_attempts_selected_identity() {
         let capture = crate::test_support::TracingCapture::new();
         let _tracing_guard = capture.install();
@@ -2581,20 +2729,11 @@ mod tests {
         let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
         let identity = identity(Some("uuid-1"), Some("LV1-FOH"), "192.168.1.35");
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade, None).await;
 
         let result = lifecycle
             .finish_connect_transaction(identity.clone(), started_runtime)
@@ -2617,20 +2756,11 @@ mod tests {
         let settings = settings_handle_for_test(&settings_dir, event_bus.clone());
         let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings);
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade, None).await;
 
         let result = lifecycle
             .finish_connect_transaction(
@@ -2658,7 +2788,6 @@ mod tests {
         let remembered = identity(Some("uuid-old"), Some("LV1-FOH"), "192.168.1.35");
         set_last_connected_lv1(&settings, remembered.clone()).await;
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
@@ -2667,7 +2796,6 @@ mod tests {
         let started_runtime = started_runtime_for_test(
             &lifecycle,
             generation,
-            runtime_generation,
             event_bus,
             lv1,
             fade,
@@ -2712,22 +2840,13 @@ mod tests {
             .spawn();
         let lifecycle = lifecycle_for_test_with_settings(event_bus.clone(), settings.clone());
         let generation = lifecycle.begin_connecting().await.unwrap();
-        let runtime_generation = lifecycle.current_runtime_generation().await;
         let lv1 = fake_lv1_handle(connected_snapshot());
         let (fade_tx, _fade_rx) = tokio::sync::mpsc::channel(1);
         let fade = fade_tx;
         let identity = identity(Some("uuid-new"), Some("LV1-FOH"), "192.168.1.36");
         let lifecycle_for_connect = lifecycle.clone();
-        let started_runtime = started_runtime_for_test(
-            &lifecycle,
-            generation,
-            runtime_generation,
-            event_bus,
-            lv1,
-            fade,
-            None,
-        )
-        .await;
+        let started_runtime =
+            started_runtime_for_test(&lifecycle, generation, event_bus, lv1, fade, None).await;
 
         let connect = tokio::spawn(async move {
             lifecycle_for_connect
@@ -2860,7 +2979,7 @@ mod tests {
             .scenes_handle()
             .send(ScenesCommand::RuntimePeersReady {
                 generation: accepted_generation,
-                initial_scene_list: vec![],
+                initial_scene_list: Some(test_scene_list()),
                 reply: ready_reply,
             })
             .await
@@ -2908,12 +3027,12 @@ mod tests {
             .current_fade()
             .await
             .expect("newer fade should remain current")
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .expect("newer fade mailbox should accept commands");
         assert!(matches!(
             newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { reply: None })
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
         ));
 
         let (scenes_reply, scenes_rx) = oneshot::channel();
@@ -2975,7 +3094,7 @@ mod tests {
             panic!("Show should request the newer LV1 state");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 state reply should send");
         let Lv1Command::GetState { reply } =
             tokio::time::timeout(std::time::Duration::from_millis(100), newer_rx.recv())
@@ -2986,7 +3105,7 @@ mod tests {
             panic!("Show should revalidate with GetState");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 revalidation reply should send");
         assert!(result.await.unwrap().is_ok());
     }
@@ -3068,12 +3187,12 @@ mod tests {
             .current_fade()
             .await
             .unwrap()
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .unwrap();
         assert!(matches!(
             newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { .. })
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
         ));
         while let Ok(event) = events.try_recv() {
             assert!(matches!(event, AppEvent::Scenes { .. }));
@@ -3244,12 +3363,12 @@ mod tests {
             .current_fade()
             .await
             .expect("newer fade handle should survive stale cleanup")
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .expect("newer fade mailbox should accept commands");
         assert!(matches!(
             newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { reply: None })
+            Some(crate::fade::FadeCommand::WaitForRecallReadiness { .. })
         ));
 
         let (show_reply, show_rx) = oneshot::channel();
@@ -3268,7 +3387,7 @@ mod tests {
             panic!("expected Show to request newer LV1 state");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 state reply should send");
         let Lv1Command::GetState { reply } =
             tokio::time::timeout(std::time::Duration::from_millis(100), newer_lv1_rx.recv())
@@ -3279,7 +3398,7 @@ mod tests {
             panic!("Show should revalidate with GetState");
         };
         reply
-            .send(connected_snapshot())
+            .send(connected_snapshot_with_scene_list())
             .expect("Show LV1 revalidation reply should send");
         show_rx
             .await
