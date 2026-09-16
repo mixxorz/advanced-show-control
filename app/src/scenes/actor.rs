@@ -19,20 +19,19 @@ use crate::runtime::generation::RuntimeGeneration;
 use crate::scenes::ScenesHandle;
 #[cfg(test)]
 use crate::scenes::recall_coordinator::{
-    BeforeFadeHandoff, LATE_CANCELED_OBSERVATION_CAPACITY, LATE_CANCELED_OBSERVATION_TTL,
-    RECALL_READINESS_TIMEOUT,
+    BeforeFadeHandoff, LATE_CANCELED_OBSERVATION_TTL, RECALL_READINESS_TIMEOUT,
 };
 use crate::scenes::recall_coordinator::{
     ObservationFadeRequest, ObservationHandoffCompletion, PendingRecallAdmission,
-    PendingRecallDispatch, PendingSceneObservation, PreparedObservationHandoff,
-    PreparedRecallDispatch, PreparedSceneObservation, RecallCoordinator, RecallReadinessOutcome,
-    fresh_lv1_snapshot, send_fade_checked,
+    PendingRecallDispatch, PreparedObservationHandoff, PreparedRecallDispatch,
+    PreparedSceneObservation, RecallCoordinator, RecallReadinessOutcome, fresh_lv1_snapshot,
+    send_fade_checked,
 };
 use crate::scenes::scene_alignment::scene_alignment_diagnostic;
 use crate::scenes::{
     ScenesCommand, ScenesCommandResult, ScenesEvent, ScenesState, SelectedSceneResult,
 };
-use crate::settings::{AppSettings, SettingsCommand, SettingsEvent, SettingsHandle};
+use crate::settings::{AppSettings, SettingsEvent};
 use crate::show::ShowLockoutReader;
 
 #[derive(Clone)]
@@ -91,8 +90,6 @@ pub struct ScenesTask {
     peers: ScenesPeers,
     event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
-    settings_handle: SettingsHandle,
-    initial_settings: AppSettings,
     lockout: ShowLockoutReader,
     command_rx: mpsc::Receiver<ScenesCommand>,
     cue_lists: crate::cue_lists::CueListsHandle,
@@ -118,8 +115,6 @@ pub fn build_scenes_actor(
     runtime_generation: RuntimeGeneration,
     event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
-    settings_handle: SettingsHandle,
-    initial_settings: AppSettings,
     lockout: ShowLockoutReader,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
     let (command_tx, command_rx) = mpsc::channel(8);
@@ -136,8 +131,6 @@ pub fn build_scenes_actor(
         peers: peers.clone(),
         events,
         event_bus,
-        settings_handle,
-        initial_settings,
         lockout,
         command_rx,
         cue_lists,
@@ -157,20 +150,11 @@ fn build_scenes_actor_with_pending_scene_observer(
     runtime_generation: RuntimeGeneration,
     event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
-    settings_handle: SettingsHandle,
-    initial_settings: AppSettings,
     lockout: ShowLockoutReader,
     pending_scene_observer: oneshot::Sender<()>,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
-    let (handle, mut task, peers) = build_scenes_actor(
-        generation,
-        runtime_generation,
-        event_bus,
-        events,
-        settings_handle,
-        initial_settings,
-        lockout,
-    );
+    let (handle, mut task, peers) =
+        build_scenes_actor(generation, runtime_generation, event_bus, events, lockout);
     task.pending_scene_observer = Some(pending_scene_observer);
     (handle, task, peers)
 }
@@ -182,20 +166,11 @@ fn build_scenes_actor_with_before_fade_handoff(
     runtime_generation: RuntimeGeneration,
     event_bus: AppEventBus,
     events: tokio::sync::broadcast::Receiver<AppEvent>,
-    settings_handle: SettingsHandle,
-    initial_settings: AppSettings,
     lockout: ShowLockoutReader,
     before_fade_handoff: BeforeFadeHandoff,
 ) -> (ScenesHandle, ScenesTask, ScenesPeers) {
-    let (handle, mut task, peers) = build_scenes_actor(
-        generation,
-        runtime_generation,
-        event_bus,
-        events,
-        settings_handle,
-        initial_settings,
-        lockout,
-    );
+    let (handle, mut task, peers) =
+        build_scenes_actor(generation, runtime_generation, event_bus, events, lockout);
     task.before_fade_handoff = Some(before_fade_handoff);
     (handle, task, peers)
 }
@@ -204,11 +179,10 @@ fn build_scenes_actor_with_before_fade_handoff(
  * @cc [owner:mixxorz,label:safety] event-bus-lag-fails-closed
  * On event-bus lag, the actor MUST synchronously drain queued facts, reconcile the active
  * generation, cancel queued recall intent without aborting Fade, and clear pending observations
- * and runtime readiness. Settings refresh and the optional fresh connected LV1 snapshot MUST run
- * as one actor-owned pending operation polled by the main select. Generation change, disconnect,
- * or newer lag MUST cancel stale recovery, and completion MUST NOT overwrite Settings or scene-list
- * facts observed after recovery began. If Settings cannot be refreshed, recall automation MUST
- * remain stopped rather than continue with stale policy.
+ * and runtime readiness. The actor MUST refresh policy from retained Settings synchronously, while
+ * an optional fresh connected LV1 snapshot runs as an actor-owned pending operation polled by the
+ * main select. Generation change, disconnect, or newer lag MUST cancel stale recovery, and
+ * completion MUST NOT overwrite scene-list facts observed after recovery began.
  */
 /**
  * @cc [owner:mixxorz,label:safety] scene-facts-precede-pending-commits
@@ -224,8 +198,6 @@ async fn run_scenes_actor(task: ScenesTask) {
         peers,
         event_bus,
         mut events,
-        settings_handle,
-        initial_settings,
         mut lockout,
         mut command_rx,
         cue_lists,
@@ -247,15 +219,11 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut scene_commands_open = true;
     let mut held_scene_command: Option<ScenesCommand> = None;
     let mut recall_coordinator = RecallCoordinator::default();
-    let mut settings = initial_settings;
+    let mut settings = event_bus.state().borrow().settings.clone();
     let mut lockout_open = true;
     let mut pending_snapshot: Option<PendingSnapshotOperation> = None;
     let mut pending_lag_recovery: Option<PendingLagRecovery> = None;
-    let mut pending_recall: Option<PendingExplicitRecallOperation> = None;
-    let mut pending_observation_settings: Option<PendingObservationSettings> = None;
-    let mut pending_observation_snapshot: Option<PendingObservationSnapshot> = None;
-    let mut pending_observation_handoff: Option<PendingObservationHandoff> = None;
-    let mut settings_revision = 0_u64;
+    let mut pending_recall: Option<PendingRecallOperation> = None;
     let mut scene_list_revision = 0_u64;
 
     // Recall timing windows:
@@ -298,7 +266,7 @@ async fn run_scenes_actor(task: ScenesTask) {
         tokio::select! {
             completion = recall_coordinator.readiness_completion(), if events.is_empty() && events.sender_strong_count() > 0 => {
                 if runtime_generation.current().await != completion.generation() {
-                    cancel_pending_explicit_recall(
+                    cancel_pending_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
                         "LV1 connection generation changed",
@@ -313,7 +281,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     tokio::time::Instant::now(),
                 ) {
                     RecallReadinessOutcome::Failed => {
-                        cancel_pending_explicit_recall(
+                        cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
                             "LV1 recall readiness was lost",
@@ -380,15 +348,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                         }
                     }
                     Ok(AppEvent::Settings(SettingsEvent::StateChanged { settings: updated_settings })) => {
-                        settings_revision = settings_revision.wrapping_add(1);
                         settings = updated_settings;
                     }
                     Ok(AppEvent::Lv1 { generation: event_generation, event: Lv1Event::Disconnected { .. } }) if event_generation == active_generation => {
                         pending_lag_recovery = None;
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                        pending_observation_handoff = None;
-                        cancel_pending_explicit_recall(
+                        cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
                             "LV1 disconnected",
@@ -412,10 +376,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     Ok(AppEvent::Runtime(crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged { generation: event_generation })) if event_generation != active_generation => {
                         pending_lag_recovery = None;
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                        pending_observation_handoff = None;
-                        cancel_pending_explicit_recall(
+                        cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
                             "LV1 connection generation changed",
@@ -438,10 +399,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("scene-recall", count);
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                        pending_observation_handoff = None;
-                        cancel_pending_explicit_recall(
+                        cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
                             "LV1 recall readiness was lost",
@@ -471,13 +429,16 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &recall_state,
                             false,
                         );
-                        pending_lag_recovery = Some(PendingLagRecovery::new(
-                            active_generation,
-                            settings_revision,
-                            scene_list_revision,
-                            settings_handle.clone(),
-                            peers.handles(active_generation).map(|handles| handles.lv1),
-                        ));
+                        settings = event_bus.state().borrow().settings.clone();
+                        pending_lag_recovery = peers
+                            .handles(active_generation)
+                            .map(|handles| {
+                                PendingLagRecovery::new(
+                                    active_generation,
+                                    scene_list_revision,
+                                    handles.lv1,
+                                )
+                            });
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                         recall_coordinator.cancel("scene recall event stream closed", true);
@@ -491,7 +452,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => cue_commands.recv().await,
                 }
-            }, if pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
+            }, if pending_snapshot.is_none() && pending_recall.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -507,7 +468,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                                 continue;
                             };
                             let admission = recall_coordinator.begin_admission(internal_scene_id, reply);
-                            pending_recall = Some(PendingExplicitRecallOperation::snapshot_for_admission(
+                            pending_recall = Some(PendingRecallOperation::snapshot_for_admission(
                                 peer_handles.lv1,
                                 admission,
                             ));
@@ -523,17 +484,17 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => command_rx.recv().await,
                 }
-            }, if scene_commands_open && ((pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none()) || held_scene_command.is_none()) => {
+            }, if scene_commands_open && ((pending_snapshot.is_none() && pending_recall.is_none()) || held_scene_command.is_none()) => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
                 };
-                if pending_snapshot.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() || pending_observation_handoff.is_some() {
+                if pending_snapshot.is_some() || pending_recall.is_some() {
                     if matches!(command, ScenesCommand::Shutdown) {
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: Scenes actor stopped");
                         }
-                        cancel_pending_explicit_recall(
+                        cancel_pending_recall(
                             pending_recall.take(),
                             &mut recall_coordinator,
                             "Scenes actor stopped",
@@ -541,7 +502,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         break;
                     }
                     if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
-                        || (pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none())
+                        || (pending_snapshot.is_none() && pending_recall.is_none())
                     {
                         held_scene_command = Some(command);
                         continue;
@@ -549,14 +510,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                     if let Some(operation) = pending_snapshot.take() {
                         operation.cancel("Store scene canceled: session was replaced");
                     }
-                    cancel_pending_explicit_recall(
+                    cancel_pending_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
                         "session was replaced",
                     );
-                    pending_observation_settings = None;
-                    pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
                 }
                 let command = match command {
                     ScenesCommand::GetSessionDocument { reply } => {
@@ -597,7 +555,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                             continue;
                         };
                         let admission = recall_coordinator.begin_admission(internal_scene_id, reply);
-                        pending_recall = Some(PendingExplicitRecallOperation::snapshot_for_admission(
+                        pending_recall = Some(PendingRecallOperation::snapshot_for_admission(
                             peer_handles.lv1,
                             admission,
                         ));
@@ -658,116 +616,18 @@ async fn run_scenes_actor(task: ScenesTask) {
                     break;
                 }
             }
-            recovered_settings = async {
-                pending_observation_settings
-                    .as_mut()
-                    .expect("enabled observation-settings branch has an operation")
-                    .future
-                    .as_mut()
-                    .await
-            }, if pending_observation_settings.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
-                let operation = pending_observation_settings
-                    .take()
-                    .expect("completed observation-settings operation exists");
-                let Some(recovered_settings) = recovered_settings else {
-                    break;
-                };
-                if operation.generation != active_generation
-                    || runtime_generation.current().await != operation.generation
-                    || scene_library_status != SceneLibraryStatus::Ready
-                {
-                    continue;
-                }
-                if settings_revision == operation.settings_revision {
-                    settings = recovered_settings;
-                }
-                let Some(prepared) = recall_coordinator.prepare_scene_observation(
-                    &mut recall_state,
-                    &settings,
-                    operation.observation,
-                ) else {
-                    continue;
-                };
-                let Some(peer_handles) = peers.handles(active_generation) else {
-                    continue;
-                };
-                pending_observation_snapshot = Some(PendingObservationSnapshot::new(
-                    peer_handles.lv1,
-                    prepared,
-                ));
-            }
-            completion = async {
-                pending_observation_snapshot
-                    .as_mut()
-                    .expect("enabled observation-snapshot branch has an operation")
-                    .future
-                    .as_mut()
-                    .await
-            }, if pending_observation_snapshot.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
-                let operation = pending_observation_snapshot
-                    .take()
-                    .expect("completed observation-snapshot operation exists");
-                if operation.generation != active_generation
-                    || runtime_generation.current().await != operation.generation
-                    || scene_library_status != SceneLibraryStatus::Ready
-                {
-                    continue;
-                }
-                let Some(peer_handles) = peers.handles(active_generation) else {
-                    continue;
-                };
-                let Some(prepared) = recall_coordinator.prepare_observation_handoff(
-                    &event_bus,
-                    &mut recall_state,
-                    &settings,
-                    &lockout,
-                    operation.prepared,
-                    completion,
-                ) else {
-                    continue;
-                };
-                pending_observation_handoff = Some(PendingObservationHandoff::new(
-                    peer_handles.lv1,
-                    peer_handles.fade,
-                    event_bus.clone(),
-                    lockout.clone(),
-                    #[cfg(test)]
-                    before_fade_handoff.take(),
-                    prepared,
-                ));
-            }
-            completion = async {
-                pending_observation_handoff
-                    .as_mut()
-                    .expect("enabled observation-handoff branch has an operation")
-                    .future
-                    .as_mut()
-                    .await
-            }, if pending_observation_handoff.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
-                let operation = pending_observation_handoff
-                    .take()
-                    .expect("completed observation-handoff operation exists");
-                if operation.generation != active_generation
-                    || runtime_generation.current().await != operation.generation
-                    || scene_library_status != SceneLibraryStatus::Ready
-                    || lockout.current()
-                {
-                    continue;
-                }
-                recall_coordinator.finish_observation_handoff(completion, &event_bus);
-            }
             completion = async {
                 pending_recall
                     .as_mut()
-                    .expect("enabled explicit-recall branch has an operation")
+                    .expect("enabled recall branch has an operation")
                     .future
                     .as_mut()
                     .await
             }, if pending_recall.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
                 let operation = pending_recall
                     .take()
-                    .expect("completed explicit-recall operation exists");
-                finish_pending_explicit_recall(
+                    .expect("completed recall operation exists");
+                finish_pending_recall(
                     operation,
                     completion,
                     &mut pending_recall,
@@ -775,8 +635,13 @@ async fn run_scenes_actor(task: ScenesTask) {
                     &peers,
                     active_generation,
                     &runtime_generation,
+                    &scene_library_status,
                     &lockout,
-                    &recall_state,
+                    &mut recall_state,
+                    &settings,
+                    &event_bus,
+                    #[cfg(test)]
+                    &mut before_fade_handoff,
                 ).await;
             }
             completion = async {
@@ -792,30 +657,18 @@ async fn run_scenes_actor(task: ScenesTask) {
                     .expect("completed lag-recovery operation exists");
                 if operation.generation == active_generation
                     && runtime_generation.current().await == operation.generation
+                    && scene_list_revision == operation.scene_list_revision
+                    && peers.handles(active_generation).is_some()
+                    && let Some(snapshot) = completion
+                    && let Some(scene_list) = authoritative_scene_list(&snapshot)
                 {
-                    if completion.settings.is_none()
-                        && settings_revision == operation.settings_revision
-                    {
-                        break;
-                    }
-                    if let Some(recovered_settings) = completion.settings
-                        && settings_revision == operation.settings_revision
-                    {
-                        settings = recovered_settings;
-                    }
-                    if scene_list_revision == operation.scene_list_revision
-                        && peers.handles(active_generation).is_some()
-                        && let Some(snapshot) = completion.snapshot
-                        && let Some(scene_list) = authoritative_scene_list(&snapshot)
-                    {
-                        apply_scene_list(
-                            &mut recall_state,
-                            &event_bus,
-                            active_generation,
-                            scene_list,
-                        );
-                        scene_library_status = SceneLibraryStatus::Ready;
-                    }
+                    apply_scene_list(
+                        &mut recall_state,
+                        &event_bus,
+                        active_generation,
+                        scene_list,
+                    );
+                    scene_library_status = SceneLibraryStatus::Ready;
                 }
             }
             completion = async {
@@ -841,10 +694,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             }
             lockout_changed = lockout.changed(), if lockout_open => match lockout_changed {
                 Ok(true) => {
-                    pending_observation_settings = None;
-                    pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
-                    cancel_pending_explicit_recall(
+                    cancel_pending_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
                         "lockout was enabled",
@@ -853,10 +703,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                 }
                 Ok(false) => {}
                 Err(_) => {
-                    pending_observation_settings = None;
-                    pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
-                    cancel_pending_explicit_recall(
+                    cancel_pending_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
                         "lockout state is unavailable",
@@ -868,10 +715,7 @@ async fn run_scenes_actor(task: ScenesTask) {
             _ = recall_timer, if recall_deadline.is_some() => {
                 let elapsed = recall_deadline.expect("enabled recall timer has a deadline");
                 if elapsed.is_safety() {
-                    pending_observation_settings = None;
-                    pending_observation_snapshot = None;
-                    pending_observation_handoff = None;
-                    cancel_pending_explicit_recall(
+                    cancel_pending_recall(
                         pending_recall.take(),
                         &mut recall_coordinator,
                         "LV1 recall readiness was lost",
@@ -892,12 +736,22 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                 }
             }
-            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && events.is_empty() && events.sender_strong_count() > 0 => {
+            _ = pending_scene_settle, if pending_scene_deadline.is_some() && pending_recall.is_none() && events.is_empty() && events.sender_strong_count() > 0 => {
                 if let Some(observation) = recall_coordinator.take_pending_observation() {
-                    pending_observation_settings = Some(PendingObservationSettings::new(
+                    settings = event_bus.state().borrow().settings.clone();
+                    let Some(prepared) = recall_coordinator.prepare_scene_observation(
+                        &mut recall_state,
+                        &settings,
                         observation,
-                        settings_revision,
-                        settings_handle.clone(),
+                    ) else {
+                        continue;
+                    };
+                    let Some(peer_handles) = peers.handles(active_generation) else {
+                        continue;
+                    };
+                    pending_recall = Some(PendingRecallOperation::observation_snapshot(
+                        peer_handles.lv1,
+                        prepared,
                     ));
                 }
             }
@@ -914,7 +768,7 @@ async fn run_scenes_actor(task: ScenesTask) {
     if let Some(operation) = pending_snapshot {
         operation.cancel("Store scene blocked: Scenes actor stopped");
     }
-    cancel_pending_explicit_recall(
+    cancel_pending_recall(
         pending_recall,
         &mut recall_coordinator,
         "Scenes actor stopped",
@@ -1300,36 +1154,45 @@ async fn dispatch_scenes_command(
     ScenesCommandDispatch::Continue
 }
 
-enum PendingExplicitRecallContext {
+enum PendingRecallContext {
     Admission(PendingRecallAdmission),
     DispatchSnapshot(PendingRecallDispatch),
     DispatchCommand(PreparedRecallDispatch),
+    ObservationSnapshot(PreparedSceneObservation),
+    ObservationHandoff,
 }
 
-enum PendingExplicitRecallCompletion {
+enum PendingRecallCompletion {
     Snapshot(Result<Lv1StateSnapshot, AppCommandError>),
     Dispatch(Result<RecallSceneDispatch, AppCommandError>),
+    ObservationSnapshot(Result<Lv1StateSnapshot, AppCommandError>),
+    ObservationHandoff(ObservationHandoffCompletion),
 }
 
-struct PendingExplicitRecallOperation {
+/**
+ * @cc [owner:mixxorz,label:safety;reliability] single-pending-recall-transaction
+ * The Scenes actor MUST own at most one external recall operation spanning explicit admission,
+ * queued dispatch, settled-observation snapshot, and Fade handoff phases. The main select MUST poll
+ * that operation without blocking runtime facts, lockout, or recall deadlines. Cancellation MUST
+ * consume its coordinator token where present and drop all external waits before stale completion
+ * can dispatch LV1, publish or admit Fade work, or report current success.
+ */
+struct PendingRecallOperation {
     generation: u64,
-    context: PendingExplicitRecallContext,
-    future: Pin<Box<dyn Future<Output = PendingExplicitRecallCompletion> + Send>>,
+    context: PendingRecallContext,
+    future: Pin<Box<dyn Future<Output = PendingRecallCompletion> + Send>>,
 }
 
-impl PendingExplicitRecallOperation {
+impl PendingRecallOperation {
     fn snapshot_for_admission(lv1: Lv1Connection, admission: PendingRecallAdmission) -> Self {
-        Self::snapshot(lv1, PendingExplicitRecallContext::Admission(admission))
+        Self::explicit_snapshot(lv1, PendingRecallContext::Admission(admission))
     }
 
     fn snapshot_for_dispatch(lv1: Lv1Connection, dispatch: PendingRecallDispatch) -> Self {
-        Self::snapshot(
-            lv1,
-            PendingExplicitRecallContext::DispatchSnapshot(dispatch),
-        )
+        Self::explicit_snapshot(lv1, PendingRecallContext::DispatchSnapshot(dispatch))
     }
 
-    fn snapshot(lv1: Lv1Connection, context: PendingExplicitRecallContext) -> Self {
+    fn explicit_snapshot(lv1: Lv1Connection, context: PendingRecallContext) -> Self {
         let generation = lv1.generation();
         Self {
             generation,
@@ -1344,7 +1207,7 @@ impl PendingExplicitRecallOperation {
                         ),
                         other => other,
                     });
-                PendingExplicitRecallCompletion::Snapshot(result)
+                PendingRecallCompletion::Snapshot(result)
             }),
         }
     }
@@ -1358,7 +1221,7 @@ impl PendingExplicitRecallOperation {
         let scene_index = prepared.scene_index();
         Self {
             generation,
-            context: PendingExplicitRecallContext::DispatchCommand(prepared),
+            context: PendingRecallContext::DispatchCommand(prepared),
             future: Box::pin(async move {
                 let result = lv1
                     .request_checked(
@@ -1383,224 +1246,28 @@ impl PendingExplicitRecallOperation {
                             other => AppCommandError::CommandFailed(other.to_string()),
                         })
                     });
-                PendingExplicitRecallCompletion::Dispatch(result)
+                PendingRecallCompletion::Dispatch(result)
             }),
         }
     }
-}
 
-fn start_next_recall_dispatch(
-    coordinator: &mut RecallCoordinator,
-    peers: &ScenesPeers,
-    generation: u64,
-) -> Option<PendingExplicitRecallOperation> {
-    let dispatch = coordinator.begin_dispatch()?;
-    let Some(handles) = peers.handles(generation) else {
-        coordinator.cancel_pending_dispatch(dispatch, "LV1 state is unavailable");
-        return None;
-    };
-    Some(PendingExplicitRecallOperation::snapshot_for_dispatch(
-        handles.lv1,
-        dispatch,
-    ))
-}
-
-fn cancel_pending_explicit_recall(
-    operation: Option<PendingExplicitRecallOperation>,
-    coordinator: &mut RecallCoordinator,
-    reason: &str,
-) {
-    let Some(operation) = operation else {
-        return;
-    };
-    match operation.context {
-        PendingExplicitRecallContext::Admission(admission) => {
-            coordinator.cancel_admission(admission, reason);
-        }
-        PendingExplicitRecallContext::DispatchSnapshot(dispatch) => {
-            coordinator.cancel_pending_dispatch(dispatch, reason);
-        }
-        PendingExplicitRecallContext::DispatchCommand(prepared) => {
-            coordinator.cancel_prepared_dispatch(prepared, reason, true);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn finish_pending_explicit_recall(
-    operation: PendingExplicitRecallOperation,
-    completion: PendingExplicitRecallCompletion,
-    pending: &mut Option<PendingExplicitRecallOperation>,
-    coordinator: &mut RecallCoordinator,
-    peers: &ScenesPeers,
-    active_generation: u64,
-    runtime_generation: &RuntimeGeneration,
-    lockout: &ShowLockoutReader,
-    recall_state: &ScenesState,
-) {
-    if operation.generation != active_generation
-        || runtime_generation.current().await != operation.generation
-        || peers.handles(active_generation).is_none()
-    {
-        cancel_pending_explicit_recall(
-            Some(operation),
-            coordinator,
-            "LV1 connection generation changed",
-        );
-        coordinator.clear_late_observations();
-        return;
-    }
-
-    match (operation.context, completion) {
-        (
-            PendingExplicitRecallContext::Admission(admission),
-            PendingExplicitRecallCompletion::Snapshot(Ok(snapshot)),
-        ) => {
-            if coordinator.finish_admission(admission, lockout, &recall_state.snapshot(), &snapshot)
-            {
-                *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
-            }
-        }
-        (
-            PendingExplicitRecallContext::Admission(admission),
-            PendingExplicitRecallCompletion::Snapshot(Err(error)),
-        ) => {
-            if coordinator.fail_admission(admission, error) {
-                *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
-            }
-        }
-        (
-            PendingExplicitRecallContext::DispatchSnapshot(dispatch),
-            PendingExplicitRecallCompletion::Snapshot(Ok(snapshot)),
-        ) => {
-            match coordinator.prepare_dispatch(
-                dispatch,
-                active_generation,
-                lockout,
-                &recall_state.snapshot(),
-                &snapshot,
-            ) {
-                Ok(prepared) => {
-                    let handles = peers
-                        .handles(active_generation)
-                        .expect("current recall peers were checked");
-                    *pending = Some(PendingExplicitRecallOperation::dispatch(
-                        handles.lv1,
-                        lockout.clone(),
-                        prepared,
-                    ));
-                }
-                Err(()) => {
-                    *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
-                }
-            }
-        }
-        (
-            PendingExplicitRecallContext::DispatchSnapshot(dispatch),
-            PendingExplicitRecallCompletion::Snapshot(Err(error)),
-        ) => {
-            let (reason, clear_late) = if error == AppCommandError::StaleGeneration {
-                ("LV1 connection generation changed", true)
-            } else {
-                ("LV1 state is unavailable", false)
-            };
-            coordinator.cancel_pending_dispatch(dispatch, reason);
-            if clear_late {
-                coordinator.clear_late_observations();
-            }
-        }
-        (
-            PendingExplicitRecallContext::DispatchCommand(prepared),
-            PendingExplicitRecallCompletion::Dispatch(result),
-        ) => {
-            coordinator.finish_dispatch(prepared, result);
-        }
-        (context, _) => {
-            cancel_pending_explicit_recall(
-                Some(PendingExplicitRecallOperation {
-                    generation: operation.generation,
-                    context,
-                    future: Box::pin(std::future::pending()),
-                }),
-                coordinator,
-                "LV1 recall operation became inconsistent",
-            );
-        }
-    }
-}
-
-/**
- * @cc [owner:mixxorz,label:safety;reliability] settled-observation-settings-pending
- * A settled scene observation's Settings refresh MUST be an actor-owned pending operation polled
- * by the main select. Runtime, LV1, Settings, lockout, and recall-deadline inputs MUST remain
- * responsive while it is pending. Cancellation MUST drop the observation token, and completion
- * MUST be generation-fenced and MUST NOT overwrite a newer Settings fact.
- */
-struct PendingObservationSettings {
-    generation: u64,
-    settings_revision: u64,
-    observation: PendingSceneObservation,
-    future: Pin<Box<dyn Future<Output = Option<AppSettings>> + Send>>,
-}
-
-impl PendingObservationSettings {
-    fn new(
-        observation: PendingSceneObservation,
-        settings_revision: u64,
-        settings_handle: SettingsHandle,
-    ) -> Self {
-        Self {
-            generation: observation.generation(),
-            settings_revision,
-            observation,
-            future: Box::pin(async move { request_recovery_settings(&settings_handle).await }),
-        }
-    }
-}
-
-/**
- * @cc [owner:mixxorz,label:safety;reliability] settled-observation-snapshot-pending
- * After synchronous observation prechecks, exact fresh LV1 snapshot acquisition and retries MUST
- * run as an actor-owned pending operation. Facts, lockout, and recall deadlines MUST remain
- * responsive, while cancellation MUST drop the coordinator token before stale completion can
- * publish, log, or hand off Fade work.
- */
-struct PendingObservationSnapshot {
-    generation: u64,
-    prepared: PreparedSceneObservation,
-    future: Pin<Box<dyn Future<Output = Result<Lv1StateSnapshot, AppCommandError>> + Send>>,
-}
-
-impl PendingObservationSnapshot {
-    fn new(lv1: Lv1Connection, prepared: PreparedSceneObservation) -> Self {
+    fn observation_snapshot(lv1: Lv1Connection, prepared: PreparedSceneObservation) -> Self {
         let generation = prepared.generation();
         let scene = prepared.scene();
         let safety_deadline = prepared.safety_deadline();
         Self {
             generation,
-            prepared,
-            future: Box::pin(
-                async move { fresh_lv1_snapshot(&lv1, &scene, safety_deadline).await },
-            ),
+            context: PendingRecallContext::ObservationSnapshot(prepared),
+            future: Box::pin(async move {
+                PendingRecallCompletion::ObservationSnapshot(
+                    fresh_lv1_snapshot(&lv1, &scene, safety_deadline).await,
+                )
+            }),
         }
     }
-}
 
-/**
- * @cc [owner:mixxorz,label:safety;reliability] settled-observation-fade-pending
- * Settled-observation Fade mailbox admission and acknowledgement MUST run as an actor-owned
- * pending operation. The permit path MUST recheck generation, lockout, and readiness deadline
- * immediately before publication and send. Cancellation MUST drop queued readiness ownership and
- * prevent late capacity or acknowledgement from committing or reporting current success.
- */
-struct PendingObservationHandoff {
-    generation: u64,
-    future: Pin<Box<dyn Future<Output = ObservationHandoffCompletion> + Send>>,
-}
-
-impl PendingObservationHandoff {
     #[allow(clippy::too_many_arguments)]
-    fn new(
+    fn observation_handoff(
         lv1: Lv1Connection,
         fade: FadeEngineHandle,
         event_bus: AppEventBus,
@@ -1611,6 +1278,7 @@ impl PendingObservationHandoff {
         let generation = prepared.generation;
         Self {
             generation,
+            context: PendingRecallContext::ObservationHandoff,
             future: Box::pin(async move {
                 #[cfg(test)]
                 if let Some(BeforeFadeHandoff { reached, resume }) = before_fade_handoff {
@@ -1684,72 +1352,224 @@ impl PendingObservationHandoff {
                         .await
                     }
                 };
-                ObservationHandoffCompletion {
+                PendingRecallCompletion::ObservationHandoff(ObservationHandoffCompletion {
                     result,
                     queued_readiness,
                     generation,
                     scene_label,
-                }
+                })
             }),
+        }
+    }
+}
+
+fn start_next_recall_dispatch(
+    coordinator: &mut RecallCoordinator,
+    peers: &ScenesPeers,
+    generation: u64,
+) -> Option<PendingRecallOperation> {
+    let dispatch = coordinator.begin_dispatch()?;
+    let Some(handles) = peers.handles(generation) else {
+        coordinator.cancel_pending_dispatch(dispatch, "LV1 state is unavailable");
+        return None;
+    };
+    Some(PendingRecallOperation::snapshot_for_dispatch(
+        handles.lv1,
+        dispatch,
+    ))
+}
+
+fn cancel_pending_recall(
+    operation: Option<PendingRecallOperation>,
+    coordinator: &mut RecallCoordinator,
+    reason: &str,
+) {
+    if let Some(operation) = operation {
+        cancel_pending_recall_context(operation.context, coordinator, reason);
+    }
+}
+
+fn cancel_pending_recall_context(
+    context: PendingRecallContext,
+    coordinator: &mut RecallCoordinator,
+    reason: &str,
+) {
+    match context {
+        PendingRecallContext::Admission(admission) => {
+            coordinator.cancel_admission(admission, reason);
+        }
+        PendingRecallContext::DispatchSnapshot(dispatch) => {
+            coordinator.cancel_pending_dispatch(dispatch, reason);
+        }
+        PendingRecallContext::DispatchCommand(prepared) => {
+            coordinator.cancel_prepared_dispatch(prepared, reason, true);
+        }
+        PendingRecallContext::ObservationSnapshot(_) | PendingRecallContext::ObservationHandoff => {
+            coordinator.cancel(reason, true);
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finish_pending_recall(
+    operation: PendingRecallOperation,
+    completion: PendingRecallCompletion,
+    pending: &mut Option<PendingRecallOperation>,
+    coordinator: &mut RecallCoordinator,
+    peers: &ScenesPeers,
+    active_generation: u64,
+    runtime_generation: &RuntimeGeneration,
+    scene_library_status: &SceneLibraryStatus,
+    lockout: &ShowLockoutReader,
+    recall_state: &mut ScenesState,
+    settings: &AppSettings,
+    event_bus: &AppEventBus,
+    #[cfg(test)] before_fade_handoff: &mut Option<BeforeFadeHandoff>,
+) {
+    let generation_changed = operation.generation != active_generation
+        || runtime_generation.current().await != operation.generation;
+    if generation_changed
+        || *scene_library_status != SceneLibraryStatus::Ready
+        || peers.handles(active_generation).is_none()
+    {
+        cancel_pending_recall(
+            Some(operation),
+            coordinator,
+            "LV1 connection generation changed",
+        );
+        if generation_changed {
+            coordinator.clear_late_observations();
+        }
+        return;
+    }
+
+    match (operation.context, completion) {
+        (
+            PendingRecallContext::Admission(admission),
+            PendingRecallCompletion::Snapshot(Ok(snapshot)),
+        ) => {
+            if coordinator.finish_admission(admission, lockout, &recall_state.snapshot(), &snapshot)
+            {
+                *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
+            }
+        }
+        (
+            PendingRecallContext::Admission(admission),
+            PendingRecallCompletion::Snapshot(Err(error)),
+        ) => {
+            if coordinator.fail_admission(admission, error) {
+                *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
+            }
+        }
+        (
+            PendingRecallContext::DispatchSnapshot(dispatch),
+            PendingRecallCompletion::Snapshot(Ok(snapshot)),
+        ) => {
+            match coordinator.prepare_dispatch(
+                dispatch,
+                active_generation,
+                lockout,
+                &recall_state.snapshot(),
+                &snapshot,
+            ) {
+                Ok(prepared) => {
+                    let handles = peers
+                        .handles(active_generation)
+                        .expect("current recall peers were checked");
+                    *pending = Some(PendingRecallOperation::dispatch(
+                        handles.lv1,
+                        lockout.clone(),
+                        prepared,
+                    ));
+                }
+                Err(()) => {
+                    *pending = start_next_recall_dispatch(coordinator, peers, active_generation);
+                }
+            }
+        }
+        (
+            PendingRecallContext::DispatchSnapshot(dispatch),
+            PendingRecallCompletion::Snapshot(Err(error)),
+        ) => {
+            let (reason, clear_late) = if error == AppCommandError::StaleGeneration {
+                ("LV1 connection generation changed", true)
+            } else {
+                ("LV1 state is unavailable", false)
+            };
+            coordinator.cancel_pending_dispatch(dispatch, reason);
+            if clear_late {
+                coordinator.clear_late_observations();
+            }
+        }
+        (
+            PendingRecallContext::DispatchCommand(prepared),
+            PendingRecallCompletion::Dispatch(result),
+        ) => {
+            coordinator.finish_dispatch(prepared, result);
+        }
+        (
+            PendingRecallContext::ObservationSnapshot(prepared),
+            PendingRecallCompletion::ObservationSnapshot(result),
+        ) => {
+            let handles = peers
+                .handles(active_generation)
+                .expect("current recall peers were checked");
+            let Some(prepared) = coordinator.prepare_observation_handoff(
+                event_bus,
+                recall_state,
+                settings,
+                lockout,
+                prepared,
+                result,
+            ) else {
+                return;
+            };
+            *pending = Some(PendingRecallOperation::observation_handoff(
+                handles.lv1,
+                handles.fade,
+                event_bus.clone(),
+                lockout.clone(),
+                #[cfg(test)]
+                before_fade_handoff.take(),
+                prepared,
+            ));
+        }
+        (
+            PendingRecallContext::ObservationHandoff,
+            PendingRecallCompletion::ObservationHandoff(completion),
+        ) => {
+            if !lockout.current() {
+                coordinator.finish_observation_handoff(completion, event_bus);
+            }
+        }
+        (context, _) => {
+            cancel_pending_recall_context(
+                context,
+                coordinator,
+                "LV1 recall operation became inconsistent",
+            );
         }
     }
 }
 
 struct PendingLagRecovery {
     generation: u64,
-    settings_revision: u64,
     scene_list_revision: u64,
-    future: Pin<Box<dyn Future<Output = LagRecoveryCompletion> + Send>>,
-}
-
-struct LagRecoveryCompletion {
-    settings: Option<AppSettings>,
-    snapshot: Option<Lv1StateSnapshot>,
+    future: Pin<Box<dyn Future<Output = Option<Lv1StateSnapshot>> + Send>>,
 }
 
 impl PendingLagRecovery {
-    fn new(
-        generation: u64,
-        settings_revision: u64,
-        scene_list_revision: u64,
-        settings_handle: SettingsHandle,
-        lv1: Option<Lv1Connection>,
-    ) -> Self {
+    fn new(generation: u64, scene_list_revision: u64, lv1: Lv1Connection) -> Self {
         Self {
             generation,
-            settings_revision,
             scene_list_revision,
             future: Box::pin(async move {
-                let settings = request_recovery_settings(&settings_handle).await;
-                let snapshot = match (&settings, lv1) {
-                    (Some(_), Some(lv1)) => lv1
-                        .request(|reply| Lv1Command::GetState { reply })
-                        .await
-                        .ok(),
-                    _ => None,
-                };
-                LagRecoveryCompletion { settings, snapshot }
+                lv1.request(|reply| Lv1Command::GetState { reply })
+                    .await
+                    .ok()
             }),
         }
     }
-}
-
-async fn request_recovery_settings(settings_handle: &SettingsHandle) -> Option<AppSettings> {
-    let (reply, rx) = oneshot::channel();
-    let result = match settings_handle
-        .send(SettingsCommand::GetSettings { reply })
-        .await
-    {
-        Ok(()) => rx.await.ok(),
-        Err(_) => None,
-    };
-    if result.is_none() {
-        tracing::error!(
-            event = "scene_recall_settings_unavailable",
-            "Scene recall automation stopped because current settings are unavailable"
-        );
-    }
-    result
 }
 
 fn authoritative_scene_list(
@@ -1871,9 +1691,8 @@ mod tests {
     use crate::scenes::{
         ChannelConfig, ChannelRef, RecallSceneResult, SceneConfig, SceneDocument, SceneScopeToggles,
     };
-    use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
+    use crate::settings::{AppSettings, SettingsCommand, build_settings_actor};
     use crate::test_support::TracingCapture;
-    use std::collections::VecDeque;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -1989,8 +1808,6 @@ mod tests {
                 runtime_generation,
                 event_bus.clone(),
                 event_bus.subscribe(),
-                fake_settings_handle(AppSettings::default()),
-                AppSettings::default(),
                 lockout.clone(),
             );
             peers.set_peers_for_generation(1, lv1, fade.clone());
@@ -2090,6 +1907,7 @@ mod tests {
             before_fade_handoff: Option<BeforeFadeHandoff>,
         ) -> Self {
             let event_bus = AppEventBus::default();
+            event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged { settings }));
             let (show, show_task, _show_peers, lockout) =
                 crate::show::build_show_actor(event_bus.clone());
             show_task.spawn();
@@ -2154,8 +1972,6 @@ mod tests {
                     runtime_generation.clone(),
                     event_bus.clone(),
                     event_bus.subscribe(),
-                    fake_settings_handle(settings.clone()),
-                    settings.clone(),
                     lockout,
                     before_fade_handoff,
                 ),
@@ -2164,8 +1980,6 @@ mod tests {
                     runtime_generation.clone(),
                     event_bus.clone(),
                     event_bus.subscribe(),
-                    fake_settings_handle(settings.clone()),
-                    settings,
                     lockout,
                 ),
             };
@@ -2330,20 +2144,12 @@ mod tests {
                     runtime_generation,
                     event_bus.clone(),
                     events,
-                    fake_settings_handle(AppSettings::default()),
-                    AppSettings::default(),
                     lockout,
                     before_fade_handoff,
                 ),
-                None => build_scenes_actor(
-                    1,
-                    runtime_generation,
-                    event_bus.clone(),
-                    events,
-                    fake_settings_handle(AppSettings::default()),
-                    AppSettings::default(),
-                    lockout,
-                ),
+                None => {
+                    build_scenes_actor(1, runtime_generation, event_bus.clone(), events, lockout)
+                }
             };
             peers.set_peers_for_generation(1, lv1, fade);
             task.spawn();
@@ -2953,116 +2759,6 @@ mod tests {
             fixture.next_fade_command().await,
             QueueFadeCommand::Recall { duration_ms: 1_000 }
         );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn current_recall_takes_precedence_while_late_cancellation_fallback_is_active() {
-        let mut fixture = RecallCoordinatorFixture::connected_with_scenes(vec![
-            queue_scene_with_fader(1, "Intro", 1_000),
-            queue_scene(2, "Verse"),
-        ])
-        .await;
-        arm_queue_recall_gate(&fixture).await;
-
-        for sequence in 10..=(10 + LATE_CANCELED_OBSERVATION_CAPACITY as u64) {
-            let recall = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
-            let dispatch = fixture.next_lv1_recall().await;
-            dispatch.reply(Ok(RecallSceneDispatch {
-                scene_observation_sequence: sequence,
-            }));
-            assert!(recall.await.unwrap().is_ok());
-            fixture.set_lockout(true).await;
-            fixture.set_lockout(false).await;
-        }
-
-        let current = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
-        let current_dispatch = fixture.next_lv1_recall().await;
-        current_dispatch.reply(Ok(RecallSceneDispatch {
-            scene_observation_sequence: 20,
-        }));
-        assert!(current.await.unwrap().is_ok());
-
-        let scene = SceneState {
-            index: 1,
-            name: "Intro".to_string(),
-        };
-        fixture.set_snapshot(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: Some(scene.clone()),
-            scene_list: vec![scene_entry(1, "Intro"), scene_entry(2, "Verse")].into(),
-            channels: vec![crate::lv1::ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Channel 0".to_string(),
-                gain_db: 0.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            }],
-            ping_sequence: 10,
-        });
-        fixture.publish_scene_observation(1, 21, scene);
-        tokio::time::advance(Duration::from_millis(30)).await;
-
-        assert_eq!(
-            fixture.next_fade_command().await,
-            QueueFadeCommand::Recall { duration_ms: 1_000 }
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn late_canceled_observation_overflow_suppresses_unrelated_spontaneous_recall() {
-        let mut fixture = RecallCoordinatorFixture::connected_with_scenes(vec![
-            queue_scene_with_fader(1, "Intro", 1_000),
-            queue_scene(2, "Verse"),
-            queue_scene_with_fader(3, "Chorus", 2_000),
-        ])
-        .await;
-        arm_queue_recall_gate(&fixture).await;
-
-        for sequence in 10..=(10 + LATE_CANCELED_OBSERVATION_CAPACITY as u64) {
-            let recall = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
-            let dispatch = fixture.next_lv1_recall().await;
-            dispatch.reply(Ok(RecallSceneDispatch {
-                scene_observation_sequence: sequence,
-            }));
-            assert!(recall.await.unwrap().is_ok());
-            fixture.set_lockout(true).await;
-            fixture.set_lockout(false).await;
-        }
-
-        let unrelated = SceneState {
-            index: 3,
-            name: "Chorus".to_string(),
-        };
-        fixture.set_snapshot(Lv1StateSnapshot {
-            connection: ConnectionStatus::Connected,
-            scene: Some(unrelated.clone()),
-            scene_list: vec![
-                scene_entry(1, "Intro"),
-                scene_entry(2, "Verse"),
-                scene_entry(3, "Chorus"),
-            ]
-            .into(),
-            channels: vec![crate::lv1::ChannelInfo {
-                group: 0,
-                channel: 0,
-                name: "Channel 0".to_string(),
-                gain_db: 0.0,
-                muted: false,
-                pan: None,
-                balance: None,
-                width: None,
-                pan_mode: None,
-            }],
-            ping_sequence: 10,
-        });
-        fixture.publish_scene_observation(1, 100, unrelated);
-        tokio::time::advance(Duration::from_millis(30)).await;
-
-        assert_no_queue_fade_command(&mut fixture).await;
     }
 
     #[tokio::test(start_paused = true)]
@@ -3923,8 +3619,6 @@ mod tests {
             runtime_generation.clone(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -4023,8 +3717,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
@@ -4153,8 +3845,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
@@ -4264,8 +3954,6 @@ mod tests {
             runtime_generation.clone(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -4331,8 +4019,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
@@ -4579,8 +4265,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             lockout,
         );
         scenes_peers.set_peers_for_generation(1, lv1, fade_proxy);
@@ -4760,8 +4444,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             lockout,
         );
         scenes_peers.set_peers_for_generation(1, lv1, fade_proxy);
@@ -5146,8 +4828,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -5205,8 +4885,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
@@ -5247,8 +4925,6 @@ mod tests {
             runtime_generation.clone(),
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
@@ -5306,8 +4982,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         task.spawn();
@@ -5503,8 +5177,6 @@ mod tests {
                 runtime_generation,
                 event_bus.clone(),
                 event_bus.subscribe(),
-                fake_settings_handle(AppSettings::default()),
-                AppSettings::default(),
                 lockout.clone(),
             );
             peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx.clone()), fade);
@@ -5600,8 +5272,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             lockout,
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
@@ -5670,8 +5340,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
@@ -5796,8 +5464,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -5884,8 +5550,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         task.spawn();
@@ -5951,8 +5615,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
             pending_scene_observed,
         );
@@ -6324,25 +5986,45 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn initial_settings_control_same_scene_behavior_and_repeat_delay() {
+    async fn persisted_settings_seed_recall_policy_before_scenes_starts() {
+        let settings_dir = std::env::temp_dir().join(format!(
+            "asc-scenes-retained-settings-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let desired_settings = AppSettings {
+            same_scene_recall_enabled: false,
+            same_scene_recall_threshold_ms: 1_200,
+            ..Default::default()
+        };
+        let seed_bus = AppEventBus::default();
+        let (seed_settings, seed_task, _) = build_settings_actor(settings_dir.clone(), seed_bus);
+        seed_task.spawn();
+        let (reply, result) = oneshot::channel();
+        seed_settings
+            .send(SettingsCommand::ReplaceSettings {
+                settings: desired_settings,
+                reply,
+            })
+            .await
+            .unwrap();
+        assert!(result.await.unwrap().unwrap().changed);
+        drop(seed_settings);
+        yield_to_actor().await;
+
         let event_bus = AppEventBus::default();
+        let (settings, settings_task, _) =
+            build_settings_actor(settings_dir.clone(), event_bus.clone());
+        settings_task.spawn();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
         let events = event_bus.subscribe();
-        let settings = AppSettings {
-            same_scene_recall_enabled: false,
-            same_scene_recall_threshold_ms: 1_200,
-            ..Default::default()
-        };
         let (handle, task, peers) = build_scenes_actor(
             1,
             runtime_generation,
             event_bus.clone(),
             events,
-            fake_settings_handle(settings.clone()),
-            settings,
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -6385,60 +6067,9 @@ mod tests {
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         drop(peers);
         server.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn pending_settled_observation_settings_is_canceled_by_disconnect() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (settings, mut settings_commands) = tokio::sync::mpsc::channel(1);
-        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
-        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            settings,
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, lv1, fade);
-        task.spawn();
-        install_scene_document(&handle, intro_scene_document()).await;
-        release_lv1.send(()).unwrap();
-        arm_recall_state(&event_bus).await;
-
-        let SettingsCommand::GetSettings {
-            reply: held_settings,
-        } = settings_commands.recv().await.unwrap()
-        else {
-            panic!("expected held settled-observation Settings request");
-        };
-        event_bus.publish_lv1(
-            1,
-            Lv1Event::Disconnected {
-                reason: "test disconnect".to_string(),
-            },
-        );
-        let (reply, state) = oneshot::channel();
-        handle
-            .send(ScenesCommand::InitialProjectionState { reply })
-            .await
-            .unwrap();
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), state)
-                .await
-                .expect("disconnect should release the gated scene mailbox")
-                .unwrap()
-                .ready_generation,
-            None
-        );
-        assert!(held_settings.send(AppSettings::default()).is_err());
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-        drop(peers);
-        server.await.unwrap();
+        drop(settings);
+        yield_to_actor().await;
+        std::fs::remove_dir_all(settings_dir).unwrap();
     }
 
     #[tokio::test(start_paused = true)]
@@ -6453,8 +6084,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
@@ -6524,8 +6153,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
             BeforeFadeHandoff {
                 reached: handoff_reached,
@@ -6579,8 +6206,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -6617,101 +6242,6 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn settled_observation_refreshes_current_settings_before_dispatch() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
-        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
-        let disabled_settings = AppSettings {
-            same_scene_recall_enabled: false,
-            ..Default::default()
-        };
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            fake_settings_handle_sequence(vec![AppSettings::default(), disabled_settings.clone()]),
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, lv1, fade);
-        task.spawn();
-        install_scene_document(&handle, intro_scene_document()).await;
-        release_lv1.send(()).unwrap();
-        arm_recall_state_for_generation(&event_bus, 1).await;
-
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 1,
-            event: Lv1Event::SceneChanged(intro_scene()),
-        });
-        yield_to_actor().await;
-        tokio::time::advance(Duration::from_millis(50)).await;
-
-        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
-        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
-
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-        drop(peers);
-        server.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn settled_observation_stops_when_settings_refresh_fails() {
-        let captured = TracingCapture::new();
-        let _guard = captured.install();
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
-        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            fake_settings_handle_then_unavailable(AppSettings::default()),
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, lv1, fade);
-        task.spawn();
-        install_scene_document(&handle, intro_scene_document()).await;
-        release_lv1.send(()).unwrap();
-        arm_recall_state(&event_bus).await;
-
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 1,
-            event: Lv1Event::SceneChanged(intro_scene()),
-        });
-        yield_to_actor().await;
-        tokio::time::advance(Duration::from_millis(50)).await;
-        yield_to_actor().await;
-
-        assert!(matches!(
-            fade_rx.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        assert!(captured
-            .matching(
-                "scene_recall_settings_unavailable",
-                tracing::Level::ERROR,
-            )
-            .iter()
-            .any(|log| {
-                log.message.as_deref()
-                    == Some(
-                        "Scene recall automation stopped because current settings are unavailable",
-                    )
-        }));
-
-        drop(peers);
-        drop(handle);
-        server.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
     async fn live_settings_update_controls_same_scene_behavior_and_repeat_delay() {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
@@ -6728,13 +6258,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle_sequence(vec![
-                AppSettings::default(),
-                disabled_settings.clone(),
-                disabled_settings.clone(),
-                disabled_settings.clone(),
-            ]),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -6800,8 +6323,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            fake_settings_handle(disabled_settings.clone()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, lv1, fade);
@@ -6889,185 +6410,11 @@ mod tests {
         server.await.unwrap();
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn queued_settings_update_after_snapshot_supersedes_initial_policy() {
-        let event_bus = AppEventBus::default();
-        let events = event_bus.subscribe();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let disabled_settings = AppSettings {
-            same_scene_recall_enabled: false,
-            same_scene_recall_threshold_ms: 1_000,
-            ..Default::default()
-        };
-        event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
-            settings: disabled_settings.clone(),
-        }));
-        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
-        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            events,
-            fake_settings_handle(disabled_settings),
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, lv1, fade);
-        task.spawn();
-        install_scene_document(&handle, intro_scene_document()).await;
-        release_lv1.send(()).unwrap();
-        arm_recall_state_for_generation(&event_bus, 1).await;
-
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 1,
-            event: Lv1Event::SceneChanged(intro_scene()),
-        });
-        yield_to_actor().await;
-        tokio::time::advance(Duration::from_millis(50)).await;
-        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
-        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
-
-        tokio::time::advance(Duration::from_millis(700)).await;
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 1,
-            event: Lv1Event::SceneChanged(intro_scene()),
-        });
-        yield_to_actor().await;
-        tokio::time::advance(Duration::from_millis(50)).await;
-        assert!(matches!(
-            fade_rx.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-
-        tokio::time::advance(Duration::from_millis(300)).await;
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 1,
-            event: Lv1Event::SceneChanged(intro_scene()),
-        });
-        yield_to_actor().await;
-        tokio::time::advance(Duration::from_millis(50)).await;
-        let (_config, behavior) = next_fade_command(&mut fade_rx).await;
-        assert_eq!(behavior, SameSceneRecallBehavior::OverrideMatchingTargets);
-
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-        drop(peers);
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn pending_lag_settings_refresh_is_canceled_by_generation_change() {
-        let event_bus = AppEventBus::new(1);
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (settings, mut settings_commands) = tokio::sync::mpsc::channel(1);
-        let (lv1, _lv1_commands) = tokio::sync::mpsc::channel(1);
-        let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation.clone(),
-            event_bus.clone(),
-            event_bus.subscribe(),
-            settings,
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
-        task.spawn();
-        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
-
-        for generation in 10..30 {
-            event_bus.publish(AppEvent::Runtime(
-                crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                    generation,
-                },
-            ));
-        }
-        let SettingsCommand::GetSettings {
-            reply: held_settings,
-        } = tokio::time::timeout(Duration::from_secs(1), settings_commands.recv())
-            .await
-            .expect("lag recovery should request settings")
-            .expect("settings mailbox should remain open")
-        else {
-            panic!("expected settings snapshot request");
-        };
-
-        runtime_generation.set(2).await;
-        event_bus.publish(AppEvent::Runtime(
-            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                generation: 2,
-            },
-        ));
-        let (reply, state) = oneshot::channel();
-        handle
-            .send(ScenesCommand::InitialProjectionState { reply })
-            .await
-            .unwrap();
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), state)
-                .await
-                .expect("generation fact should remain responsive")
-                .unwrap()
-                .ready_generation,
-            None
-        );
-        assert!(held_settings.send(AppSettings::default()).is_err());
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn pending_lag_settings_failure_stops_actor() {
-        let event_bus = AppEventBus::new(1);
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (settings, mut settings_commands) = tokio::sync::mpsc::channel(1);
-        let (handle, task, _peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            settings,
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        task.spawn();
-
-        for generation in 10..30 {
-            event_bus.publish(AppEvent::Runtime(
-                crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                    generation,
-                },
-            ));
-        }
-        let SettingsCommand::GetSettings { reply } =
-            tokio::time::timeout(Duration::from_secs(1), settings_commands.recv())
-                .await
-                .expect("lag recovery should request settings")
-                .expect("settings mailbox should remain open")
-        else {
-            panic!("expected settings snapshot request");
-        };
-        drop(reply);
-        yield_to_actor().await;
-
-        let (reply, _response) = oneshot::channel();
-        assert!(
-            handle
-                .send(ScenesCommand::InitialProjectionState { reply })
-                .await
-                .is_err(),
-            "failed lag recovery must stop the actor rather than later reuse stale policy"
-        );
-    }
-
     #[tokio::test]
     async fn pending_lag_lv1_snapshot_is_canceled_by_disconnect() {
         let event_bus = AppEventBus::new(1);
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let settings = fake_settings_handle(AppSettings::default());
         let (lv1, mut lv1_commands) = tokio::sync::mpsc::channel(1);
         let (fade, _fade_rx, _fade_starts) = fake_fade_handle();
         let (handle, task, peers) = build_scenes_actor(
@@ -7075,8 +6422,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             event_bus.subscribe(),
-            settings,
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
@@ -7135,30 +6480,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn lagged_settings_events_refresh_before_recall() {
-        let captured = TracingCapture::new();
-        let _guard = captured.install();
         let event_bus = AppEventBus::new(1);
         let events = event_bus.subscribe();
         let runtime_generation = RuntimeGeneration::new();
         runtime_generation.set(1).await;
-        let settings_dir =
-            std::env::temp_dir().join(format!("scene-settings-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&settings_dir).unwrap();
-        let (settings_handle, settings_task, _) =
-            crate::settings::build_settings_actor(settings_dir, event_bus.clone());
-        settings_task.spawn();
-        let (reply, rx) = oneshot::channel();
-        settings_handle
-            .send(SettingsCommand::ReplaceSettings {
-                settings: AppSettings {
-                    same_scene_recall_enabled: false,
-                    ..Default::default()
-                },
-                reply,
-            })
-            .await
-            .unwrap();
-        rx.await.unwrap().unwrap();
+        event_bus.publish(AppEvent::Settings(SettingsEvent::StateChanged {
+            settings: AppSettings {
+                same_scene_recall_enabled: false,
+                ..Default::default()
+            },
+        }));
         runtime_generation.set(2).await;
         event_bus.publish(AppEvent::Runtime(
             crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
@@ -7178,8 +6509,6 @@ mod tests {
             runtime_generation,
             event_bus.clone(),
             events,
-            settings_handle,
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(2, lv1, fade);
@@ -7213,81 +6542,6 @@ mod tests {
 
         handle.send(ScenesCommand::Shutdown).await.unwrap();
         drop(peers);
-        server.await.unwrap();
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn unavailable_settings_after_lag_stops_recall_automation() {
-        let captured = TracingCapture::new();
-        let _guard = captured.install();
-        let event_bus = AppEventBus::new(1);
-        let events = event_bus.subscribe();
-        let (settings_tx, settings_rx) = tokio::sync::mpsc::channel(1);
-        drop(settings_rx);
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
-        let (fade, mut fade_rx, _fade_starts) = fake_fade_handle();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            events,
-            settings_tx,
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, lv1, fade);
-        task.spawn();
-        install_scene_document(&handle, intro_scene_document()).await;
-        release_lv1.send(()).unwrap();
-        arm_recall_state(&event_bus).await;
-
-        event_bus.publish(AppEvent::Runtime(
-            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                generation: 3,
-            },
-        ));
-        event_bus.publish(AppEvent::Runtime(
-            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                generation: 4,
-            },
-        ));
-        yield_to_actor().await;
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 1,
-            event: Lv1Event::SceneChanged(intro_scene()),
-        });
-        tokio::time::advance(Duration::from_millis(50)).await;
-        yield_to_actor().await;
-
-        assert!(matches!(
-            fade_rx.try_recv(),
-            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
-        ));
-        assert!(captured
-            .matching(
-                "scene_recall_settings_unavailable",
-                tracing::Level::ERROR,
-            )
-            .iter()
-            .any(|log| {
-                log.message.as_deref()
-                    == Some(
-                        "Scene recall automation stopped because current settings are unavailable",
-                    )
-        }));
-        yield_to_actor().await;
-        let (reply, _response) = oneshot::channel();
-        assert!(
-            handle
-                .send(ScenesCommand::InitialProjectionState { reply })
-                .await
-                .is_err(),
-            "failed lag recovery must stop the actor rather than later reuse stale policy"
-        );
-        drop(peers);
-        drop(handle);
         server.await.unwrap();
     }
 
@@ -8182,8 +7436,6 @@ mod tests {
             runtime_generation,
             event_bus,
             events,
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
             test_lockout_reader(),
         );
         peers.set_peers_for_generation(generation, lv1, fade);
@@ -8234,41 +7486,6 @@ mod tests {
             .await
             .unwrap();
         response.await.unwrap().unwrap();
-    }
-
-    fn fake_settings_handle(settings: AppSettings) -> SettingsHandle {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            while let Some(command) = rx.recv().await {
-                if let SettingsCommand::GetSettings { reply } = command {
-                    let _ = reply.send(settings.clone());
-                }
-            }
-        });
-        tx
-    }
-
-    fn fake_settings_handle_sequence(settings: Vec<AppSettings>) -> SettingsHandle {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(8);
-        tokio::spawn(async move {
-            let mut settings = VecDeque::from(settings);
-            while let Some(command) = rx.recv().await {
-                if let SettingsCommand::GetSettings { reply } = command {
-                    let _ = reply.send(settings.pop_front().expect("unexpected settings refresh"));
-                }
-            }
-        });
-        tx
-    }
-
-    fn fake_settings_handle_then_unavailable(settings: AppSettings) -> SettingsHandle {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
-        tokio::spawn(async move {
-            if let Some(SettingsCommand::GetSettings { reply }) = rx.recv().await {
-                let _ = reply.send(settings);
-            }
-        });
-        tx
     }
 
     async fn install_scene_document(handle: &ScenesHandle, document: SceneDocument) {

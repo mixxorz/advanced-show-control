@@ -562,7 +562,7 @@ mod tests {
             crate::show::build_show_actor(event_bus.clone());
         let settings_dir =
             std::env::temp_dir().join(format!("asc-application-test-{}", Uuid::new_v4()));
-        let (settings, settings_task, initial_settings) =
+        let (settings, settings_task, _initial_settings) =
             crate::settings::build_settings_actor(settings_dir, event_bus.clone());
         let lifecycle = AppLifecycle::new(
             event_bus,
@@ -570,7 +570,6 @@ mod tests {
             show_peers,
             lockout,
             settings.clone(),
-            initial_settings,
         );
         drop(show_task);
         settings_task.spawn();

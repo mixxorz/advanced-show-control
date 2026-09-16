@@ -60,11 +60,6 @@ impl Session {
         let events = AppEventBus::default();
         let (_show, task, show_peers, lockout) = crate::show::build_show_actor(events.clone());
         task.spawn();
-        let settings_dir =
-            std::env::temp_dir().join(format!("cue-session-test-{}", Uuid::new_v4()));
-        let (settings_handle, task, settings) =
-            crate::settings::build_settings_actor(settings_dir, events.clone());
-        task.spawn();
         let snapshot = crate::lv1::Lv1StateSnapshot {
             connection: crate::lv1::ConnectionStatus::Connected,
             scene: None,
@@ -103,8 +98,6 @@ impl Session {
             generation.clone(),
             events.clone(),
             events.subscribe(),
-            settings_handle,
-            settings,
             lockout,
         );
         let cues = task.cue_lists_handle();

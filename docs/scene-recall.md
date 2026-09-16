@@ -43,14 +43,14 @@ admission validation
     -> LV1 recall dispatch
     -> exact newer scene observation
     -> 25 ms observation settle
-    -> current Settings and fresh exact LV1 snapshot
+    -> latest retained Settings and fresh exact LV1 snapshot
     -> Fade admission or readiness-only handoff
     -> two-ping Fade readiness
     -> configured ASC recall interval
     -> next FIFO dispatch
 ```
 
-The Scenes actor owns these phases through one synchronous `RecallCoordinator`. External Settings, LV1, and Fade waits are actor-owned pending operations. The actor continues processing runtime facts, LV1 facts, lockout changes, recall deadlines, and safety commands while those operations are pending.
+The Scenes actor owns these phases through one synchronous `RecallCoordinator`. Explicit admission, queued dispatch, fresh observation snapshots, and Fade handoffs share one typed actor-owned pending recall transaction. The actor continues processing runtime facts, LV1 facts, Settings facts, lockout changes, recall deadlines, and safety commands while its external LV1 or Fade wait is pending.
 
 ## Dispatch Correlation
 
@@ -58,7 +58,7 @@ The LV1 actor captures the current connection-local `SceneObservation.sequence` 
 
 This prevents an observation that occurred before dispatch from satisfying the request. Sequence values are scoped to one connection generation and reset after reconnect; they are not durable scene identifiers.
 
-After a matching observation, Scenes waits 25 ms so scene name and index frames can settle. It then refreshes Settings and requests fresh LV1 state. Fresh-state validation requires a connected snapshot whose current scene still matches the expected index and name. Returned mismatched or disconnected snapshots are retried for up to two seconds, bounded by the existing recall safety deadline; an LV1 state-request error returns immediately.
+After a matching observation, Scenes waits 25 ms so scene name and index frames can settle. It then reads the event bus's latest retained Settings projection synchronously and requests fresh LV1 state. Fresh-state validation requires a connected snapshot whose current scene still matches the expected index and name. Returned mismatched or disconnected snapshots are retried for up to two seconds, bounded by the existing recall safety deadline; an LV1 state-request error returns immediately.
 
 ## What Fade Readiness Means
 
@@ -118,7 +118,7 @@ Failure is conservative:
 - An installed Fade readiness timeout removes all paused targets rather than sending delayed writes into uncertain LV1 state.
 - Lockout, disconnect, generation change, session replacement, event-bus lag, and actor shutdown cancel affected runtime recall intent.
 - A blocked or skipped direct LV1 observation sends no Fade command and does not alter an existing fade. The same policy outcome correlated to an ASC request leaves active work unchanged initially, but its required readiness-only handoff can still time out and remove paused targets.
-- When a recall is canceled while awaiting its exact observation, a matching late observation is suppressed for a bounded period rather than being treated as an independent recall.
+- When a recall is canceled while awaiting its exact observation, its identity is retained for up to five seconds so one matching late observation is not treated as an independent recall. ASC retains the eight most recent identities and discards the oldest on capacity pressure; unrelated observations are never globally suppressed.
 
 A readiness timeout therefore means ASC could not prove that the expected scene was followed by a healthy post-recall keepalive cadence within five seconds. It does not identify which LV1 subsystem delayed that cadence.
 

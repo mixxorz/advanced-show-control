@@ -183,10 +183,6 @@ pub(super) struct PendingSceneObservation {
 }
 
 impl PendingSceneObservation {
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
     fn new(generation: u64, sequence: u64, scene: SceneState, now: Instant) -> Self {
         Self {
             generation,
@@ -207,14 +203,7 @@ struct LateCanceledObservation {
 
 #[derive(Default)]
 struct LateCanceledObservations {
-    entries: Vec<LateCanceledObservation>,
-    suppress_all_until: Option<(u64, Instant)>,
-}
-
-#[derive(Clone, Copy)]
-enum LateCanceledObservationSuppression {
-    Exact,
-    Fallback,
+    entries: VecDeque<LateCanceledObservation>,
 }
 
 impl LateCanceledObservations {
@@ -237,66 +226,43 @@ impl LateCanceledObservations {
     }
 
     /**
-     * @cc [owner:mixxorz,label:safety] late-cancellation-overflow-fails-closed
-     * Exact late-observation suppression MUST retain at most eight entries. Recording beyond that
-     * capacity MUST activate generation-specific suppression of all otherwise spontaneous scene
-     * observations for five seconds; exact matching of a current queued recall MUST remain eligible
-     * before this fallback is consulted.
+     * @cc [owner:mixxorz,label:safety] bounded-exact-late-cancellation
+     * Late-observation suppression MUST retain the eight most recently canceled exact recall
+     * identities for at most five seconds. Capacity pressure MUST discard the oldest identity and
+     * MUST NOT suppress unrelated spontaneous scene observations.
      */
     fn record(&mut self, generation: u64, dispatch_sequence: u64, scene: SceneState, now: Instant) {
         self.purge(now);
-        let expires_at = now + LATE_CANCELED_OBSERVATION_TTL;
-        if self.entries.len() >= LATE_CANCELED_OBSERVATION_CAPACITY {
-            self.suppress_all_until = Some(match self.suppress_all_until {
-                Some((current_generation, current_until)) if current_generation == generation => {
-                    (generation, current_until.max(expires_at))
-                }
-                _ => (generation, expires_at),
-            });
-            return;
+        if self.entries.len() == LATE_CANCELED_OBSERVATION_CAPACITY {
+            self.entries.pop_front();
         }
-        self.entries.push(LateCanceledObservation {
+        self.entries.push_back(LateCanceledObservation {
             generation,
             dispatch_sequence,
             scene,
-            expires_at,
+            expires_at: now + LATE_CANCELED_OBSERVATION_TTL,
         });
     }
 
-    fn suppresses(
-        &mut self,
-        observation: &PendingSceneObservation,
-        now: Instant,
-    ) -> Option<LateCanceledObservationSuppression> {
+    fn suppresses(&mut self, observation: &PendingSceneObservation, now: Instant) -> bool {
         self.purge(now);
-        if matches!(
-            self.suppress_all_until,
-            Some((generation, until)) if generation == observation.generation && now < until
-        ) {
-            return Some(LateCanceledObservationSuppression::Fallback);
-        }
-        let index = self.entries.iter().position(|entry| {
+        let Some(index) = self.entries.iter().position(|entry| {
             entry.generation == observation.generation
                 && observation.sequence > entry.dispatch_sequence
                 && entry.scene == observation.scene
-        })?;
+        }) else {
+            return false;
+        };
         self.entries.remove(index);
-        Some(LateCanceledObservationSuppression::Exact)
+        true
     }
 
     fn purge(&mut self, now: Instant) {
         self.entries.retain(|entry| entry.expires_at > now);
-        if self
-            .suppress_all_until
-            .is_some_and(|(_, until)| until <= now)
-        {
-            self.suppress_all_until = None;
-        }
     }
 
     fn clear(&mut self) {
         self.entries.clear();
-        self.suppress_all_until = None;
     }
 }
 
@@ -591,7 +557,7 @@ impl RecallCoordinator {
             return None;
         }
         if queue_readiness.is_none()
-            && let Some(suppression) = self
+            && self
                 .late_canceled_observations
                 .suppresses(&observation, now)
         {
@@ -601,11 +567,7 @@ impl RecallCoordinator {
                 scene_index = observation.scene.index,
                 scene_name = %observation.scene.name,
                 sequence = observation.sequence,
-                suppression = match suppression {
-                    LateCanceledObservationSuppression::Exact => "exact_late_observation",
-                    LateCanceledObservationSuppression::Fallback => "bounded_fallback",
-                },
-                "Ignored a scene observation while canceled recall suppression is active"
+                "Ignored a late scene observation from a canceled recall"
             );
             return None;
         }
@@ -1316,6 +1278,61 @@ mod tests {
             request.await.unwrap(),
             Err(AppCommandError::CommandFailed(message))
                 if message == "timed out waiting for fresh LV1 scene to match recalled scene 1: Intro"
+        ));
+    }
+
+    #[test]
+    fn late_cancellation_retains_only_the_most_recent_exact_identities() {
+        let now = Instant::now();
+        let mut canceled = LateCanceledObservations::default();
+
+        for index in 0..=LATE_CANCELED_OBSERVATION_CAPACITY {
+            canceled.record(
+                1,
+                index as u64,
+                SceneState {
+                    index: index as i32,
+                    name: format!("Scene {index}"),
+                },
+                now,
+            );
+        }
+
+        assert!(!canceled.suppresses(
+            &PendingSceneObservation::new(
+                1,
+                100,
+                SceneState {
+                    index: 0,
+                    name: "Scene 0".to_string(),
+                },
+                now,
+            ),
+            now,
+        ));
+        assert!(canceled.suppresses(
+            &PendingSceneObservation::new(
+                1,
+                100,
+                SceneState {
+                    index: LATE_CANCELED_OBSERVATION_CAPACITY as i32,
+                    name: format!("Scene {LATE_CANCELED_OBSERVATION_CAPACITY}"),
+                },
+                now,
+            ),
+            now,
+        ));
+        assert!(!canceled.suppresses(
+            &PendingSceneObservation::new(
+                1,
+                100,
+                SceneState {
+                    index: 100,
+                    name: "Unrelated".to_string(),
+                },
+                now,
+            ),
+            now,
         ));
     }
 
