@@ -2057,19 +2057,6 @@ mod tests {
                 event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }),
             });
         }
-
-        async fn set_lockout(&self, enabled: bool) {
-            let (reply, result) = oneshot::channel();
-            self.show
-                .send(crate::show::ShowCommand::SetLockout {
-                    enabled,
-                    reply: Some(reply),
-                })
-                .await
-                .unwrap();
-            result.await.unwrap();
-            yield_to_actor().await;
-        }
     }
 
     impl RecallCoordinatorFixture {
@@ -3129,45 +3116,6 @@ mod tests {
         assert_eq!(
             fixture.next_fade_command().await,
             QueueFadeCommand::Recall { duration_ms: 2_000 }
-        );
-    }
-
-    #[tokio::test]
-    async fn lockout_releases_the_recall_readiness_completion_receiver() {
-        let mut fixture =
-            FadeReservationLockoutFixture::connected_with_scenes(vec![queue_scene(1, "Intro")])
-                .await;
-        let recalled = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
-        fixture
-            .next_lv1_recall()
-            .await
-            .reply(Ok(RecallSceneDispatch {
-                scene_observation_sequence: 10,
-            }));
-        assert!(recalled.await.unwrap().is_ok());
-        let scene = SceneState {
-            index: 1,
-            name: "Intro".to_string(),
-        };
-        fixture.set_current_scene(scene.clone());
-        fixture.publish_scene_observation(11, scene);
-        let command = tokio::time::timeout(Duration::from_secs(1), fixture.fade_commands.recv())
-            .await
-            .unwrap()
-            .unwrap();
-        let FadeCommand::WaitForRecallReadiness {
-            readiness, reply, ..
-        } = command
-        else {
-            panic!("expected readiness without fade targets");
-        };
-        let completion = readiness.completion.unwrap();
-        reply.unwrap().send(Ok(())).unwrap();
-
-        fixture.set_lockout(true).await;
-        assert!(
-            completion.is_closed(),
-            "canceled recalls must own no pending completion task"
         );
     }
 

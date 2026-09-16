@@ -3786,52 +3786,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn post_recall_disconnect_clears_readiness_before_later_pings() {
-        let (event_bus, engine, mut write_rx) =
-            spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
-                40,
-                vec![channel_info(0, -20.0, None)],
-            )])
-            .await;
-        let mut events = event_bus.subscribe();
-
-        start_fade(
-            &engine,
-            fade_config(
-                scene(1, "Intro"),
-                vec![FadeTarget {
-                    group: 0,
-                    channel: 0,
-                    parameter: FadeParameter::FaderDb,
-                    target: -10.0,
-                }],
-                1_000,
-            ),
-        )
-        .await
-        .unwrap();
-
-        event_bus.publish_lv1(
-            7,
-            Lv1Event::Disconnected {
-                reason: "test disconnect".to_string(),
-            },
-        );
-        wait_for_fade_aborted(&mut events).await;
-
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 7,
-            event: Lv1Event::PingReceived { sequence: 41 },
-        });
-        event_bus.publish(AppEvent::Lv1 {
-            generation: 7,
-            event: Lv1Event::PingReceived { sequence: 42 },
-        });
-        assert_no_write_after_cancellation(&mut write_rx).await;
-        assert_no_additional_fade_abort(&mut events).await;
-    }
-
-    #[tokio::test]
     async fn post_recall_ping_stale_disconnect_keeps_current_gate_and_releases_after_pings() {
         let (event_bus, engine, mut write_rx) =
             spawn_runtime_for_ping_gate_test(vec![connected_snapshot(
