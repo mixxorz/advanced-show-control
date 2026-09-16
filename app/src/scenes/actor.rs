@@ -251,7 +251,6 @@ async fn run_scenes_actor(task: ScenesTask) {
     let mut lockout_open = true;
     let mut pending_snapshot: Option<PendingSnapshotOperation> = None;
     let mut pending_lag_recovery: Option<PendingLagRecovery> = None;
-    let mut pending_abort: Option<PendingAbortOperation> = None;
     let mut pending_recall: Option<PendingExplicitRecallOperation> = None;
     let mut pending_observation_settings: Option<PendingObservationSettings> = None;
     let mut pending_observation_snapshot: Option<PendingObservationSnapshot> = None;
@@ -394,9 +393,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &mut recall_coordinator,
                             "LV1 disconnected",
                         );
-                        if let Some(operation) = pending_abort.take() {
-                            operation.cancel(AppCommandError::FadeUnavailable);
-                        }
                         scene_list_revision = scene_list_revision.wrapping_add(1);
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: LV1 disconnected");
@@ -424,9 +420,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                             &mut recall_coordinator,
                             "LV1 connection generation changed",
                         );
-                        if let Some(operation) = pending_abort.take() {
-                            operation.cancel(AppCommandError::StaleGeneration);
-                        }
                         scene_list_revision = scene_list_revision.wrapping_add(1);
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: LV1 generation changed");
@@ -456,9 +449,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                         drain_retained_events(&mut events);
                         let current_generation = runtime_generation.current().await;
                         if current_generation != active_generation {
-                            if let Some(operation) = pending_abort.take() {
-                                operation.cancel(AppCommandError::StaleGeneration);
-                            }
                             scene_list_revision = scene_list_revision.wrapping_add(1);
                             transition_scene_generation(
                                 &mut active_generation,
@@ -501,7 +491,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => cue_commands.recv().await,
                 }
-            }, if pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
+            }, if pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none() && cue_commands_open && !cues.recall_pending() => {
                 match command {
                     Some(crate::cue_lists::CueListsCommand::RecallCuedCue { reply }) => {
                         if let Some(command) = cues.begin_recall(reply) {
@@ -533,12 +523,12 @@ async fn run_scenes_actor(task: ScenesTask) {
                     Some(command) => Some(command),
                     None => command_rx.recv().await,
                 }
-            }, if scene_commands_open && ((pending_snapshot.is_none() && pending_abort.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none()) || held_scene_command.is_none()) => {
+            }, if scene_commands_open && ((pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none()) || held_scene_command.is_none()) => {
                 let Some(command) = command else {
                     scene_commands_open = false;
                     continue;
                 };
-                if pending_snapshot.is_some() || pending_abort.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() || pending_observation_handoff.is_some() {
+                if pending_snapshot.is_some() || pending_recall.is_some() || pending_observation_settings.is_some() || pending_observation_snapshot.is_some() || pending_observation_handoff.is_some() {
                     if matches!(command, ScenesCommand::Shutdown) {
                         if let Some(operation) = pending_snapshot.take() {
                             operation.cancel("Store scene blocked: Scenes actor stopped");
@@ -549,38 +539,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                             "Scenes actor stopped",
                         );
                         break;
-                    }
-                    if pending_abort.is_none()
-                        && matches!(&command, ScenesCommand::AbortAll { .. })
-                    {
-                        let ScenesCommand::AbortAll { reply } = command else {
-                            unreachable!("matched Abort All command");
-                        };
-                        if let Some(operation) = pending_snapshot.take() {
-                            operation.cancel("Store scene canceled: Abort All was requested");
-                        }
-                        cancel_pending_explicit_recall(
-                            pending_recall.take(),
-                            &mut recall_coordinator,
-                            "Abort All was requested",
-                        );
-                        pending_observation_settings = None;
-                        pending_observation_snapshot = None;
-                        pending_observation_handoff = None;
-                        recall_coordinator.cancel("Abort All was requested", true);
-                        cancel_queued_cue_recalls(
-                            &mut cue_commands,
-                            &mut retained_cue_commands,
-                            "Abort All was requested",
-                        );
-                        pending_abort = Some(PendingAbortOperation::new(
-                            active_generation,
-                            peers.handles(active_generation).map(|handles| {
-                                (handles.lv1, handles.fade)
-                            }),
-                            reply,
-                        ));
-                        continue;
                     }
                     if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
                         || (pending_snapshot.is_none() && pending_recall.is_none() && pending_observation_settings.is_none() && pending_observation_snapshot.is_none() && pending_observation_handoff.is_none())
@@ -601,22 +559,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                     pending_observation_handoff = None;
                 }
                 let command = match command {
-                    ScenesCommand::AbortAll { reply } => {
-                        recall_coordinator.cancel("Abort All was requested", true);
-                        cancel_queued_cue_recalls(
-                            &mut cue_commands,
-                            &mut retained_cue_commands,
-                            "Abort All was requested",
-                        );
-                        pending_abort = Some(PendingAbortOperation::new(
-                            active_generation,
-                            peers.handles(active_generation).map(|handles| {
-                                (handles.lv1, handles.fade)
-                            }),
-                            reply,
-                        ));
-                        continue;
-                    }
                     ScenesCommand::GetSessionDocument { reply } => {
                         let _ = reply.send(crate::session::SessionDocument {
                             scenes: recall_state.snapshot(), cue_lists: cues.state.document(),
@@ -838,27 +780,6 @@ async fn run_scenes_actor(task: ScenesTask) {
                 ).await;
             }
             completion = async {
-                pending_abort
-                    .as_mut()
-                    .expect("enabled abort branch has an operation")
-                    .future
-                    .as_mut()
-                    .await
-            }, if pending_abort.is_some() && events.is_empty() && events.sender_strong_count() > 0 => {
-                let mut operation = pending_abort
-                    .take()
-                    .expect("completed abort operation exists");
-                let result = if operation.generation == active_generation
-                    && runtime_generation.current().await == operation.generation
-                    && peers.handles(active_generation).is_some()
-                {
-                    completion
-                } else {
-                    Err(AppCommandError::StaleGeneration)
-                };
-                operation.reply(result);
-            }
-            completion = async {
                 pending_lag_recovery
                     .as_mut()
                     .expect("enabled lag-recovery branch has an operation")
@@ -993,9 +914,6 @@ async fn run_scenes_actor(task: ScenesTask) {
     if let Some(operation) = pending_snapshot {
         operation.cancel("Store scene blocked: Scenes actor stopped");
     }
-    if let Some(operation) = pending_abort {
-        operation.cancel(AppCommandError::FadeUnavailable);
-    }
     cancel_pending_explicit_recall(
         pending_recall,
         &mut recall_coordinator,
@@ -1077,9 +995,8 @@ impl PendingSnapshotOperation {
  * @cc [owner:mixxorz,label:safety;reliability] store-snapshot-pending-operation
  * A store-from-LV1 state request MUST run as the Scenes actor's single pending snapshot operation.
  * While it is pending the actor MUST continue consuming runtime and LV1 facts, lockout changes,
- * and recall deadlines. Disconnect, generation change, session replacement, Abort All, or actor
- * shutdown MUST drop the request and reject its caller before a late snapshot can mutate or publish
- * scene state.
+ * and recall deadlines. Disconnect, generation change, session replacement, or actor shutdown MUST
+ * drop the request and reject its caller before a late snapshot can mutate or publish scene state.
  */
 async fn finish_pending_snapshot(
     mut operation: PendingSnapshotOperation,
@@ -1378,9 +1295,6 @@ async fn dispatch_scenes_command(
         ScenesCommand::RecallScene { .. } => {
             unreachable!("explicit recall operations are started by the actor loop")
         }
-        ScenesCommand::AbortAll { .. } => {
-            unreachable!("abort operations are started by the actor loop")
-        }
         ScenesCommand::Shutdown => return ScenesCommandDispatch::Shutdown,
     }
     ScenesCommandDispatch::Continue
@@ -1612,67 +1526,6 @@ async fn finish_pending_explicit_recall(
                 "LV1 recall operation became inconsistent",
             );
         }
-    }
-}
-
-/**
- * @cc [owner:mixxorz,label:safety;reliability] abort-all-pending-operation
- * Abort All MUST synchronously cancel coordinated recall intent and every already-admitted queued
- * cue recall before its Fade request begins, while preserving the order of non-recall cue commands.
- * Fade mailbox admission and acknowledgement MUST run as an actor-owned pending operation while
- * runtime, LV1, Settings, lockout, and recall-deadline inputs remain serviced. Scene and cue
- * commands MUST remain FIFO-gated until completion. Generation MUST be rechecked after Fade
- * mailbox reservation and immediately before sending. Generation change, disconnect, or shutdown
- * MUST drop stale work, and a late acknowledgement MUST NOT be reported as current success.
- */
-struct PendingAbortOperation {
-    generation: u64,
-    reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
-    future: Pin<Box<dyn Future<Output = Result<(), AppCommandError>> + Send>>,
-}
-
-impl PendingAbortOperation {
-    fn new(
-        generation: u64,
-        peers: Option<(Lv1Connection, FadeEngineHandle)>,
-        reply: oneshot::Sender<Result<(), AppCommandError>>,
-    ) -> Self {
-        Self {
-            generation,
-            reply: Some(reply),
-            future: Box::pin(async move {
-                let Some((lv1, fade)) = peers else {
-                    return Err(AppCommandError::FadeUnavailable);
-                };
-                let permit = fade
-                    .reserve()
-                    .await
-                    .map_err(|_| AppCommandError::FadeUnavailable)?;
-                let (fade_reply, fade_result) = oneshot::channel();
-                lv1.if_current(|| {
-                    permit.send(FadeCommand::AbortAll {
-                        reply: Some(fade_reply),
-                    });
-                })
-                .await
-                .ok_or(AppCommandError::StaleGeneration)?;
-                let result = fade_result
-                    .await
-                    .map_err(|_| AppCommandError::ReplyChannelClosed)?;
-                lv1.ensure_current().await?;
-                result
-            }),
-        }
-    }
-
-    fn reply(&mut self, result: Result<(), AppCommandError>) {
-        if let Some(reply) = self.reply.take() {
-            let _ = reply.send(result);
-        }
-    }
-
-    fn cancel(mut self, error: AppCommandError) {
-        self.reply(Err(error));
     }
 }
 
@@ -2204,6 +2057,19 @@ mod tests {
                 event: Lv1Event::SceneChanged(SceneObservation { sequence, scene }),
             });
         }
+
+        async fn set_lockout(&self, enabled: bool) {
+            let (reply, result) = oneshot::channel();
+            self.show
+                .send(crate::show::ShowCommand::SetLockout {
+                    enabled,
+                    reply: Some(reply),
+                })
+                .await
+                .unwrap();
+            result.await.unwrap();
+            yield_to_actor().await;
+        }
     }
 
     impl RecallCoordinatorFixture {
@@ -2394,6 +2260,19 @@ mod tests {
             });
         }
 
+        async fn set_lockout(&self, enabled: bool) {
+            let (reply, result) = oneshot::channel();
+            self.show
+                .send(crate::show::ShowCommand::SetLockout {
+                    enabled,
+                    reply: Some(reply),
+                })
+                .await
+                .unwrap();
+            result.await.unwrap();
+            yield_to_actor().await;
+        }
+
         async fn close_lv1_peer(&mut self) {
             self.close_lv1_peer
                 .take()
@@ -2544,7 +2423,19 @@ mod tests {
     enum QueueFadeCommand {
         Recall { duration_ms: u64 },
         Wait,
-        Abort,
+    }
+
+    fn fade_mailbox_filler() -> FadeCommand {
+        FadeCommand::WaitForRecallReadiness {
+            scene: FadeSceneIdentity {
+                index: 0,
+                name: "mailbox filler".to_string(),
+            },
+            readiness: crate::fade::RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + Duration::from_secs(5),
+            ),
+            reply: None,
+        }
     }
 
     fn queue_scene(index: i32, name: &str) -> SceneConfig {
@@ -2977,130 +2868,6 @@ mod tests {
         assert!(fixture.try_next_lv1_recall().is_none());
     }
 
-    #[tokio::test]
-    async fn recall_queue_cancellation_abort_all_cancels_intent_before_forwarding_one_fade_abort() {
-        let mut fixture = RecallCoordinatorFixture::connected_with_scenes(vec![
-            queue_scene(1, "Intro"),
-            queue_scene(2, "Verse"),
-        ])
-        .await;
-        let waiting = enqueue_in_flight_and_waiting(&mut fixture).await;
-        let (reply, result) = oneshot::channel();
-        fixture
-            .handle
-            .send(ScenesCommand::AbortAll { reply })
-            .await
-            .unwrap();
-
-        assert!(matches!(
-            waiting.await.unwrap(),
-            Err(AppCommandError::RecallCanceled(reason)) if reason == "Abort All was requested"
-        ));
-        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
-        assert_eq!(result.await.unwrap(), Ok(()));
-        assert!(fixture.fade_commands.try_recv().is_err());
-    }
-
-    #[tokio::test]
-    async fn pending_abort_fade_capacity_is_canceled_by_generation_change() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (lv1, _lv1_commands) = tokio::sync::mpsc::channel(1);
-        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
-        fade.send(FadeCommand::AbortAll { reply: None })
-            .await
-            .unwrap();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation.clone(),
-            event_bus.clone(),
-            event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
-        task.spawn();
-
-        let (reply, result) = oneshot::channel();
-        handle
-            .send(ScenesCommand::AbortAll { reply })
-            .await
-            .unwrap();
-        yield_to_actor().await;
-        runtime_generation.set(2).await;
-        event_bus.publish(AppEvent::Runtime(
-            crate::runtime::events::RuntimeLifecycleEvent::ActiveGenerationChanged {
-                generation: 2,
-            },
-        ));
-
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), result)
-                .await
-                .expect("generation change should cancel the held abort")
-                .unwrap(),
-            Err(AppCommandError::StaleGeneration)
-        );
-        assert!(matches!(
-            fade_commands.recv().await,
-            Some(FadeCommand::AbortAll { reply: None })
-        ));
-        assert!(fade_commands.try_recv().is_err());
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn pending_abort_acknowledgement_is_canceled_by_disconnect() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (lv1, _lv1_commands) = tokio::sync::mpsc::channel(1);
-        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
-            test_lockout_reader(),
-        );
-        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1), fade);
-        task.spawn();
-
-        let (reply, result) = oneshot::channel();
-        handle
-            .send(ScenesCommand::AbortAll { reply })
-            .await
-            .unwrap();
-        let Some(FadeCommand::AbortAll {
-            reply: Some(held_ack),
-        }) = tokio::time::timeout(Duration::from_secs(1), fade_commands.recv())
-            .await
-            .expect("Scenes should send Abort All")
-        else {
-            panic!("expected acknowledged Fade abort");
-        };
-
-        event_bus.publish_lv1(
-            1,
-            Lv1Event::Disconnected {
-                reason: "test disconnect".to_string(),
-            },
-        );
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), result)
-                .await
-                .expect("disconnect should cancel the held acknowledgement")
-                .unwrap(),
-            Err(AppCommandError::FadeUnavailable)
-        );
-        assert!(held_ack.send(Ok(())).is_err());
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-    }
-
     #[tokio::test(start_paused = true)]
     async fn late_canceled_exact_observation_is_suppressed_once_then_allowed() {
         let mut fixture = RecallCoordinatorFixture::connected_with_scenes(vec![
@@ -3116,14 +2883,8 @@ mod tests {
         }));
         assert!(recall.await.unwrap().is_ok());
 
-        let (reply, result) = oneshot::channel();
-        fixture
-            .handle
-            .send(ScenesCommand::AbortAll { reply })
-            .await
-            .unwrap();
-        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
-        assert_eq!(result.await.unwrap(), Ok(()));
+        fixture.set_lockout(true).await;
+        fixture.set_lockout(false).await;
 
         let scene = SceneState {
             index: 1,
@@ -3173,14 +2934,8 @@ mod tests {
         }));
         assert!(recall.await.unwrap().is_ok());
 
-        let (abort_reply, abort_result) = oneshot::channel();
-        fixture
-            .handle
-            .send(ScenesCommand::AbortAll { reply: abort_reply })
-            .await
-            .unwrap();
-        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
-        assert_eq!(abort_result.await.unwrap(), Ok(()));
+        fixture.set_lockout(true).await;
+        fixture.set_lockout(false).await;
         tokio::time::advance(LATE_CANCELED_OBSERVATION_TTL + Duration::from_millis(1)).await;
 
         let scene = SceneState {
@@ -3229,14 +2984,8 @@ mod tests {
                 scene_observation_sequence: sequence,
             }));
             assert!(recall.await.unwrap().is_ok());
-            let (abort_reply, abort_result) = oneshot::channel();
-            fixture
-                .handle
-                .send(ScenesCommand::AbortAll { reply: abort_reply })
-                .await
-                .unwrap();
-            assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
-            assert_eq!(abort_result.await.unwrap(), Ok(()));
+            fixture.set_lockout(true).await;
+            fixture.set_lockout(false).await;
         }
 
         let current = fixture.send_recall(uuid::Uuid::from_u128(1)).await;
@@ -3293,14 +3042,8 @@ mod tests {
                 scene_observation_sequence: sequence,
             }));
             assert!(recall.await.unwrap().is_ok());
-            let (reply, result) = oneshot::channel();
-            fixture
-                .handle
-                .send(ScenesCommand::AbortAll { reply })
-                .await
-                .unwrap();
-            assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
-            assert_eq!(result.await.unwrap(), Ok(()));
+            fixture.set_lockout(true).await;
+            fixture.set_lockout(false).await;
         }
 
         let unrelated = SceneState {
@@ -3351,14 +3094,8 @@ mod tests {
             scene_observation_sequence: 10,
         }));
         assert!(recall.await.unwrap().is_ok());
-        let (reply, result) = oneshot::channel();
-        fixture
-            .handle
-            .send(ScenesCommand::AbortAll { reply })
-            .await
-            .unwrap();
-        assert_eq!(fixture.next_fade_command().await, QueueFadeCommand::Abort);
-        assert_eq!(result.await.unwrap(), Ok(()));
+        fixture.set_lockout(true).await;
+        fixture.set_lockout(false).await;
 
         let mismatch = SceneState {
             index: 3,
@@ -3396,7 +3133,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recall_queue_abort_releases_its_readiness_completion_receiver() {
+    async fn lockout_releases_the_recall_readiness_completion_receiver() {
         let mut fixture =
             FadeReservationLockoutFixture::connected_with_scenes(vec![queue_scene(1, "Intro")])
                 .await;
@@ -3427,18 +3164,7 @@ mod tests {
         let completion = readiness.completion.unwrap();
         reply.unwrap().send(Ok(())).unwrap();
 
-        let (reply, aborted) = oneshot::channel();
-        fixture
-            .handle
-            .send(ScenesCommand::AbortAll { reply })
-            .await
-            .unwrap();
-        let command = fixture.fade_commands.recv().await.unwrap();
-        let FadeCommand::AbortAll { reply } = command else {
-            panic!("expected fade abort");
-        };
-        reply.unwrap().send(Ok(())).unwrap();
-        assert!(aborted.await.unwrap().is_ok());
+        fixture.set_lockout(true).await;
         assert!(
             completion.is_closed(),
             "canceled recalls must own no pending completion task"
@@ -4090,11 +3816,7 @@ mod tests {
             queue_scene(2, "Verse"),
         ])
         .await;
-        fixture
-            .fade
-            .send(FadeCommand::AbortAll { reply: None })
-            .await
-            .unwrap();
+        fixture.fade.send(fade_mailbox_filler()).await.unwrap();
 
         let baseline = SceneState {
             index: 2,
@@ -4142,10 +3864,7 @@ mod tests {
         lockout_rx.await.unwrap();
         assert!(fixture.lockout.changed().await.unwrap());
 
-        assert!(matches!(
-            fixture.fade_commands.recv().await,
-            Some(FadeCommand::AbortAll { reply: None })
-        ));
+        assert!(fixture.fade_commands.recv().await.is_some());
         yield_to_actor().await;
         assert!(matches!(
             fixture.fade_commands.try_recv(),
@@ -5989,87 +5708,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn abort_all_preempts_a_pending_store_snapshot() {
-        let event_bus = AppEventBus::default();
-        let runtime_generation = RuntimeGeneration::new();
-        runtime_generation.set(1).await;
-        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(8);
-        let (fade, mut fade_commands) = tokio::sync::mpsc::channel(1);
-        let (show, show_task, _show_peers, lockout) =
-            crate::show::build_show_actor(event_bus.clone());
-        show_task.spawn();
-        let (handle, task, peers) = build_scenes_actor(
-            1,
-            runtime_generation,
-            event_bus.clone(),
-            event_bus.subscribe(),
-            fake_settings_handle(AppSettings::default()),
-            AppSettings::default(),
-            lockout,
-        );
-        peers.set_peers_for_generation(1, crate::lv1::test_actor_handle(lv1_tx), fade);
-        task.spawn();
-        install_scene_document(&handle, intro_scene_document()).await;
-        mark_runtime_peers_ready_with_list(&handle, 1, vec![scene_entry(1, "Intro")]).await;
-
-        let (store_reply, store_result) = oneshot::channel();
-        handle
-            .send(ScenesCommand::StoreSceneConfigFromCurrentLv1 {
-                internal_scene_id: intro_internal_scene_id(),
-                reply: Some(store_reply),
-            })
-            .await
-            .unwrap();
-        let Some(Lv1Command::GetState {
-            reply: held_snapshot,
-        }) = lv1_rx.recv().await
-        else {
-            panic!("expected held LV1 snapshot request");
-        };
-
-        let (abort_reply, abort_result) = oneshot::channel();
-        handle
-            .send(ScenesCommand::AbortAll { reply: abort_reply })
-            .await
-            .unwrap();
-
-        assert_eq!(
-            tokio::time::timeout(Duration::from_secs(1), store_result)
-                .await
-                .expect("Abort All should cancel the store before snapshot release")
-                .unwrap(),
-            Err("Store scene canceled: Abort All was requested".to_string())
-        );
-        let Some(FadeCommand::AbortAll {
-            reply: Some(fade_reply),
-        }) = fade_commands.recv().await
-        else {
-            panic!("expected Fade abort");
-        };
-        fade_reply.send(Ok(())).unwrap();
-        assert_eq!(abort_result.await.unwrap(), Ok(()));
-        assert!(
-            held_snapshot
-                .send(Lv1StateSnapshot {
-                    connection: ConnectionStatus::Connected,
-                    scene: None,
-                    scene_list: vec![scene_entry(1, "Intro")].into(),
-                    channels: Vec::new(),
-                    ping_sequence: 0,
-                })
-                .is_err()
-        );
-
-        handle.send(ScenesCommand::Shutdown).await.unwrap();
-        show.send(crate::show::ShowCommand::SetLockout {
-            enabled: false,
-            reply: None,
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test]
     async fn session_replacement_cancels_a_pending_store_snapshot() {
         let event_bus = AppEventBus::default();
         let runtime_generation = RuntimeGeneration::new();
@@ -6927,9 +6565,7 @@ mod tests {
         runtime_generation.set(1).await;
         let (lv1, release_lv1, server) = spawn_fake_lv1_with_intro(event_bus.clone()).await;
         let (fade, mut fade_rx) = tokio::sync::mpsc::channel(1);
-        fade.send(FadeCommand::AbortAll { reply: None })
-            .await
-            .unwrap();
+        fade.send(fade_mailbox_filler()).await.unwrap();
         let (handoff_reached, handoff_wait) = oneshot::channel();
         let (resume_handoff, handoff_resume) = oneshot::channel();
         let (handle, task, peers) = build_scenes_actor_with_before_fade_handoff(
@@ -6968,10 +6604,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(state.await.unwrap().ready_generation, None);
-        assert!(matches!(
-            fade_rx.recv().await,
-            Some(FadeCommand::AbortAll { .. })
-        ));
+        assert!(fade_rx.recv().await.is_some());
         yield_to_actor().await;
         assert!(fade_rx.try_recv().is_err());
 
@@ -8521,12 +8154,6 @@ mod tests {
                                 let _ = reply.send(Ok(()));
                             }
                             readiness = request.completion.map(|completion| (1, 0, 0, completion));
-                        }
-                        Some(FadeCommand::AbortAll { reply }) => {
-                            let _ = seen_tx.send(QueueFadeCommand::Abort).await;
-                            if let Some(reply) = reply {
-                                let _ = reply.send(Ok(()));
-                            }
                         }
                         None => break,
                     },

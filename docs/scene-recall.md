@@ -20,7 +20,7 @@ GO accepts additional distinct presses while earlier GO commands are unsettled, 
 
 A scene recalled directly in LV1 produces a `SceneChanged` observation. ASC does not send another LV1 recall command. After the observation settles, Scenes validates generation, connection, lockout, exact index/name, linked config, live topology, enabled scope, and required stored targets before admitting any Fade work.
 
-A blocked, skipped, disabled, stale, or ambiguous direct LV1 observation does not abort an active fade. It has no queue-readiness owner because it did not originate from an ASC request. By contrast, an exact observation caused by an ASC-originated recall must still complete readiness when ordinary Fade policy is skipped, blocked by fade configuration or topology, or has no targets; otherwise ASC could dispatch the next queued LV1 recall while the console is still processing the first one. Lockout, disconnect, generation change, and other runtime-safety failures cancel the queued request instead of creating readiness.
+A blocked, skipped, disabled, stale, or ambiguous direct LV1 observation does not alter an active fade. It has no queue-readiness owner because it did not originate from an ASC request. By contrast, an exact observation caused by an ASC-originated recall must still complete readiness when ordinary Fade policy is skipped, blocked by fade configuration or topology, or has no targets; otherwise ASC could dispatch the next queued LV1 recall while the console is still processing the first one. Lockout, disconnect, generation change, and other runtime-safety failures cancel the queued request instead of creating readiness.
 
 ## LV1 Observation Acceptance
 
@@ -117,8 +117,7 @@ Failure is conservative:
 - A safety timeout cancels remaining queued recall intent.
 - An installed Fade readiness timeout removes all paused targets rather than sending delayed writes into uncertain LV1 state.
 - Lockout, disconnect, generation change, session replacement, event-bus lag, and actor shutdown cancel affected runtime recall intent.
-- Abort All cancels coordinated recall intent before requesting Fade cancellation.
-- A blocked or skipped direct LV1 observation sends no Fade command and does not abort an existing fade. The same policy outcome correlated to an ASC request does not abort immediately, but its required readiness-only handoff can still time out and remove paused targets.
+- A blocked or skipped direct LV1 observation sends no Fade command and does not alter an existing fade. The same policy outcome correlated to an ASC request leaves active work unchanged initially, but its required readiness-only handoff can still time out and remove paused targets.
 - When a recall is canceled while awaiting its exact observation, a matching late observation is suppressed for a bounded period rather than being treated as an independent recall.
 
 A readiness timeout therefore means ASC could not prove that the expected scene was followed by a healthy post-recall keepalive cadence within five seconds. It does not identify which LV1 subsystem delayed that cadence.

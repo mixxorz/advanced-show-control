@@ -12,7 +12,6 @@ pub enum SameSceneRecallBehavior {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecallReadinessCancellation {
-    Aborted,
     Disconnected,
     GenerationChanged,
     Superseded,
@@ -56,9 +55,6 @@ pub enum FadeCommand {
     WaitForRecallReadiness {
         scene: crate::fade::types::FadeSceneIdentity,
         readiness: RecallReadinessRequest,
-        reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
-    },
-    AbortAll {
         reply: Option<oneshot::Sender<Result<(), AppCommandError>>>,
     },
 }

@@ -591,63 +591,6 @@ async fn multiple_go_requests_queue_while_the_first_recall_is_unsettled() {
 }
 
 #[tokio::test]
-async fn abort_all_cancels_active_and_queued_go_requests() {
-    let id = Uuid::new_v4();
-    let mut config = scene(id);
-    config.scene_index = Some(1);
-    let mut session = Session::with_scenes(vec![config]).await;
-    session.cue(id).await;
-
-    let mut recalls = Vec::new();
-    for _ in 0..3 {
-        let (reply, recalled) = oneshot::channel();
-        session
-            .cues
-            .send(CueListsCommand::RecallCuedCue { reply })
-            .await
-            .unwrap();
-        recalls.push(recalled);
-    }
-    let crate::lv1::Lv1Command::RecallScene {
-        reply: Some(dispatch),
-        ..
-    } = session.recalls.recv().await.unwrap()
-    else {
-        panic!("expected recall");
-    };
-
-    let (reply, aborted) = oneshot::channel();
-    session
-        .scenes
-        .send(ScenesCommand::AbortAll { reply })
-        .await
-        .unwrap();
-    let crate::fade::FadeCommand::AbortAll { reply: Some(reply) } =
-        session.fade_commands.recv().await.unwrap()
-    else {
-        panic!("expected Fade abort");
-    };
-    reply.send(Ok(())).unwrap();
-    assert_eq!(aborted.await.unwrap(), Ok(()));
-
-    for recalled in recalls {
-        assert!(matches!(
-            recalled.await.unwrap(),
-            Err(crate::runtime::errors::AppCommandError::RecallCanceled(reason))
-                if reason == "Abort All was requested"
-        ));
-    }
-    assert!(
-        dispatch
-            .send(Ok(crate::lv1::RecallSceneDispatch {
-                scene_observation_sequence: 0,
-            }))
-            .is_err()
-    );
-    assert!(session.recalls.try_recv().is_err());
-}
-
-#[tokio::test]
 async fn session_replacement_returns_one_reconciled_document() {
     let session = Session::new().await;
     let id = Uuid::new_v4();

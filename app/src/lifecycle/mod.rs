@@ -1116,6 +1116,19 @@ mod tests {
         test_actor_handle(tx)
     }
 
+    fn fade_mailbox_probe() -> crate::fade::FadeCommand {
+        crate::fade::FadeCommand::WaitForRecallReadiness {
+            scene: crate::fade::FadeSceneIdentity {
+                index: 0,
+                name: "mailbox probe".to_string(),
+            },
+            readiness: crate::fade::RecallReadinessRequest::detached(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(5),
+            ),
+            reply: None,
+        }
+    }
+
     struct TestSettingsDir {
         path: PathBuf,
     }
@@ -2015,13 +2028,10 @@ mod tests {
             .current_fade()
             .await
             .unwrap()
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .unwrap();
-        assert!(matches!(
-            newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { .. })
-        ));
+        assert!(newer_fade_rx.recv().await.is_some());
         assert!(
             capture
                 .matching("lv1_connected", tracing::Level::INFO)
@@ -2156,13 +2166,10 @@ mod tests {
             .current_fade()
             .await
             .unwrap()
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .unwrap();
-        assert!(matches!(
-            newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { .. })
-        ));
+        assert!(newer_fade_rx.recv().await.is_some());
         let (reply, response) = oneshot::channel();
         lifecycle
             .scenes
@@ -3215,13 +3222,10 @@ mod tests {
             .current_fade()
             .await
             .expect("newer fade should remain current")
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .expect("newer fade mailbox should accept commands");
-        assert!(matches!(
-            newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { reply: None })
-        ));
+        assert!(newer_fade_rx.recv().await.is_some());
 
         let (scenes_reply, scenes_rx) = oneshot::channel();
         lifecycle
@@ -3375,13 +3379,10 @@ mod tests {
             .current_fade()
             .await
             .unwrap()
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .unwrap();
-        assert!(matches!(
-            newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { .. })
-        ));
+        assert!(newer_fade_rx.recv().await.is_some());
         while let Ok(event) = events.try_recv() {
             assert!(matches!(event, AppEvent::Scenes { .. }));
         }
@@ -3551,13 +3552,10 @@ mod tests {
             .current_fade()
             .await
             .expect("newer fade handle should survive stale cleanup")
-            .send(crate::fade::FadeCommand::AbortAll { reply: None })
+            .send(fade_mailbox_probe())
             .await
             .expect("newer fade mailbox should accept commands");
-        assert!(matches!(
-            newer_fade_rx.recv().await,
-            Some(crate::fade::FadeCommand::AbortAll { reply: None })
-        ));
+        assert!(newer_fade_rx.recv().await.is_some());
 
         let (show_reply, show_rx) = oneshot::channel();
         lifecycle

@@ -348,13 +348,6 @@ impl ApplicationCommandContext {
         .await
     }
 
-    pub async fn abort_all_fades(&self) -> Result<(), String> {
-        let result = self
-            .send_scene(|reply| ScenesCommand::AbortAll { reply })
-            .await?;
-        result.map_err(map_app_command_error)
-    }
-
     pub async fn create_cue_list(&self, name: String) -> Result<CueListsCommandResult, String> {
         self.send_cue_mutation(|reply| CueListsCommand::CreateCueList {
             name,
