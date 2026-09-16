@@ -152,23 +152,24 @@ impl ActiveTarget {
         }
     }
 
-    /// @cc [owner:mixxorz,label:product] parameter-send-delta-suppression
-    /// `next_send` MUST suppress values whose change from `expected_value` is below the parameter's
-    /// minimum delta, comparing faders in measured position space and Pan, Balance, and Width in
-    /// native value space. It MUST update `expected_value` exactly when it returns a value.
+    #[cfg(test)]
     pub(crate) fn next_send(&mut self, now: Instant) -> Option<f64> {
+        let new_value = self.proposed_send(now)?;
+        self.expected_value = new_value;
+        Some(new_value)
+    }
+
+    /// @cc [owner:mixxorz,label:product;safety] parameter-send-proposal
+    /// `proposed_send` MUST suppress values whose change from `expected_value` is below the
+    /// parameter's minimum delta, comparing faders in measured position space and Pan, Balance, and
+    /// Width in native value space, and MUST NOT mutate `expected_value` before mailbox admission.
+    pub(crate) fn proposed_send(&self, now: Instant) -> Option<f64> {
         let new_value = if self.is_done(now) {
             self.target_value
         } else {
             self.value_at(now)
         };
-
-        if self.should_send(new_value) {
-            self.expected_value = new_value;
-            Some(new_value)
-        } else {
-            None
-        }
+        self.should_send(new_value).then_some(new_value)
     }
 
     fn should_send(&self, new_value: f64) -> bool {
@@ -188,6 +189,7 @@ impl ActiveTarget {
     /// @cc [owner:mixxorz,label:product;safety] exact-final-value
     /// `exact_final_send` MUST bypass minimum-delta suppression, return the configured target
     /// exactly, and update the expected value used by feedback comparison to that same target.
+    #[cfg(test)]
     pub(crate) fn exact_final_send(&mut self) -> f64 {
         self.expected_value = self.target_value;
         self.target_value

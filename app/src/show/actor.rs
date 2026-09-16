@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -153,7 +155,12 @@ fn build_show_actor_with_state(
 
 /// @cc [owner:mixxorz,label:reliability] show-event-lag-fails-dirty
 /// If the Show event subscriber lags, the actor MUST conservatively mark the show dirty and publish
-/// the full Show projection rather than assuming no persisted edit was missed.
+/// the full Show projection rather than assuming no persisted edit was missed. While its single
+/// actor-owned persistence operation is pending, the actor MUST consume facts, generation-fenced
+/// connection-metadata commands, and read-only state/path commands. On receiving any other command,
+/// it MUST hold only that command and stop polling the mailbox until persistence completes so later
+/// commands cannot bypass it. A persisted edit observed during a successful operation MUST remain
+/// dirty.
 async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -163,32 +170,137 @@ async fn run_show_actor(
     lockout_tx: watch::Sender<bool>,
     backup_dir: std::path::PathBuf,
 ) {
+    let mut pending: Option<PendingShowOperation> = None;
+    let mut deferred_command = None;
+    let mut command_channel_drained = false;
     loop {
-        tokio::select! {
-            command = rx.recv() => {
-                let Some(command) = command else { break; };
-                handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
-                publish_lockout_if_changed(&lockout_tx, &state);
-            }
-            event = events.recv() => {
-                match event {
-                    Ok(event) => handle_app_event(event, &mut state, &event_bus),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
-                        log_lagged_subscriber("show-actor", count);
-                        state.mark_dirty();
-                        publish_state_changed(&event_bus, &state);
+        if let Some(operation) = pending.as_mut() {
+            tokio::select! {
+                completion = &mut operation.future => {
+                    let dirty_during_wait = operation.dirty_during_wait;
+                    finish_pending_operation(
+                        completion,
+                        dirty_during_wait,
+                        &mut state,
+                        &event_bus,
+                    );
+                    publish_lockout_if_changed(&lockout_tx, &state);
+                    pending = None;
+                }
+                command = rx.recv(), if deferred_command.is_none() && !command_channel_drained => {
+                    let Some(command) = command else {
+                        command_channel_drained = true;
+                        continue;
+                    };
+                    match command {
+                        ShowCommand::CurrentShowFilePath { reply } => {
+                            let _ = reply.send(state.current_show_file_path());
+                        }
+                        ShowCommand::InitialProjectionState { reply } => {
+                            let _ = reply.send(state.projection_state());
+                        }
+                        ShowCommand::SetLv1ConnectionIfCurrent {
+                            identity,
+                            expected_generation,
+                            reply,
+                        } => {
+                            set_lv1_connection_if_current(
+                                identity,
+                                expected_generation,
+                                reply,
+                                &mut state,
+                                &event_bus,
+                                &peers,
+                            ).await;
+                        }
+                        command => deferred_command = Some(command),
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+                event = events.recv() => {
+                    let Some(dirtied) = handle_show_event(event, &mut state, &event_bus) else {
+                        break;
+                    };
+                    operation.dirty_during_wait |= dirtied;
+                }
+            }
+        } else if let Some(command) = deferred_command.take() {
+            pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+            publish_lockout_if_changed(&lockout_tx, &state);
+        } else {
+            tokio::select! {
+                command = rx.recv() => {
+                    let Some(command) = command else { break; };
+                    pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+                    publish_lockout_if_changed(&lockout_tx, &state);
+                }
+                event = events.recv() => {
+                    if handle_show_event(event, &mut state, &event_bus).is_none() {
+                        break;
+                    }
                 }
             }
         }
     }
 }
 
+fn handle_show_event(
+    event: Result<AppEvent, tokio::sync::broadcast::error::RecvError>,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) -> Option<bool> {
+    match event {
+        Ok(event) => {
+            let dirtied = matches!(
+                event,
+                AppEvent::Scenes {
+                    event: crate::scenes::ScenesEvent::StateChanged {
+                        persisted_scene_edit: true,
+                        ..
+                    },
+                    ..
+                } | AppEvent::CueLists(_)
+            );
+            handle_app_event(event, state, event_bus);
+            Some(dirtied)
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+            log_lagged_subscriber("show-actor", count);
+            state.mark_dirty();
+            publish_state_changed(event_bus, state);
+            Some(true)
+        }
+        Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
+    }
+}
+
+struct PendingShowOperation {
+    future: Pin<Box<dyn Future<Output = PendingShowCompletion> + Send>>,
+    dirty_during_wait: bool,
+}
+
+enum PendingShowCompletion {
+    New {
+        result: Result<NewShowFileResult, String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<NewShowFileResult, String>>>,
+    },
+    NewFromTemplate {
+        result: Result<PreparedLoad, String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<NewShowFileResult, String>>>,
+    },
+    Save {
+        result: Result<(std::path::PathBuf, String), String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<ShowCommandResult, String>>>,
+    },
+    Load {
+        result: Result<PreparedLoad, String>,
+        reply: Option<tokio::sync::oneshot::Sender<Result<LoadShowFileResult, String>>>,
+    },
+}
+
 /// @cc [owner:mixxorz,label:safety] lockout-watch-follows-command-state
 /// After every processed Show command, this producer MUST synchronize the watch value to Show's
 /// accepted lockout state and MUST notify readers only when that value changed, including lockout
-/// changes caused by set, new, or load commands.
+/// changes caused by set, new, new-from-template, or load commands.
 fn publish_lockout_if_changed(lockout_tx: &watch::Sender<bool>, state: &ShowState) {
     lockout_tx.send_if_modified(|current| {
         let next = state.lockout();
@@ -233,9 +345,9 @@ fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool)
 /**
  * @cc [owner:mixxorz,label:product] show-command-outcomes
  * State-changing commands MUST publish a full Show projection exactly when their owned projected
- * state changes, except successful new, save, and load operations, which MUST publish their final
- * projection. `ShowCommandResult.changed` MUST describe that command's accepted state change, and
- * absence or closure of an optional reply MUST NOT cancel command execution.
+ * state changes, except successful new, new-from-template, save, and load operations, which MUST
+ * publish their final projection. `ShowCommandResult.changed` MUST describe that command's accepted
+ * state change, and absence or closure of an optional reply MUST NOT cancel command execution.
  */
 /**
  * @cc [owner:mixxorz,label:safety] generation-conditioned-connection-metadata
@@ -247,11 +359,11 @@ fn publish_if_changed(event_bus: &AppEventBus, state: &ShowState, changed: bool)
  * @cc [owner:mixxorz,label:persistence] show-persistence-orchestration
  * Save MUST obtain one combined Scenes/Cue Lists `SessionDocument`, write it with current lockout,
  * and mark path/timestamp clean only after the write succeeds; save MUST NOT require LV1. New,
- * load, and new-from-template MUST require a connected, generation-current LV1 scene snapshot and
- * replace both documents before updating Show metadata. Any pre-commit read, validation, write, or
- * replacement error MUST be returned without reporting success or applying the corresponding Show
- * metadata transition. New-from-template MUST use the load validation and reconciliation path while
- * leaving the committed show without a backing path.
+ * load, and new-from-template MUST require a connected, generation-current LV1 snapshot with an
+ * authoritative scene list and replace both documents before updating Show metadata. Any
+ * pre-commit read, validation, write, or replacement error MUST be returned without reporting
+ * success or applying the corresponding Show metadata transition. New-from-template MUST use the
+ * load validation and reconciliation path while leaving the committed show without a backing path.
  */
 async fn handle_command(
     command: ShowCommand,
@@ -259,7 +371,7 @@ async fn handle_command(
     event_bus: &AppEventBus,
     peers: &ShowActorPeers,
     backup_dir: &std::path::Path,
-) {
+) -> Option<PendingShowOperation> {
     match command {
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
@@ -275,81 +387,98 @@ async fn handle_command(
             }
         }
         ShowCommand::NewShowFileFromCurrentLv1 { reply } => {
-            let result = async {
-                let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
-                let scene_configs = crate::scenes::align_scene_configs(Vec::new(), &lv1.scene_list);
-                let selected_scene_internal_id = scene_configs
-                    .first()
-                    .map(|scene| scene.internal_scene_id.to_string());
-                let scene_document = SceneDocument {
-                    scene_configs,
-                    selected_scene_internal_id: selected_scene_internal_id.clone(),
-                };
-                validate_lv1_snapshot(peers, expected_generation, &lv1).await?;
-                replace_session_document(
-                    peers,
-                    SessionDocument {
-                        scenes: scene_document,
-                        cue_lists: CueListDocument::default(),
-                    },
-                    expected_generation,
-                )
-                .await?;
-                state.reset_for_new_show();
-                publish_state_changed(event_bus, state);
-                tracing::info!(event = "session_created", "New session created");
-                Ok(NewShowFileResult {
-                    selected_scene_internal_id,
-                })
-            }
-            .await;
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+            let peers = peers.clone();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
+                        let scene_list = lv1.scene_list.as_deref().ok_or_else(|| {
+                            "New session blocked: LV1 scene list is not loaded".to_string()
+                        })?;
+                        let scene_configs =
+                            crate::scenes::align_scene_configs(Vec::new(), scene_list);
+                        let selected_scene_internal_id = scene_configs
+                            .first()
+                            .map(|scene| scene.internal_scene_id.to_string());
+                        validate_lv1_snapshot(&peers, expected_generation, &lv1).await?;
+                        replace_session_document(
+                            &peers,
+                            SessionDocument {
+                                scenes: SceneDocument {
+                                    scene_configs,
+                                    selected_scene_internal_id: selected_scene_internal_id.clone(),
+                                },
+                                cue_lists: CueListDocument::default(),
+                            },
+                            expected_generation,
+                        )
+                        .await?;
+                        Ok(NewShowFileResult {
+                            selected_scene_internal_id,
+                        })
+                    }
+                    .await;
+                    PendingShowCompletion::New { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
         }
         ShowCommand::NewShowFileFromTemplate { path, reply } => {
-            let result = async {
-                let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
-                let mut file = read_show_file(&path)?;
-                let loaded = load_show_file_from_dto(
-                    state,
-                    event_bus,
-                    peers,
-                    ShowFileLoadKind::NewFromTemplate,
-                    &mut file,
-                    &lv1,
-                    expected_generation,
-                )
-                .await?;
-                Ok(NewShowFileResult {
-                    selected_scene_internal_id: loaded.selected_scene_internal_id,
-                })
-            }
-            .await;
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+            let peers = peers.clone();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
+                        let read_path = path;
+                        let lv1_for_import = lv1.clone();
+                        let imported = tokio::task::spawn_blocking(move || {
+                            load_show_file_for_lv1(&read_path, &lv1_for_import)
+                        })
+                        .await
+                        .map_err(|error| format!("Session template load task failed: {error}"))??;
+                        prepare_load_show_file(
+                            &peers,
+                            ShowFileLoadKind::NewFromTemplate,
+                            imported,
+                            &lv1,
+                            expected_generation,
+                        )
+                        .await
+                    }
+                    .await;
+                    PendingShowCompletion::NewFromTemplate { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
         }
         ShowCommand::SaveShowFileAs { path, reply } => {
-            let result = async {
-                let saved_at = crate::time::current_timestamp_millis();
-                let document = current_session_document(peers).await?;
-                let file = crate::show::show_file::export_show_file(
-                    document.scenes,
-                    document.cue_lists,
-                    state.lockout(),
-                    saved_at.clone(),
-                );
-                write_show_file(&path, &file, backup_dir)?;
-                state.mark_saved(path, saved_at);
-                publish_state_changed(event_bus, state);
-                tracing::info!(event = "session_saved", "Session saved");
-                Ok(ShowCommandResult { changed: true })
-            }
-            .await;
-            if let Some(reply) = reply {
-                let _ = reply.send(result);
-            }
+            let peers = peers.clone();
+            let backup_dir = backup_dir.to_path_buf();
+            let lockout = state.lockout();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let saved_at = crate::time::current_timestamp_millis();
+                        let document = current_session_document(&peers).await?;
+                        let file = crate::show::show_file::export_show_file(
+                            document.scenes,
+                            document.cue_lists,
+                            lockout,
+                            saved_at.clone(),
+                        );
+                        let write_path = path.clone();
+                        tokio::task::spawn_blocking(move || {
+                            write_show_file(&write_path, &file, &backup_dir)
+                        })
+                        .await
+                        .map_err(|error| format!("Session save task failed: {error}"))??;
+                        Ok((path, saved_at))
+                    }
+                    .await;
+                    PendingShowCompletion::Save { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
         }
         ShowCommand::SetDiscoveredLv1Systems { systems, reply } => {
             let changed = state.set_discovered_lv1_systems(systems);
@@ -363,43 +492,195 @@ async fn handle_command(
             expected_generation,
             reply,
         } => {
-            let outcome = peers
-                .runtime_generation
-                .if_current(expected_generation, || {
-                    let changed = state.set_lv1_connection(identity);
-                    publish_if_changed(event_bus, state, changed);
-                    super::CompleteConnectionOutcome {
-                        accepted: true,
-                        changed,
-                    }
-                })
-                .await
-                .unwrap_or(super::CompleteConnectionOutcome {
-                    accepted: false,
-                    changed: false,
-                });
-            let _ = reply.send(outcome);
+            set_lv1_connection_if_current(
+                identity,
+                expected_generation,
+                reply,
+                state,
+                event_bus,
+                peers,
+            )
+            .await;
         }
         ShowCommand::LoadShowFileFromPath { path, reply } => {
-            let result = async {
-                let (expected_generation, lv1) = current_lv1_snapshot(peers).await?;
-                let mut file = read_show_file(&path)?;
-                load_show_file_from_dto(
-                    state,
-                    event_bus,
-                    peers,
-                    ShowFileLoadKind::Open(path),
-                    &mut file,
-                    &lv1,
-                    expected_generation,
-                )
-                .await
+            let peers = peers.clone();
+            return Some(PendingShowOperation {
+                future: Box::pin(async move {
+                    let result = async {
+                        let (expected_generation, lv1) = current_lv1_snapshot(&peers).await?;
+                        let read_path = path.clone();
+                        let lv1_for_import = lv1.clone();
+                        let imported = tokio::task::spawn_blocking(move || {
+                            load_show_file_for_lv1(&read_path, &lv1_for_import)
+                        })
+                        .await
+                        .map_err(|error| format!("Session load task failed: {error}"))??;
+                        prepare_load_show_file(
+                            &peers,
+                            ShowFileLoadKind::Open(path),
+                            imported,
+                            &lv1,
+                            expected_generation,
+                        )
+                        .await
+                    }
+                    .await;
+                    PendingShowCompletion::Load { result, reply }
+                }),
+                dirty_during_wait: false,
+            });
+        }
+    }
+    None
+}
+
+async fn set_lv1_connection_if_current(
+    identity: Option<crate::connection_state::Lv1SystemIdentity>,
+    expected_generation: u64,
+    reply: tokio::sync::oneshot::Sender<super::CompleteConnectionOutcome>,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+    peers: &ShowActorPeers,
+) {
+    let outcome = peers
+        .runtime_generation
+        .if_current(expected_generation, || {
+            let changed = state.set_lv1_connection(identity);
+            publish_if_changed(event_bus, state, changed);
+            super::CompleteConnectionOutcome {
+                accepted: true,
+                changed,
             }
-            .await;
+        })
+        .await
+        .unwrap_or(super::CompleteConnectionOutcome {
+            accepted: false,
+            changed: false,
+        });
+    let _ = reply.send(outcome);
+}
+
+/// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
+/// A successful ordinary load MUST adopt the imported path, saved timestamp, and lockout, and MUST
+/// remain clean only when no scene-ID generation, LV1 scene alignment, cue reconciliation, or
+/// persisted edit consumed while the operation was pending changed the imported persisted document.
+/// A successful template load MUST preserve imported session data and lockout while clearing backing
+/// file metadata. A persisted edit consumed while either operation was pending MUST leave the
+/// resulting session dirty.
+fn finish_pending_operation(
+    completion: PendingShowCompletion,
+    dirty_during_wait: bool,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) {
+    match completion {
+        PendingShowCompletion::New { result, reply } => {
+            if result.is_ok() {
+                state.reset_for_new_show();
+                if dirty_during_wait {
+                    state.mark_dirty();
+                }
+                publish_state_changed(event_bus, state);
+                tracing::info!(event = "session_created", "New session created");
+            }
             if let Some(reply) = reply {
                 let _ = reply.send(result);
             }
         }
+        PendingShowCompletion::NewFromTemplate { result, reply } => {
+            let result = result.map(|prepared| {
+                let loaded = finish_prepared_load(prepared, dirty_during_wait, state, event_bus);
+                NewShowFileResult {
+                    selected_scene_internal_id: loaded.selected_scene_internal_id,
+                }
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+        PendingShowCompletion::Save { result, reply } => {
+            let result = result.map(|(path, saved_at)| {
+                state.mark_saved(path, saved_at);
+                if dirty_during_wait {
+                    state.mark_dirty();
+                }
+                publish_state_changed(event_bus, state);
+                tracing::info!(event = "session_saved", "Session saved");
+                ShowCommandResult { changed: true }
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+        PendingShowCompletion::Load { result, reply } => {
+            let result = result.map(|prepared| {
+                finish_prepared_load(prepared, dirty_during_wait, state, event_bus)
+            });
+            if let Some(reply) = reply {
+                let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+fn finish_prepared_load(
+    prepared: PreparedLoad,
+    dirty_during_wait: bool,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) -> LoadShowFileResult {
+    let PreparedLoad {
+        load_kind,
+        saved_at,
+        lockout,
+        selected_scene_internal_id,
+        should_mark_dirty,
+        alignment_changed,
+        imported_scene_configs,
+        aligned_scene_configs,
+        lv1_scene_list,
+    } = prepared;
+    match &load_kind {
+        ShowFileLoadKind::Open(path) => {
+            state.set_lockout(lockout);
+            state.mark_saved(path.clone(), saved_at.clone());
+            if should_mark_dirty {
+                state.mark_dirty();
+            }
+        }
+        ShowFileLoadKind::NewFromTemplate => {
+            state.reset_for_new_show_from_template(lockout);
+        }
+    }
+    if dirty_during_wait {
+        state.mark_dirty();
+    }
+    publish_state_changed(event_bus, state);
+    if alignment_changed {
+        tracing::debug!(
+            event = "session_scene_alignment",
+            "{}",
+            crate::scenes::scene_alignment_diagnostic(
+                &imported_scene_configs,
+                &aligned_scene_configs,
+                &lv1_scene_list
+            )
+        );
+    }
+    match load_kind {
+        ShowFileLoadKind::Open(_) => {
+            tracing::info!(event = "session_opened", "Session loaded");
+        }
+        ShowFileLoadKind::NewFromTemplate => {
+            tracing::info!(
+                event = "session_created_from_template",
+                "New session created from template"
+            );
+        }
+    }
+    LoadShowFileResult {
+        selected_scene_internal_id,
+        saved_at,
     }
 }
 
@@ -441,7 +722,8 @@ async fn get_lv1_state(lv1: &Lv1Connection) -> Result<Lv1StateSnapshot, AppComma
 
 /// @cc [owner:mixxorz,label:safety] replacement-revalidates-lv1-scene-list
 /// Before new/load commits a replacement, the installed LV1 peer MUST still be the expected
-/// generation, connected, and report the same scene list used to construct the replacement.
+/// generation, connected, and report the same authoritative scene list used to construct the
+/// replacement. A missing scene list MUST fail validation even when both snapshots report `None`.
 async fn validate_lv1_snapshot(
     peers: &ShowActorPeers,
     expected_generation: u64,
@@ -455,7 +737,15 @@ async fn validate_lv1_snapshot(
     if snapshot.connection != crate::lv1::ConnectionStatus::Connected {
         return Err("LV1 is no longer connected".to_string());
     }
-    if snapshot.scene_list != expected_snapshot.scene_list {
+    let expected_scene_list = expected_snapshot
+        .scene_list
+        .as_ref()
+        .ok_or_else(|| "LV1 scene list was not loaded".to_string())?;
+    let scene_list = snapshot
+        .scene_list
+        .as_ref()
+        .ok_or_else(|| "LV1 scene list is no longer loaded".to_string())?;
+    if scene_list != expected_scene_list {
         return Err("LV1 scene list changed during show replacement".to_string());
     }
     Ok(())
@@ -478,30 +768,76 @@ enum ShowFileLoadKind {
     NewFromTemplate,
 }
 
-/// @cc [owner:mixxorz,label:persistence] load-normalization-dirty-state
-/// A successful ordinary load MUST adopt the imported path, saved timestamp, and lockout, and MUST
-/// remain clean only when no scene-ID generation, LV1 scene alignment, or cue reconciliation changed
-/// the imported persisted document. A successful template load MUST preserve imported session data
-/// and lockout while clearing backing-file metadata so it behaves as a new show. The published Show
-/// projection's dirty state MUST account for reconciliation according to the selected load kind.
-async fn load_show_file_from_dto(
-    state: &mut ShowState,
-    event_bus: &AppEventBus,
+struct PreparedLoadImport {
+    saved_at: String,
+    lockout: bool,
+    selected_scene_internal_id: Option<String>,
+    generated_internal_scene_ids: bool,
+    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
+    imported_cue_list_snapshot: CueListDocument,
+    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
+    alignment_changed: bool,
+}
+
+struct PreparedLoad {
+    load_kind: ShowFileLoadKind,
+    saved_at: String,
+    lockout: bool,
+    selected_scene_internal_id: Option<String>,
+    should_mark_dirty: bool,
+    alignment_changed: bool,
+    imported_scene_configs: Vec<crate::scenes::SceneConfig>,
+    aligned_scene_configs: Vec<crate::scenes::SceneConfig>,
+    lv1_scene_list: Vec<crate::lv1::SceneListEntry>,
+}
+
+/// @cc [owner:mixxorz,label:performance;persistence] load-import-off-actor-runtime
+/// Reading, importing, and aligning a show file MUST be suitable for execution on a blocking worker;
+/// the Show actor's Tokio runtime task MUST receive only the completed import or its error.
+fn load_show_file_for_lv1(
+    path: &std::path::Path,
+    lv1: &Lv1StateSnapshot,
+) -> Result<PreparedLoadImport, String> {
+    let mut file = read_show_file(path)?;
+    let imported = import_show_file(&mut file, lv1)?;
+    let imported_scene_configs = imported.snapshot.scene_configs;
+    let scene_list = lv1
+        .scene_list
+        .as_deref()
+        .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?;
+    let aligned_scene_configs =
+        crate::scenes::align_scene_configs(imported_scene_configs.clone(), scene_list);
+    let alignment_changed = aligned_scene_configs != imported_scene_configs;
+    Ok(PreparedLoadImport {
+        saved_at: file.saved_at,
+        lockout: imported.lockout,
+        selected_scene_internal_id: imported.selected_scene_internal_id,
+        generated_internal_scene_ids: imported.generated_internal_scene_ids,
+        imported_scene_configs,
+        imported_cue_list_snapshot: imported.cue_list_snapshot,
+        aligned_scene_configs,
+        alignment_changed,
+    })
+}
+
+async fn prepare_load_show_file(
     peers: &ShowActorPeers,
     load_kind: ShowFileLoadKind,
-    file: &mut super::show_file::ShowFile,
+    imported: PreparedLoadImport,
     lv1: &Lv1StateSnapshot,
     expected_generation: u64,
-) -> Result<LoadShowFileResult, String> {
-    let imported = import_show_file(file, lv1)?;
-    let saved_at = file.saved_at.clone();
-    let selected_scene_internal_id = imported.selected_scene_internal_id.clone();
-    let imported_scene_configs = imported.snapshot.scene_configs;
-    let imported_cue_list_snapshot = imported.cue_list_snapshot.clone();
-    let aligned_scene_configs =
-        crate::scenes::align_scene_configs(imported_scene_configs.clone(), &lv1.scene_list);
-    let alignment_changed = aligned_scene_configs != imported_scene_configs;
-    let mut should_mark_dirty = imported.generated_internal_scene_ids || alignment_changed;
+) -> Result<PreparedLoad, String> {
+    let PreparedLoadImport {
+        saved_at,
+        lockout,
+        selected_scene_internal_id,
+        generated_internal_scene_ids,
+        imported_scene_configs,
+        imported_cue_list_snapshot,
+        aligned_scene_configs,
+        alignment_changed,
+    } = imported;
+    let mut should_mark_dirty = generated_internal_scene_ids || alignment_changed;
     let selected_scene_internal_id = selected_scene_internal_id
         .filter(|selected| {
             aligned_scene_configs
@@ -522,50 +858,25 @@ async fn load_show_file_from_dto(
         peers,
         SessionDocument {
             scenes: scene_document,
-            cue_lists: imported.cue_list_snapshot,
+            cue_lists: imported_cue_list_snapshot.clone(),
         },
         expected_generation,
     )
     .await?;
     should_mark_dirty |= committed.cue_lists != imported_cue_list_snapshot;
-    match &load_kind {
-        ShowFileLoadKind::Open(path) => {
-            state.set_lockout(imported.lockout);
-            state.mark_saved(path.clone(), saved_at.clone());
-            if should_mark_dirty {
-                state.mark_dirty();
-            }
-        }
-        ShowFileLoadKind::NewFromTemplate => {
-            state.reset_for_new_show_from_template(imported.lockout);
-        }
-    }
-    publish_state_changed(event_bus, state);
-    if alignment_changed {
-        tracing::debug!(
-            event = "session_scene_alignment",
-            "{}",
-            crate::scenes::scene_alignment_diagnostic(
-                &imported_scene_configs,
-                &aligned_scene_configs,
-                &lv1.scene_list
-            )
-        );
-    }
-    match load_kind {
-        ShowFileLoadKind::Open(_) => {
-            tracing::info!(event = "session_opened", "Session loaded");
-        }
-        ShowFileLoadKind::NewFromTemplate => {
-            tracing::info!(
-                event = "session_created_from_template",
-                "New session created from template"
-            );
-        }
-    }
-    Ok(LoadShowFileResult {
-        selected_scene_internal_id,
+    Ok(PreparedLoad {
+        load_kind,
         saved_at,
+        lockout,
+        selected_scene_internal_id,
+        should_mark_dirty,
+        alignment_changed,
+        imported_scene_configs,
+        aligned_scene_configs,
+        lv1_scene_list: lv1
+            .scene_list
+            .clone()
+            .ok_or_else(|| "Open a session after LV1 scenes are loaded".to_string())?,
     })
 }
 
@@ -634,8 +945,9 @@ mod tests {
     use crate::lv1::{ConnectionStatus, Lv1StateSnapshot, SceneListEntry};
     use crate::runtime::events::{AppEventBus, RuntimeLifecycleEvent};
     use crate::runtime::generation::RuntimeGeneration;
-    use crate::scenes::{SceneConfig, SceneScopeToggles};
+    use crate::scenes::{SceneConfig, SceneDocument, SceneScopeToggles};
     use crate::scenes::{ScenesCommand, build_scenes_actor};
+    use crate::session::SessionDocument;
     use crate::settings::{AppSettings, SettingsCommand, SettingsHandle};
     use crate::show::commands::ShowCommand;
     use crate::show::handle::ShowStateHandle;
@@ -645,7 +957,7 @@ mod tests {
         Lv1StateSnapshot {
             connection: ConnectionStatus::Connected,
             scene: None,
-            scene_list: scenes,
+            scene_list: Some(scenes),
             channels: Vec::new(),
             ping_sequence: 0,
         }
@@ -1675,6 +1987,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn new_show_rejects_unknown_lv1_scene_list() {
+        let event_bus = AppEventBus::default();
+        let (show, peers) = show_actor(event_bus);
+        let mut snapshot = lv1_snapshot(Vec::new());
+        snapshot.scene_list = None;
+        let (lv1_tx, mut lv1_rx) = tokio::sync::mpsc::channel(1);
+        tokio::spawn(async move {
+            if let Some(crate::lv1::Lv1Command::GetState { reply }) = lv1_rx.recv().await {
+                let _ = reply.send(snapshot);
+            }
+        });
+        peers.set_lv1(0, crate::lv1::test_actor_handle(lv1_tx));
+
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.await.unwrap().unwrap_err(),
+            "New session blocked: LV1 scene list is not loaded"
+        );
+    }
+
+    #[tokio::test]
     async fn new_show_replaces_scenes_state_from_current_lv1_and_marks_metadata_clean() {
         let event_bus = AppEventBus::default();
         let (show, peers) = show_actor(event_bus.clone());
@@ -1746,6 +2083,124 @@ mod tests {
             result.selected_scene_internal_id,
             selected_scene_internal_id
         );
+    }
+
+    #[tokio::test]
+    async fn pending_save_allows_disconnect_metadata_to_complete_promptly() {
+        let root = TestDir::new("pending-save-disconnect");
+        let event_bus = AppEventBus::default();
+        let (show, task, peers, _lockout) = build_show_actor(event_bus);
+        let (scenes, mut scene_commands) = tokio::sync::mpsc::channel(8);
+        peers.set_scenes(scenes);
+        task.with_backup_dir(root.path().join("backups")).spawn();
+
+        let identity = crate::connection_state::Lv1SystemIdentity {
+            uuid: Some("uuid-1".to_string()),
+            host: Some("LV1".to_string()),
+            address: "127.0.0.1".to_string(),
+            port: 50_000,
+        };
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: Some(identity),
+            expected_generation: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(response.await.unwrap().changed);
+
+        show.send(ShowCommand::SaveShowFileAs {
+            path: root.path().join("pending.ascs"),
+            reply: None,
+        })
+        .await
+        .unwrap();
+        let Some(ScenesCommand::GetSessionDocument { .. }) = scene_commands.recv().await else {
+            panic!("save should request the session document");
+        };
+
+        let (reply, response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: None,
+            expected_generation: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+
+        let outcome = tokio::time::timeout(std::time::Duration::from_millis(100), response)
+            .await
+            .expect("disconnect metadata must not wait for pending persistence")
+            .unwrap();
+        assert!(outcome.accepted);
+        assert!(outcome.changed);
+    }
+
+    #[tokio::test]
+    async fn pending_save_consumes_persisted_edits_without_accepting_another_command() {
+        let root = TestDir::new("pending-save");
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let (show, task, peers, _lockout) = build_show_actor(event_bus.clone());
+        let (scenes, mut scene_commands) = tokio::sync::mpsc::channel(8);
+        peers.set_scenes(scenes);
+        task.with_backup_dir(root.path().join("backups")).spawn();
+
+        let path = root.path().join("pending.ascs");
+        let (save_reply, save_response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SaveShowFileAs {
+            path,
+            reply: Some(save_reply),
+        })
+        .await
+        .unwrap();
+        let Some(ScenesCommand::GetSessionDocument {
+            reply: document_reply,
+        }) = scene_commands.recv().await
+        else {
+            panic!("save should request the session document");
+        };
+
+        let (lockout_reply, mut lockout_response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLockout {
+            enabled: true,
+            reply: Some(lockout_reply),
+        })
+        .await
+        .unwrap();
+        let (connection_reply, mut connection_response) = tokio::sync::oneshot::channel();
+        show.send(ShowCommand::SetLv1ConnectionIfCurrent {
+            identity: None,
+            expected_generation: 0,
+            reply: connection_reply,
+        })
+        .await
+        .unwrap();
+        event_bus.publish(crate::runtime::events::AppEvent::CueLists(
+            CueListsProjectionState::default(),
+        ));
+
+        let dirty_state = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            recv_file_metadata_event(&mut events),
+        )
+        .await
+        .expect("persisted edits should be consumed while save waits");
+        assert!(dirty_state.show_file_dirty);
+        assert!(lockout_response.try_recv().is_err());
+        assert!(connection_response.try_recv().is_err());
+
+        document_reply
+            .send(SessionDocument {
+                scenes: SceneDocument::empty(),
+                cue_lists: CueListDocument::default(),
+            })
+            .unwrap();
+        save_response.await.unwrap().unwrap();
+        assert!(lockout_response.await.unwrap().changed);
+        assert!(connection_response.await.unwrap().accepted);
+        assert!(current_show_state(&show).await.show_file_dirty);
     }
 
     #[tokio::test]

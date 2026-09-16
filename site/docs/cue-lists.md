@@ -37,9 +37,9 @@ Before pressing **GO**:
 
 After a successful **GO**, the following entry is cued automatically. After the last entry, **Cued** returns to `---`.
 
-**GO** is temporarily unavailable while a recall is in progress. It is also unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists.
+While a recall is in progress, each additional deliberate **GO** press queues another cue recall in order. Up to eight GO commands can remain unsettled at once; **GO** becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.
 
-An unlinked scene fade can still appear under **Cued**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
+**GO** is unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists. An unlinked scene fade can still appear under **Cued**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
 
 ## Cue entry states
 

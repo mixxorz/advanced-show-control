@@ -45,6 +45,38 @@ impl Lv1Connection {
         self.send_checked(command, || Ok(())).await
     }
 
+    pub(crate) async fn reserve_owned(
+        &self,
+    ) -> Result<tokio::sync::mpsc::OwnedPermit<Lv1Command>, AppCommandError> {
+        self.ensure_current().await?;
+        self.handle
+            .reserve_owned()
+            .await
+            .map_err(|error| match error {
+                Lv1ActorError::NotConnected => AppCommandError::Lv1Unavailable,
+                other => AppCommandError::CommandFailed(other.to_string()),
+            })
+    }
+
+    /// @cc [owner:mixxorz,label:safety;generation] generation-fenced-reserved-admission
+    /// A reserved command MUST be sent only while this connection's generation is current and its
+    /// final validation succeeds. Revocation or validation failure MUST drop the reservation without
+    /// sending the command.
+    pub(crate) async fn send_reserved_checked(
+        &self,
+        permit: tokio::sync::mpsc::OwnedPermit<Lv1Command>,
+        command: Lv1Command,
+        validate: impl FnOnce() -> Result<(), AppCommandError>,
+    ) -> Result<(), AppCommandError> {
+        self.if_current(|| {
+            validate()?;
+            permit.send(command);
+            Ok(())
+        })
+        .await
+        .ok_or(AppCommandError::StaleGeneration)?
+    }
+
     /// @cc [owner:mixxorz,label:safety;generation] generation-fenced-mailbox-admission
     /// A command MUST be admitted only while this connection's generation is current; generation
     /// revocation or validation failure after mailbox-capacity waiting MUST prevent the send.

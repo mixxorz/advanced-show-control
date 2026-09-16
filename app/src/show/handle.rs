@@ -98,7 +98,8 @@ mod tests {
                         scene_list: vec![SceneListEntry {
                             index: 1,
                             name: "Intro".to_string(),
-                        }],
+                        }]
+                        .into(),
                         channels: Vec::new(),
                         ping_sequence: 0,
                     });

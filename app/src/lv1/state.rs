@@ -148,7 +148,7 @@ pub(super) struct ActorState {
     generation: u64,
     pub(super) connection: ConnectionStatus,
     pub(super) scene: Option<SceneState>,
-    pub(super) scene_list: Vec<SceneListEntry>,
+    pub(super) scene_list: Option<Vec<SceneListEntry>>,
     pub(super) channels: Vec<ChannelInfo>,
     pub(super) ping_sequence: u64,
     pub(super) scene_observation_sequence: u64,
@@ -163,7 +163,7 @@ impl ActorState {
             generation,
             connection: ConnectionStatus::Connecting,
             scene: None,
-            scene_list: Vec::new(),
+            scene_list: None,
             channels: Vec::new(),
             ping_sequence: 0,
             scene_observation_sequence: 0,
@@ -258,7 +258,7 @@ pub(super) fn handle_message(state: &mut ActorState, msg: &crate::lv1::osc::OscM
         "/Notify/SceneList" => match parse_scene_list(&msg.args) {
             Ok(list) => {
                 state.diagnose(format!("parsed /Notify/SceneList scenes={}", list.len()));
-                state.scene_list = list.clone();
+                state.scene_list = Some(list.clone());
                 state.fan_out(Lv1Event::SceneListChanged(list));
             }
             Err(err) => {
@@ -403,6 +403,32 @@ mod tests {
         buffer.apply_name("Old".to_string());
         buffer.apply_name("New".to_string());
         assert_eq!(buffer.apply_index(2).unwrap().name, "New");
+    }
+
+    #[test]
+    fn scene_list_snapshot_distinguishes_unknown_from_authoritative_empty() {
+        let event_bus = AppEventBus::default();
+        let mut events = event_bus.subscribe();
+        let mut state = ActorState::new(event_bus, 7);
+
+        assert!(state.snapshot().scene_list.is_none());
+
+        handle_message(
+            &mut state,
+            &crate::lv1::osc::OscMessage {
+                address: "/Notify/SceneList".to_string(),
+                args: vec![crate::lv1::osc::OscArg::Int(0)],
+            },
+        );
+
+        assert_eq!(state.snapshot().scene_list, Some(Vec::new()));
+        assert!(matches!(
+            events.try_recv(),
+            Ok(crate::runtime::events::AppEvent::Lv1 {
+                generation: 7,
+                event: Lv1Event::SceneListChanged(scene_list),
+            }) if scene_list.is_empty()
+        ));
     }
 
     #[test]

@@ -15,6 +15,7 @@ mod tests {
         assert!(!settings.enable_extensive_diagnostics);
         assert!(settings.same_scene_recall_enabled);
         assert_eq!(settings.same_scene_recall_threshold_ms, 500);
+        assert_eq!(settings.asc_recall_interval_ms, 0);
     }
 
     #[test]
@@ -24,6 +25,19 @@ mod tests {
 
         assert!(settings.same_scene_recall_enabled);
         assert_eq!(settings.same_scene_recall_threshold_ms, 500);
+        assert_eq!(settings.asc_recall_interval_ms, 0);
+    }
+
+    #[test]
+    fn asc_recall_interval_uses_camel_case_persistence() {
+        let settings: AppSettings = serde_json::from_str(r#"{"ascRecallIntervalMs":1200}"#)
+            .expect("ASC recall interval should deserialize");
+
+        assert_eq!(settings.asc_recall_interval_ms, 1_200);
+        assert_eq!(
+            serde_json::to_value(settings).expect("settings should serialize")["ascRecallIntervalMs"],
+            1_200
+        );
     }
 
     #[test]
@@ -35,6 +49,17 @@ mod tests {
         .normalized();
 
         assert_eq!(settings.same_scene_recall_threshold_ms, 5_000);
+    }
+
+    #[test]
+    fn normalization_clamps_asc_recall_interval() {
+        let settings = AppSettings {
+            asc_recall_interval_ms: 10_001,
+            ..Default::default()
+        }
+        .normalized();
+
+        assert_eq!(settings.asc_recall_interval_ms, 10_000);
     }
 
     #[test]
@@ -139,12 +164,13 @@ pub struct AppSettings {
     pub enable_extensive_diagnostics: bool,
     pub same_scene_recall_enabled: bool,
     pub same_scene_recall_threshold_ms: u64,
+    pub asc_recall_interval_ms: u64,
 }
 
 /// @cc [owner:mixxorz,label:product] stable-settings-defaults
 /// Missing or newly introduced persisted fields MUST default to conservative application behavior:
 /// automatic loading/saving and extensive diagnostics off, 24-hour time, sensitivity 9,
-/// same-scene recall on with a 500 ms threshold, and Space/C for Go/Cue.
+/// same-scene recall on with a 500 ms threshold, ASC recall interval 0 ms, and Space/C for Go/Cue.
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -156,19 +182,21 @@ impl Default for AppSettings {
             enable_extensive_diagnostics: false,
             same_scene_recall_enabled: true,
             same_scene_recall_threshold_ms: 500,
+            asc_recall_interval_ms: 0,
         }
     }
 }
 
 impl AppSettings {
     /// @cc [owner:mixxorz,label:data-integrity] normalize-settings-boundaries
-    /// Normalization MUST clamp fader sensitivity to 1..=10 and same-scene threshold to
-    /// 0..=5000 ms, canonicalize supported key labels, uppercase single-scalar keys, and replace
-    /// blank Go/Cue shortcuts with their respective defaults while preserving their modifiers only
-    /// when the key remains valid.
+    /// Normalization MUST clamp fader sensitivity to 1..=10, same-scene threshold to
+    /// 0..=5000 ms, and ASC recall interval to 0..=10,000 ms; canonicalize supported key labels;
+    /// uppercase single-scalar keys; and replace blank Go/Cue shortcuts with their respective
+    /// defaults while preserving their modifiers only when the key remains valid.
     pub fn normalized(mut self) -> Self {
         self.fader_override_sensitivity = self.fader_override_sensitivity.clamp(1, 10);
         self.same_scene_recall_threshold_ms = self.same_scene_recall_threshold_ms.clamp(0, 5_000);
+        self.asc_recall_interval_ms = self.asc_recall_interval_ms.clamp(0, 10_000);
         self.keyboard_shortcuts = self.keyboard_shortcuts.normalized();
         self
     }

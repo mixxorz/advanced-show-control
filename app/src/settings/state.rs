@@ -45,21 +45,21 @@ impl SettingsState {
         self.document.settings.clone()
     }
 
-    /// @cc [owner:mixxorz,label:data-integrity] public-settings-replacement-atomicity
-    /// A changed public-settings replacement MUST preserve the remembered LV1 identity and update
-    /// in-memory state only after the complete normalized document is atomically published. A
-    /// staging or publication failure MUST return an error and leave both prior memory and the
-    /// destination document unchanged; normalized no-ops MUST perform no write and return `false`.
-    pub fn replace_settings(&mut self, settings: AppSettings) -> Result<bool, String> {
+    /// @cc [owner:mixxorz,label:data-integrity] stage-public-settings-replacement
+    /// A changed public-settings replacement MUST preserve the remembered LV1 identity and stage
+    /// the complete normalized document without mutating memory or publishing the destination;
+    /// normalized no-ops MUST perform no filesystem work and return no staged update.
+    pub(crate) fn stage_settings(
+        &self,
+        settings: AppSettings,
+    ) -> Result<Option<StagedSettingsUpdate>, String> {
         let normalized = settings.normalized();
         if normalized == self.document.settings {
-            return Ok(false);
+            return Ok(None);
         }
         let mut updated = self.document.clone();
         updated.settings = normalized;
-        let staged = StagedSettingsUpdate::prepare(self.file_path.clone(), updated)?;
-        self.publish_staged(staged)?;
-        Ok(true)
+        StagedSettingsUpdate::prepare(self.file_path.clone(), updated).map(Some)
     }
 
     pub fn last_connected_lv1(&self) -> Option<Lv1SystemIdentity> {

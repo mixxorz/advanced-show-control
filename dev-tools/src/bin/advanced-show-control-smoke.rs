@@ -22,6 +22,8 @@ const TARGET_B: f64 = 0.0;
 const GAIN_TOLERANCE: f64 = 0.5;
 const SAME_SCENE_DURATION: Duration = Duration::from_secs(6);
 const RECALL_GATE_SETTLE: Duration = Duration::from_millis(2_100);
+const CONFIGURED_RECALL_INTERVAL: Duration = Duration::from_secs(10);
+const RECALL_INTERVAL_TOLERANCE: Duration = Duration::from_millis(100);
 const SMOKE_APP_IDENTIFIER: &str = "com.advancedshowcontrol.debug";
 
 /// @cc [owner:mixxorz,label:safety] smoke-config-isolation
@@ -195,6 +197,10 @@ impl Runner<'_> {
             Box::pin(this.rapid_recall())
         })
         .await?;
+        self.test("configured-scene-recall-interval", |this| {
+            Box::pin(this.configured_recall_interval())
+        })
+        .await?;
         self.test("fade-starts", |this| Box::pin(this.fade_starts()))
             .await?;
         self.test("fade-completes", |this| Box::pin(this.fade_completes()))
@@ -285,14 +291,25 @@ impl Runner<'_> {
     }
 
     async fn startup_auto_connect(&mut self) -> Result<(), String> {
+        let scene_a = self.scene_a;
+        let scene_b = self.scene_b;
+        let before = self
+            .wait_state("pre-reconnect scene configs", move |state| {
+                find_config(state, scene_a).is_some() && find_config(state, scene_b).is_some()
+            })
+            .await?;
+        let expected_scene_configs = before.scene_configs;
+
         self.commands.disconnect_lv1().await?;
         self.wait_state("LV1 disconnect", |state| {
             state.connection == AppConnectionState::Disconnected
         })
         .await?;
         self.commands.startup_auto_connect_lv1().await?;
-        self.wait_state("startup auto-connect", |state| {
+        self.wait_state("reconnected scene configs", |state| {
             state.connection == AppConnectionState::Connected
+                && state.scene_count > 0
+                && state.scene_configs == expected_scene_configs
         })
         .await?;
         self.resolve_scenes().await
@@ -411,6 +428,57 @@ impl Runner<'_> {
         })
         .await?;
         Ok(())
+    }
+
+    async fn configured_recall_interval(&mut self) -> Result<(), String> {
+        self.set_asc_recall_interval(CONFIGURED_RECALL_INTERVAL)
+            .await?;
+        let result = async {
+            let first_commands = self.commands.clone();
+            let second_commands = self.commands.clone();
+            let first_scene = self.scene_a;
+            let second_scene = self.scene_b;
+            let (first, second) = tokio::time::timeout(
+                TIMEOUT + CONFIGURED_RECALL_INTERVAL + Duration::from_secs(2),
+                async {
+                    tokio::join!(
+                        async move {
+                            let result = first_commands.recall_scene(first_scene).await;
+                            (result, Instant::now())
+                        },
+                        async move {
+                            tokio::time::sleep(Duration::from_millis(10)).await;
+                            let result = second_commands.recall_scene(second_scene).await;
+                            (result, Instant::now())
+                        }
+                    )
+                },
+            )
+            .await
+            .map_err(|_| "configured recall interval commands timed out".to_string())?;
+            first.0?;
+            second.0?;
+            let observed_interval = second.1.saturating_duration_since(first.1);
+            if observed_interval + RECALL_INTERVAL_TOLERANCE < CONFIGURED_RECALL_INTERVAL {
+                return Err(format!(
+                    "queued recall dispatched after {}ms; configured interval is {}ms",
+                    observed_interval.as_millis(),
+                    CONFIGURED_RECALL_INTERVAL.as_millis()
+                ));
+            }
+            self.wait_state("interval-delayed Smoke B recall", |state| {
+                state
+                    .current_scene
+                    .as_ref()
+                    .is_some_and(|scene| scene.name == SMOKE_B)
+            })
+            .await?;
+            Ok(())
+        }
+        .await;
+        let cleanup = self.set_asc_recall_interval(Duration::ZERO).await;
+        result?;
+        cleanup
     }
 
     async fn prepare_fades(&mut self) -> Result<(), String> {
@@ -534,6 +602,22 @@ impl Runner<'_> {
         Ok(())
     }
 
+    async fn set_asc_recall_interval(&mut self, interval: Duration) -> Result<(), String> {
+        let interval_ms = interval.as_millis() as u64;
+        let mut settings = self
+            .projections
+            .latest()
+            .ok_or("projected settings unavailable")?
+            .settings;
+        settings.asc_recall_interval_ms = interval_ms;
+        self.commands.replace_app_settings(settings).await?;
+        self.wait_state("projected ASC recall interval", |state| {
+            state.settings.asc_recall_interval_ms == interval_ms
+        })
+        .await?;
+        Ok(())
+    }
+
     async fn set_same_scene_settings(
         &mut self,
         enabled: bool,
@@ -636,7 +720,7 @@ impl Runner<'_> {
             .recall_scene(self.scene_b)
             .await
             .expect_err("lockout recall unexpectedly succeeded");
-        if !error.to_lowercase().contains("blocked") {
+        if !is_lockout_rejection(&error) {
             return Err(format!("unexpected lockout error: {error}"));
         }
         self.commands.set_lockout(false).await?;
@@ -678,6 +762,11 @@ impl Runner<'_> {
             .join("logs")
             .join(format!("debug-smoke-{name}-{}.ascs", Uuid::new_v4()))
     }
+}
+
+fn is_lockout_rejection(error: &str) -> bool {
+    let error = error.to_lowercase();
+    error.contains("blocked") || (error.contains("canceled") && error.contains("lockout"))
 }
 
 fn new_session_ready(state: &AppViewState, selected: Uuid) -> bool {
@@ -742,6 +831,19 @@ mod tests {
         );
         assert_eq!(smoke.parent(), production.parent());
         assert_ne!(smoke, production);
+    }
+
+    #[test]
+    fn lockout_check_accepts_blocked_or_race_canceled_recall() {
+        assert!(is_lockout_rejection(
+            "Recall blocked: show lockout is enabled"
+        ));
+        assert!(is_lockout_rejection(
+            "Scene recall canceled: lockout was enabled"
+        ));
+        assert!(!is_lockout_rejection(
+            "Scene recall canceled: connection changed"
+        ));
     }
 
     #[test]
