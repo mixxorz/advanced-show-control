@@ -28,12 +28,12 @@ The larger **GO** section occupies the left side of the bottom bar. The remainin
 
 | Item | What it shows |
 | --- | --- |
-| **Cued** | The scene prepared for the next **GO**. |
+| **Next** | The scene prepared for the next **GO**. |
 | **Current** | The scene currently active in LV1. |
 | **Mode** | **Offline**, **Ready**, **Safe**, or **Fading**. |
 | **Time** | The local time. |
 
-Compare **Cued** and **Current** before pressing **GO**. `---` means no scene is available for that field.
+Compare **Next** and **Current** before pressing **GO**. `---` means no scene is available for that field.
 
 **Ready** means LV1 is connected, **SAFE** is off, and no running fade is displayed. It does not guarantee that **GO** is available; you must also cue a valid entry.
 

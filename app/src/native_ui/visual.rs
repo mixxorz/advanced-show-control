@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::cell::RefCell;
     use std::path::Path;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -22,6 +24,7 @@ mod macos {
     use super::super::menu::{self, MENU_NEW_SHORTCUT, NewShow, Quit};
     use super::super::scenes::ScenesView;
     use super::super::settings_view::SettingsView;
+    use super::super::state::GoSubmissionGuard;
     use super::super::{
         AppRoot, CommandDispatcher, NativeRuntime, UiEvent, theme, ui_event_channel,
     };
@@ -92,10 +95,20 @@ mod macos {
         let window = cx
             .open_window(size(px(1180.), px(780.)), |window, cx| {
                 let initial = AppViewState::default();
+                let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
+                go_submissions.borrow_mut().start(u64::MAX - 1);
+                go_submissions.borrow_mut().start(u64::MAX);
                 let scenes =
                     cx.new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
-                let cues =
-                    cx.new(|cx| CueListsView::new(initial.clone(), dispatcher.clone(), window, cx));
+                let cues = cx.new(|cx| {
+                    CueListsView::new(
+                        initial.clone(),
+                        dispatcher.clone(),
+                        go_submissions.clone(),
+                        window,
+                        cx,
+                    )
+                });
                 let settings =
                     cx.new(|cx| SettingsView::new(initial, dispatcher.clone(), window, cx));
                 let app = cx.new(|cx| {
@@ -106,6 +119,7 @@ mod macos {
                         scenes,
                         cues,
                         settings,
+                        go_submissions,
                         window,
                         cx,
                     )
@@ -184,7 +198,7 @@ mod macos {
             assert!(go.size.width >= go_cell.size.width * 0.80);
             assert!(go.size.height >= go_cell.size.height * 0.75);
             let status_cells = [
-                window.find("status-cued").bounds(),
+                window.find("status-next").bounds(),
                 window.find("status-current").bounds(),
                 window.find("status-mode").bounds(),
                 window.find("status-time").bounds(),
@@ -229,6 +243,27 @@ mod macos {
             window.render_frame(cx);
             assert!(window.try_find("popup-menu").is_none());
             window.click("tab-Cue Lists", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find("cue-active-scene-44444444-4444-4444-8444-444444444444")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("cue-active-scene-66666666-6666-4666-8666-666666666666")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("cue-active-scene-77777777-7777-4777-8777-777777777777")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("cue-active-scene-55555555-5555-4555-8555-555555555555")
+                    .is_none()
+            );
             window.click("select-cue-entry-44444444-4444-4444-8444-444444444444", cx);
             window.click("session-menu", cx);
             window.render_frame(cx);
@@ -514,7 +549,10 @@ mod macos {
         let scene_a = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let scene_b = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
         let list_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
-        let entry_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        let current_entry_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        let next_entry_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        let pending_entry_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
+        let neutral_entry_id = Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap();
         let scenes = vec![
             SceneSummary {
                 index: 0,
@@ -579,13 +617,28 @@ mod macos {
             cue_lists: vec![CueList {
                 id: list_id,
                 name: "Main Show".into(),
-                entries: vec![CueEntry {
-                    id: entry_id,
-                    scene_internal_id: scene_b,
-                }],
+                entries: vec![
+                    CueEntry {
+                        id: current_entry_id,
+                        scene_internal_id: scene_a,
+                    },
+                    CueEntry {
+                        id: next_entry_id,
+                        scene_internal_id: scene_b,
+                    },
+                    CueEntry {
+                        id: pending_entry_id,
+                        scene_internal_id: scene_a,
+                    },
+                    CueEntry {
+                        id: neutral_entry_id,
+                        scene_internal_id: scene_a,
+                    },
+                ],
             }],
             active_cue_list_id: Some(list_id.to_string()),
-            cued_cue_entry_id: Some(entry_id.to_string()),
+            current_cue_entry_id: Some(current_entry_id.to_string()),
+            cued_cue_entry_id: Some(next_entry_id.to_string()),
             selected_scene_internal_id: Some(scene_a.to_string()),
             show_file_name: "Visual Reference.ascs".into(),
             show_file_dirty: lockout,
@@ -645,6 +698,7 @@ pub fn run_gallery() -> anyhow::Result<()> {
     use super::cues::CueListsView;
     use super::scenes::ScenesView;
     use super::settings_view::SettingsView;
+    use super::state::GoSubmissionGuard;
     use super::{AppRoot, CommandDispatcher, NativeRuntime, UiEvent, theme, ui_event_channel};
 
     let config_dir = std::env::current_dir()?.join("target/native-gallery-config");
@@ -686,10 +740,17 @@ pub fn run_gallery() -> anyhow::Result<()> {
                 },
                 move |window, cx| {
                     let initial = crate::projector::AppViewState::default();
+                    let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
                     let scenes = cx
                         .new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
                     let cues = cx.new(|cx| {
-                        CueListsView::new(initial.clone(), dispatcher.clone(), window, cx)
+                        CueListsView::new(
+                            initial.clone(),
+                            dispatcher.clone(),
+                            go_submissions.clone(),
+                            window,
+                            cx,
+                        )
                     });
                     let settings =
                         cx.new(|cx| SettingsView::new(initial, dispatcher.clone(), window, cx));
@@ -701,6 +762,7 @@ pub fn run_gallery() -> anyhow::Result<()> {
                             scenes,
                             cues,
                             settings,
+                            go_submissions,
                             window,
                             cx,
                         )

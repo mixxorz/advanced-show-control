@@ -7,6 +7,7 @@ pub(crate) struct CueLists {
     pub state: CueListsState,
     event_bus: AppEventBus,
     pending_recall: Option<PendingRecall>,
+    current_entry_id: Option<uuid::Uuid>,
 }
 
 struct PendingRecall {
@@ -23,7 +24,25 @@ impl CueLists {
             state: CueListsState::default(),
             event_bus,
             pending_recall: None,
+            current_entry_id: None,
         }
+    }
+
+    pub fn projection_state(&self) -> CueListsProjectionState {
+        CueListsProjectionState {
+            document: self.state.document(),
+            current_cue_entry_id: self.current_entry_id,
+            last_recall_status: None,
+        }
+    }
+
+    pub fn replace_document(
+        &mut self,
+        document: super::CueListDocument,
+        valid_scene_ids: impl IntoIterator<Item = uuid::Uuid>,
+    ) {
+        self.state.replace_document(document, valid_scene_ids);
+        self.current_entry_id = None;
     }
 
     pub fn recall_pending(&self) -> bool {
@@ -71,9 +90,10 @@ impl CueLists {
     }
 
     /// @cc [owner:mixxorz,label:safety;product] advance-only-after-dispatch-success
-    /// Completion MUST advance to the next entry only after the scene recall reports successful LV1
-    /// dispatch and the same entry remains cued. Dispatch failure, reply-channel failure, or changed cue
-    /// identity MUST return an error and MUST NOT advance or publish a cue-list edit.
+    /// Completion MUST advance to the next entry and project the dispatched entry as current only
+    /// after the scene recall reports successful LV1 dispatch and the same entry remains cued.
+    /// Dispatch failure, reply-channel failure, or changed cue identity MUST return an error and MUST
+    /// NOT advance, replace the current cue, or publish a cue-list edit.
     pub async fn complete_recall(&mut self) {
         use crate::runtime::errors::AppCommandError;
         let Some(pending) = &mut self.pending_recall else {
@@ -91,6 +111,7 @@ impl CueLists {
                 .state
                 .advance_after_successful_recall()
                 .map_err(AppCommandError::CommandFailed)?;
+            self.current_entry_id = Some(entry.id);
             self.publish();
             Ok(super::CueRecallResult {
                 recalled_entry_id: entry.id,
@@ -102,10 +123,7 @@ impl CueLists {
 
     fn publish(&self) {
         self.event_bus
-            .publish(AppEvent::CueLists(CueListsProjectionState {
-                document: self.state.document(),
-                last_recall_status: None,
-            }));
+            .publish(AppEvent::CueLists(self.projection_state()));
     }
 
     /// @cc [owner:mixxorz,label:persistence;safety] reconciliation-publishes-selection-clears
@@ -125,6 +143,12 @@ impl CueLists {
                 "Cued entry cleared because its scene is unavailable."
             );
         }
+        if self
+            .current_entry_id
+            .is_some_and(|id| !self.state.active_entry_exists(id))
+        {
+            self.current_entry_id = None;
+        }
         if result.active_cue_list_cleared || result.cued_entry_cleared {
             self.publish();
         }
@@ -143,10 +167,7 @@ impl CueLists {
         };
         let (reply, result) = match command {
             CueListsCommand::InitialProjectionState { reply } => {
-                let _ = reply.send(CueListsProjectionState {
-                    document: state.document(),
-                    last_recall_status: None,
-                });
+                let _ = reply.send(self.projection_state());
                 return;
             }
             CueListsCommand::CreateCueList { name, reply } => (
@@ -217,6 +238,12 @@ impl CueLists {
             }
         };
         if result.as_ref().is_ok_and(|result| result.changed) {
+            if self
+                .current_entry_id
+                .is_some_and(|id| !state.active_entry_exists(id))
+            {
+                self.current_entry_id = None;
+            }
             self.publish();
         }
         if let Some(reply) = reply {

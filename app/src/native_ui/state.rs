@@ -1,4 +1,37 @@
+use std::collections::HashSet;
+
 use crate::projector::AppViewState;
+
+pub(super) const GO_SUBMISSION_CAPACITY: usize = 8;
+
+/// @cc [owner:mixxorz,label:safety;product] go-outstanding-command-capacity
+/// Pointer and keyboard GO submission MUST share one eight-command capacity guard. Only a matching
+/// command completion may release its slot; unrelated or duplicate completions MUST NOT change the
+/// outstanding count.
+#[derive(Default)]
+pub(super) struct GoSubmissionGuard {
+    command_ids: HashSet<u64>,
+}
+
+impl GoSubmissionGuard {
+    pub fn can_submit(&self) -> bool {
+        self.command_ids.len() < GO_SUBMISSION_CAPACITY
+    }
+
+    pub fn unsettled_count(&self) -> usize {
+        self.command_ids.len()
+    }
+
+    pub fn start(&mut self, command_id: u64) {
+        debug_assert!(self.can_submit());
+        let inserted = self.command_ids.insert(command_id);
+        debug_assert!(inserted);
+    }
+
+    pub fn finish(&mut self, command_id: u64) -> bool {
+        self.command_ids.remove(&command_id)
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MainTab {

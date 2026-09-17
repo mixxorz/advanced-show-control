@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -20,6 +19,7 @@ use super::logs::LogsView;
 use super::menu::session_menu_button;
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
+use super::state::GoSubmissionGuard;
 use super::theme::{
     ACCENT_ORANGE, CONSOLE_BG, CONSOLE_CHROME, CONSOLE_LINE, CONSOLE_MUTED, CONSOLE_PRIMARY,
     CONSOLE_SECONDARY, STATUS_CUED, STATUS_CURRENT, STATUS_DANGER, STATUS_WARNING,
@@ -27,33 +27,6 @@ use super::theme::{
 use super::{CommandDispatcher, MainTab};
 
 type OpenConnection = dyn Fn(&mut Window, &mut gpui_kit::App);
-
-const GO_SUBMISSION_CAPACITY: usize = 8;
-
-/// @cc [owner:mixxorz,label:safety;product] go-outstanding-command-capacity
-/// Pointer and keyboard GO submission MUST share one eight-command capacity guard. Only a matching
-/// command completion may release its slot; unrelated or duplicate completions MUST NOT change the
-/// outstanding count.
-#[derive(Default)]
-pub(super) struct GoSubmissionGuard {
-    command_ids: HashSet<u64>,
-}
-
-impl GoSubmissionGuard {
-    pub fn can_submit(&self) -> bool {
-        self.command_ids.len() < GO_SUBMISSION_CAPACITY
-    }
-
-    pub fn start(&mut self, command_id: u64) {
-        debug_assert!(self.can_submit());
-        let inserted = self.command_ids.insert(command_id);
-        debug_assert!(inserted);
-    }
-
-    pub fn finish(&mut self, command_id: u64) -> bool {
-        self.command_ids.remove(&command_id)
-    }
-}
 
 pub struct AppShell {
     active_tab: MainTab,
@@ -409,12 +382,15 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
                             }
                             let command_id = go_dispatcher.dispatch_cued_cue_recall();
                             go_submissions.borrow_mut().start(command_id);
-                            entity.update(cx, |_, cx| cx.notify());
+                            entity.update(cx, |shell, cx| {
+                                shell.cue_lists.update(cx, |_, cx| cx.notify());
+                                cx.notify();
+                            });
                         }),
                 ),
         )
         .child(status_cell(
-            "CUED",
+            "NEXT",
             cued.map(|scene| scene.scene_name.as_str()).unwrap_or("---"),
             if cued.is_some() {
                 STATUS_CUED
@@ -505,10 +481,11 @@ mod tests {
     use chrono::NaiveTime;
 
     use super::{
-        AppConnectionState, CONSOLE_PRIMARY, GoSubmissionGuard, STATUS_CUED, STATUS_DANGER,
-        STATUS_WARNING, TimeDisplayFormat, connection_presentation, console_display_name,
-        format_time, should_dispatch_go_click,
+        AppConnectionState, CONSOLE_PRIMARY, STATUS_CUED, STATUS_DANGER, STATUS_WARNING,
+        TimeDisplayFormat, connection_presentation, console_display_name, format_time,
+        should_dispatch_go_click,
     };
+    use crate::native_ui::state::{GO_SUBMISSION_CAPACITY, GoSubmissionGuard};
 
     #[test]
     fn connection_presentation_maps_projected_state_to_label_and_status_color() {
@@ -530,7 +507,7 @@ mod tests {
     fn go_submission_guard_allows_eight_unsettled_commands() {
         let mut guard = GoSubmissionGuard::default();
 
-        for command_id in 1..=super::GO_SUBMISSION_CAPACITY as u64 {
+        for command_id in 1..=GO_SUBMISSION_CAPACITY as u64 {
             assert!(guard.can_submit());
             guard.start(command_id);
         }

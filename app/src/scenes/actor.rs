@@ -534,10 +534,10 @@ async fn run_scenes_actor(task: ScenesTask) {
                                     "session was replaced",
                                 );
                                 recall_state.replace_snapshot_for_session(document.scenes);
-                                cues.state.replace_document(document.cue_lists, recall_state.scene_configs().iter().map(|scene| scene.internal_scene_id));
+                                cues.replace_document(document.cue_lists, recall_state.scene_configs().iter().map(|scene| scene.internal_scene_id));
                                 event_bus.publish(AppEvent::SessionReplaced {
                                     generation: active_generation, scenes: recall_state.projection_state(),
-                                    cue_lists: crate::cue_lists::CueListsProjectionState { document: cues.state.document(), last_recall_status: None },
+                                    cue_lists: cues.projection_state(),
                                 });
                                 crate::session::SessionDocument { scenes: recall_state.snapshot(), cue_lists: cues.state.document() }
                             })

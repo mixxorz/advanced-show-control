@@ -322,6 +322,11 @@ impl CueListsState {
         result
     }
 
+    pub(crate) fn active_entry_exists(&self, cue_entry_id: Uuid) -> bool {
+        self.active_cue_list()
+            .is_some_and(|list| list.entries.iter().any(|entry| entry.id == cue_entry_id))
+    }
+
     fn active_cue_list(&self) -> Option<&CueList> {
         self.document
             .active_cue_list_id

@@ -1,3 +1,7 @@
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::rc::Rc;
+
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
 use gpui_kit::component::{
     Disableable, IconName, Sizable,
@@ -17,6 +21,7 @@ use super::{
         format_scene_number, scene_library_columns, scene_library_header, scene_library_panel,
         scene_library_row,
     },
+    state::GoSubmissionGuard,
     theme,
 };
 use crate::{
@@ -98,6 +103,7 @@ enum ManageCommand {
 pub struct CueListsView {
     snapshot: AppViewState,
     dispatcher: CommandDispatcher,
+    go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     selected_entry_id: Option<Uuid>,
     manage_open: bool,
     name_editor: Option<NameEditor>,
@@ -111,9 +117,10 @@ pub struct CueListsView {
 }
 
 impl CueListsView {
-    pub fn new(
+    pub(super) fn new(
         snapshot: AppViewState,
         dispatcher: CommandDispatcher,
+        go_submissions: Rc<RefCell<GoSubmissionGuard>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -127,6 +134,7 @@ impl CueListsView {
         Self {
             snapshot,
             dispatcher,
+            go_submissions,
             selected_entry_id: None,
             manage_open: false,
             name_editor: None,
@@ -511,17 +519,20 @@ impl CueListsView {
                 .child("No active cue list.")
                 .into_any_element();
         };
+        let pending_entry_ids = pending_cue_entry_ids(
+            &list.entries,
+            projected_entry_id(self.snapshot.cued_cue_entry_id.as_deref()),
+            self.go_submissions.borrow().unsettled_count(),
+        );
         div()
             .id("active-cue-entries")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
-            .children(
-                list.entries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, entry)| self.render_entry_row(entry, index, cx)),
-            )
+            .children(list.entries.into_iter().enumerate().map(|(index, entry)| {
+                let pending = pending_entry_ids.contains(&entry.id);
+                self.render_entry_row(entry, index, pending, cx)
+            }))
             .child(append)
             .into_any_element()
     }
@@ -530,22 +541,26 @@ impl CueListsView {
         &self,
         entry: CueEntry,
         index: usize,
+        pending: bool,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let scene = scene_by_id(&self.snapshot, entry.scene_internal_id);
         let missing = scene.is_none();
-        let current = scene.is_some_and(|scene| {
+        let active_scene = scene.is_some_and(|scene| {
             self.snapshot.current_scene.as_ref().is_some_and(|current| {
                 scene.scene_index == Some(current.index) && scene.scene_name == current.name
             })
         });
-        let cued =
-            self.snapshot.cued_cue_entry_id.as_deref() == Some(entry.id.to_string().as_str());
+        let current =
+            projected_entry_id(self.snapshot.current_cue_entry_id.as_deref()) == Some(entry.id);
+        let next = projected_entry_id(self.snapshot.cued_cue_entry_id.as_deref()) == Some(entry.id);
+        let arrow = cue_arrow_state(current, next, pending);
         let selected = self.selected_entry_id == Some(entry.id);
         let scene_name = scene.map_or("Missing scene", |scene| scene.scene_name.as_str());
         let display_name: SharedString = scene_name.to_string().into();
-        let highlight = cue_entry_highlight(selected, cued, current, missing);
+        let highlight = cue_entry_highlight(selected, arrow, missing);
         let color = highlight.unwrap_or(theme::CONSOLE_PRIMARY);
+        let arrow_color = arrow.map(CueArrowState::color).unwrap_or(color);
         let left_border = highlight.unwrap_or(theme::CONSOLE_PANEL);
         let entry_id = entry.id;
         let drag_name = display_name.clone();
@@ -631,16 +646,11 @@ impl CueListsView {
                         });
                     })
                     .child(
-                        div()
-                            .w(px(22.))
-                            .text_color(rgb(color))
-                            .child(div().ml(px(-2.)).child(
-                                if current || cued || selected || missing {
-                                    "▶"
-                                } else {
-                                    ""
-                                },
-                            )),
+                        div().w(px(22.)).text_color(rgb(arrow_color)).child(
+                            div()
+                                .ml(px(-2.))
+                                .child(if arrow.is_some() { "▶" } else { "" }),
+                        ),
                     )
                     .child(
                         div()
@@ -654,12 +664,26 @@ impl CueListsView {
                     .child(
                         div()
                             .w(px(54.))
-                            .text_right()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap_1()
                             .font_family("Fira Code")
-                            .text_color(rgb(color))
+                            .text_color(rgb(theme::CONSOLE_PRIMARY))
                             .child(format_scene_number(
                                 scene.and_then(|scene| scene.scene_index),
-                            )),
+                            ))
+                            .child(div().w(px(6.)).child(if active_scene {
+                                div()
+                                    .id(format!("cue-active-scene-{entry_id}"))
+                                    .test_support()
+                                    .size(px(6.))
+                                    .rounded_full()
+                                    .bg(rgb(theme::STATUS_CURRENT))
+                                    .into_any_element()
+                            } else {
+                                div().size(px(6.)).into_any_element()
+                            })),
                     ),
             )
             .child(
@@ -1156,13 +1180,66 @@ impl StableId for CueList {
     }
 }
 
-fn cue_entry_highlight(selected: bool, cued: bool, current: bool, missing: bool) -> Option<u32> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CueArrowState {
+    Current,
+    Next,
+    Pending,
+}
+
+impl CueArrowState {
+    fn color(self) -> u32 {
+        match self {
+            Self::Current => theme::STATUS_CURRENT,
+            Self::Next => theme::STATUS_CUED,
+            Self::Pending => theme::STATUS_WARNING,
+        }
+    }
+}
+
+fn projected_entry_id(id: Option<&str>) -> Option<Uuid> {
+    id.and_then(|id| Uuid::parse_str(id).ok())
+}
+
+/// The first unsettled GO belongs to the green Next row. Additional unsettled submissions are
+/// pending intent for the following rows; recomputing from the current count naturally closes gaps
+/// when a recall fails or is canceled without advancing Next.
+fn pending_cue_entry_ids(
+    entries: &[CueEntry],
+    next_entry_id: Option<Uuid>,
+    unsettled_go_count: usize,
+) -> HashSet<Uuid> {
+    let pending_count = unsettled_go_count.saturating_sub(1);
+    let Some(next_index) =
+        next_entry_id.and_then(|id| entries.iter().position(|entry| entry.id == id))
+    else {
+        return HashSet::new();
+    };
+    entries
+        .iter()
+        .skip(next_index + 1)
+        .take(pending_count)
+        .map(|entry| entry.id)
+        .collect()
+}
+
+fn cue_arrow_state(current: bool, next: bool, pending: bool) -> Option<CueArrowState> {
+    if next {
+        Some(CueArrowState::Next)
+    } else if pending {
+        Some(CueArrowState::Pending)
+    } else if current {
+        Some(CueArrowState::Current)
+    } else {
+        None
+    }
+}
+
+fn cue_entry_highlight(selected: bool, arrow: Option<CueArrowState>, missing: bool) -> Option<u32> {
     if selected {
         Some(theme::ACCENT_ORANGE)
-    } else if cued {
-        Some(theme::STATUS_CUED)
-    } else if current {
-        Some(theme::STATUS_CURRENT)
+    } else if let Some(arrow) = arrow {
+        Some(arrow.color())
     } else if missing {
         Some(theme::STATUS_WARNING)
     } else {
@@ -1198,27 +1275,60 @@ mod tests {
     }
 
     #[test]
-    fn cue_entry_highlights_prioritize_selected_then_cued_then_current() {
+    fn cue_arrow_state_prioritizes_next_then_pending_then_current() {
+        assert_eq!(cue_arrow_state(true, true, true), Some(CueArrowState::Next));
         assert_eq!(
-            cue_entry_highlight(true, true, true, false),
+            cue_arrow_state(true, false, true),
+            Some(CueArrowState::Pending)
+        );
+        assert_eq!(
+            cue_arrow_state(true, false, false),
+            Some(CueArrowState::Current)
+        );
+        assert_eq!(cue_arrow_state(false, false, false), None);
+        assert_eq!(CueArrowState::Current.color(), theme::STATUS_CURRENT);
+        assert_eq!(CueArrowState::Next.color(), theme::STATUS_CUED);
+        assert_eq!(CueArrowState::Pending.color(), theme::STATUS_WARNING);
+    }
+
+    #[test]
+    fn pending_cues_follow_next_without_queue_position_metadata() {
+        let entries = vec![entry(1, 11), entry(2, 12), entry(3, 13), entry(4, 14)];
+
+        assert_eq!(
+            pending_cue_entry_ids(&entries, Some(id(1)), 3),
+            HashSet::from([id(2), id(3)])
+        );
+        assert_eq!(
+            pending_cue_entry_ids(&entries, Some(id(2)), 2),
+            HashSet::from([id(3)])
+        );
+        assert!(pending_cue_entry_ids(&entries, Some(id(1)), 1).is_empty());
+        assert!(pending_cue_entry_ids(&entries, Some(id(99)), 3).is_empty());
+    }
+
+    #[test]
+    fn row_highlight_preserves_selection_without_changing_arrow_semantics() {
+        assert_eq!(
+            cue_entry_highlight(true, Some(CueArrowState::Current), false),
             Some(theme::ACCENT_ORANGE)
         );
         assert_eq!(
-            cue_entry_highlight(false, true, true, false),
+            cue_entry_highlight(false, Some(CueArrowState::Current), false),
+            Some(theme::STATUS_CURRENT)
+        );
+        assert_eq!(
+            cue_entry_highlight(false, Some(CueArrowState::Next), false),
             Some(theme::STATUS_CUED)
         );
         assert_eq!(
-            cue_entry_highlight(false, false, true, false),
-            Some(theme::STATUS_CURRENT)
-        );
-        assert_eq!(cue_entry_highlight(false, false, false, false), None);
-        assert_eq!(
-            cue_entry_highlight(false, false, false, true),
+            cue_entry_highlight(false, Some(CueArrowState::Pending), false),
             Some(theme::STATUS_WARNING)
         );
+        assert_eq!(cue_entry_highlight(false, None, false), None);
         assert_eq!(
-            cue_entry_highlight(true, false, false, true),
-            Some(theme::ACCENT_ORANGE)
+            cue_entry_highlight(false, None, true),
+            Some(theme::STATUS_WARNING)
         );
     }
 

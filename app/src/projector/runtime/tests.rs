@@ -87,6 +87,7 @@ fn cue_state() -> CueListsProjectionState {
             active_cue_list_id: Some(Uuid::from_u128(1)),
             cued_cue_entry_id: None,
         },
+        current_cue_entry_id: None,
         last_recall_status: Some("recalling".into()),
     }
 }

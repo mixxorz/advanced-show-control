@@ -262,6 +262,10 @@ impl ProjectionCache {
                 .document
                 .active_cue_list_id
                 .map(|id| id.to_string()),
+            current_cue_entry_id: state
+                .cue_lists
+                .current_cue_entry_id
+                .map(|id| id.to_string()),
             cued_cue_entry_id: state
                 .cue_lists
                 .document
@@ -400,6 +404,7 @@ mod tests {
                 active_cue_list_id: Some(cue_list_id),
                 cued_cue_entry_id: None,
             },
+            current_cue_entry_id: None,
             last_recall_status: Some("recalled".to_string()),
         };
         cache.append_log(UiLogEvent {
@@ -624,6 +629,7 @@ mod tests {
         let mut cache = ProjectionCache::new();
         let mut state = AppStateSnapshot::default();
         let cue_list_id = uuid::Uuid::from_u128(1);
+        let current_entry_id = uuid::Uuid::from_u128(2);
         state.cue_lists = CueListsProjectionState {
             document: crate::cue_lists::CueListDocument {
                 cue_lists: vec![crate::cue_lists::CueList {
@@ -634,12 +640,17 @@ mod tests {
                 active_cue_list_id: Some(cue_list_id),
                 cued_cue_entry_id: None,
             },
+            current_cue_entry_id: Some(current_entry_id),
             last_recall_status: None,
         };
 
         let snapshot = cache.build_snapshot(&state);
 
         assert_eq!(snapshot.cue_lists[0].name, "Main");
+        assert_eq!(
+            snapshot.current_cue_entry_id.as_deref(),
+            Some(current_entry_id.to_string().as_str())
+        );
         assert_eq!(
             snapshot.active_cue_list_id.as_deref(),
             Some(cue_list_id.to_string().as_str())

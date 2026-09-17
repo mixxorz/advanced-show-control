@@ -13,7 +13,7 @@ The production crate is `app/`. Domain actors and services live under `app/src/`
 | `lv1`       | Generation-scoped actor. Owns TCP transport/reconnect, OSC, and the LV1 live-state mirror.                                                      |
 | `fade`      | Generation-scoped actor. Owns fade timing, interpolation, readiness, override, safety cancellation, overlap, and writes.                       |
 | `scenes`    | One app-lifetime actor/document. Owns configs, selection, clipboard, scene-library reconciliation, capture/link/edit, recall policy, and queue. |
-| `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents and active/cued entries; has no task, peers, or event subscription. |
+| `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents, active/cued entries, and the runtime current-cue identity; has no task, peers, or event subscription. |
 | `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
 | `settings`  | App-lifetime actor. Owns app settings and private remembered LV1 identity in app-config `settings.json`.                                        |
 | `lifecycle` | Owns connection-generation transitions and generation-scoped peer installation/removal.                                                         |

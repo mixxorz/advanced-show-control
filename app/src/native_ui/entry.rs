@@ -10,6 +10,7 @@ use crate::projector::AppViewState;
 use super::cues::CueListsView;
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
+use super::state::GoSubmissionGuard;
 use super::{AppRoot, CommandDispatcher, NativeRuntime, menu, theme, ui_event_channel};
 
 pub fn run() -> Result<()> {
@@ -58,10 +59,17 @@ pub fn run() -> Result<()> {
                 },
                 move |window, cx| {
                     let initial = AppViewState::default();
+                    let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
                     let scenes = cx
                         .new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
                     let cue_lists = cx.new(|cx| {
-                        CueListsView::new(initial.clone(), dispatcher.clone(), window, cx)
+                        CueListsView::new(
+                            initial.clone(),
+                            dispatcher.clone(),
+                            go_submissions.clone(),
+                            window,
+                            cx,
+                        )
                     });
                     let settings =
                         cx.new(|cx| SettingsView::new(initial, dispatcher.clone(), window, cx));
@@ -73,6 +81,7 @@ pub fn run() -> Result<()> {
                             scenes,
                             cue_lists,
                             settings,
+                            go_submissions,
                             window,
                             cx,
                         )

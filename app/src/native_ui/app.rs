@@ -24,7 +24,8 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
-use super::shell::{AppShell, GoSubmissionGuard};
+use super::shell::AppShell;
+use super::state::GoSubmissionGuard;
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
 pub struct AppRoot {
@@ -45,13 +46,14 @@ impl AppRoot {
     /// that dialog closes, fixed session and Quit shortcuts and in-app session-menu actions MUST
     /// reach AppRoot without requiring another pointer or focus event.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         dispatcher: CommandDispatcher,
         projections: ProjectionSubscription,
         ui_events: mpsc::UnboundedReceiver<UiEvent>,
         scenes: Entity<ScenesView>,
         cue_lists: Entity<CueListsView>,
         settings: Entity<SettingsView>,
+        go_submissions: Rc<RefCell<GoSubmissionGuard>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -61,7 +63,6 @@ impl AppRoot {
         let initial = AppViewState::default();
         let connection = Rc::new(RefCell::new(ConnectionState::startup()));
         let latest_snapshot = Rc::new(RefCell::new(initial.clone()));
-        let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
         let open_connection_state = connection.clone();
         let open_snapshot = latest_snapshot.clone();
         let open_dispatcher = dispatcher.clone();
@@ -188,6 +189,7 @@ impl AppRoot {
                 let completed_error = result.as_ref().err().cloned();
                 self.connection.borrow_mut().finish_command(command_id);
                 if self.go_submissions.borrow_mut().finish(command_id) {
+                    self.cue_lists.update(cx, |_, cx| cx.notify());
                     self.shell.update(cx, |_, cx| cx.notify());
                 }
                 let failed = result.is_err();
@@ -516,6 +518,7 @@ impl AppRoot {
                 }
                 let command_id = self.dispatcher.dispatch_cued_cue_recall();
                 self.go_submissions.borrow_mut().start(command_id);
+                self.cue_lists.update(cx, |_, cx| cx.notify());
                 self.shell.update(cx, |_, cx| cx.notify());
             }
             RoutedAction::Cue => {

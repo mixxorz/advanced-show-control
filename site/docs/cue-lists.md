@@ -23,7 +23,7 @@ Use **Manage Cue Lists** to create, select, rename, reorder, or delete lists. De
 
 ## Prepare the next cue
 
-Select an entry, then select **Cue**. You can also double-click the entry. The cued row turns blue, and its scene name appears under **Cued** in the bottom status bar.
+Select an entry, then select **Cue**. You can also double-click the entry. The next row receives a green arrow, and its scene name appears under **Next** in the bottom status bar.
 
 Selecting a row does not cue it. This lets you inspect or edit the list without changing the scene prepared for **GO**.
 
@@ -32,23 +32,27 @@ Selecting a row does not cue it. This lets you inspect or edit the list without 
 Before pressing **GO**:
 
 1. Confirm that **SAFE** is off.
-2. Check the scene shown under **Cued**.
+2. Check the scene shown under **Next**.
 3. Confirm that it is the transition you want to run next.
 
-After a successful **GO**, the following entry is cued automatically. After the last entry, **Cued** returns to `---`.
+After a successful **GO**, the executed cue receives a blue arrow and the following entry becomes **Next**. After the last entry, **Next** returns to `---`.
 
-While a recall is in progress, each additional deliberate **GO** press queues another cue recall in order. Up to eight GO commands can remain unsettled at once; **GO** becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.
+While a recall is in progress, each additional deliberate **GO** press queues another cue recall in order. Pending cues after **Next** receive amber arrows. Up to eight GO commands can remain unsettled at once; **GO** becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.
 
-**GO** is unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists. An unlinked scene fade can still appear under **Cued**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
+**GO** is unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists. An unlinked scene fade can still appear under **Next**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
 
 ## Cue entry states
 
-| State | Meaning |
+| Indicator | Meaning |
 | --- | --- |
-| Selected | The entry you are working with. |
-| Cued | The entry prepared for **GO**. |
-| Current | Its LV1 scene is active. |
+| Blue arrow | The current, successfully executed cue. |
+| Green arrow | The next cue prepared for **GO**. |
+| Amber arrow | A cue pending in the ordered execution queue. |
+| Blue dot beside the scene number | The cue references the scene currently active in LV1. More than one row can show this dot. |
+| Selected row | The entry you are working with. |
 | Missing scene | The scene fade used by this entry no longer exists. |
+
+Scene numbers remain neutral so their color does not imply cue state.
 
 ![A cued entry whose scene fade is missing.](assets/screenshots/missing-cue-scene.png)
 
