@@ -324,6 +324,11 @@ impl CueListsView {
         cx.notify();
     }
 
+    pub(super) fn go_submitted(&mut self, cx: &mut Context<Self>) {
+        self.selected_entry_id = None;
+        cx.notify();
+    }
+
     fn render_scene_library(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let scenes = self.snapshot.scene_configs.clone();
         let recall_scene_id = selected_scene_config(&self.snapshot)
@@ -519,11 +524,13 @@ impl CueListsView {
                 .child("No active cue list.")
                 .into_any_element();
         };
-        let pending_entry_ids = pending_cue_entry_ids(
-            &list.entries,
-            projected_entry_id(self.snapshot.cued_cue_entry_id.as_deref()),
-            self.go_submissions.borrow().unsettled_count(),
-        );
+        let projected_next_entry_id =
+            projected_entry_id(self.snapshot.cued_cue_entry_id.as_deref());
+        let pending_go_count = self.go_submissions.borrow().presentation_pending_count();
+        let pending_entry_ids =
+            pending_cue_entry_ids(&list.entries, projected_next_entry_id, pending_go_count);
+        let next_entry_id =
+            displayed_next_cue_entry_id(&list.entries, projected_next_entry_id, pending_go_count);
         div()
             .id("active-cue-entries")
             .flex_1()
@@ -531,7 +538,8 @@ impl CueListsView {
             .overflow_y_scroll()
             .children(list.entries.into_iter().enumerate().map(|(index, entry)| {
                 let pending = pending_entry_ids.contains(&entry.id);
-                self.render_entry_row(entry, index, pending, cx)
+                let next = next_entry_id == Some(entry.id);
+                self.render_entry_row(entry, index, pending, next, cx)
             }))
             .child(append)
             .into_any_element()
@@ -542,6 +550,7 @@ impl CueListsView {
         entry: CueEntry,
         index: usize,
         pending: bool,
+        next: bool,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         let scene = scene_by_id(&self.snapshot, entry.scene_internal_id);
@@ -553,7 +562,6 @@ impl CueListsView {
         });
         let current =
             projected_entry_id(self.snapshot.current_cue_entry_id.as_deref()) == Some(entry.id);
-        let next = projected_entry_id(self.snapshot.cued_cue_entry_id.as_deref()) == Some(entry.id);
         let arrow = cue_arrow_state(current, next, pending);
         let selected = self.selected_entry_id == Some(entry.id);
         let scene_name = scene.map_or("Missing scene", |scene| scene.scene_name.as_str());
@@ -640,7 +648,8 @@ impl CueListsView {
                             if event.click_count() >= 2 {
                                 this.cue(entry_id, cx);
                             } else {
-                                this.selected_entry_id = Some(entry_id);
+                                this.selected_entry_id =
+                                    (this.selected_entry_id != Some(entry_id)).then_some(entry_id);
                                 cx.notify();
                             }
                         });
@@ -670,9 +679,6 @@ impl CueListsView {
                             .gap_1()
                             .font_family("Fira Code")
                             .text_color(rgb(theme::CONSOLE_PRIMARY))
-                            .child(format_scene_number(
-                                scene.and_then(|scene| scene.scene_index),
-                            ))
                             .child(div().w(px(6.)).child(if active_scene {
                                 div()
                                     .id(format!("cue-active-scene-{entry_id}"))
@@ -683,13 +689,16 @@ impl CueListsView {
                                     .into_any_element()
                             } else {
                                 div().size(px(6.)).into_any_element()
-                            })),
+                            }))
+                            .child(format_scene_number(
+                                scene.and_then(|scene| scene.scene_index),
+                            )),
                     ),
             )
             .child(
                 bordered_button(format!("remove-cue-entry-{entry_id}"))
                     .small()
-                    .ml_2()
+                    .ml_3()
                     .mr_2()
                     .danger()
                     .icon(IconName::Delete)
@@ -1201,15 +1210,14 @@ fn projected_entry_id(id: Option<&str>) -> Option<Uuid> {
     id.and_then(|id| Uuid::parse_str(id).ok())
 }
 
-/// The first unsettled GO belongs to the green Next row. Additional unsettled submissions are
-/// pending intent for the following rows; recomputing from the current count naturally closes gaps
-/// when a recall fails or is canceled without advancing Next.
+/// Presentation-pending GO submissions turn the projected Next row and its successors into pending
+/// intent. Recomputing from that count closes gaps when a recall fails or when a newer projection
+/// acknowledges a successful recall before its command completion arrives.
 fn pending_cue_entry_ids(
     entries: &[CueEntry],
     next_entry_id: Option<Uuid>,
     unsettled_go_count: usize,
 ) -> HashSet<Uuid> {
-    let pending_count = unsettled_go_count.saturating_sub(1);
     let Some(next_index) =
         next_entry_id.and_then(|id| entries.iter().position(|entry| entry.id == id))
     else {
@@ -1217,10 +1225,22 @@ fn pending_cue_entry_ids(
     };
     entries
         .iter()
-        .skip(next_index + 1)
-        .take(pending_count)
+        .skip(next_index)
+        .take(unsettled_go_count)
         .map(|entry| entry.id)
         .collect()
+}
+
+pub(super) fn displayed_next_cue_entry_id(
+    entries: &[CueEntry],
+    projected_next_entry_id: Option<Uuid>,
+    unsettled_go_count: usize,
+) -> Option<Uuid> {
+    let next_index =
+        projected_next_entry_id.and_then(|id| entries.iter().position(|entry| entry.id == id))?;
+    entries
+        .get(next_index + unsettled_go_count)
+        .map(|entry| entry.id)
 }
 
 fn cue_arrow_state(current: bool, next: bool, pending: bool) -> Option<CueArrowState> {
@@ -1292,19 +1312,37 @@ mod tests {
     }
 
     #[test]
-    fn pending_cues_follow_next_without_queue_position_metadata() {
+    fn pending_cues_begin_with_projected_next_without_queue_position_metadata() {
         let entries = vec![entry(1, 11), entry(2, 12), entry(3, 13), entry(4, 14)];
 
         assert_eq!(
             pending_cue_entry_ids(&entries, Some(id(1)), 3),
-            HashSet::from([id(2), id(3)])
+            HashSet::from([id(1), id(2), id(3)])
         );
         assert_eq!(
             pending_cue_entry_ids(&entries, Some(id(2)), 2),
-            HashSet::from([id(3)])
+            HashSet::from([id(2), id(3)])
         );
-        assert!(pending_cue_entry_ids(&entries, Some(id(1)), 1).is_empty());
+        assert_eq!(
+            pending_cue_entry_ids(&entries, Some(id(1)), 1),
+            HashSet::from([id(1)])
+        );
         assert!(pending_cue_entry_ids(&entries, Some(id(99)), 3).is_empty());
+
+        assert_eq!(
+            displayed_next_cue_entry_id(&entries, Some(id(1)), 0),
+            Some(id(1))
+        );
+        assert_eq!(
+            displayed_next_cue_entry_id(&entries, Some(id(1)), 1),
+            Some(id(2))
+        );
+        assert_eq!(
+            displayed_next_cue_entry_id(&entries, Some(id(1)), 3),
+            Some(id(4))
+        );
+        assert_eq!(displayed_next_cue_entry_id(&entries, Some(id(1)), 4), None);
+        assert_eq!(displayed_next_cue_entry_id(&entries, Some(id(99)), 1), None);
     }
 
     #[test]

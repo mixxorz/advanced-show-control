@@ -37,7 +37,7 @@ Before pressing **GO**:
 
 After a successful **GO**, the executed cue receives a blue arrow and the following entry becomes **Next**. After the last entry, **Next** returns to `---`.
 
-While a recall is in progress, each additional deliberate **GO** press queues another cue recall in order. Pending cues after **Next** receive amber arrows. Up to eight GO commands can remain unsettled at once; **GO** becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.
+When you press **GO**, the submitted cue immediately receives an amber arrow and the green **Next** arrow moves to the following cue. Each additional deliberate **GO** press queues that next cue in order and advances the green arrow again. Up to eight GO commands can remain unsettled at once; **GO** becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.
 
 **GO** is unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists. An unlinked scene fade can still appear under **Next**, but **GO** will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.
 

@@ -24,7 +24,7 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
-use super::shell::AppShell;
+use super::shell::{AppShell, resolve_next_entry_id, resolve_next_scene};
 use super::state::GoSubmissionGuard;
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
@@ -164,6 +164,7 @@ impl AppRoot {
                 if connection_was_visible && !self.connection.borrow().is_visible() {
                     window.close_dialog(cx);
                 }
+                self.go_submissions.borrow_mut().observe_snapshot(&snapshot);
                 *self.latest_snapshot.borrow_mut() = snapshot.clone();
                 window.set_window_title(&self.presentation.window_title());
                 self.shell
@@ -181,30 +182,38 @@ impl AppRoot {
                 cx.notify();
             }
             UiEvent::CommandFinished { command_id, result } => {
-                if self.pending_save_command_id.get() == Some(command_id) {
-                    self.pending_save_command_id.set(None);
+                self.finish_command_event(command_id, result, window, cx);
+            }
+            UiEvent::CueRecallFinished {
+                command_id,
+                session_revision,
+                canceled_by_session_replacement,
+                result,
+            } => {
+                let snapshot = self.latest_snapshot.borrow();
+                if !cue_completion_matches_session(session_revision, &snapshot) {
+                    return;
                 }
-                let was_connection_command =
-                    self.connection.borrow().pending_command_id == Some(command_id);
-                let completed_error = result.as_ref().err().cloned();
-                self.connection.borrow_mut().finish_command(command_id);
-                if self.go_submissions.borrow_mut().finish(command_id) {
+                if canceled_by_session_replacement {
+                    drop(snapshot);
+                    self.go_submissions.borrow_mut().invalidate();
                     self.cue_lists.update(cx, |_, cx| cx.notify());
                     self.shell.update(cx, |_, cx| cx.notify());
+                    self.finish_command_event(command_id, Ok(()), window, cx);
+                    return;
                 }
-                let failed = result.is_err();
-                let is_latest_command = self.presentation.complete_command(command_id, result);
-                self.shell.update(cx, |shell, cx| {
-                    shell.command_finished(command_id, failed, window, cx)
-                });
-                if was_connection_command {
-                    self.connection.borrow_mut().command_error = completed_error.clone();
+                let recalled_entry_id = result.as_ref().ok().map(|result| result.recalled_entry_id);
+                if !self.go_submissions.borrow_mut().finish(
+                    command_id,
+                    recalled_entry_id,
+                    &snapshot,
+                ) {
+                    return;
                 }
-                if is_latest_command && let Some(error) = completed_error {
-                    window.push_notification(Notification::error(error), cx);
-                }
-                self.sync_connection_dialog(window, cx);
-                cx.notify();
+                drop(snapshot);
+                self.cue_lists.update(cx, |_, cx| cx.notify());
+                self.shell.update(cx, |_, cx| cx.notify());
+                self.finish_command_event(command_id, result.map(|_| ()), window, cx);
             }
             UiEvent::SaveDestinationRequired { command_id } => {
                 if self.pending_save_command_id.get() == Some(command_id) {
@@ -228,6 +237,35 @@ impl AppRoot {
                 self.sync_connection_dialog(window, cx);
             }
         }
+    }
+
+    fn finish_command_event(
+        &mut self,
+        command_id: u64,
+        result: Result<(), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_save_command_id.get() == Some(command_id) {
+            self.pending_save_command_id.set(None);
+        }
+        let was_connection_command =
+            self.connection.borrow().pending_command_id == Some(command_id);
+        let completed_error = result.as_ref().err().cloned();
+        self.connection.borrow_mut().finish_command(command_id);
+        let failed = result.is_err();
+        let is_latest_command = self.presentation.complete_command(command_id, result);
+        self.shell.update(cx, |shell, cx| {
+            shell.command_finished(command_id, failed, window, cx)
+        });
+        if was_connection_command {
+            self.connection.borrow_mut().command_error = completed_error.clone();
+        }
+        if is_latest_command && let Some(error) = completed_error {
+            window.push_notification(Notification::error(error), cx);
+        }
+        self.sync_connection_dialog(window, cx);
+        cx.notify();
     }
 
     fn sync_connection_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -510,15 +548,28 @@ impl AppRoot {
         match action {
             RoutedAction::Go => {
                 cx.stop_propagation();
+                let pending_go_count = self.go_submissions.borrow().presentation_pending_count();
+                let state_version = self.presentation.snapshot().state_version;
+                let session_revision = self.presentation.snapshot().session_revision;
+                let next_entry_id =
+                    resolve_next_entry_id(self.presentation.snapshot(), pending_go_count);
                 if event.is_held
-                    || !self.presentation.cued_scene_is_valid()
+                    || resolve_next_scene(self.presentation.snapshot(), pending_go_count).is_none()
                     || !self.go_submissions.borrow().can_submit()
                 {
                     return;
                 }
-                let command_id = self.dispatcher.dispatch_cued_cue_recall();
-                self.go_submissions.borrow_mut().start(command_id);
-                self.cue_lists.update(cx, |_, cx| cx.notify());
+                let Some(next_entry_id) = next_entry_id else {
+                    return;
+                };
+                let command_id = self.dispatcher.dispatch_cued_cue_recall(session_revision);
+                self.go_submissions.borrow_mut().start(
+                    command_id,
+                    state_version,
+                    session_revision,
+                    next_entry_id,
+                );
+                self.cue_lists.update(cx, |cues, cx| cues.go_submitted(cx));
                 self.shell.update(cx, |_, cx| cx.notify());
             }
             RoutedAction::Cue => {
@@ -531,6 +582,10 @@ impl AppRoot {
             }
         }
     }
+}
+
+fn cue_completion_matches_session(session_revision: u64, snapshot: &AppViewState) -> bool {
+    session_revision == snapshot.session_revision
 }
 
 fn about_detail() -> &'static str {
@@ -599,9 +654,21 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        about_detail, ensure_show_file_extension, is_show_file_path, suggested_save_file_name,
+        about_detail, cue_completion_matches_session, ensure_show_file_extension,
+        is_show_file_path, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn stale_cue_completion_cannot_invalidate_a_new_session() {
+        let snapshot = AppViewState {
+            session_revision: 2,
+            ..Default::default()
+        };
+
+        assert!(!cue_completion_matches_session(1, &snapshot));
+        assert!(cue_completion_matches_session(2, &snapshot));
+    }
 
     #[test]
     fn show_file_paths_require_the_session_extension_case_insensitively() {

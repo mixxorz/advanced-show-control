@@ -96,8 +96,12 @@ mod macos {
             .open_window(size(px(1180.), px(780.)), |window, cx| {
                 let initial = AppViewState::default();
                 let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
-                go_submissions.borrow_mut().start(u64::MAX - 1);
-                go_submissions.borrow_mut().start(u64::MAX);
+                go_submissions.borrow_mut().start(
+                    u64::MAX,
+                    0,
+                    0,
+                    Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+                );
                 let scenes =
                     cx.new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
                 let cues = cx.new(|cx| {
@@ -281,6 +285,7 @@ mod macos {
         );
         cx.update_window(window.into(), |_, window, cx| {
             window.press("escape", cx);
+            window.click("select-cue-entry-44444444-4444-4444-8444-444444444444", cx);
         })?;
         cx.run_until_parked();
 
