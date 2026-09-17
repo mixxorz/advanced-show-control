@@ -26,6 +26,7 @@ pub(super) fn editable_numeric_control(
         .on_key_down(on_key_down)
         .child(
             bordered_button(SharedString::from(format!("{id}-decrease")))
+                .border_r_0()
                 .rounded_r_none()
                 .label("−")
                 .accessibility_label(format!("Decrease {label}"))
@@ -37,6 +38,7 @@ pub(super) fn editable_numeric_control(
                 Input::new(input)
                     .id(SharedString::from(format!("{id}-input")))
                     .aria_label(label)
+                    .border_r_0()
                     .rounded_none(),
             ),
         )
