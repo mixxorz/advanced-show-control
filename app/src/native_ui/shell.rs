@@ -109,6 +109,35 @@ impl AppShell {
         self.settings.read(cx).capture_active()
     }
 
+    pub(super) fn submit_go(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let pending_go_count = self.go_submissions.borrow().presentation_pending_count();
+        let Some(next_entry_id) = resolve_next_entry_id(&self.snapshot, pending_go_count) else {
+            return false;
+        };
+        if resolve_next_scene(&self.snapshot, pending_go_count).is_none()
+            || !self.go_submissions.borrow().can_submit()
+            || self.modal_open(cx)
+            || self.session_menu_open
+            || self.shortcut_capture_active(cx)
+        {
+            return false;
+        }
+
+        self.action_context.focus(window, cx);
+        let command_id = self
+            .dispatcher
+            .dispatch_cued_cue_recall(self.snapshot.session_revision);
+        self.go_submissions.borrow_mut().start(
+            command_id,
+            self.snapshot.state_version,
+            self.snapshot.session_revision,
+            next_entry_id,
+        );
+        self.cue_lists.update(cx, |cues, cx| cues.go_submitted(cx));
+        cx.notify();
+        true
+    }
+
     pub fn command_finished(
         &self,
         command_id: u64,
@@ -324,7 +353,6 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
         .map(|scene| scene.name.as_str())
         .unwrap_or("---");
     let pending_go_count = shell.go_submissions.borrow().presentation_pending_count();
-    let next_entry_id = resolve_next_entry_id(&shell.snapshot, pending_go_count);
     let cued = resolve_next_scene(&shell.snapshot, pending_go_count);
     let mode = if shell.snapshot.connection != AppConnectionState::Connected {
         ("Offline", CONSOLE_SECONDARY)
@@ -341,10 +369,6 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
         && !shell.modal_open(cx)
         && !shell.session_menu_open
         && !shell.shortcut_capture_active(cx);
-    let go_dispatcher = shell.dispatcher.clone();
-    let go_submissions = shell.go_submissions.clone();
-    let state_version = shell.snapshot.state_version;
-    let session_revision = shell.snapshot.session_revision;
     let entity = cx.entity();
 
     div()
@@ -378,26 +402,12 @@ fn bottom_status(shell: &AppShell, cx: &mut Context<AppShell>) -> impl IntoEleme
                         .accessibility_label("Recall cued scene")
                         .label("GO")
                         .disabled(!can_go)
-                        .on_click(move |event, _, cx| {
-                            if !should_dispatch_go_click(event.click_count())
-                                || !go_submissions.borrow().can_submit()
-                            {
+                        .on_click(move |event, window, cx| {
+                            if !should_dispatch_go_click(event.click_count()) {
                                 return;
                             }
-                            let Some(next_entry_id) = next_entry_id else {
-                                return;
-                            };
-                            let command_id =
-                                go_dispatcher.dispatch_cued_cue_recall(session_revision);
-                            go_submissions.borrow_mut().start(
-                                command_id,
-                                state_version,
-                                session_revision,
-                                next_entry_id,
-                            );
                             entity.update(cx, |shell, cx| {
-                                shell.cue_lists.update(cx, |cues, cx| cues.go_submitted(cx));
-                                cx.notify();
+                                shell.submit_go(window, cx);
                             });
                         }),
                 ),

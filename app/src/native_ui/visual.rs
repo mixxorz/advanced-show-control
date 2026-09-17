@@ -285,9 +285,36 @@ mod macos {
         );
         cx.update_window(window.into(), |_, window, cx| {
             window.press("escape", cx);
-            window.click("select-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.click("select-cue-entry-77777777-7777-4777-8777-777777777777", cx);
+        })?;
+        let dispatched_before_keyboard_go = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("space", cx);
+            assert!(window.focused(cx).is_some());
         })?;
         cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_keyboard_go + 1,
+            "keyboard GO did not dispatch exactly once"
+        );
+        let dispatched_after_keyboard_go = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("cue-selected", cx);
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_after_keyboard_go,
+            "keyboard GO left the focused cue row selected"
+        );
+        let dispatched_before_pointer_go = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("go", cx);
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_pointer_go + 1,
+            "pointer GO did not use the shared submission path"
+        );
 
         let mut tab_captures = Vec::new();
         let mut cue_manager_capture = None;

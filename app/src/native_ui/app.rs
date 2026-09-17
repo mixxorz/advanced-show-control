@@ -24,7 +24,7 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
-use super::shell::{AppShell, resolve_next_entry_id, resolve_next_scene};
+use super::shell::AppShell;
 use super::state::GoSubmissionGuard;
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
@@ -548,29 +548,12 @@ impl AppRoot {
         match action {
             RoutedAction::Go => {
                 cx.stop_propagation();
-                let pending_go_count = self.go_submissions.borrow().presentation_pending_count();
-                let state_version = self.presentation.snapshot().state_version;
-                let session_revision = self.presentation.snapshot().session_revision;
-                let next_entry_id =
-                    resolve_next_entry_id(self.presentation.snapshot(), pending_go_count);
-                if event.is_held
-                    || resolve_next_scene(self.presentation.snapshot(), pending_go_count).is_none()
-                    || !self.go_submissions.borrow().can_submit()
-                {
+                if event.is_held {
                     return;
                 }
-                let Some(next_entry_id) = next_entry_id else {
-                    return;
-                };
-                let command_id = self.dispatcher.dispatch_cued_cue_recall(session_revision);
-                self.go_submissions.borrow_mut().start(
-                    command_id,
-                    state_version,
-                    session_revision,
-                    next_entry_id,
-                );
-                self.cue_lists.update(cx, |cues, cx| cues.go_submitted(cx));
-                self.shell.update(cx, |_, cx| cx.notify());
+                self.shell.update(cx, |shell, cx| {
+                    shell.submit_go(window, cx);
+                });
             }
             RoutedAction::Cue => {
                 cx.stop_propagation();
