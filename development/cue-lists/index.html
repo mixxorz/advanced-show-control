@@ -798,38 +798,46 @@
 <p><img alt="The Manage Cue Lists dialog." src="../assets/screenshots/manage-cue-lists.png" /></p>
 <p>Use <strong>Manage Cue Lists</strong> to create, select, rename, reorder, or delete lists. Deleting a list does not delete its scenes or fade settings.</p>
 <h2 id="prepare-the-next-cue">Prepare the next cue<a class="headerlink" href="#prepare-the-next-cue" title="Permanent link">&para;</a></h2>
-<p>Select an entry, then select <strong>Cue</strong>. You can also double-click the entry. The cued row turns blue, and its scene name appears under <strong>Cued</strong> in the bottom status bar.</p>
+<p>Select an entry, then select <strong>Cue</strong>. You can also double-click the entry. The next row receives a green arrow, and its scene name appears under <strong>Next</strong> in the bottom status bar.</p>
 <p>Selecting a row does not cue it. This lets you inspect or edit the list without changing the scene prepared for <strong>GO</strong>.</p>
 <h2 id="use-go">Use GO<a class="headerlink" href="#use-go" title="Permanent link">&para;</a></h2>
 <p>Before pressing <strong>GO</strong>:</p>
 <ol>
 <li>Confirm that <strong>SAFE</strong> is off.</li>
-<li>Check the scene shown under <strong>Cued</strong>.</li>
+<li>Check the scene shown under <strong>Next</strong>.</li>
 <li>Confirm that it is the transition you want to run next.</li>
 </ol>
-<p>After a successful <strong>GO</strong>, the following entry is cued automatically. After the last entry, <strong>Cued</strong> returns to <code>---</code>.</p>
-<p>While a recall is in progress, each additional deliberate <strong>GO</strong> press queues another cue recall in order. Up to eight GO commands can remain unsettled at once; <strong>GO</strong> becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.</p>
-<p><strong>GO</strong> is unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists. An unlinked scene fade can still appear under <strong>Cued</strong>, but <strong>GO</strong> will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.</p>
+<p>After a successful <strong>GO</strong>, the executed cue receives a blue arrow and the following entry becomes <strong>Next</strong>. After the last entry, <strong>Next</strong> returns to <code>---</code>.</p>
+<p>When you press <strong>GO</strong>, the submitted cue immediately receives an amber arrow and the green <strong>Next</strong> arrow moves to the following cue. Each additional deliberate <strong>GO</strong> press queues that next cue in order and advances the green arrow again. Up to eight GO commands can remain unsettled at once; <strong>GO</strong> becomes available again as commands settle. A pointer double-click counts as one press, and holding the keyboard shortcut does not repeat it.</p>
+<p><strong>GO</strong> is unavailable when there is no active list, no cued entry, or the cue refers to a scene fade that no longer exists. An unlinked scene fade can still appear under <strong>Next</strong>, but <strong>GO</strong> will refuse the recall. Link the fade to the intended LV1 scene, confirm the scene number and name, then try again.</p>
 <h2 id="cue-entry-states">Cue entry states<a class="headerlink" href="#cue-entry-states" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>State</th>
+<th>Indicator</th>
 <th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Selected</td>
+<td>Blue arrow</td>
+<td>The current, successfully executed cue.</td>
+</tr>
+<tr>
+<td>Green arrow</td>
+<td>The next cue prepared for <strong>GO</strong>.</td>
+</tr>
+<tr>
+<td>Amber arrow</td>
+<td>A cue pending in the ordered execution queue.</td>
+</tr>
+<tr>
+<td>Blue dot beside the scene number</td>
+<td>The cue references the scene currently active in LV1. More than one row can show this dot.</td>
+</tr>
+<tr>
+<td>Selected row</td>
 <td>The entry you are working with.</td>
-</tr>
-<tr>
-<td>Cued</td>
-<td>The entry prepared for <strong>GO</strong>.</td>
-</tr>
-<tr>
-<td>Current</td>
-<td>Its LV1 scene is active.</td>
 </tr>
 <tr>
 <td>Missing scene</td>
@@ -837,6 +845,7 @@
 </tr>
 </tbody>
 </table>
+<p>Scene numbers remain neutral so their color does not imply cue state.</p>
 <p><img alt="A cued entry whose scene fade is missing." src="../assets/screenshots/missing-cue-scene.png" /></p>
 <h2 id="keyboard-operation">Keyboard operation<a class="headerlink" href="#keyboard-operation" title="Permanent link">&para;</a></h2>
 <p>The default shortcut for <strong>Cue</strong> is <code>C</code>. The default shortcut for <strong>GO</strong> is <code>Space</code>.</p>
