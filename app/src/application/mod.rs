@@ -525,7 +525,17 @@ fn enqueue_cued_cue_recall(cue_lists: &CueListsHandle) -> Result<PendingCueRecal
 pub(crate) async fn complete_cued_cue_recall(
     response: PendingCueRecall,
 ) -> Result<CueRecallResult, String> {
-    receive(response).await?.map_err(map_app_command_error)
+    complete_cued_cue_recall_typed(response)
+        .await
+        .map_err(map_app_command_error)
+}
+
+pub(crate) async fn complete_cued_cue_recall_typed(
+    response: PendingCueRecall,
+) -> Result<CueRecallResult, AppCommandError> {
+    response
+        .await
+        .map_err(|_| AppCommandError::ReplyChannelClosed)?
 }
 
 fn cue_lists_unavailable() -> String {

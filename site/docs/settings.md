@@ -30,7 +30,7 @@ Enable **Extensive diagnostics** only while you investigate a problem. When it i
 2. Press the key combination you want.
 3. Confirm the displayed shortcut.
 
-Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when needed. Pressing a modifier by itself keeps capture open. `Tab` can be used as a shortcut. A shortcut cannot duplicate the other action or **New Session**, **Open Session...**, **Save Session**, or **Save As...**.
+Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when needed. Pressing a modifier by itself keeps capture open. `Tab` can be used as a shortcut. A shortcut cannot duplicate the other action or **New Session**, **Open Session…**, **Save Session**, **Save Session As…**, or **Quit**. Quit is `Cmd+Q` on macOS and `Alt+F4` on Windows.
 
 Shortcuts do not operate while you are entering text or working in a dialog. Holding a shortcut does not repeat CUE or GO. A shortcut does not bypass **SAFE**, connection checks, or the LV1 scene number-and-name check.
 
@@ -45,7 +45,7 @@ In v2, **Auto load last show file** does not open a session, **Auto save session
 | Setting | Default | What to do instead |
 | --- | --- | --- |
 | **Auto load last show file** | Off | Open the required session yourself. |
-| **Auto save sessions** | Off | Use **File > Save Session** after each intended change. |
+| **Auto save sessions** | Off | Open the burger menu in the top bar and select **Save Session** after each intended change. |
 | **Fader override sensitivity** | `9` | During a fade, a fader you move follows your move while other scoped controls may continue. Rehearse this response before show use. |
 
 **Fader override sensitivity** accepts `1` through `10`, but it is inactive in v2.

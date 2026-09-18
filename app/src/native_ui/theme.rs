@@ -56,6 +56,8 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         let colors = &mut theme.colors;
         colors.background = rgb(CONSOLE_BG).into();
         colors.foreground = rgb(CONSOLE_PRIMARY).into();
+        colors.popover = rgb(CONSOLE_SECTION).into();
+        colors.popover_foreground = rgb(CONSOLE_PRIMARY).into();
         colors.border = rgb(CONSOLE_LINE).into();
         colors.input = rgb(CONSOLE_LINE_STRONG).into();
         colors.ring = rgb(ACCENT_ORANGE).into();
@@ -129,6 +131,9 @@ mod tests {
             assert_eq!(theme.mono_font_family.as_ref(), "Fira Code");
             assert_eq!(theme.mode, ThemeMode::Dark);
             assert_eq!(theme.colors.background, rgb(CONSOLE_BG).into());
+            assert_eq!(theme.colors.popover, rgb(CONSOLE_SECTION).into());
+            assert_eq!(theme.tokens.popover.color, rgb(CONSOLE_SECTION).into());
+            assert_eq!(theme.colors.popover_foreground, rgb(CONSOLE_PRIMARY).into());
             assert_eq!(
                 theme.colors.button_primary,
                 rgb(ACCENT_ORANGE_ACTIVE).into()

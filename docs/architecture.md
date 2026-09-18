@@ -13,17 +13,17 @@ The production crate is `app/`. Domain actors and services live under `app/src/`
 | `lv1`       | Generation-scoped actor. Owns TCP transport/reconnect, OSC, and the LV1 live-state mirror.                                                      |
 | `fade`      | Generation-scoped actor. Owns fade timing, interpolation, readiness, override, safety cancellation, overlap, and writes.                       |
 | `scenes`    | One app-lifetime actor/document. Owns configs, selection, clipboard, scene-library reconciliation, capture/link/edit, recall policy, and queue. |
-| `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents and active/cued entries; has no task, peers, or event subscription. |
+| `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents, active/cued entries, and the runtime current-cue identity; has no task, peers, or event subscription. |
 | `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
 | `settings`  | App-lifetime actor. Owns app settings and private remembered LV1 identity in app-config `settings.json`.                                        |
 | `lifecycle` | Owns connection-generation transitions and generation-scoped peer installation/removal.                                                         |
 | `projector` | App-lifetime `AppViewState` cache and sole publisher to the native projection sink.                                                            |
 | `runtime`   | Owns `AppEventBus`, lifecycle facts, generation guards, and UI-safe command errors.                                                             |
-| `native_ui` | Owns the GPUI host, views, native menus/dialogs, Tokio bridge, and thin command dispatch.                                                        |
+| `native_ui` | Owns the GPUI host, views, in-app session menu, macOS application menu, dialogs, Tokio bridge, and thin command dispatch.                       |
 
 ## Commands and Facts
 
-Native menu actions and visible GPUI controls use the same host-neutral command dispatch. Dialog behavior, mailbox dispatch, and error mapping remain adapter concerns under `native_ui/`.
+In-app session-menu actions, the retained native macOS application-menu actions, and other visible GPUI controls use the same host-neutral command dispatch. Windows does not install a native application menu. Dialog behavior, mailbox dispatch, and error mapping remain adapter concerns under `native_ui/`.
 
 Actors receive explicit mailbox command enums. Show, Scenes, Cue Lists, Settings, and Fade handles are typed Tokio senders, not forwarding wrapper objects. The app-lifetime Scenes handle is always available from lifecycle; only its connection-dependent operations can be unavailable. Shared adapter helpers own request/reply plumbing while call sites still construct explicit command variants. A caller attaches a `oneshot` reply only when it needs a result. Business logic and validation belong to the owning actor, not a handle or native UI adapter.
 

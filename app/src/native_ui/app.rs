@@ -5,8 +5,9 @@ use std::time::Duration;
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{Root, WindowExt as _};
 use gpui_kit::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, PathPromptOptions, PromptLevel, Render, Styled as _, Window, div,
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, PathPromptOptions, PromptLevel, Render, Styled as _, Window,
+    div,
 };
 use tokio::sync::mpsc;
 
@@ -18,17 +19,19 @@ use super::keyboard::{
     InteractionState, RoutedAction, global_key_context, normalized_physical_key, route_action,
 };
 use super::logs::LogsView;
-use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, SaveShow, SaveShowAs};
+use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow, SaveShowAs};
 #[cfg(target_os = "macos")]
-use super::menu::{Hide, HideOthers, Quit};
+use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
 use super::settings_view::SettingsView;
-use super::shell::{AppShell, GoSubmissionGuard};
+use super::shell::AppShell;
+use super::state::GoSubmissionGuard;
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
 pub struct AppRoot {
     presentation: PresentationState,
     dispatcher: CommandDispatcher,
+    focus: FocusHandle,
     shell: Entity<AppShell>,
     cue_lists: Entity<CueListsView>,
     connection: Rc<RefCell<ConnectionState>>,
@@ -38,22 +41,28 @@ pub struct AppRoot {
 }
 
 impl AppRoot {
+    /// @cc [owner:mixxorz,label:accessibility;keyboard] session-action-focus
+    /// AppRoot MUST establish a live tracked action context before a startup dialog can open. After
+    /// that dialog closes, fixed session and Quit shortcuts and in-app session-menu actions MUST
+    /// reach AppRoot without requiring another pointer or focus event.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub(super) fn new(
         dispatcher: CommandDispatcher,
         projections: ProjectionSubscription,
         ui_events: mpsc::UnboundedReceiver<UiEvent>,
         scenes: Entity<ScenesView>,
         cue_lists: Entity<CueListsView>,
         settings: Entity<SettingsView>,
+        go_submissions: Rc<RefCell<GoSubmissionGuard>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         dispatcher.bridge_projections(projections);
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
         let initial = AppViewState::default();
         let connection = Rc::new(RefCell::new(ConnectionState::startup()));
         let latest_snapshot = Rc::new(RefCell::new(initial.clone()));
-        let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
         let open_connection_state = connection.clone();
         let open_snapshot = latest_snapshot.clone();
         let open_dispatcher = dispatcher.clone();
@@ -66,6 +75,7 @@ impl AppRoot {
                 settings,
                 cx.new(|_| LogsView::new(initial)),
                 go_submissions.clone(),
+                focus.clone(),
                 move |window, cx| {
                     open_connection_state.borrow_mut().open_manual();
                     if !window.has_active_dialog(cx) {
@@ -97,6 +107,7 @@ impl AppRoot {
         Self {
             presentation: PresentationState::default(),
             dispatcher,
+            focus,
             shell,
             cue_lists,
             connection,
@@ -153,6 +164,7 @@ impl AppRoot {
                 if connection_was_visible && !self.connection.borrow().is_visible() {
                     window.close_dialog(cx);
                 }
+                self.go_submissions.borrow_mut().observe_snapshot(&snapshot);
                 *self.latest_snapshot.borrow_mut() = snapshot.clone();
                 window.set_window_title(&self.presentation.window_title());
                 self.shell
@@ -170,29 +182,38 @@ impl AppRoot {
                 cx.notify();
             }
             UiEvent::CommandFinished { command_id, result } => {
-                if self.pending_save_command_id.get() == Some(command_id) {
-                    self.pending_save_command_id.set(None);
+                self.finish_command_event(command_id, result, window, cx);
+            }
+            UiEvent::CueRecallFinished {
+                command_id,
+                session_revision,
+                canceled_by_session_replacement,
+                result,
+            } => {
+                let snapshot = self.latest_snapshot.borrow();
+                if !cue_completion_matches_session(session_revision, &snapshot) {
+                    return;
                 }
-                let was_connection_command =
-                    self.connection.borrow().pending_command_id == Some(command_id);
-                let completed_error = result.as_ref().err().cloned();
-                self.connection.borrow_mut().finish_command(command_id);
-                if self.go_submissions.borrow_mut().finish(command_id) {
+                if canceled_by_session_replacement {
+                    drop(snapshot);
+                    self.go_submissions.borrow_mut().invalidate();
+                    self.cue_lists.update(cx, |_, cx| cx.notify());
                     self.shell.update(cx, |_, cx| cx.notify());
+                    self.finish_command_event(command_id, Ok(()), window, cx);
+                    return;
                 }
-                let failed = result.is_err();
-                let is_latest_command = self.presentation.complete_command(command_id, result);
-                self.shell.update(cx, |shell, cx| {
-                    shell.command_finished(command_id, failed, window, cx)
-                });
-                if was_connection_command {
-                    self.connection.borrow_mut().command_error = completed_error.clone();
+                let recalled_entry_id = result.as_ref().ok().map(|result| result.recalled_entry_id);
+                if !self.go_submissions.borrow_mut().finish(
+                    command_id,
+                    recalled_entry_id,
+                    &snapshot,
+                ) {
+                    return;
                 }
-                if is_latest_command && let Some(error) = completed_error {
-                    window.push_notification(Notification::error(error), cx);
-                }
-                self.sync_connection_dialog(window, cx);
-                cx.notify();
+                drop(snapshot);
+                self.cue_lists.update(cx, |_, cx| cx.notify());
+                self.shell.update(cx, |_, cx| cx.notify());
+                self.finish_command_event(command_id, result.map(|_| ()), window, cx);
             }
             UiEvent::SaveDestinationRequired { command_id } => {
                 if self.pending_save_command_id.get() == Some(command_id) {
@@ -216,6 +237,35 @@ impl AppRoot {
                 self.sync_connection_dialog(window, cx);
             }
         }
+    }
+
+    fn finish_command_event(
+        &mut self,
+        command_id: u64,
+        result: Result<(), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_save_command_id.get() == Some(command_id) {
+            self.pending_save_command_id.set(None);
+        }
+        let was_connection_command =
+            self.connection.borrow().pending_command_id == Some(command_id);
+        let completed_error = result.as_ref().err().cloned();
+        self.connection.borrow_mut().finish_command(command_id);
+        let failed = result.is_err();
+        let is_latest_command = self.presentation.complete_command(command_id, result);
+        self.shell.update(cx, |shell, cx| {
+            shell.command_finished(command_id, failed, window, cx)
+        });
+        if was_connection_command {
+            self.connection.borrow_mut().command_error = completed_error.clone();
+        }
+        if is_latest_command && let Some(error) = completed_error {
+            window.push_notification(Notification::error(error), cx);
+        }
+        self.sync_connection_dialog(window, cx);
+        cx.notify();
     }
 
     fn sync_connection_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -455,7 +505,6 @@ impl AppRoot {
         }
     }
 
-    #[cfg(target_os = "macos")]
     fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
         if self.shell.read(cx).shortcut_capture_active(cx) {
             cx.propagate();
@@ -467,8 +516,8 @@ impl AppRoot {
     /// @cc [owner:mixxorz,label:safety;keyboard] go-shortcut-routing
     /// A matching GO keydown MUST be consumed and each distinct non-held press with a resolvable
     /// projected cue MUST dispatch while fewer than eight GO commands are unsettled, including while
-    /// earlier recalls are pending. Repeats and key events owned by editable controls or dialogs MUST
-    /// NOT dispatch.
+    /// earlier recalls are pending. Repeats and key events owned by editable controls, dialogs, or an
+    /// open session menu MUST NOT dispatch.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let custom_modal_open = self.shell.read(cx).modal_open(cx);
         if custom_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
@@ -479,7 +528,9 @@ impl AppRoot {
             return;
         }
         let interaction = InteractionState {
-            modal_open: window.has_active_dialog(cx) || custom_modal_open,
+            modal_open: window.has_active_dialog(cx)
+                || custom_modal_open
+                || self.shell.read(cx).session_menu_open(),
             editable_focused: event.prefer_character_input,
         };
         let capture_active = self.shell.read(cx).shortcut_capture_active(cx);
@@ -497,15 +548,12 @@ impl AppRoot {
         match action {
             RoutedAction::Go => {
                 cx.stop_propagation();
-                if event.is_held
-                    || !self.presentation.cued_scene_is_valid()
-                    || !self.go_submissions.borrow().can_submit()
-                {
+                if event.is_held {
                     return;
                 }
-                let command_id = self.dispatcher.dispatch_cued_cue_recall();
-                self.go_submissions.borrow_mut().start(command_id);
-                self.shell.update(cx, |_, cx| cx.notify());
+                self.shell.update(cx, |shell, cx| {
+                    shell.submit_go(window, cx);
+                });
             }
             RoutedAction::Cue => {
                 cx.stop_propagation();
@@ -517,6 +565,10 @@ impl AppRoot {
             }
         }
     }
+}
+
+fn cue_completion_matches_session(session_revision: u64, snapshot: &AppViewState) -> bool {
+    session_revision == snapshot.session_revision
 }
 
 fn about_detail() -> &'static str {
@@ -560,17 +612,18 @@ impl Render for AppRoot {
             .relative()
             .size_full()
             .key_context(global_key_context())
+            .track_focus(&self.focus)
             .on_action(cx.listener(Self::on_about))
             .on_action(cx.listener(Self::on_new_show))
             .on_action(cx.listener(Self::on_new_show_from_template))
             .on_action(cx.listener(Self::on_open_show))
             .on_action(cx.listener(Self::on_save_show))
-            .on_action(cx.listener(Self::on_save_show_as));
+            .on_action(cx.listener(Self::on_save_show_as))
+            .on_action(cx.listener(Self::on_quit));
         #[cfg(target_os = "macos")]
         let root = root
             .on_action(cx.listener(Self::on_hide))
-            .on_action(cx.listener(Self::on_hide_others))
-            .on_action(cx.listener(Self::on_quit));
+            .on_action(cx.listener(Self::on_hide_others));
         root.on_key_down(cx.listener(Self::on_key_down))
             .child(self.shell.clone())
             .children(Root::render_sheet_layer(window, cx))
@@ -584,9 +637,21 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        about_detail, ensure_show_file_extension, is_show_file_path, suggested_save_file_name,
+        about_detail, cue_completion_matches_session, ensure_show_file_extension,
+        is_show_file_path, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn stale_cue_completion_cannot_invalidate_a_new_session() {
+        let snapshot = AppViewState {
+            session_revision: 2,
+            ..Default::default()
+        };
+
+        assert!(!cue_completion_matches_session(1, &snapshot));
+        assert!(cue_completion_matches_session(2, &snapshot));
+    }
 
     #[test]
     fn show_file_paths_require_the_session_extension_case_insensitively() {

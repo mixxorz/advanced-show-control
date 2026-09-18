@@ -3,7 +3,7 @@ use std::future::Future;
 
 use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use crate::native_ui::CommandDispatcher;
 use crate::native_ui::button::bordered_button;
+use crate::native_ui::numeric_control::editable_numeric_control;
 use crate::native_ui::scene_library::{
     format_scene_number, scene_library_columns, scene_library_header, scene_library_panel,
     scene_library_row,
@@ -194,6 +195,7 @@ impl ScenesView {
     }
 
     fn commit_duration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.duration_edit_revision = self.duration_edit_revision.wrapping_add(1);
         let Some(scene) = selected_scene(&self.snapshot) else {
             return;
         };
@@ -204,8 +206,12 @@ impl ScenesView {
             self.reset_duration(projected, window, cx);
             return;
         };
-        if duration_ms == projected && self.pending_duration_command.is_none() {
-            self.reset_duration(projected, window, cx);
+        let pending_target = self
+            .pending_duration_command
+            .filter(|(_, pending_scene, _)| *pending_scene == scene_id)
+            .map(|(_, _, target)| target);
+        if !duration_update_requires_dispatch(duration_ms, projected, pending_target) {
+            self.reset_duration(duration_ms, window, cx);
             return;
         }
         let command_id = self.dispatch_duration(scene_id, duration_ms);
@@ -214,7 +220,7 @@ impl ScenesView {
     }
 
     fn dispatch_duration(&self, scene_id: Uuid, duration_ms: u64) -> u64 {
-        self.dispatcher.dispatch(move |commands| async move {
+        self.dispatcher.dispatch_serial(move |commands| async move {
             commands
                 .set_scene_duration_ms(scene_id, duration_ms)
                 .await
@@ -252,7 +258,8 @@ impl ScenesView {
         });
     }
 
-    fn discard_duration_draft(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn discard_duration_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.duration_edit_revision = self.duration_edit_revision.wrapping_add(1);
         if let Some(scene) = selected_scene(&self.snapshot) {
             self.reset_duration(scene.duration_ms, window, cx);
         }
@@ -413,6 +420,8 @@ impl ScenesView {
         let scene_id = scene.internal_scene_id;
         let unlinked = scene.scene_index.is_none();
         let clipboard = self.snapshot.scene_settings_clipboard_available;
+        let duration_draft = self.duration_input.read(cx).value().to_string();
+        let duration_base = normalize_duration(&duration_draft).unwrap_or(scene.duration_ms);
 
         div()
             .flex()
@@ -470,56 +479,54 @@ impl ScenesView {
                     .gap_2()
                     .text_color(rgb(CONSOLE_SECONDARY))
                     .child("X-FADE")
-                    .child(
-                        div()
-                            .w(px(96.))
-                            .on_key_down(cx.listener(
-                                |this, event: &gpui_kit::KeyDownEvent, window, cx| {
-                                    if this.pending_overwrite.is_none()
-                                        && super::keyboard::normalized_physical_key(
-                                            &event.keystroke,
-                                        ) == "Escape"
-                                    {
-                                        this.discard_duration_draft(window, cx);
-                                        cx.stop_propagation();
-                                    }
-                                },
-                            ))
-                            .child(Input::new(&self.duration_input)),
-                    )
-                    .child(self.duration_step_button(1, cx))
-                    .child(self.duration_step_button(-1, cx)),
+                    .child(editable_numeric_control(
+                        "scene-x-fade",
+                        "Scene crossfade duration",
+                        &self.duration_input,
+                        duration_base > 0,
+                        duration_base < 120_000,
+                        cx.listener(|this, _, window, cx| {
+                            this.step_duration_control(-1, window, cx)
+                        }),
+                        cx.listener(|this, _, window, cx| {
+                            this.step_duration_control(1, window, cx)
+                        }),
+                        cx.listener(|this, event: &gpui_kit::KeyDownEvent, window, cx| {
+                            if this.pending_overwrite.is_none()
+                                && super::keyboard::normalized_physical_key(&event.keystroke)
+                                    == "Escape"
+                            {
+                                this.discard_duration_draft(window, cx);
+                                cx.stop_propagation();
+                            }
+                        }),
+                    )),
             )
     }
 
-    fn duration_step_button(&self, direction: i64, cx: &mut Context<Self>) -> Button {
-        let label = if direction > 0 { "+1S" } else { "−1S" };
-        bordered_button(if direction > 0 {
-            "duration-step-up"
-        } else {
-            "duration-step-down"
-        })
-        .label(label)
-        .small()
-        .on_click(cx.listener(move |this, _, window, cx| {
-            let Some(scene) = selected_scene(&this.snapshot) else {
-                return;
-            };
-            let scene_id = scene.internal_scene_id;
-            let projected = scene.duration_ms;
-            let draft = this.duration_input.read(cx).value().to_string();
-            let next = stepped_duration(&draft, projected, direction);
-            this.duration_edit_revision = this.duration_edit_revision.wrapping_add(1);
-            if duration_step_requires_dispatch(
-                next,
-                projected,
-                this.pending_duration_command.is_some(),
-            ) {
-                let command_id = this.dispatch_duration(scene_id, next);
-                this.pending_duration_command = Some((command_id, scene_id, next));
-            }
-            this.reset_duration(next, window, cx);
-        }))
+    fn step_duration_control(
+        &mut self,
+        direction: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(scene) = selected_scene(&self.snapshot) else {
+            return;
+        };
+        let scene_id = scene.internal_scene_id;
+        let projected = scene.duration_ms;
+        let draft = self.duration_input.read(cx).value().to_string();
+        let next = stepped_duration(&draft, projected, direction);
+        self.duration_edit_revision = self.duration_edit_revision.wrapping_add(1);
+        let pending_target = self
+            .pending_duration_command
+            .filter(|(_, pending_scene, _)| *pending_scene == scene_id)
+            .map(|(_, _, target)| target);
+        if duration_update_requires_dispatch(next, projected, pending_target) {
+            let command_id = self.dispatch_duration(scene_id, next);
+            self.pending_duration_command = Some((command_id, scene_id, next));
+        }
+        self.reset_duration(next, window, cx);
     }
 
     fn render_link_controls(
@@ -1083,8 +1090,12 @@ fn preserve_pending_duration_draft(
     })
 }
 
-fn duration_step_requires_dispatch(next: u64, projected: u64, pending: bool) -> bool {
-    next != projected || pending
+fn duration_update_requires_dispatch(
+    next: u64,
+    projected: u64,
+    pending_target: Option<u64>,
+) -> bool {
+    pending_target.map_or(next != projected, |pending| pending != next)
 }
 
 fn stepped_duration(draft: &str, projected: u64, direction: i64) -> u64 {
@@ -1194,6 +1205,19 @@ mod tests {
     }
 
     #[test]
+    fn duration_updates_do_not_repeat_an_identical_pending_target() {
+        assert!(duration_update_requires_dispatch(2_000, 1_000, None));
+        assert!(!duration_update_requires_dispatch(1_000, 1_000, None));
+        assert!(!duration_update_requires_dispatch(
+            2_000,
+            1_000,
+            Some(2_000)
+        ));
+        assert!(duration_update_requires_dispatch(3_000, 1_000, Some(2_000)));
+        assert!(duration_update_requires_dispatch(1_000, 1_000, Some(2_000)));
+    }
+
+    #[test]
     fn duration_steps_use_the_typed_draft_as_their_base() {
         let first = stepped_duration("1.0s", 1_000, 1);
         let second = stepped_duration(&format_duration(first), 1_000, 1);
@@ -1201,8 +1225,11 @@ mod tests {
         assert_eq!(first, 2_000);
         assert_eq!(second, 3_000);
         assert_eq!(stepped_duration("invalid", 1_000, -1), 0);
-        assert!(duration_step_requires_dispatch(1_000, 1_000, true));
-        assert!(!duration_step_requires_dispatch(1_000, 1_000, false));
+        assert!(!duration_update_requires_dispatch(
+            2_000,
+            1_000,
+            Some(2_000)
+        ));
     }
 
     #[test]

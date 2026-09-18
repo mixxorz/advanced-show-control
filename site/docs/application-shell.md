@@ -6,9 +6,9 @@ The application shell keeps the controls you need during a show in one place: co
 
 ## Top bar
 
-Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**. The **Events** tab is visible in v2, but event automation is not yet available.
+The square burger button immediately before **Scenes** opens the session menu. Use the tabs to move between **Scenes**, **Cue Lists**, **Logs**, and **Settings**.
 
-The connection indicator shows **Connected**, **Connecting**, or **Offline**. Select the console name to open **Connect to LV1** or change consoles.
+The connection indicator shows a green, amber, or red dot beside **Connected**, **Connecting**, or **Offline**, respectively. Select the console-name button and its trailing arrow to open **Connect to LV1** or change consoles.
 
 If LV1 disconnects, the status changes to **Offline**. Open **Connect to LV1**, select the intended available console, and wait for **Connected** before recalling a scene.
 
@@ -24,16 +24,16 @@ If you want to use **Mode** to watch a fade finish, wait until the fade is compl
 
 ## Bottom status bar
 
-The bottom bar shows the information you need before **GO**:
+The larger **GO** section occupies the left side of the bottom bar. The remaining width is divided evenly among the information you need before **GO**:
 
 | Item | What it shows |
 | --- | --- |
-| **Cued** | The scene prepared for the next **GO**. |
+| **Next** | The scene prepared for the next **GO**. |
 | **Current** | The scene currently active in LV1. |
 | **Mode** | **Offline**, **Ready**, **Safe**, or **Fading**. |
 | **Time** | The local time. |
 
-Compare **Cued** and **Current** before pressing **GO**. `---` means no scene is available for that field.
+Compare **Next** and **Current** before pressing **GO**. `---` means no scene is available for that field.
 
 **Ready** means LV1 is connected, **SAFE** is off, and no running fade is displayed. It does not guarantee that **GO** is available; you must also cue a valid entry.
 
@@ -41,13 +41,15 @@ If you move a fader during a fade, **Mode** may return to **Ready** while other 
 
 ## Sessions
 
-Sessions store scene fades and cue lists in `.ascs` files.
+Sessions store scene fades and cue lists in `.ascs` files. Open the burger menu in the top bar to use these commands:
 
 | Command | Shortcut |
 | --- | --- |
 | **New Session** | `CmdOrCtrl+N` |
-| **Open Session...** | `CmdOrCtrl+O` |
+| **New from Template…** | None |
+| **Open Session…** | `CmdOrCtrl+O` |
 | **Save Session** | `CmdOrCtrl+S` |
-| **Save As...** | `CmdOrCtrl+Shift+S` |
+| **Save Session As…** | `CmdOrCtrl+Shift+S` |
+| **Quit** | `Cmd+Q` on macOS; `Alt+F4` on Windows |
 
 An asterisk in the window title marks unsaved changes. Version 2 does not ask before you create, open, or close a session with unsaved changes, so save before continuing.

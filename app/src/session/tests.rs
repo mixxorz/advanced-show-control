@@ -528,6 +528,7 @@ async fn multiple_go_requests_queue_while_the_first_recall_is_unsettled() {
         entries.push(response.await.unwrap().unwrap().entry.unwrap());
     }
 
+    let mut events = session.events.subscribe();
     let mut responses = Vec::new();
     for _ in 0..3 {
         let (reply, response) = oneshot::channel();
@@ -569,6 +570,21 @@ async fn multiple_go_requests_queue_while_the_first_recall_is_unsettled() {
                 next_cued_entry_id: expected_next_entries[offset],
             }
         );
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let AppEvent::CueLists(state) = events.recv().await.unwrap()
+                    && state.current_cue_entry_id == Some(expected_entries[offset])
+                {
+                    assert_eq!(
+                        state.document.cued_cue_entry_id,
+                        expected_next_entries[offset]
+                    );
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
         if offset < 2 {
             session
                 .finish_recall_readiness(

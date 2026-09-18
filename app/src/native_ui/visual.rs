@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 mod macos {
+    use std::cell::RefCell;
     use std::path::Path;
+    use std::rc::Rc;
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -19,8 +21,10 @@ mod macos {
     use crate::scenes::{ChannelConfig, ChannelRef, SceneConfig, SceneScopeToggles};
 
     use super::super::cues::CueListsView;
+    use super::super::menu::{self, MENU_NEW_SHORTCUT, NewShow, Quit};
     use super::super::scenes::ScenesView;
     use super::super::settings_view::SettingsView;
+    use super::super::state::GoSubmissionGuard;
     use super::super::{
         AppRoot, CommandDispatcher, NativeRuntime, UiEvent, theme, ui_event_channel,
     };
@@ -75,6 +79,7 @@ mod macos {
         let (ui_events, receiver) = ui_event_channel();
         let dispatcher =
             CommandDispatcher::new(runtime.handle(), runtime.commands(), ui_events.clone());
+        let observed_dispatcher = dispatcher.clone();
 
         let mut cx = HeadlessAppContext::with_platform(
             gpui_kit::platform::current_platform(true).text_system(),
@@ -84,15 +89,30 @@ mod macos {
         cx.update(|cx| {
             gpui_kit::init(cx);
             theme::install(cx).expect("bundled native theme must install");
+            menu::install(cx);
         });
 
         let window = cx
             .open_window(size(px(1180.), px(780.)), |window, cx| {
                 let initial = AppViewState::default();
+                let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
+                go_submissions.borrow_mut().start(
+                    u64::MAX,
+                    0,
+                    0,
+                    Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap(),
+                );
                 let scenes =
                     cx.new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
-                let cues =
-                    cx.new(|cx| CueListsView::new(initial.clone(), dispatcher.clone(), window, cx));
+                let cues = cx.new(|cx| {
+                    CueListsView::new(
+                        initial.clone(),
+                        dispatcher.clone(),
+                        go_submissions.clone(),
+                        window,
+                        cx,
+                    )
+                });
                 let settings =
                     cx.new(|cx| SettingsView::new(initial, dispatcher.clone(), window, cx));
                 let app = cx.new(|cx| {
@@ -103,6 +123,7 @@ mod macos {
                         scenes,
                         cues,
                         settings,
+                        go_submissions,
                         window,
                         cx,
                     )
@@ -138,11 +159,162 @@ mod macos {
         })?;
         cx.advance_clock(Duration::from_secs(1));
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))?;
+        let dispatched_before_new_shortcut = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.is_action_available(&NewShow, cx));
+            assert!(window.is_action_available(&Quit, cx));
+            window.press(MENU_NEW_SHORTCUT, cx);
+        })?;
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_new_shortcut + 1,
+            "New Session shortcut did not dispatch immediately after the startup dialog closed"
+        );
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let top_bar = window.find("top-bar").bounds();
+            let session_menu = window.find("session-menu").bounds();
+            let scenes_tab = window.find("tab-Scenes").bounds();
+            let cue_lists_tab = window.find("tab-Cue Lists").bounds();
+            let logs_tab = window.find("tab-Logs").bounds();
+            assert_eq!(session_menu.size.width, session_menu.size.height);
+            assert_eq!(session_menu.top(), top_bar.top() + px(1.));
+            assert_eq!(session_menu.bottom(), top_bar.bottom() - px(1.));
+            assert_eq!(session_menu.right(), scenes_tab.left());
+            assert!(window.try_find("tab-Events").is_none());
+            assert_eq!(cue_lists_tab.right(), logs_tab.left());
+
+            let connection_dot = window.find("connection-status-dot").bounds();
+            let connection_label = window.find("connection-status-label").bounds();
+            assert_eq!(connection_dot.size, size(px(8.), px(8.)));
+            assert_eq!(connection_dot.center().y, connection_label.center().y);
+
+            let console_chooser = window.find("open-connection").bounds();
+            assert!(console_chooser.size.width >= px(144.));
+            assert!(window.try_find("scene-x-fade").is_some());
+
+            let bottom_status = window.find("bottom-status").bounds();
+            let go_cell = window.find("go-cell").bounds();
+            let go = window.find("go").bounds();
+            assert!(go_cell.size.width >= bottom_status.size.width * 0.13);
+            assert!(go_cell.size.width <= bottom_status.size.width * 0.15);
+            assert!(go.size.width >= go_cell.size.width * 0.80);
+            assert!(go.size.height >= go_cell.size.height * 0.75);
+            let status_cells = [
+                window.find("status-next").bounds(),
+                window.find("status-current").bounds(),
+                window.find("status-mode").bounds(),
+                window.find("status-time").bounds(),
+            ];
+            for cell in status_cells.iter().skip(1) {
+                assert!((cell.size.width - status_cells[0].size.width).abs() <= px(1.));
+            }
+
+            window.click("open-connection", cx);
+            assert!(window.has_active_dialog(cx));
+            window.press("escape", cx);
+        })?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(!window.has_active_dialog(cx));
+        })?;
         let ready = cx.capture_screenshot(window.into())?;
         ready
             .save(output_dir.join("native-shell-ready.png"))
             .context("failed to save ready-state screenshot")?;
+
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("session-menu", cx);
+            window.render_frame(cx);
+            let frame = window.find("session-menu-frame").bounds();
+            let popup = window.find("popup-menu").bounds();
+            assert_eq!(frame.top() + px(1.), popup.top());
+            assert_eq!(frame.left() + px(1.), popup.left());
+            assert_eq!(frame.bottom() - px(1.), popup.bottom());
+            assert_eq!(frame.right() - px(1.), popup.right());
+        })?;
+        let session_menu = cx.capture_screenshot(window.into())?;
+        session_menu
+            .save(output_dir.join("native-session-menu.png"))
+            .context("failed to save session-menu screenshot")?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("escape", cx);
+        })?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_none());
+            window.click("tab-Cue Lists", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find("cue-active-scene-44444444-4444-4444-8444-444444444444")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("cue-active-scene-66666666-6666-4666-8666-666666666666")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("cue-active-scene-77777777-7777-4777-8777-777777777777")
+                    .is_some()
+            );
+            assert!(
+                window
+                    .try_find("cue-active-scene-55555555-5555-4555-8555-555555555555")
+                    .is_none()
+            );
+            window.click("select-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.click("session-menu", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("popup-menu").is_some());
+        })?;
+        let dispatched_before_shortcuts = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("space", cx);
+            window.press("c", cx);
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_shortcuts,
+            "GO or Cue dispatched while the session menu was open"
+        );
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("escape", cx);
+            window.click("select-cue-entry-77777777-7777-4777-8777-777777777777", cx);
+        })?;
+        let dispatched_before_keyboard_go = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("space", cx);
+            assert!(window.focused(cx).is_some());
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_keyboard_go + 1,
+            "keyboard GO did not dispatch exactly once"
+        );
+        let dispatched_after_keyboard_go = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("cue-selected", cx);
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_after_keyboard_go,
+            "keyboard GO left the focused cue row selected"
+        );
+        let dispatched_before_pointer_go = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("go", cx);
+        })?;
+        cx.run_until_parked();
+        anyhow::ensure!(
+            observed_dispatcher.dispatched_count() == dispatched_before_pointer_go + 1,
+            "pointer GO did not use the shared submission path"
+        );
 
         let mut tab_captures = Vec::new();
         let mut cue_manager_capture = None;
@@ -160,7 +332,26 @@ mod macos {
                 .save(output_dir.join(file_name))
                 .with_context(|| format!("failed to save {file_name}"))?;
             tab_captures.push(image);
+            if selector == "tab-Logs" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    let timestamp = window.find("log-timestamp-0").bounds();
+                    let severity = window.find("log-severity-0").bounds();
+                    let message = window.find("log-message-0").bounds();
+                    assert_eq!(timestamp.size.width, px(176.));
+                    assert_eq!(severity.size.width, px(88.));
+                    assert_eq!(timestamp.right() + px(12.), severity.left());
+                    assert_eq!(severity.right() + px(12.), message.left());
+                    assert!(message.size.width > timestamp.size.width);
+                })?;
+            }
             if selector == "tab-Settings" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("sensitivity").is_some());
+                    assert!(window.try_find("same-scene-threshold").is_some());
+                    assert!(window.try_find("asc-recall-interval").is_some());
+                })?;
                 cx.update_window(window.into(), |_, window, cx| {
                     window.scroll(
                         "settings-view",
@@ -195,7 +386,26 @@ mod macos {
                     .save(output_dir.join("native-cue-manager.png"))
                     .context("failed to save cue-manager screenshot")?;
                 cue_manager_capture = Some(manager);
+                let dispatched_before_unchanged_rename = observed_dispatcher.dispatched_count();
                 cx.update_window(window.into(), |_, window, cx| {
+                    assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
+                    window.click("rename-cue-list-33333333-3333-4333-8333-333333333333", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-list-name").is_some());
+                    assert!(window.try_find("cue-list-name-editor").is_none());
+                    assert!(window.focused(cx).is_some());
+                    window.click("submit-cue-list-name", cx);
+                    window.press("escape", cx);
+                })?;
+                cx.run_until_parked();
+                anyhow::ensure!(
+                    observed_dispatcher.dispatched_count() == dispatched_before_unchanged_rename,
+                    "unchanged inline cue-list rename dispatched"
+                );
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-list-name").is_none());
+                    assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
                     window.click("delete-cue-list-33333333-3333-4333-8333-333333333333", cx);
                     window.render_frame(cx);
                     assert!(window.try_find("delete-cue-list-confirmation").is_some());
@@ -274,7 +484,8 @@ mod macos {
         })?;
 
         let dimensions = ready.dimensions();
-        for image in std::iter::once(&connection)
+        for image in [&connection, &session_menu]
+            .into_iter()
             .chain(tab_captures.iter())
             .chain(cue_manager_capture.iter())
             .chain([&safe, &scene_overwrite])
@@ -287,7 +498,7 @@ mod macos {
             "native screenshot has the wrong aspect ratio: {dimensions:?}"
         );
         anyhow::ensure!(
-            ready != safe,
+            ready != safe && ready != session_menu,
             "distinct projected states rendered identically"
         );
         anyhow::ensure!(
@@ -305,6 +516,11 @@ mod macos {
                 "native-shell-ready",
                 visual_signature!(ready),
                 include_bytes!("visual_snapshots/native-shell-ready.rgb").as_slice(),
+            ),
+            (
+                "native-session-menu",
+                visual_signature!(session_menu),
+                include_bytes!("visual_snapshots/native-session-menu.rgb").as_slice(),
             ),
             (
                 "native-cue-lists",
@@ -384,7 +600,10 @@ mod macos {
         let scene_a = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let scene_b = Uuid::parse_str("22222222-2222-4222-8222-222222222222").unwrap();
         let list_id = Uuid::parse_str("33333333-3333-4333-8333-333333333333").unwrap();
-        let entry_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        let current_entry_id = Uuid::parse_str("44444444-4444-4444-8444-444444444444").unwrap();
+        let next_entry_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
+        let pending_entry_id = Uuid::parse_str("66666666-6666-4666-8666-666666666666").unwrap();
+        let neutral_entry_id = Uuid::parse_str("77777777-7777-4777-8777-777777777777").unwrap();
         let scenes = vec![
             SceneSummary {
                 index: 0,
@@ -449,13 +668,28 @@ mod macos {
             cue_lists: vec![CueList {
                 id: list_id,
                 name: "Main Show".into(),
-                entries: vec![CueEntry {
-                    id: entry_id,
-                    scene_internal_id: scene_b,
-                }],
+                entries: vec![
+                    CueEntry {
+                        id: current_entry_id,
+                        scene_internal_id: scene_a,
+                    },
+                    CueEntry {
+                        id: next_entry_id,
+                        scene_internal_id: scene_b,
+                    },
+                    CueEntry {
+                        id: pending_entry_id,
+                        scene_internal_id: scene_a,
+                    },
+                    CueEntry {
+                        id: neutral_entry_id,
+                        scene_internal_id: scene_a,
+                    },
+                ],
             }],
             active_cue_list_id: Some(list_id.to_string()),
-            cued_cue_entry_id: Some(entry_id.to_string()),
+            current_cue_entry_id: Some(current_entry_id.to_string()),
+            cued_cue_entry_id: Some(next_entry_id.to_string()),
             selected_scene_internal_id: Some(scene_a.to_string()),
             show_file_name: "Visual Reference.ascs".into(),
             show_file_dirty: lockout,
@@ -515,6 +749,7 @@ pub fn run_gallery() -> anyhow::Result<()> {
     use super::cues::CueListsView;
     use super::scenes::ScenesView;
     use super::settings_view::SettingsView;
+    use super::state::GoSubmissionGuard;
     use super::{AppRoot, CommandDispatcher, NativeRuntime, UiEvent, theme, ui_event_channel};
 
     let config_dir = std::env::current_dir()?.join("target/native-gallery-config");
@@ -556,10 +791,17 @@ pub fn run_gallery() -> anyhow::Result<()> {
                 },
                 move |window, cx| {
                     let initial = crate::projector::AppViewState::default();
+                    let go_submissions = Rc::new(RefCell::new(GoSubmissionGuard::default()));
                     let scenes = cx
                         .new(|cx| ScenesView::new(initial.clone(), dispatcher.clone(), window, cx));
                     let cues = cx.new(|cx| {
-                        CueListsView::new(initial.clone(), dispatcher.clone(), window, cx)
+                        CueListsView::new(
+                            initial.clone(),
+                            dispatcher.clone(),
+                            go_submissions.clone(),
+                            window,
+                            cx,
+                        )
                     });
                     let settings =
                         cx.new(|cx| SettingsView::new(initial, dispatcher.clone(), window, cx));
@@ -571,6 +813,7 @@ pub fn run_gallery() -> anyhow::Result<()> {
                             scenes,
                             cues,
                             settings,
+                            go_submissions,
                             window,
                             cx,
                         )

@@ -87,6 +87,7 @@ fn cue_state() -> CueListsProjectionState {
             active_cue_list_id: Some(Uuid::from_u128(1)),
             cued_cue_entry_id: None,
         },
+        current_cue_entry_id: None,
         last_recall_status: Some("recalling".into()),
     }
 }
@@ -201,6 +202,7 @@ async fn session_replacement_projects_scenes_and_cues_together() {
     let snapshot = test.snapshot().await;
     assert!(!snapshot.scene_settings_clipboard_available);
     assert_eq!(snapshot.cue_lists[0].name, "Main");
+    assert_eq!(snapshot.session_revision, 1);
 }
 
 #[tokio::test(start_paused = true)]

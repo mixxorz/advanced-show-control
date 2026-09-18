@@ -20,17 +20,17 @@ If **Recall** is unavailable, the setting is unlinked. If LV1 recalls but no fad
 
 ## GO is disabled or refused
 
-If **GO** is disabled, select an active cue list, cue an entry linked to an available scene fade setting, and confirm **Cued**. Also confirm **SAFE** is off. If eight GO commands are still unsettled, wait for one to dispatch before adding another.
+If **GO** is disabled, select an active cue list, cue an entry linked to an available scene fade setting, and confirm **Next**. Also confirm **SAFE** is off. If eight GO commands are still unsettled, wait for one to dispatch before adding another.
 
 If **GO** is enabled but the setting is unlinked, the recall is refused and the cue remains. Link the setting to the intended LV1 scene, compare its number and name, then use **GO** again. See [Use GO](cue-lists.md#use-go).
 
 ## Cue displays Missing scene
 
-**Missing scene** and `---` mean the cue points to its original scene fade setting, which is no longer available. Restore that original setting if possible. Otherwise, remove the missing cue entry, add the replacement or restored scene fade setting to the cue list, then cue it again. If you need to relink a setting, select it, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. See [Link A Missing Scene](scenes.md#link-a-missing-scene) and [Build A Cue List](cue-lists.md#build-a-cue-list). Until you replace the entry, it cannot supply **Cued** for **GO**.
+**Missing scene** and `---` mean the cue points to its original scene fade setting, which is no longer available. Restore that original setting if possible. Otherwise, remove the missing cue entry, add the replacement or restored scene fade setting to the cue list, then cue it again. If you need to relink a setting, select it, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. See [Link A Missing Scene](scenes.md#link-a-missing-scene) and [Build A Cue List](cue-lists.md#build-a-cue-list). Until you replace the entry, it cannot supply **Next** for **GO**.
 
 ## Session cannot be opened or saved
 
-Open an `.ascs` file through **File > Open Session...**. Use **Save Session** or **Save As...** to choose a path for a new session. If the title has an asterisk, save before you open, create, or close a session.
+Open the burger menu in the top bar and select **Open Session…** to open an `.ascs` file. Use **Save Session** or **Save Session As…** from the same menu to choose a path for a new session. If the title has an asterisk, save before you open, create, or close a session.
 
 ## No visible log explains a failure
 

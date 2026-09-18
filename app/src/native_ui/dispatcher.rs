@@ -7,10 +7,12 @@ use std::sync::{
 
 use tokio::sync::mpsc;
 
-use crate::application::{ApplicationCommandContext, complete_cued_cue_recall};
+use crate::application::{ApplicationCommandContext, complete_cued_cue_recall_typed};
 use crate::connection_state::Lv1SystemIdentity;
+use crate::cue_lists::CueRecallResult;
 use crate::lv1::TcpConnectProbeResult;
 use crate::projector::{AppViewState, ProjectionSubscription};
+use crate::runtime::errors::AppCommandError;
 
 #[derive(Debug)]
 pub enum UiEvent {
@@ -21,6 +23,12 @@ pub enum UiEvent {
     CommandFinished {
         command_id: u64,
         result: Result<(), String>,
+    },
+    CueRecallFinished {
+        command_id: u64,
+        session_revision: u64,
+        canceled_by_session_replacement: bool,
+        result: Result<CueRecallResult, String>,
     },
     SaveDestinationRequired {
         command_id: u64,
@@ -83,6 +91,11 @@ impl CommandDispatcher {
             + 1
     }
 
+    #[cfg(feature = "debug-tools")]
+    pub(crate) fn dispatched_count(&self) -> u64 {
+        self.next_command_id.load(Ordering::Relaxed)
+    }
+
     pub fn dispatch<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
@@ -103,20 +116,36 @@ impl CommandDispatcher {
     /// A GO command MUST be synchronously admitted to the cue mailbox before this method returns and
     /// before its response waiter is spawned. Command-started and command-finished events MUST retain
     /// the same command ID whether admission succeeds or fails.
-    pub fn dispatch_cued_cue_recall(&self) -> u64 {
+    pub fn dispatch_cued_cue_recall(&self, session_revision: u64) -> u64 {
         let command_id = self.next_command_id();
         let _ = self.ui_events.send(UiEvent::CommandStarted { command_id });
         match self.commands.enqueue_cued_cue_recall() {
             Ok(response) => {
                 let ui_events = self.ui_events.clone();
                 self.runtime.spawn(async move {
-                    let result = complete_cued_cue_recall(response).await.map(|_| ());
-                    let _ = ui_events.send(UiEvent::CommandFinished { command_id, result });
+                    let result = complete_cued_cue_recall_typed(response).await;
+                    let canceled_by_session_replacement = matches!(
+                        &result,
+                        Err(AppCommandError::RecallCanceled(reason))
+                            if reason == "session was replaced"
+                    );
+                    let result = result.map_err(|error| match error {
+                        AppCommandError::CommandFailed(message) => message,
+                        other => other.to_string(),
+                    });
+                    let _ = ui_events.send(UiEvent::CueRecallFinished {
+                        command_id,
+                        session_revision,
+                        canceled_by_session_replacement,
+                        result,
+                    });
                 });
             }
             Err(error) => {
-                let _ = self.ui_events.send(UiEvent::CommandFinished {
+                let _ = self.ui_events.send(UiEvent::CueRecallFinished {
                     command_id,
+                    session_revision,
+                    canceled_by_session_replacement: false,
                     result: Err(error),
                 });
             }
@@ -124,9 +153,9 @@ impl CommandDispatcher {
         command_id
     }
 
-    /// Enqueues commands that must reach their owner in user-action order. Settings replacements use
-    /// this lane so complete-object edits compose, and file actions use it so a subsequent Save sees
-    /// the authoritative result of the preceding New, Open, or template load.
+    /// Enqueues commands that must reach their owner in user-action order. Settings replacements and
+    /// scene-duration edits use this lane so successive drafts compose, and file actions use it so a
+    /// subsequent Save sees the authoritative result of the preceding New, Open, or template load.
     pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
