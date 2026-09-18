@@ -2184,6 +2184,7 @@ mod tests {
     async fn vegas_channel_snapshot_wait_includes_late_mute_notification() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
+        let (release_mute_off, wait_for_release) = std::sync::mpsc::channel();
 
         let server = tokio::task::spawn_blocking(move || {
             let (mut stream, _) = listener.accept().unwrap();
@@ -2224,7 +2225,9 @@ mod tests {
                     .unwrap();
             stream.write_all(&frame).unwrap();
 
-            std::thread::sleep(Duration::from_millis(80));
+            wait_for_release
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap();
 
             let mute_off = vec![
                 advanced_show_control::lv1::osc::OscArg::Int(0),
@@ -2247,28 +2250,36 @@ mod tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
                 match events.recv().await {
-                    Ok(app_event) => {
-                        let AppEvent::Lv1 { event, .. } = app_event else {
-                            continue;
-                        };
-
-                        if matches!(event, Lv1Event::Connected) {
-                            break;
-                        }
-                    }
+                    Ok(AppEvent::Lv1 {
+                        event: Lv1Event::MuteChanged { muted: true, .. },
+                        ..
+                    }) => break,
+                    Ok(_) => {}
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
                         log_lagged_subscriber("vegas-test", count);
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        panic!("LV1 event bus closed before mute-on notification");
+                    }
                 }
             }
         })
         .await
         .unwrap();
 
-        let snapshot = wait_for_channels_with_mute_settle(&handle, &event_bus, &mut events, 2_000)
+        let baseline = wait_for_channels_until(&handle, Instant::now() + Duration::from_secs(2))
             .await
             .unwrap();
+        assert!(baseline[0].muted);
+
+        let snapshot = wait_for_channels_with_mute_settle(&handle, &event_bus, &mut events, 2_000);
+        tokio::pin!(snapshot);
+        tokio::select! {
+            _ = &mut snapshot => panic!("settle completed before the late mute notification"),
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+        }
+        release_mute_off.send(()).unwrap();
+        let snapshot = snapshot.await.unwrap();
         assert_eq!(snapshot.len(), 1);
         assert!(!snapshot[0].muted);
 
