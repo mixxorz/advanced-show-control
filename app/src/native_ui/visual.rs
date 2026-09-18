@@ -386,7 +386,26 @@ mod macos {
                     .save(output_dir.join("native-cue-manager.png"))
                     .context("failed to save cue-manager screenshot")?;
                 cue_manager_capture = Some(manager);
+                let dispatched_before_unchanged_rename = observed_dispatcher.dispatched_count();
                 cx.update_window(window.into(), |_, window, cx| {
+                    assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
+                    window.click("rename-cue-list-33333333-3333-4333-8333-333333333333", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-list-name").is_some());
+                    assert!(window.try_find("cue-list-name-editor").is_none());
+                    assert!(window.focused(cx).is_some());
+                    window.click("submit-cue-list-name", cx);
+                    window.press("escape", cx);
+                })?;
+                cx.run_until_parked();
+                anyhow::ensure!(
+                    observed_dispatcher.dispatched_count() == dispatched_before_unchanged_rename,
+                    "unchanged inline cue-list rename dispatched"
+                );
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-list-name").is_none());
+                    assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
                     window.click("delete-cue-list-33333333-3333-4333-8333-333333333333", cx);
                     window.render_frame(cx);
                     assert!(window.try_find("delete-cue-list-confirmation").is_some());

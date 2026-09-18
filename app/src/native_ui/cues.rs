@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
 use gpui_kit::component::{
-    Disableable, IconName, Sizable,
+    Disableable, Icon, IconName, Sizable,
     button::ButtonVariants,
     input::{Input, InputEvent, InputState},
 };
@@ -126,10 +126,10 @@ impl CueListsView {
     ) -> Self {
         let name_input = cx.new(|cx| InputState::new(window, cx));
         let name_input_subscription =
-            cx.subscribe(&name_input, |this, _, event: &InputEvent, cx| {
-                if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.submit_name_editor(cx);
-                }
+            cx.subscribe(&name_input, |this, _, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter { .. } => this.submit_name_editor(cx),
+                InputEvent::Change => cx.notify(),
+                InputEvent::Focus | InputEvent::Blur => {}
             });
         Self {
             snapshot,
@@ -263,7 +263,7 @@ impl CueListsView {
                     self.manage_focus.focus(window, cx);
                 }
                 ManageCommand::Activate => {
-                    self.close_manager(window, cx);
+                    self.manage_focus.focus(window, cx);
                 }
                 ManageCommand::Reorder => {}
                 _ => {}
@@ -279,7 +279,13 @@ impl CueListsView {
         let Some(editor) = self.name_editor else {
             return;
         };
-        let name = self.name_input.read(cx).value().to_string();
+        let Some(name) = valid_name_editor_value(
+            editor,
+            self.name_input.read(cx).value().as_ref(),
+            &self.snapshot.cue_lists,
+        ) else {
+            return;
+        };
         let command_id = match editor {
             NameEditor::Create => self.dispatch(move |commands| {
                 Box::pin(async move { commands.create_cue_list(name).await.map(|_| ()) })
@@ -289,6 +295,19 @@ impl CueListsView {
             }),
         };
         self.pending_manage_command = Some((command_id, ManageCommand::Name(editor)));
+        cx.notify();
+    }
+
+    fn activate_cue_list(&mut self, id: Uuid, cx: &mut Context<Self>) {
+        if self.manager_controls_inert() {
+            return;
+        }
+        if self.snapshot.active_cue_list_id.as_deref() != Some(id.to_string().as_str()) {
+            let command_id = self.dispatch(move |commands| {
+                Box::pin(async move { commands.set_active_cue_list(Some(id)).await.map(|_| ()) })
+            });
+            self.pending_manage_command = Some((command_id, ManageCommand::Activate));
+        }
         cx.notify();
     }
 
@@ -477,8 +496,8 @@ impl CueListsView {
                     .text_color(rgb(theme::CONSOLE_SECONDARY))
                     .child(div().w(px(25.)))
                     .child(div().flex_1().child("SCENE NAME"))
-                    .child(div().w(px(54.)).text_right().child("#"))
-                    .child(div().w(px(28.))),
+                    .child(div().w(px(64.)).text_right().child("#"))
+                    .child(div().w(px(44.))),
             )
             .child(self.render_active_entries(list, cx))
     }
@@ -672,11 +691,11 @@ impl CueListsView {
                     )
                     .child(
                         div()
-                            .w(px(54.))
+                            .w(px(64.))
                             .flex()
                             .items_center()
                             .justify_end()
-                            .gap_1()
+                            .gap_2()
                             .font_family("Fira Code")
                             .text_color(rgb(theme::CONSOLE_PRIMARY))
                             .child(div().w(px(6.)).child(if active_scene {
@@ -698,8 +717,8 @@ impl CueListsView {
             .child(
                 bordered_button(format!("remove-cue-entry-{entry_id}"))
                     .small()
-                    .ml_3()
-                    .mr_2()
+                    .ml_4()
+                    .mr_3()
                     .danger()
                     .icon(IconName::Delete)
                     .accessibility_label(remove_label)
@@ -729,7 +748,8 @@ impl CueListsView {
         let entity = cx.entity();
         let close = bordered_button("close-cue-manager")
             .small()
-            .label("CLOSE")
+            .icon(IconName::Close)
+            .accessibility_label("Close cue list manager")
             .disabled(manager_inert)
             .on_click(move |_, window, cx| {
                 entity.update(cx, |this, cx| {
@@ -742,7 +762,6 @@ impl CueListsView {
         let entity = cx.entity();
         let create = bordered_button("new-cue-list")
             .small()
-            .primary()
             .label("NEW CUE LIST")
             .disabled(manager_inert)
             .on_click(move |_, window, cx| {
@@ -800,7 +819,7 @@ impl CueListsView {
                             .child(
                                 div()
                                     .text_lg()
-                                    .text_color(rgb(theme::ACCENT_ORANGE))
+                                    .text_color(rgb(theme::CONSOLE_PRIMARY))
                                     .child("CUE LISTS"),
                             )
                             .child(div().flex().gap_2().child(create).child(close)),
@@ -817,11 +836,11 @@ impl CueListsView {
                                     .clone()
                                     .into_iter()
                                     .map(|list| self.render_manage_row(list, cx)),
-                            ),
+                            )
+                            .when(self.name_editor == Some(NameEditor::Create), |rows| {
+                                rows.child(self.render_create_row(cx))
+                            }),
                     )
-                    .when_some(self.name_editor, |panel, editor| {
-                        panel.child(self.render_name_editor(editor, cx))
-                    })
                     .when_some(self.pending_delete, |panel, id| {
                         panel.child(self.render_delete_confirmation(id, cx))
                     }),
@@ -833,31 +852,51 @@ impl CueListsView {
         let active =
             self.snapshot.active_cue_list_id.as_deref() == Some(list.id.to_string().as_str());
         let id = list.id;
+        let editor = NameEditor::Rename(id);
+        let renaming = self.name_editor == Some(editor);
+        let submitting = matches!(
+            self.pending_manage_command,
+            Some((_, ManageCommand::Name(pending))) if pending == editor
+        );
+        let can_save = valid_name_editor_value(
+            editor,
+            self.name_input.read(cx).value().as_ref(),
+            &self.snapshot.cue_lists,
+        )
+        .is_some();
         let name: SharedString = list.name.clone().into();
         let drag_name = name.clone();
         let rename_label = format!("Rename cue list {name}");
         let delete_label = format!("Delete cue list {name}");
+        let input_label = format!("Name for cue list {name}");
+        let row_select_entity = cx.entity();
         let select_entity = cx.entity();
         let rename_entity = cx.entity();
         let delete_entity = cx.entity();
+        let cancel_entity = cx.entity();
+        let save_entity = cx.entity();
         let drop_entity = cx.entity();
         div()
             .id(format!("cue-list-row-{id}"))
+            .min_h(px(46.))
             .flex()
             .items_center()
             .gap_2()
-            .px_3()
-            .py_2()
+            .pr_2()
             .mb_2()
-            .bg(rgb(theme::CONSOLE_SECTION))
-            .border_1()
-            .border_color(rgb(if active {
-                theme::ACCENT_ORANGE
+            .bg(rgb(if active {
+                theme::CONSOLE_CONTROL
             } else {
-                theme::CONSOLE_LINE
+                theme::CONSOLE_SECTION
             }))
+            .border_1()
+            .border_color(rgb(theme::CONSOLE_LINE))
+            .hover(|style| style.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
             .when(!manager_inert, |row| {
-                row.on_drop(move |payload: &CueListDrag, _, cx| {
+                row.on_click(move |_, _, cx| {
+                    row_select_entity.update(cx, |this, cx| this.activate_cue_list(id, cx));
+                })
+                .on_drop(move |payload: &CueListDrag, _, cx| {
                     let from = payload.list_id;
                     drop_entity.update(cx, |this, cx| {
                         if this.manager_controls_inert() {
@@ -878,152 +917,209 @@ impl CueListsView {
             })
             .child(
                 div()
+                    .w(px(3.))
+                    .self_stretch()
+                    .when(active, |bar| bar.bg(rgb(theme::ACCENT_ORANGE))),
+            )
+            .child(
+                div()
                     .id(format!("drag-cue-list-{id}"))
                     .test_support()
                     .w(px(22.))
-                    .cursor_pointer()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .text_color(rgb(theme::CONSOLE_MUTED))
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .when(!manager_inert, |handle| {
-                        handle.on_drag(
-                            CueListDrag {
-                                list_id: id,
-                                name: drag_name,
-                            },
-                            |payload, _, _, cx| cx.new(|_| payload.clone()),
-                        )
+                        handle
+                            .cursor_grab()
+                            .active(|style| style.cursor_grabbing())
+                            .on_drag(
+                                CueListDrag {
+                                    list_id: id,
+                                    name: drag_name,
+                                },
+                                |payload, _, _, cx| cx.new(|_| payload.clone()),
+                            )
                     })
-                    .child("↕"),
+                    .child(
+                        Icon::default()
+                            .data(include_bytes!(
+                                "../../assets/icons/drag-handle-vertical.svg"
+                            ))
+                            .small()
+                            .text_color(rgb(theme::CONSOLE_MUTED)),
+                    ),
             )
-            .child(
-                BaseButton::new(format!("activate-cue-list-{id}"))
-                    .accessibility_label(format!("Activate cue list {name}"))
-                    .disabled(manager_inert)
-                    .flex_1()
-                    .text_color(rgb(theme::CONSOLE_PRIMARY))
-                    .child(name)
-                    .on_click(move |_, window, cx| {
-                        select_entity.update(cx, |this, cx| {
-                            if this.manager_controls_inert() {
-                                return;
-                            }
-                            if this.snapshot.active_cue_list_id.as_deref()
-                                != Some(id.to_string().as_str())
-                            {
-                                let command_id = this.dispatch(move |commands| {
-                                    Box::pin(async move {
-                                        commands.set_active_cue_list(Some(id)).await.map(|_| ())
-                                    })
+            .when(renaming, |row| {
+                row.child(
+                    Input::new(&self.name_input)
+                        .id("cue-list-name")
+                        .aria_label(input_label)
+                        .flex_1()
+                        .min_w_0()
+                        .focus_bordered(true)
+                        .disabled(submitting),
+                )
+                .child(
+                    bordered_button("cancel-cue-list-name")
+                        .small()
+                        .label("CANCEL")
+                        .disabled(submitting)
+                        .on_click(move |_, window, cx| {
+                            cancel_entity.update(cx, |this, cx| {
+                                if this.pending_manage_command.is_some() {
+                                    return;
+                                }
+                                this.name_editor = None;
+                                this.manage_focus.focus(window, cx);
+                                cx.notify();
+                            });
+                        }),
+                )
+                .child(
+                    bordered_button("submit-cue-list-name")
+                        .small()
+                        .primary()
+                        .label("SAVE")
+                        .disabled(submitting || !can_save)
+                        .on_click(move |_, _, cx| {
+                            save_entity.update(cx, |this, cx| this.submit_name_editor(cx));
+                        }),
+                )
+            })
+            .when(!renaming, |row| {
+                row.child(
+                    BaseButton::new(format!("activate-cue-list-{id}"))
+                        .accessibility_label(format!("Activate cue list {name}"))
+                        .disabled(manager_inert)
+                        .self_stretch()
+                        .flex_1()
+                        .justify_start()
+                        .px_2()
+                        .text_left()
+                        .text_color(rgb(theme::CONSOLE_PRIMARY))
+                        .focus_visible(|style| {
+                            style.border_1().border_color(rgb(theme::ACCENT_ORANGE))
+                        })
+                        .child(name)
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            select_entity.update(cx, |this, cx| this.activate_cue_list(id, cx));
+                        }),
+                )
+                .child(
+                    bordered_button(format!("rename-cue-list-{id}"))
+                        .small()
+                        .label("RENAME")
+                        .accessibility_label(rename_label)
+                        .disabled(manager_inert)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            rename_entity.update(cx, |this, cx| {
+                                if this.manager_controls_inert() {
+                                    return;
+                                }
+                                let value = this
+                                    .snapshot
+                                    .cue_lists
+                                    .iter()
+                                    .find(|list| list.id == id)
+                                    .map_or("", |list| list.name.as_str());
+                                this.name_editor = Some(NameEditor::Rename(id));
+                                this.pending_delete = None;
+                                this.name_input.update(cx, |input, cx| {
+                                    input.set_value(value, window, cx);
+                                    input.select_all(window, cx);
+                                    input.focus(window, cx);
                                 });
-                                this.pending_manage_command =
-                                    Some((command_id, ManageCommand::Activate));
-                            } else {
-                                this.close_manager(window, cx);
-                            }
-                            cx.notify();
-                        });
-                    }),
-            )
-            .child(
-                bordered_button(format!("rename-cue-list-{id}"))
-                    .small()
-                    .label("RENAME")
-                    .accessibility_label(rename_label)
-                    .disabled(manager_inert)
-                    .on_click(move |_, window, cx| {
-                        rename_entity.update(cx, |this, cx| {
-                            if this.manager_controls_inert() {
-                                return;
-                            }
-                            let value = this
-                                .snapshot
-                                .cue_lists
-                                .iter()
-                                .find(|list| list.id == id)
-                                .map_or("", |list| list.name.as_str());
-                            this.name_input
-                                .update(cx, |input, cx| input.set_value(value, window, cx));
-                            this.name_editor = Some(NameEditor::Rename(id));
-                            this.pending_delete = None;
-                            this.name_input.read(cx).focus_handle(cx).focus(window, cx);
-                            cx.notify();
-                        });
-                    }),
-            )
-            .child(
-                bordered_button(format!("delete-cue-list-{id}"))
-                    .small()
-                    .danger()
-                    .label("DELETE")
-                    .accessibility_label(delete_label)
-                    .disabled(manager_inert)
-                    .on_click(move |_, window, cx| {
-                        cx.stop_propagation();
-                        delete_entity.update(cx, |this, cx| {
-                            if this.manager_controls_inert() {
-                                return;
-                            }
-                            this.pending_delete = Some(id);
-                            this.name_editor = None;
-                            this.nested_focus.focus(window, cx);
-                            cx.notify();
-                        });
-                    }),
-            )
+                                cx.notify();
+                            });
+                        }),
+                )
+                .child(
+                    bordered_button(format!("delete-cue-list-{id}"))
+                        .small()
+                        .danger()
+                        .label("DELETE")
+                        .accessibility_label(delete_label)
+                        .disabled(manager_inert)
+                        .on_click(move |_, window, cx| {
+                            cx.stop_propagation();
+                            delete_entity.update(cx, |this, cx| {
+                                if this.manager_controls_inert() {
+                                    return;
+                                }
+                                this.pending_delete = Some(id);
+                                this.name_editor = None;
+                                this.nested_focus.focus(window, cx);
+                                cx.notify();
+                            });
+                        }),
+                )
+            })
             .into_any_element()
     }
 
-    fn render_name_editor(&self, editor: NameEditor, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_create_row(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let entity = cx.entity();
         let cancel_entity = cx.entity();
+        let editor = NameEditor::Create;
         let submitting = matches!(
             self.pending_manage_command,
             Some((_, ManageCommand::Name(pending))) if pending == editor
         );
-        let title = match editor {
-            NameEditor::Create => "NEW CUE LIST",
-            NameEditor::Rename(_) => "RENAME CUE LIST",
-        };
+        let can_save = valid_name_editor_value(
+            editor,
+            self.name_input.read(cx).value().as_ref(),
+            &self.snapshot.cue_lists,
+        )
+        .is_some();
         div()
             .id("cue-list-name-editor")
-            .role(Role::Dialog)
-            .aria_label(title)
-            .p_3()
+            .min_h(px(46.))
             .flex()
-            .flex_col()
+            .items_center()
             .gap_2()
-            .bg(rgb(theme::CONSOLE_CHROME))
+            .pr_2()
+            .mb_2()
+            .bg(rgb(theme::CONSOLE_SECTION))
             .border_1()
-            .border_color(rgb(theme::ACCENT_ORANGE))
-            .child(div().text_color(rgb(theme::ACCENT_ORANGE)).child(title))
-            .child(Input::new(&self.name_input).id("cue-list-name"))
+            .border_color(rgb(theme::CONSOLE_LINE))
+            .child(div().w(px(3.)).self_stretch())
+            .child(div().w(px(22.)))
             .child(
-                div()
-                    .flex()
-                    .justify_end()
-                    .gap_2()
-                    .child(
-                        bordered_button("cancel-cue-list-name")
-                            .small()
-                            .label("CANCEL")
-                            .disabled(submitting)
-                            .on_click(move |_, window, cx| {
-                                cancel_entity.update(cx, |this, cx| {
-                                    this.name_editor = None;
-                                    this.manage_focus.focus(window, cx);
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .child(
-                        bordered_button("submit-cue-list-name")
-                            .small()
-                            .primary()
-                            .label("SAVE")
-                            .disabled(submitting)
-                            .on_click(move |_, _, cx| {
-                                entity.update(cx, |this, cx| this.submit_name_editor(cx));
-                            }),
-                    ),
+                Input::new(&self.name_input)
+                    .id("cue-list-name")
+                    .aria_label("New cue list name")
+                    .flex_1()
+                    .min_w_0()
+                    .focus_bordered(true)
+                    .disabled(submitting),
+            )
+            .child(
+                bordered_button("cancel-cue-list-name")
+                    .small()
+                    .label("CANCEL")
+                    .disabled(submitting)
+                    .on_click(move |_, window, cx| {
+                        cancel_entity.update(cx, |this, cx| {
+                            this.name_editor = None;
+                            this.manage_focus.focus(window, cx);
+                            cx.notify();
+                        });
+                    }),
+            )
+            .child(
+                bordered_button("submit-cue-list-name")
+                    .small()
+                    .primary()
+                    .label("SAVE")
+                    .disabled(submitting || !can_save)
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| this.submit_name_editor(cx));
+                    }),
             )
     }
 
@@ -1129,6 +1225,26 @@ impl Render for CueListsView {
                 root.child(self.render_manage_overlay(cx))
             })
     }
+}
+
+fn valid_name_editor_value(
+    editor: NameEditor,
+    value: &str,
+    cue_lists: &[CueList],
+) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let NameEditor::Rename(id) = editor
+        && cue_lists
+            .iter()
+            .find(|list| list.id == id)
+            .is_none_or(|list| list.name == value)
+    {
+        return None;
+    }
+    Some(value.to_string())
 }
 
 fn manager_controls_inert(
@@ -1418,12 +1534,47 @@ mod tests {
     fn manager_controls_are_inert_for_nested_ui_or_pending_commands() {
         assert!(!manager_controls_inert(None, None, None));
         assert!(manager_controls_inert(Some(NameEditor::Create), None, None));
+        assert!(manager_controls_inert(
+            Some(NameEditor::Rename(id(1))),
+            None,
+            None
+        ));
         assert!(manager_controls_inert(None, Some(id(1)), None));
         assert!(manager_controls_inert(
             None,
             None,
             Some((7, ManageCommand::Delete(id(1))))
         ));
+    }
+
+    #[test]
+    fn cue_list_name_editor_trims_values_and_rejects_empty_or_unchanged_names() {
+        let lists = vec![CueList {
+            id: id(1),
+            name: "Main".to_string(),
+            entries: Vec::new(),
+        }];
+
+        assert_eq!(
+            valid_name_editor_value(NameEditor::Create, "  New List  ", &lists),
+            Some("New List".to_string())
+        );
+        assert_eq!(
+            valid_name_editor_value(NameEditor::Rename(id(1)), "  Updated  ", &lists),
+            Some("Updated".to_string())
+        );
+        assert_eq!(
+            valid_name_editor_value(NameEditor::Rename(id(1)), " Main ", &lists),
+            None
+        );
+        assert_eq!(
+            valid_name_editor_value(NameEditor::Rename(id(99)), "Updated", &lists),
+            None
+        );
+        assert_eq!(
+            valid_name_editor_value(NameEditor::Create, "   ", &lists),
+            None
+        );
     }
 
     #[test]
