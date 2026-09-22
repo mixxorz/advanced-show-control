@@ -157,8 +157,10 @@ impl AppRoot {
     /// A session-state query result MUST compare both its captured persisted-edit submission epoch
     /// and authoritative owner-side persisted revision with their current values, then either
     /// enqueue a retry or apply the guard result in this same GPUI callback, without yielding to a
-    /// UI submission or owner fact between comparison and continuation dispatch. If any modal
-    /// surface is active, it MUST cancel instead.
+    /// UI submission or owner fact between comparison and continuation dispatch. A clean result
+    /// MUST carry its validated owner revision into guarded replacement or quit admission; this UI
+    /// comparison alone MUST NOT authorize the destructive action. If any modal surface is active,
+    /// it MUST cancel instead.
     fn handle_event(&mut self, event: UiEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             UiEvent::Snapshot(snapshot) => {
@@ -271,6 +273,7 @@ impl AppRoot {
                     let result = result.map(|state| SessionStatus {
                         path: state.show_file_path,
                         dirty: state.show_file_dirty,
+                        persisted_session_revision: state.persisted_session_revision,
                     });
                     self.session_guard
                         .borrow_mut()
@@ -400,11 +403,25 @@ impl AppRoot {
                 });
                 self.session_guard.borrow_mut().save_started(command_id);
             }
-            GuardEffect::Continue(action) => match action {
-                SessionAction::New => self.new_show(),
-                SessionAction::NewFromTemplate => self.new_show_from_template(cx),
-                SessionAction::Open => self.open_show(cx),
-                SessionAction::Quit => cx.quit(),
+            GuardEffect::Continue {
+                action,
+                expected_persisted_revision,
+            } => match (action, expected_persisted_revision) {
+                (SessionAction::New, Some(revision)) => self.guarded_new_show(revision),
+                (SessionAction::NewFromTemplate, Some(revision)) => {
+                    self.guarded_new_show_from_template(revision, cx)
+                }
+                (SessionAction::Open, Some(revision)) => self.guarded_open_show(revision, cx),
+                (SessionAction::Quit, Some(revision)) => {
+                    if !self.dispatcher.admit_guarded_quit(revision, || cx.quit()) {
+                        let effect = self.session_guard.borrow_mut().request(SessionAction::Quit);
+                        self.apply_guard_effect(effect, window, cx);
+                    }
+                }
+                (SessionAction::New, None) => self.new_show(),
+                (SessionAction::NewFromTemplate, None) => self.new_show_from_template(cx),
+                (SessionAction::Open, None) => self.open_show(cx),
+                (SessionAction::Quit, None) => cx.quit(),
             },
             GuardEffect::Error(message) => {
                 window.push_notification(Notification::error(message), cx);
@@ -478,7 +495,33 @@ impl AppRoot {
             .dispatch_serial(|commands| async move { commands.new_show_file().await.map(|_| ()) });
     }
 
+    fn guarded_new_show(&self, expected_persisted_revision: u64) {
+        self.pending_save_command_id.set(None);
+        self.dispatcher.dispatch_serial(move |commands| async move {
+            commands
+                .guarded_new_show_file(expected_persisted_revision)
+                .await
+                .map(|_| ())
+        });
+    }
+
     pub fn new_show_from_template(&self, cx: &mut Context<Self>) {
+        self.new_show_from_template_with_revision(None, cx);
+    }
+
+    fn guarded_new_show_from_template(
+        &self,
+        expected_persisted_revision: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_show_from_template_with_revision(Some(expected_persisted_revision), cx);
+    }
+
+    fn new_show_from_template_with_revision(
+        &self,
+        expected_persisted_revision: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -499,7 +542,13 @@ impl AppRoot {
                     return;
                 }
                 dispatcher.dispatch_serial(move |commands| async move {
-                    commands.new_show_file_from_template(path).await.map(|_| ())
+                    match expected_persisted_revision {
+                        Some(revision) => commands
+                            .guarded_new_show_file_from_template(path, revision)
+                            .await
+                            .map(|_| ()),
+                        None => commands.new_show_file_from_template(path).await.map(|_| ()),
+                    }
                 });
             }
             Ok(Ok(None)) => {}
@@ -518,6 +567,18 @@ impl AppRoot {
     }
 
     pub fn open_show(&self, cx: &mut Context<Self>) {
+        self.open_show_with_revision(None, cx);
+    }
+
+    fn guarded_open_show(&self, expected_persisted_revision: u64, cx: &mut Context<Self>) {
+        self.open_show_with_revision(Some(expected_persisted_revision), cx);
+    }
+
+    fn open_show_with_revision(
+        &self,
+        expected_persisted_revision: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -538,7 +599,13 @@ impl AppRoot {
                     return;
                 }
                 dispatcher.dispatch_serial(move |commands| async move {
-                    commands.open_show_file(path).await.map(|_| ())
+                    match expected_persisted_revision {
+                        Some(revision) => commands
+                            .guarded_open_show_file(path, revision)
+                            .await
+                            .map(|_| ()),
+                        None => commands.open_show_file(path).await.map(|_| ()),
+                    }
                 });
             }
             Ok(Ok(None)) => {}

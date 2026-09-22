@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 use tokio::sync::{broadcast, watch};
 
@@ -56,7 +53,7 @@ pub enum AppEvent {
 pub struct AppEventBus {
     tx: broadcast::Sender<AppEvent>,
     state: watch::Sender<AppStateSnapshot>,
-    persisted_session_revision: Arc<AtomicU64>,
+    persisted_session_revision: Arc<Mutex<u64>>,
 }
 
 impl AppEventBus {
@@ -69,7 +66,7 @@ impl AppEventBus {
         Self {
             tx,
             state,
-            persisted_session_revision: Arc::new(AtomicU64::new(0)),
+            persisted_session_revision: Arc::new(Mutex::new(0)),
         }
     }
 
@@ -89,10 +86,11 @@ impl AppEventBus {
      * zero rather than fail.
      */
     /// @cc [owner:mixxorz,label:persistence;ordering] owner-persisted-session-revision
-    /// Publishing a persisted Scenes state change or any Cue Lists fact MUST synchronously advance
-    /// the shared revision before retaining or broadcasting the fact. Projection-only scene facts,
-    /// session replacement, and facts from all other domains MUST NOT advance it. Show-owned
-    /// persisted mutations MUST call `note_persisted_session_edit` only after accepting a change.
+    /// Publishing a persisted Scenes state change or any Cue Lists fact MUST hold the shared gate
+    /// while synchronously advancing the revision, retaining, and broadcasting the fact.
+    /// Projection-only scene facts, session replacement, and facts from all other domains MUST NOT
+    /// advance it. Show-owned persisted mutations MUST call `note_persisted_session_edit` only after
+    /// accepting a change.
     pub fn publish(&self, event: AppEvent) -> usize {
         if matches!(
             &event,
@@ -104,22 +102,52 @@ impl AppEventBus {
                 ..
             } | AppEvent::CueLists(_)
         ) {
-            self.note_persisted_session_edit();
+            let mut revision = self
+                .persisted_session_revision
+                .lock()
+                .expect("persisted session revision lock poisoned");
+            *revision = revision
+                .checked_add(1)
+                .expect("persisted session revision exhausted");
+            self.retain(&event);
+            return self.tx.send(event).unwrap_or(0);
         }
         self.retain(&event);
         self.tx.send(event).unwrap_or(0)
     }
 
     pub fn note_persisted_session_edit(&self) {
-        self.persisted_session_revision
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |revision| {
-                revision.checked_add(1)
-            })
+        let mut revision = self
+            .persisted_session_revision
+            .lock()
+            .expect("persisted session revision lock poisoned");
+        *revision = revision
+            .checked_add(1)
             .expect("persisted session revision exhausted");
     }
 
     pub fn persisted_session_revision(&self) -> u64 {
-        self.persisted_session_revision.load(Ordering::SeqCst)
+        *self
+            .persisted_session_revision
+            .lock()
+            .expect("persisted session revision lock poisoned")
+    }
+
+    /// @cc [owner:mixxorz,label:persistence;concurrency] persisted-session-admission-gate
+    /// `admit` MUST run only when `expected_revision` exactly matches the shared revision and MUST
+    /// remain bounded to synchronous in-memory work. It MUST NOT await, perform blocking I/O, or wait
+    /// on an actor while the gate is held. Persisted fact publication and explicit persisted-edit
+    /// notes MUST serialize with the complete admitted closure.
+    pub fn admit_persisted_session_revision<T>(
+        &self,
+        expected_revision: u64,
+        admit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let revision = self
+            .persisted_session_revision
+            .lock()
+            .expect("persisted session revision lock poisoned");
+        (*revision == expected_revision).then(admit)
     }
 
     /// @cc [owner:mixxorz,label:consistency] unchanged-state-does-not-notify
@@ -179,6 +207,48 @@ mod tests {
     use super::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
     use crate::cue_lists::CueListsProjectionState;
     use crate::scenes::{ScenesEvent, ScenesProjectionState};
+
+    #[test]
+    fn persisted_revision_gate_serializes_increment_and_rejects_mismatch() {
+        let event_bus = AppEventBus::default();
+        let admitted_bus = event_bus.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let admission = std::thread::spawn(move || {
+            admitted_bus.admit_persisted_session_revision(0, || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+            })
+        });
+        entered_rx.recv().unwrap();
+
+        let increment_bus = event_bus.clone();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (incremented_tx, incremented_rx) = std::sync::mpsc::channel();
+        let increment = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            increment_bus.note_persisted_session_edit();
+            incremented_tx.send(()).unwrap();
+        });
+        started_rx.recv().unwrap();
+        assert!(
+            incremented_rx
+                .recv_timeout(std::time::Duration::from_millis(25))
+                .is_err()
+        );
+
+        release_tx.send(()).unwrap();
+        assert_eq!(admission.join().unwrap(), Some(()));
+        increment.join().unwrap();
+        assert_eq!(event_bus.persisted_session_revision(), 1);
+
+        let called = std::cell::Cell::new(false);
+        assert_eq!(
+            event_bus.admit_persisted_session_revision(0, || called.set(true)),
+            None
+        );
+        assert!(!called.get());
+    }
 
     #[test]
     fn persisted_revision_advances_only_for_persisted_scene_and_cue_facts() {

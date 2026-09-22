@@ -21,8 +21,17 @@ pub enum ShowCommand {
     NewShowFileFromCurrentLv1 {
         reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
     },
+    GuardedNewShowFileFromCurrentLv1 {
+        expected_persisted_revision: u64,
+        reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
+    },
     NewShowFileFromTemplate {
         path: std::path::PathBuf,
+        reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
+    },
+    GuardedNewShowFileFromTemplate {
+        path: std::path::PathBuf,
+        expected_persisted_revision: u64,
         reply: Option<oneshot::Sender<Result<NewShowFileResult, String>>>,
     },
     SaveShowFileAs {
@@ -40,6 +49,11 @@ pub enum ShowCommand {
     },
     LoadShowFileFromPath {
         path: std::path::PathBuf,
+        reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
+    },
+    GuardedLoadShowFileFromPath {
+        path: std::path::PathBuf,
+        expected_persisted_revision: u64,
         reply: Option<oneshot::Sender<Result<LoadShowFileResult, String>>>,
     },
 }

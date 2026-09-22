@@ -104,10 +104,32 @@ impl ApplicationCommandContext {
         self.lifecycle.persisted_session_revision()
     }
 
+    pub fn admit_persisted_session_revision<T>(
+        &self,
+        expected_revision: u64,
+        admit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.lifecycle
+            .admit_persisted_session_revision(expected_revision, admit)
+    }
+
     pub async fn new_show_file(&self) -> Result<NewShowFileResult, String> {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
             .await?;
+        receive_nested(response).await
+    }
+
+    pub async fn guarded_new_show_file(
+        &self,
+        expected_persisted_revision: u64,
+    ) -> Result<NewShowFileResult, String> {
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::GuardedNewShowFileFromCurrentLv1 {
+            expected_persisted_revision,
+            reply: Some(reply),
+        })
+        .await?;
         receive_nested(response).await
     }
 
@@ -130,6 +152,24 @@ impl ApplicationCommandContext {
         receive_nested(response).await.map(Some)
     }
 
+    pub async fn guarded_open_show_file(
+        &self,
+        path: Option<PathBuf>,
+        expected_persisted_revision: u64,
+    ) -> Result<Option<LoadShowFileResult>, String> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::GuardedLoadShowFileFromPath {
+            path,
+            expected_persisted_revision,
+            reply: Some(reply),
+        })
+        .await?;
+        receive_nested(response).await.map(Some)
+    }
+
     /// A missing path means the host picker was cancelled without changing the current session.
     pub async fn new_show_file_from_template(
         &self,
@@ -141,6 +181,24 @@ impl ApplicationCommandContext {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromTemplate {
             path,
+            reply: Some(reply),
+        })
+        .await?;
+        receive_nested(response).await.map(Some)
+    }
+
+    pub async fn guarded_new_show_file_from_template(
+        &self,
+        path: Option<PathBuf>,
+        expected_persisted_revision: u64,
+    ) -> Result<Option<NewShowFileResult>, String> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::GuardedNewShowFileFromTemplate {
+            path,
+            expected_persisted_revision,
             reply: Some(reply),
         })
         .await?;

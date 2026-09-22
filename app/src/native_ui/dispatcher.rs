@@ -203,6 +203,15 @@ impl CommandDispatcher {
         self.commands.persisted_session_revision()
     }
 
+    /// @cc [owner:mixxorz,label:product;persistence] guarded-quit-admission
+    /// The quit callback MUST run synchronously under exact persisted-revision admission. A
+    /// mismatch MUST leave it uncalled so the UI can restart preflight or cancel visibly.
+    pub fn admit_guarded_quit(&self, expected_revision: u64, quit: impl FnOnce()) -> bool {
+        self.commands
+            .admit_persisted_session_revision(expected_revision, quit)
+            .is_some()
+    }
+
     pub fn query_show_session_state(&self) -> u64 {
         let query_id = self.next_command_id();
         let persisted_edit_epoch = self.persisted_edit_epoch();
@@ -365,6 +374,39 @@ mod tests {
         .expect("session-state query timed out");
 
         assert_eq!(query_epoch, 0);
+    }
+
+    #[tokio::test]
+    async fn guarded_quit_calls_closure_only_for_exact_revision() {
+        let event_bus = AppEventBus::default();
+        let event_bus_for_increment = event_bus.clone();
+        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
+        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
+        let lifecycle = AppLifecycle::new(
+            event_bus,
+            show.clone(),
+            show_peers,
+            lockout,
+            settings.clone(),
+        );
+        show_task.spawn();
+        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
+        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
+        let (events, _event_rx) = ui_event_channel();
+        let dispatcher =
+            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        let admitted_calls = calls.clone();
+        assert!(dispatcher.admit_guarded_quit(0, move || {
+            admitted_calls.fetch_add(1, Ordering::SeqCst);
+        }));
+        event_bus_for_increment.note_persisted_session_edit();
+        let rejected_calls = calls.clone();
+        assert!(!dispatcher.admit_guarded_quit(0, move || {
+            rejected_calls.fetch_add(1, Ordering::SeqCst);
+        }));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
