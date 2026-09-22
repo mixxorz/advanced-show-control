@@ -1,12 +1,12 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::base::Button as BaseButton;
+use gpui_kit::component::WindowExt as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::dialog::{Dialog, DialogContent};
 use gpui_kit::component::scroll::ScrollableElement as _;
-use gpui_kit::component::{Disableable as _, WindowExt as _};
 use gpui_kit::{
     App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, rgb,
@@ -84,17 +84,25 @@ impl ConnectionState {
         }
     }
 
+    /// @cc [owner:mixxorz,label:safety;presentation] latency-result-active-pending-only
+    /// A latency result MUST update presentation state only when its session is active and its exact
+    /// identity is currently pending. Closed-session, stale-session, removed-identity, duplicate, and
+    /// unsolicited results MUST leave latency state unchanged.
     pub fn set_latency(
         &mut self,
         session_id: u64,
         identity: &Lv1SystemIdentity,
         result: Result<TcpConnectProbeResult, String>,
     ) {
-        if self.mode.is_none() || session_id != self.latency_session_id {
+        let key = identity_key(identity);
+        if self.mode.is_none()
+            || session_id != self.latency_session_id
+            || self.latency.get(&key) != Some(&LatencyState::Pending)
+        {
             return;
         }
         self.latency.insert(
-            identity_key(identity),
+            key,
             match result {
                 Ok(result) => LatencyState::Success(result.tcp_connect_ms),
                 Err(error) => LatencyState::Error(error),
@@ -104,11 +112,40 @@ impl ConnectionState {
 
     pub fn begin_latency(&mut self, identity: &Lv1SystemIdentity) -> Option<u64> {
         let key = identity_key(identity);
-        if self.latency.get(&key) == Some(&LatencyState::Pending) {
+        if self.mode.is_none() || self.latency.contains_key(&key) {
             return None;
         }
         self.latency.insert(key, LatencyState::Pending);
         Some(self.latency_session_id)
+    }
+
+    /// @cc [owner:mixxorz,label:product;presentation] discovered-latency-session-reconciliation
+    /// While the dialog is open, reconciliation MUST prune identities absent from the complete
+    /// discovered list and return one probe for each identity not yet tested in this dialog session.
+    /// While closed it MUST return no probes and retain no latency state.
+    pub fn reconcile_latency_probes(
+        &mut self,
+        systems: &[DiscoveredLv1System],
+    ) -> Vec<(u64, Lv1SystemIdentity)> {
+        if self.mode.is_none() {
+            self.latency.clear();
+            return Vec::new();
+        }
+
+        let discovered_keys = systems
+            .iter()
+            .map(|system| identity_key(&system.identity))
+            .collect::<HashSet<_>>();
+        self.latency
+            .retain(|identity, _| discovered_keys.contains(identity));
+
+        systems
+            .iter()
+            .filter_map(|system| {
+                self.begin_latency(&system.identity)
+                    .map(|session_id| (session_id, system.identity.clone()))
+            })
+            .collect()
     }
 
     fn invalidate_latency_session(&mut self) {
@@ -120,6 +157,16 @@ impl ConnectionState {
     }
 }
 
+pub(super) fn begin_automatic_latency_probes(
+    state: &Rc<RefCell<ConnectionState>>,
+    systems: &[DiscoveredLv1System],
+    mut dispatch: impl FnMut(u64, Lv1SystemIdentity),
+) {
+    for (session_id, identity) in state.borrow_mut().reconcile_latency_probes(systems) {
+        dispatch(session_id, identity);
+    }
+}
+
 pub fn open_connection_dialog(
     window: &mut Window,
     cx: &mut App,
@@ -127,6 +174,12 @@ pub fn open_connection_dialog(
     state: Rc<RefCell<ConnectionState>>,
     dispatcher: CommandDispatcher,
 ) {
+    let systems = snapshot.borrow().discovered_lv1_systems.clone();
+    let probe_dispatcher = dispatcher.clone();
+    begin_automatic_latency_probes(&state, &systems, move |session_id, identity| {
+        probe_dispatcher.probe_latency(session_id, identity, None);
+    });
+
     window.open_dialog(cx, move |dialog, _, _| {
         let close_state = state.clone();
         let connection = state.borrow();
@@ -269,11 +322,8 @@ fn system_row(
     };
     let select_dispatcher = dispatcher.clone();
     let select_identity = identity.clone();
-    let select_state = state.clone();
-    let resume_state = state.clone();
-    let probe_identity = identity.clone();
-    let probe_label = format!("Test connection latency for {display_name}");
-    let probe_state = state;
+    let select_state = state;
+    let resume_state = select_state.clone();
 
     div()
         .flex()
@@ -342,27 +392,10 @@ fn system_row(
                     _ => CONSOLE_SECONDARY,
                 }))
                 .child(match latency {
-                    None => "Not tested".to_string(),
-                    Some(LatencyState::Pending) => "Testing…".to_string(),
+                    None | Some(LatencyState::Pending) => "Testing…".to_string(),
                     Some(LatencyState::Success(ms)) => format!("{ms} ms"),
                     Some(LatencyState::Error(error)) => format!("Failed: {error}"),
                 }),
-        )
-        .child(
-            bordered_button(SharedString::from(format!(
-                "probe-{}",
-                identity_key(&identity)
-            )))
-            .secondary()
-            .accessibility_label(probe_label)
-            .label("TEST")
-            .disabled(matches!(latency, Some(LatencyState::Pending)))
-            .on_click(move |_, window, _| {
-                if let Some(session_id) = probe_state.borrow_mut().begin_latency(&probe_identity) {
-                    dispatcher.probe_latency(session_id, probe_identity.clone(), None);
-                    window.refresh();
-                }
-            }),
         )
 }
 
@@ -477,8 +510,9 @@ mod tests {
             mode: Some(ConnectionDialogMode::Manual),
             ..Default::default()
         };
+        let session_id = state.begin_latency(&console).unwrap();
         state.set_latency(
-            0,
+            session_id,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
@@ -503,6 +537,130 @@ mod tests {
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
 
+        assert!(state.latency.is_empty());
+    }
+
+    #[test]
+    fn visible_dialog_starts_each_discovered_identity_once_per_session() {
+        let first = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let second = identity(Some("b"), Some("MON"), "10.0.0.2", 1234);
+        let systems = vec![
+            DiscoveredLv1System {
+                identity: first.clone(),
+                status: DiscoveredLv1Status::Available,
+            },
+            DiscoveredLv1System {
+                identity: second.clone(),
+                status: DiscoveredLv1Status::Available,
+            },
+        ];
+        let mut state = ConnectionState::startup();
+
+        let probes = state.reconcile_latency_probes(&systems);
+        assert_eq!(probes.len(), 2);
+        assert_eq!(probes[0].1, first);
+        assert_eq!(probes[1].1, second);
+        assert!(state.reconcile_latency_probes(&systems).is_empty());
+    }
+
+    #[test]
+    fn latency_reconciliation_prunes_removed_identities_and_rejects_their_results() {
+        let removed = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let retained = identity(Some("b"), Some("MON"), "10.0.0.2", 1234);
+        let mut state = ConnectionState::startup();
+        let systems = |identities: &[Lv1SystemIdentity]| {
+            identities
+                .iter()
+                .cloned()
+                .map(|identity| DiscoveredLv1System {
+                    identity,
+                    status: DiscoveredLv1Status::Available,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        let probes = state.reconcile_latency_probes(&systems(&[removed.clone(), retained.clone()]));
+        let session_id = probes[0].0;
+        assert!(
+            state
+                .reconcile_latency_probes(&systems(std::slice::from_ref(&retained)))
+                .is_empty()
+        );
+
+        state.set_latency(
+            session_id,
+            &removed,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
+        );
+
+        assert!(!state.latency.contains_key(&identity_key(&removed)));
+        assert_eq!(
+            state.latency.get(&identity_key(&retained)),
+            Some(&LatencyState::Pending)
+        );
+    }
+
+    #[test]
+    fn latency_results_require_a_currently_pending_identity() {
+        let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let mut state = ConnectionState::startup();
+
+        state.set_latency(
+            0,
+            &console,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
+        );
+        assert!(state.latency.is_empty());
+
+        let session_id = state.begin_latency(&console).unwrap();
+        state.set_latency(
+            session_id,
+            &console,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
+        );
+        state.set_latency(
+            session_id,
+            &console,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
+        );
+
+        assert_eq!(
+            state.latency.get(&identity_key(&console)),
+            Some(&LatencyState::Success(12))
+        );
+    }
+
+    #[gpui_kit::test]
+    fn automatic_latency_probes_begin_without_row_interaction(_: &mut gpui_kit::TestAppContext) {
+        let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let systems = vec![DiscoveredLv1System {
+            identity: console.clone(),
+            status: DiscoveredLv1Status::Available,
+        }];
+        let state = Rc::new(RefCell::new(ConnectionState::startup()));
+        let mut dispatched = Vec::new();
+
+        begin_automatic_latency_probes(&state, &systems, |session_id, identity| {
+            dispatched.push((session_id, identity));
+        });
+
+        assert_eq!(dispatched, vec![(0, console.clone())]);
+        assert_eq!(
+            state.borrow().latency.get(&identity_key(&console)),
+            Some(&LatencyState::Pending)
+        );
+    }
+
+    #[test]
+    fn closed_dialog_does_not_start_automatic_probes() {
+        let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let systems = vec![DiscoveredLv1System {
+            identity: console,
+            status: DiscoveredLv1Status::Available,
+        }];
+        let mut state = ConnectionState::default();
+
+        assert!(state.reconcile_latency_probes(&systems).is_empty());
         assert!(state.latency.is_empty());
     }
 }

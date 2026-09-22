@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 
 use crate::projector::{AppViewState, ProjectionSubscription};
 
-use super::connection::{ConnectionState, open_connection_dialog};
+use super::connection::{ConnectionState, begin_automatic_latency_probes, open_connection_dialog};
 use super::cues::CueListsView;
 use super::keyboard::{
     InteractionState, RoutedAction, global_key_context, normalized_physical_key, route_action,
@@ -273,6 +273,12 @@ impl AppRoot {
         if !visible {
             return;
         }
+
+        let systems = self.latest_snapshot.borrow().discovered_lv1_systems.clone();
+        let dispatcher = self.dispatcher.clone();
+        begin_automatic_latency_probes(&self.connection, &systems, move |session_id, identity| {
+            dispatcher.probe_latency(session_id, identity, None);
+        });
 
         if window.has_active_dialog(cx) {
             window.refresh();

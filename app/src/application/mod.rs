@@ -81,6 +81,10 @@ impl ApplicationCommandContext {
         self.lifecycle.refresh_lv1_discovery(timeout_ms).await
     }
 
+    /// @cc [owner:mixxorz,label:architecture;safety] latency-probe-is-transport-detached
+    /// A latency probe MUST open and close only an isolated TCP connection to the supplied endpoint.
+    /// It MUST NOT invoke lifecycle connection transitions, advance generations, install runtime
+    /// peers, register an LV1 session, or issue LV1 or fader commands.
     pub async fn probe_lv1_tcp_connect_latency(
         &self,
         identity: Lv1SystemIdentity,
