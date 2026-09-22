@@ -92,10 +92,14 @@ impl ShowState {
         self.show_file_path.clone()
     }
 
-    pub(crate) fn session_state(&self) -> super::events::ShowSessionState {
+    pub(crate) fn session_state(
+        &self,
+        persisted_session_revision: u64,
+    ) -> super::events::ShowSessionState {
         super::events::ShowSessionState {
             show_file_path: self.show_file_path.clone(),
             show_file_dirty: self.show_file_dirty,
+            persisted_session_revision,
         }
     }
 

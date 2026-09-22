@@ -68,8 +68,9 @@ impl SessionGuard {
     /// Every destructive session action MUST first obtain an authoritative Show session-state
     /// result. It may continue only when that preflight is clean, the user explicitly chose
     /// Discard, or a successful save is followed by an authoritative clean recheck. A matching
-    /// query whose persisted-edit submission epoch is stale MUST retain its preflight or post-save
-    /// phase and request another query. Uncorrelated results, cancellation, query/save failure, and
+    /// query whose persisted-edit submission epoch or owner-side persisted revision is stale MUST
+    /// retain its preflight or post-save phase and request another query. Uncorrelated results,
+    /// cancellation, query/save failure, and
     /// a dirty post-save recheck MUST NOT continue the action.
     pub(super) fn request(&mut self, action: SessionAction) -> GuardEffect {
         if self.pending.is_some() {
@@ -417,7 +418,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_preflight_epoch_retries_without_losing_the_action() {
+    fn stale_preflight_query_retries_without_losing_the_action() {
         let mut guard = SessionGuard::default();
         guard.request(SessionAction::Open);
         guard.query_started(10);
@@ -432,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_post_save_epoch_retries_without_losing_the_phase() {
+    fn stale_post_save_query_retries_without_losing_the_phase() {
         let mut guard = SessionGuard::default();
         guard.request(SessionAction::Quit);
         guard.query_started(1);

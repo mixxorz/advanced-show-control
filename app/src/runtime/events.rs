@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
 use tokio::sync::{broadcast, watch};
 
 use super::AppStateSnapshot;
@@ -51,6 +56,7 @@ pub enum AppEvent {
 pub struct AppEventBus {
     tx: broadcast::Sender<AppEvent>,
     state: watch::Sender<AppStateSnapshot>,
+    persisted_session_revision: Arc<AtomicU64>,
 }
 
 impl AppEventBus {
@@ -60,7 +66,11 @@ impl AppEventBus {
     pub fn new(capacity: usize) -> Self {
         let (tx, _) = broadcast::channel(capacity.max(1));
         let (state, _) = watch::channel(AppStateSnapshot::default());
-        Self { tx, state }
+        Self {
+            tx,
+            state,
+            persisted_session_revision: Arc::new(AtomicU64::new(0)),
+        }
     }
 
     /**
@@ -78,9 +88,38 @@ impl AppEventBus {
      * Publishing with no broadcast receivers MUST still retain applicable state and MUST return
      * zero rather than fail.
      */
+    /// @cc [owner:mixxorz,label:persistence;ordering] owner-persisted-session-revision
+    /// Publishing a persisted Scenes state change or any Cue Lists fact MUST synchronously advance
+    /// the shared revision before retaining or broadcasting the fact. Projection-only scene facts,
+    /// session replacement, and facts from all other domains MUST NOT advance it. Show-owned
+    /// persisted mutations MUST call `note_persisted_session_edit` only after accepting a change.
     pub fn publish(&self, event: AppEvent) -> usize {
+        if matches!(
+            &event,
+            AppEvent::Scenes {
+                event: ScenesEvent::StateChanged {
+                    persisted_scene_edit: true,
+                    ..
+                },
+                ..
+            } | AppEvent::CueLists(_)
+        ) {
+            self.note_persisted_session_edit();
+        }
         self.retain(&event);
         self.tx.send(event).unwrap_or(0)
+    }
+
+    pub fn note_persisted_session_edit(&self) {
+        self.persisted_session_revision
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |revision| {
+                revision.checked_add(1)
+            })
+            .expect("persisted session revision exhausted");
+    }
+
+    pub fn persisted_session_revision(&self) -> u64 {
+        self.persisted_session_revision.load(Ordering::SeqCst)
     }
 
     /// @cc [owner:mixxorz,label:consistency] unchanged-state-does-not-notify
@@ -138,6 +177,39 @@ pub fn log_lagged_subscriber(name: &str, count: u64) {
 #[cfg(test)]
 mod tests {
     use super::{AppEvent, AppEventBus, RuntimeLifecycleEvent};
+    use crate::cue_lists::CueListsProjectionState;
+    use crate::scenes::{ScenesEvent, ScenesProjectionState};
+
+    #[test]
+    fn persisted_revision_advances_only_for_persisted_scene_and_cue_facts() {
+        let event_bus = AppEventBus::default();
+
+        event_bus.publish_scenes(
+            0,
+            ScenesEvent::StateChanged {
+                state: ScenesProjectionState::default(),
+                persisted_scene_edit: false,
+            },
+        );
+        event_bus.publish(AppEvent::SessionReplaced {
+            generation: 1,
+            scenes: ScenesProjectionState::default(),
+            cue_lists: CueListsProjectionState::default(),
+        });
+        assert_eq!(event_bus.persisted_session_revision(), 0);
+
+        event_bus.publish_scenes(
+            0,
+            ScenesEvent::StateChanged {
+                state: ScenesProjectionState::default(),
+                persisted_scene_edit: true,
+            },
+        );
+        assert_eq!(event_bus.persisted_session_revision(), 1);
+
+        event_bus.publish(AppEvent::CueLists(CueListsProjectionState::default()));
+        assert_eq!(event_bus.persisted_session_revision(), 2);
+    }
 
     #[tokio::test]
     async fn default_bus_retains_4096_events_for_a_waiting_subscriber() {

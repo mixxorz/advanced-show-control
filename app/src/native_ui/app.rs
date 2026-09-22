@@ -154,10 +154,11 @@ impl AppRoot {
     }
 
     /// @cc [owner:mixxorz,label:persistence;ordering] query-epoch-check-and-continuation-atomic
-    /// A session-state query result MUST compare its captured persisted-edit epoch with the current
-    /// dispatcher epoch and either enqueue a retry or apply the guard result in this same GPUI
-    /// callback, without yielding to another native UI mutation submission between comparison and
-    /// continuation dispatch. If any modal surface is active, it MUST cancel instead.
+    /// A session-state query result MUST compare both its captured persisted-edit submission epoch
+    /// and authoritative owner-side persisted revision with their current values, then either
+    /// enqueue a retry or apply the guard result in this same GPUI callback, without yielding to a
+    /// UI submission or owner fact between comparison and continuation dispatch. If any modal
+    /// surface is active, it MUST cancel instead.
     fn handle_event(&mut self, event: UiEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             UiEvent::Snapshot(snapshot) => {
@@ -259,7 +260,12 @@ impl AppRoot {
                     }
                     return;
                 }
-                let effect = if persisted_edit_epoch != self.dispatcher.persisted_edit_epoch() {
+                let effect = if session_query_is_stale(
+                    persisted_edit_epoch,
+                    self.dispatcher.persisted_edit_epoch(),
+                    &result,
+                    self.dispatcher.persisted_session_revision(),
+                ) {
                     self.session_guard.borrow_mut().state_query_stale(query_id)
                 } else {
                     let result = result.map(|state| SessionStatus {
@@ -745,6 +751,18 @@ impl AppRoot {
     }
 }
 
+fn session_query_is_stale(
+    query_edit_epoch: u64,
+    current_edit_epoch: u64,
+    result: &Result<crate::show::ShowSessionState, String>,
+    current_persisted_revision: u64,
+) -> bool {
+    query_edit_epoch != current_edit_epoch
+        || result
+            .as_ref()
+            .is_ok_and(|state| state.persisted_session_revision != current_persisted_revision)
+}
+
 fn modal_surface_active(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
     native_prompt || native_dialog || custom_modal
 }
@@ -820,9 +838,22 @@ mod tests {
 
     use super::{
         about_detail, cue_completion_matches_session, ensure_show_file_extension,
-        is_show_file_path, modal_surface_active, suggested_save_file_name,
+        is_show_file_path, modal_surface_active, session_query_is_stale, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn owner_revision_change_makes_successful_query_stale() {
+        let result = Ok(crate::show::ShowSessionState {
+            show_file_path: None,
+            show_file_dirty: false,
+            persisted_session_revision: 4,
+        });
+
+        assert!(!session_query_is_stale(2, 2, &result, 4));
+        assert!(session_query_is_stale(2, 2, &result, 5));
+        assert!(session_query_is_stale(2, 3, &result, 4));
+    }
 
     #[test]
     fn close_request_is_blocked_while_any_modal_surface_is_active() {

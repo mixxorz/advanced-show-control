@@ -100,6 +100,10 @@ impl ApplicationCommandContext {
         receive(response).await
     }
 
+    pub fn persisted_session_revision(&self) -> u64 {
+        self.lifecycle.persisted_session_revision()
+    }
+
     pub async fn new_show_file(&self) -> Result<NewShowFileResult, String> {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
@@ -696,6 +700,7 @@ mod tests {
                 .send(ShowSessionState {
                     show_file_path: Some(PathBuf::from("authoritative.ascs")),
                     show_file_dirty: true,
+                    persisted_session_revision: 7,
                 })
                 .unwrap();
         });
@@ -706,6 +711,7 @@ mod tests {
             Some(PathBuf::from("authoritative.ascs"))
         );
         assert!(state.show_file_dirty);
+        assert_eq!(state.persisted_session_revision, 7);
         actor.await.unwrap();
     }
 

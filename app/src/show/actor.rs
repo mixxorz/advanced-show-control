@@ -195,12 +195,14 @@ async fn run_show_actor(
                     };
                     match command {
                         ShowCommand::CurrentSessionState { reply } => {
+                            let persisted_session_revision =
+                                event_bus.persisted_session_revision();
                             operation.dirty_during_wait |= drain_available_show_events(
                                 &mut events,
                                 &mut state,
                                 &event_bus,
                             );
-                            let _ = reply.send(state.session_state());
+                            let _ = reply.send(state.session_state(persisted_session_revision));
                         }
                         ShowCommand::CurrentShowFilePath { reply } => {
                             let _ = reply.send(state.current_show_file_path());
@@ -240,8 +242,9 @@ async fn run_show_actor(
                 command = rx.recv() => {
                     let Some(command) = command else { break; };
                     if let ShowCommand::CurrentSessionState { reply } = command {
+                        let persisted_session_revision = event_bus.persisted_session_revision();
                         drain_available_show_events(&mut events, &mut state, &event_bus);
-                        let _ = reply.send(state.session_state());
+                        let _ = reply.send(state.session_state(persisted_session_revision));
                     } else {
                         pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
                         publish_lockout_if_changed(&lockout_tx, &state);
@@ -258,9 +261,11 @@ async fn run_show_actor(
 }
 
 /// @cc [owner:mixxorz,label:persistence;ordering] session-state-query-observes-published-edits
-/// Before replying to `CurrentSessionState`, Show MUST consume every already-queued event-bus fact
-/// and apply persisted-edit dirtying. This drain MUST use only non-blocking receives so lifecycle
-/// commands and pending persistence completion remain responsive.
+/// Before replying to `CurrentSessionState`, Show MUST capture the shared owner-side persisted
+/// revision, then consume every already-queued event-bus fact and apply persisted-edit dirtying.
+/// Capturing first ensures a fact published during or after the drain makes the reply stale at the
+/// UI rather than pairing an unconsumed edit's revision with clean state. This drain MUST use only
+/// non-blocking receives so lifecycle commands and pending persistence completion remain responsive.
 fn drain_available_show_events(
     events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
     state: &mut ShowState,
@@ -419,7 +424,7 @@ async fn handle_command(
 ) -> Option<PendingShowOperation> {
     match command {
         ShowCommand::CurrentSessionState { reply } => {
-            let _ = reply.send(state.session_state());
+            let _ = reply.send(state.session_state(event_bus.persisted_session_revision()));
         }
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
@@ -429,6 +434,9 @@ async fn handle_command(
         }
         ShowCommand::SetLockout { enabled, reply } => {
             let changed = state.set_lockout(enabled);
+            if changed {
+                event_bus.note_persisted_session_edit();
+            }
             publish_if_changed(event_bus, state, changed);
             if let Some(reply) = reply {
                 let _ = reply.send(ShowCommandResult { changed });
@@ -2175,6 +2183,26 @@ mod tests {
             .unwrap();
         assert!(outcome.accepted);
         assert!(outcome.changed);
+    }
+
+    #[tokio::test]
+    async fn lockout_revision_advances_once_only_when_value_changes() {
+        let event_bus = AppEventBus::default();
+        let (show, task, _peers, _lockout) = build_show_actor(event_bus.clone());
+        task.spawn();
+
+        for enabled in [true, true] {
+            let (reply, response) = tokio::sync::oneshot::channel();
+            show.send(ShowCommand::SetLockout {
+                enabled,
+                reply: Some(reply),
+            })
+            .await
+            .unwrap();
+            response.await.unwrap();
+        }
+
+        assert_eq!(event_bus.persisted_session_revision(), 1);
     }
 
     #[tokio::test]

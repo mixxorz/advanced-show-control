@@ -199,6 +199,10 @@ impl CommandDispatcher {
         self.persisted_edit_epoch.load(Ordering::SeqCst)
     }
 
+    pub fn persisted_session_revision(&self) -> u64 {
+        self.commands.persisted_session_revision()
+    }
+
     pub fn query_show_session_state(&self) -> u64 {
         let query_id = self.next_command_id();
         let persisted_edit_epoch = self.persisted_edit_epoch();
@@ -361,6 +365,52 @@ mod tests {
         .expect("session-state query timed out");
 
         assert_eq!(query_epoch, 0);
+    }
+
+    #[tokio::test]
+    async fn owner_edit_published_after_query_creation_is_detectable_before_continuation() {
+        let event_bus = AppEventBus::default();
+        let event_bus_for_publish = event_bus.clone();
+        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
+        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
+        let lifecycle = AppLifecycle::new(
+            event_bus,
+            show.clone(),
+            show_peers,
+            lockout,
+            settings.clone(),
+        );
+        show_task.spawn();
+        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
+        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
+        let (events, mut event_rx) = ui_event_channel();
+        let dispatcher =
+            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
+
+        let query_id = dispatcher.query_show_session_state();
+        let queried_revision = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let UiEvent::SessionStateQueryFinished {
+                    query_id: completed_id,
+                    result,
+                    ..
+                } = event_rx.recv().await.expect("UI event channel closed")
+                    && completed_id == query_id
+                {
+                    break result
+                        .expect("session-state query failed")
+                        .persisted_session_revision;
+                }
+            }
+        })
+        .await
+        .expect("session-state query timed out");
+
+        event_bus_for_publish.publish(crate::runtime::events::AppEvent::CueLists(
+            crate::cue_lists::CueListsProjectionState::default(),
+        ));
+
+        assert_ne!(queried_revision, dispatcher.persisted_session_revision());
     }
 
     #[tokio::test]
