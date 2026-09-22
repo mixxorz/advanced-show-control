@@ -13,7 +13,9 @@ use tokio::sync::mpsc;
 
 use crate::projector::{AppViewState, ProjectionSubscription};
 
-use super::connection::{ConnectionState, begin_automatic_latency_probes, open_connection_dialog};
+use super::connection::{
+    ConnectionState, apply_latency_result, begin_automatic_latency_probes, open_connection_dialog,
+};
 use super::cues::CueListsView;
 use super::keyboard::{
     InteractionState, RoutedAction, global_key_context, normalized_physical_key, route_action,
@@ -232,9 +234,14 @@ impl AppRoot {
                 identity,
                 result,
             } => {
-                self.connection
-                    .borrow_mut()
-                    .set_latency(session_id, attempt_id, &identity, result);
+                apply_latency_result(
+                    &self.connection,
+                    session_id,
+                    attempt_id,
+                    &identity,
+                    result,
+                    window,
+                );
                 self.sync_connection_dialog(window, cx);
             }
         }

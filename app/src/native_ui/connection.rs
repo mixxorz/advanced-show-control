@@ -194,6 +194,20 @@ pub(super) fn begin_automatic_latency_probes(
     }
 }
 
+pub(super) fn apply_latency_result(
+    state: &Rc<RefCell<ConnectionState>>,
+    session_id: u64,
+    attempt_id: u64,
+    identity: &Lv1SystemIdentity,
+    result: Result<TcpConnectProbeResult, String>,
+    window: &mut Window,
+) {
+    state
+        .borrow_mut()
+        .set_latency(session_id, attempt_id, identity, result);
+    window.refresh();
+}
+
 pub fn open_connection_dialog(
     window: &mut Window,
     cx: &mut App,
@@ -201,11 +215,29 @@ pub fn open_connection_dialog(
     state: Rc<RefCell<ConnectionState>>,
     dispatcher: CommandDispatcher,
 ) {
-    let systems = snapshot.borrow().discovered_lv1_systems.clone();
     let probe_dispatcher = dispatcher.clone();
-    begin_automatic_latency_probes(&state, &systems, move |session_id, attempt_id, identity| {
-        probe_dispatcher.probe_latency(session_id, attempt_id, identity, None);
-    });
+    open_connection_dialog_with_probe(
+        window,
+        cx,
+        snapshot,
+        state,
+        dispatcher,
+        move |session_id, attempt_id, identity| {
+            probe_dispatcher.probe_latency(session_id, attempt_id, identity, None);
+        },
+    );
+}
+
+fn open_connection_dialog_with_probe(
+    window: &mut Window,
+    cx: &mut App,
+    snapshot: Rc<RefCell<AppViewState>>,
+    state: Rc<RefCell<ConnectionState>>,
+    dispatcher: CommandDispatcher,
+    dispatch_probe: impl FnMut(u64, u64, Lv1SystemIdentity),
+) {
+    let systems = snapshot.borrow().discovered_lv1_systems.clone();
+    begin_automatic_latency_probes(&state, &systems, dispatch_probe);
 
     window.open_dialog(cx, move |dialog, _, _| {
         let close_state = state.clone();
@@ -805,24 +837,135 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn automatic_latency_probes_begin_without_row_interaction(_: &mut gpui_kit::TestAppContext) {
+    fn dialog_open_dispatches_renders_completion_and_reopens_with_a_fresh_attempt(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{AppContext as _, Context, Render, div, size};
+
+        struct Harness;
+
+        struct TestDir(std::path::PathBuf);
+
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        impl Render for Harness {
+            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div().children(Root::render_dialog_layer(window, cx))
+            }
+        }
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let settings_dir = TestDir(std::env::temp_dir().join(format!(
+            "asc-connection-dialog-test-{}",
+            uuid::Uuid::new_v4()
+        )));
+        let dispatcher = {
+            let _entered = runtime.enter();
+            let events = crate::runtime::events::AppEventBus::default();
+            let (show, show_task, show_peers, lockout) =
+                crate::show::build_show_actor(events.clone());
+            let (settings, settings_task, _) =
+                crate::settings::build_settings_actor(settings_dir.0.clone(), events.clone());
+            let lifecycle = crate::lifecycle::AppLifecycle::new(
+                events,
+                show.clone(),
+                show_peers,
+                lockout,
+                settings.clone(),
+            );
+            show_task.spawn();
+            settings_task.spawn();
+            let (ui_logs, _) = tokio::sync::broadcast::channel(8);
+            let commands = crate::application::ApplicationCommandContext::new(
+                lifecycle, show, settings, ui_logs,
+            );
+            let (ui_events, _) = tokio::sync::mpsc::unbounded_channel();
+            CommandDispatcher::new(runtime.handle().clone(), commands, ui_events)
+        };
+
         let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
-        let systems = vec![DiscoveredLv1System {
-            identity: console.clone(),
-            status: DiscoveredLv1Status::Available,
-        }];
+        let snapshot = Rc::new(RefCell::new(AppViewState {
+            discovered_lv1_systems: vec![DiscoveredLv1System {
+                identity: console.clone(),
+                status: DiscoveredLv1Status::Available,
+            }],
+            ..Default::default()
+        }));
         let state = Rc::new(RefCell::new(ConnectionState::startup()));
-        let mut dispatched = Vec::new();
+        let dispatched = Rc::new(RefCell::new(Vec::new()));
 
-        begin_automatic_latency_probes(&state, &systems, |session_id, attempt_id, identity| {
-            dispatched.push((session_id, attempt_id, identity));
+        cx.update(gpui_kit::init);
+        let handle = cx.open_window(size(px(720.), px(520.)), |window, cx| {
+            Root::new(cx.new(|_| Harness), window, cx)
         });
+        let first_dispatches = dispatched.clone();
+        cx.update_window(handle.into(), |_, window, cx| {
+            open_connection_dialog_with_probe(
+                window,
+                cx,
+                snapshot.clone(),
+                state.clone(),
+                dispatcher.clone(),
+                move |session_id, attempt_id, identity| {
+                    first_dispatches
+                        .borrow_mut()
+                        .push((session_id, attempt_id, identity));
+                },
+            );
+            window.render_frame(cx);
+            let row_id = format!("select-system-{}", identity_key(&console));
+            assert_eq!(
+                window.find(SharedString::from(row_id.clone())).label(),
+                Some("FOH, Available, latency Testing…")
+            );
 
-        assert_eq!(dispatched, vec![(0, 0, console.clone())]);
-        assert_eq!(
-            state.borrow().latency.get(&identity_key(&console)),
-            Some(&LatencyState::Pending { attempt_id: 0 })
-        );
+            let (session_id, attempt_id, _) = dispatched.borrow()[0].clone();
+            apply_latency_result(
+                &state,
+                session_id,
+                attempt_id,
+                &console,
+                Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
+                window,
+            );
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(SharedString::from(row_id.clone())).label(),
+                Some("FOH, Available, latency 12 ms")
+            );
+
+            window.close_dialog(cx);
+            state.borrow_mut().open_manual();
+            let reopened_dispatches = dispatched.clone();
+            open_connection_dialog_with_probe(
+                window,
+                cx,
+                snapshot.clone(),
+                state.clone(),
+                dispatcher.clone(),
+                move |session_id, attempt_id, identity| {
+                    reopened_dispatches
+                        .borrow_mut()
+                        .push((session_id, attempt_id, identity));
+                },
+            );
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        let dispatched = dispatched.borrow();
+        assert_eq!(dispatched.len(), 2);
+        assert_ne!(dispatched[0].0, dispatched[1].0);
+        assert_ne!(dispatched[0].1, dispatched[1].1);
     }
 
     #[test]
