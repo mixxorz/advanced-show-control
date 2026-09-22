@@ -112,9 +112,11 @@ pub fn run() -> Result<()> {
 }
 
 /// @cc [owner:mixxorz,label:product;persistence] native-close-uses-session-guard
-/// Every platform window-close request MUST be vetoed and consult AppRoot's dirty-session guard.
-/// The window may close only through the Quit continuation after an authoritative clean preflight,
-/// explicit Discard, or a successful save followed by an authoritative clean recheck.
+/// Every platform window-close request MUST be vetoed. While a native prompt, native dialog, or
+/// custom modal is active, the request MUST NOT begin a guard preflight. Otherwise it MUST consult
+/// AppRoot's dirty-session guard, and the window may close only through the Quit continuation after
+/// an authoritative clean preflight, explicit Discard, or a successful save followed by an
+/// authoritative clean recheck.
 fn install_session_close_guard(app: &Entity<AppRoot>, window: &mut Window, cx: &mut App) {
     let weak_app = app.downgrade();
     window.on_window_should_close(cx, move |window, cx| {

@@ -224,6 +224,17 @@ impl SessionGuard {
     }
 
     pub(super) fn command_finished(&mut self, command_id: u64, succeeded: bool) -> GuardEffect {
+        let failed_query_matches = matches!(
+            self.pending.as_ref().map(|pending| &pending.phase),
+            Some(GuardPhase::Querying {
+                query_id: Some(expected_id),
+                ..
+            }) if *expected_id == command_id && !succeeded
+        );
+        if failed_query_matches {
+            self.pending = None;
+            return GuardEffect::None;
+        }
         let matches = matches!(
             self.pending.as_ref().map(|pending| &pending.phase),
             Some(GuardPhase::Saving {
@@ -384,6 +395,16 @@ mod tests {
             GuardEffect::None
         );
         assert!(guard.is_pending());
+    }
+
+    #[test]
+    fn matching_generic_query_failure_clears_pending_intent() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::New);
+        guard.query_started(17);
+
+        assert_eq!(guard.command_finished(17, false), GuardEffect::None);
+        assert!(!guard.is_pending());
     }
 
     #[test]

@@ -191,7 +191,7 @@ impl ScenesView {
         + Send
         + 'static,
     ) {
-        self.dispatcher.dispatch(command);
+        self.dispatcher.dispatch_serial(command);
     }
 
     fn commit_duration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -284,8 +284,8 @@ impl ScenesView {
             .disabled(recall_scene_id.is_none())
             .on_click(cx.listener(move |this, _, _, _| {
                 if let Some(scene_id) = recall_scene_id {
-                    this.dispatch(move |commands| {
-                        Box::pin(async move { commands.recall_scene(scene_id).await.map(|_| ()) })
+                    this.dispatcher.dispatch(move |commands| async move {
+                        commands.recall_scene(scene_id).await.map(|_| ())
                     });
                 }
             }));

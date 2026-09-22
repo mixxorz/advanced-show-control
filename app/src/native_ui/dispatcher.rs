@@ -158,9 +158,12 @@ impl CommandDispatcher {
         command_id
     }
 
-    /// Enqueues commands that must reach their owner in user-action order. Settings replacements and
-    /// scene-duration edits use this lane so successive drafts compose, and file actions use it so a
-    /// subsequent Save sees the authoritative result of the preceding New, Open, or template load.
+    /// @cc [owner:mixxorz,label:persistence;ordering] persisted-ui-mutations-before-file-preflight
+    /// Every native UI submission that can persistently mutate Scenes, Cue Lists, or Show lockout,
+    /// plus destructive-session preflight queries and save/new/open/template file operations, MUST
+    /// use this lane. FIFO completion MUST ensure a preflight observes all earlier submitted edits.
+    /// GO recall and latency, connection, discovery, and other network operations MUST NOT be routed
+    /// through this lane solely for this ordering guarantee.
     pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
     where
         F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
@@ -268,4 +271,61 @@ pub fn ui_event_channel() -> (
     mpsc::UnboundedReceiver<UiEvent>,
 ) {
     mpsc::unbounded_channel()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::lifecycle::AppLifecycle;
+    use crate::runtime::events::AppEventBus;
+    use crate::settings::SettingsCommand;
+    use crate::show::build_show_actor;
+
+    #[tokio::test]
+    async fn persisted_edit_queued_before_preflight_completes_before_the_query() {
+        let event_bus = AppEventBus::default();
+        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
+        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
+        let lifecycle = AppLifecycle::new(
+            event_bus,
+            show.clone(),
+            show_peers,
+            lockout,
+            settings.clone(),
+        );
+        show_task.spawn();
+        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
+        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
+        let (events, mut event_rx) = ui_event_channel();
+        let dispatcher =
+            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
+
+        dispatcher.dispatch_serial(|commands| async move {
+            commands
+                .create_cue_list("Ordered edit".to_string())
+                .await
+                .map(|_| ())
+        });
+        let query_id = dispatcher.query_show_session_state();
+
+        let result = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let UiEvent::SessionStateQueryFinished {
+                    query_id: completed_id,
+                    result,
+                } = event_rx.recv().await.expect("UI event channel closed")
+                    && completed_id == query_id
+                {
+                    break result;
+                }
+            }
+        })
+        .await
+        .expect("session-state query timed out")
+        .expect("session-state query failed");
+
+        assert!(result.show_file_dirty);
+    }
 }

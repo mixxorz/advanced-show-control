@@ -316,6 +316,13 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        if close_request_blocked(
+            window.has_active_prompt(),
+            window.has_active_dialog(cx),
+            self.shell.read(cx).modal_open(cx),
+        ) {
+            return false;
+        }
         let (accept, effect) = self.session_guard.borrow_mut().request_close();
         self.apply_guard_effect(effect, window, cx);
         accept
@@ -707,6 +714,10 @@ impl AppRoot {
     }
 }
 
+fn close_request_blocked(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
+    native_prompt || native_dialog || custom_modal
+}
+
 fn cue_completion_matches_session(session_revision: u64, snapshot: &AppViewState) -> bool {
     session_revision == snapshot.session_revision
 }
@@ -777,10 +788,18 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        about_detail, cue_completion_matches_session, ensure_show_file_extension,
-        is_show_file_path, suggested_save_file_name,
+        about_detail, close_request_blocked, cue_completion_matches_session,
+        ensure_show_file_extension, is_show_file_path, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn close_request_is_blocked_while_any_modal_surface_is_active() {
+        assert!(!close_request_blocked(false, false, false));
+        assert!(close_request_blocked(true, false, false));
+        assert!(close_request_blocked(false, true, false));
+        assert!(close_request_blocked(false, false, true));
+    }
 
     #[test]
     fn stale_cue_completion_cannot_invalidate_a_new_session() {
