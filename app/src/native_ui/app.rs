@@ -23,7 +23,7 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 #[cfg(target_os = "macos")]
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
-use super::session_guard::{GuardChoice, GuardEffect, SessionAction, SessionGuard};
+use super::session_guard::{GuardChoice, GuardEffect, SessionAction, SessionGuard, SessionStatus};
 use super::settings_view::SettingsView;
 use super::shell::AppShell;
 use super::state::GoSubmissionGuard;
@@ -234,6 +234,17 @@ impl AppRoot {
                     }
                 }
             }
+            UiEvent::SessionStateQueryFinished { query_id, result } => {
+                let result = result.map(|state| SessionStatus {
+                    path: state.show_file_path,
+                    dirty: state.show_file_dirty,
+                });
+                let effect = self
+                    .session_guard
+                    .borrow_mut()
+                    .state_query_finished(query_id, result);
+                self.apply_guard_effect(effect, window, cx);
+            }
             UiEvent::LatencyMeasured {
                 session_id,
                 identity,
@@ -305,11 +316,7 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let dirty = self.latest_snapshot.borrow().show_file_dirty;
-        if dirty && (window.has_active_prompt() || self.modal_open(window, cx)) {
-            return false;
-        }
-        let (accept, effect) = self.session_guard.borrow_mut().request_close(dirty);
+        let (accept, effect) = self.session_guard.borrow_mut().request_close();
         self.apply_guard_effect(effect, window, cx);
         accept
     }
@@ -320,8 +327,7 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let dirty = self.latest_snapshot.borrow().show_file_dirty;
-        let effect = self.session_guard.borrow_mut().request(action, dirty);
+        let effect = self.session_guard.borrow_mut().request(action);
         self.apply_guard_effect(effect, window, cx);
     }
 
@@ -333,6 +339,10 @@ impl AppRoot {
     ) {
         match effect {
             GuardEffect::None => {}
+            GuardEffect::QueryState => {
+                let query_id = self.dispatcher.query_show_session_state();
+                self.session_guard.borrow_mut().query_started(query_id);
+            }
             GuardEffect::Prompt => self.prompt_for_dirty_session(window, cx),
             GuardEffect::ChooseSaveDestination => self.prompt_for_guarded_save_destination(cx),
             GuardEffect::SaveCurrent => {
@@ -356,6 +366,9 @@ impl AppRoot {
                 SessionAction::Open => self.open_show(cx),
                 SessionAction::Quit => cx.quit(),
             },
+            GuardEffect::Error(message) => {
+                window.push_notification(Notification::error(message), cx);
+            }
         }
     }
 
@@ -374,8 +387,7 @@ impl AppRoot {
                 _ => GuardChoice::Cancel,
             };
             let _ = this.update_in(cx, |this, window, cx| {
-                let titled = this.latest_snapshot.borrow().show_file_path.is_some();
-                let effect = this.session_guard.borrow_mut().choose(choice, titled);
+                let effect = this.session_guard.borrow_mut().choose(choice);
                 this.apply_guard_effect(effect, window, cx);
             });
         })

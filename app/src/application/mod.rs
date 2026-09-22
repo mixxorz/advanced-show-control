@@ -21,7 +21,7 @@ use crate::scenes::{
 use crate::settings::{AppSettings, SettingsCommand, SettingsCommandResult, SettingsHandle};
 use crate::show::{
     ConnectCommandResult, LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult,
-    ShowStateHandle,
+    ShowSessionState, ShowStateHandle,
 };
 
 /// Cloneable access to the app-lifetime command owners.
@@ -91,6 +91,13 @@ impl ApplicationCommandContext {
 
     pub async fn disconnect_lv1(&self) -> Result<ShowCommandResult, String> {
         self.lifecycle.disconnect_current_runtime().await
+    }
+
+    pub async fn current_show_session_state(&self) -> Result<ShowSessionState, String> {
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::CurrentSessionState { reply })
+            .await?;
+        receive(response).await
     }
 
     pub async fn new_show_file(&self) -> Result<NewShowFileResult, String> {
@@ -674,6 +681,31 @@ mod tests {
                 .selected_scene_internal_id,
             Some("scene-id".to_string())
         );
+        actor.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn current_show_session_state_uses_the_narrow_authoritative_query() {
+        let (show, mut commands) = tokio::sync::mpsc::channel(4);
+        let context = context_with_show(show);
+        let actor = tokio::spawn(async move {
+            let ShowCommand::CurrentSessionState { reply } = commands.recv().await.unwrap() else {
+                panic!("expected current-session-state query");
+            };
+            reply
+                .send(ShowSessionState {
+                    show_file_path: Some(PathBuf::from("authoritative.ascs")),
+                    show_file_dirty: true,
+                })
+                .unwrap();
+        });
+
+        let state = context.current_show_session_state().await.unwrap();
+        assert_eq!(
+            state.show_file_path,
+            Some(PathBuf::from("authoritative.ascs"))
+        );
+        assert!(state.show_file_dirty);
         actor.await.unwrap();
     }
 

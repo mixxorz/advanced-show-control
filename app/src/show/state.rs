@@ -92,6 +92,13 @@ impl ShowState {
         self.show_file_path.clone()
     }
 
+    pub(crate) fn session_state(&self) -> super::events::ShowSessionState {
+        super::events::ShowSessionState {
+            show_file_path: self.show_file_path.clone(),
+            show_file_dirty: self.show_file_dirty,
+        }
+    }
+
     pub fn projection_state(&self) -> super::events::ShowProjectionState {
         let show_file_name = self
             .show_file_path

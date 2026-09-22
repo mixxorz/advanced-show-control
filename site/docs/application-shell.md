@@ -52,4 +52,4 @@ Sessions store scene fades and cue lists in `.ascs` files. Open the burger menu 
 | **Save Session As…** | `CmdOrCtrl+Shift+S` |
 | **Quit** | `Cmd+Q` on macOS; `Alt+F4` on Windows |
 
-An asterisk in the window title marks unsaved changes. If you create, open, or close while changes are unsaved, Advanced Show Control asks you to **Save**, **Discard**, or **Cancel**. **Save** opens Save As for an untitled session and continues only after the save succeeds. **Discard** continues without saving. **Cancel**, cancelling Save As, or a save error leaves the current session open and unchanged.
+An asterisk in the window title marks unsaved changes. If you create, open, or close while changes are unsaved, Advanced Show Control asks you to **Save**, **Discard**, or **Cancel**. **Save** opens Save As for an untitled session and continues only after the save succeeds. **Discard** continues without saving. **Cancel**, cancelling Save As, a save error, or new edits detected while saving leaves the current session open and cancels the requested action.

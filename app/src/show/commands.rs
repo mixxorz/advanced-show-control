@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::oneshot;
 
 pub enum ShowCommand {
+    CurrentSessionState {
+        reply: oneshot::Sender<super::events::ShowSessionState>,
+    },
     CurrentShowFilePath {
         reply: oneshot::Sender<Option<std::path::PathBuf>>,
     },

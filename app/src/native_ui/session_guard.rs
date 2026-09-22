@@ -16,99 +16,237 @@ pub(super) enum GuardChoice {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub(super) struct SessionStatus {
+    pub path: Option<PathBuf>,
+    pub dirty: bool,
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub(super) enum GuardEffect {
     None,
+    QueryState,
     Prompt,
     ChooseSaveDestination,
     SaveCurrent,
     SaveTo(PathBuf),
     Continue(SessionAction),
+    Error(String),
+}
+
+#[derive(Clone, Copy)]
+enum QueryKind {
+    Preflight,
+    PostSave,
+}
+
+enum GuardPhase {
+    Querying {
+        kind: QueryKind,
+        query_id: Option<u64>,
+    },
+    AwaitingChoice {
+        titled: bool,
+    },
+    AwaitingSaveDestination,
+    Saving {
+        command_id: Option<u64>,
+    },
+}
+
+struct PendingAction {
+    action: SessionAction,
+    phase: GuardPhase,
 }
 
 #[derive(Default)]
 pub(super) struct SessionGuard {
-    pending_action: Option<SessionAction>,
-    save_command_id: Option<u64>,
+    pending: Option<PendingAction>,
 }
 
 impl SessionGuard {
     /// @cc [owner:mixxorz,label:product;persistence] dirty-session-destructive-action-gate
-    /// A destructive session action MUST continue only when the projected session was clean, the
-    /// user explicitly chose Discard, or the guard observed success for its own save command.
-    /// Cancel, Save As cancellation, and save failure MUST clear pending intent without continuing.
-    pub(super) fn request(&mut self, action: SessionAction, dirty: bool) -> GuardEffect {
-        if self.pending_action.is_some() {
+    /// Every destructive session action MUST first obtain an authoritative Show session-state
+    /// result. It may continue only when that preflight is clean, the user explicitly chose
+    /// Discard, or a successful save is followed by an authoritative clean recheck. Stale query or
+    /// command results, cancellation, query/save failure, and a dirty post-save recheck MUST NOT
+    /// continue the action.
+    pub(super) fn request(&mut self, action: SessionAction) -> GuardEffect {
+        if self.pending.is_some() {
             return GuardEffect::None;
         }
-        if !dirty {
-            return GuardEffect::Continue(action);
-        }
-        self.pending_action = Some(action);
-        GuardEffect::Prompt
+        self.pending = Some(PendingAction {
+            action,
+            phase: GuardPhase::Querying {
+                kind: QueryKind::Preflight,
+                query_id: None,
+            },
+        });
+        GuardEffect::QueryState
     }
 
     /// @cc [owner:mixxorz,label:product;persistence] dirty-window-close-veto
-    /// A platform close request MUST be accepted synchronously only for a clean session. A dirty
-    /// close MUST be vetoed and enter the same guarded Quit flow as menu and keyboard actions.
-    pub(super) fn request_close(&mut self, dirty: bool) -> (bool, GuardEffect) {
-        if !dirty {
-            return (true, GuardEffect::None);
-        }
-        (false, self.request(SessionAction::Quit, true))
+    /// A platform close request MUST always be vetoed. The first request enters the same
+    /// authoritative preflight as menu and keyboard actions; repeated requests remain vetoed while
+    /// preflight, prompting, saving, or post-save verification is pending. Closing occurs only by
+    /// the guarded Quit continuation.
+    pub(super) fn request_close(&mut self) -> (bool, GuardEffect) {
+        (false, self.request(SessionAction::Quit))
     }
 
-    pub(super) fn choose(&mut self, choice: GuardChoice, titled: bool) -> GuardEffect {
-        let Some(action) = self.pending_action else {
+    pub(super) fn query_started(&mut self, query_id: u64) {
+        if let Some(PendingAction {
+            phase: GuardPhase::Querying { query_id: slot, .. },
+            ..
+        }) = self.pending.as_mut()
+            && slot.is_none()
+        {
+            *slot = Some(query_id);
+        }
+    }
+
+    pub(super) fn state_query_finished(
+        &mut self,
+        query_id: u64,
+        result: Result<SessionStatus, String>,
+    ) -> GuardEffect {
+        let Some(PendingAction {
+            action,
+            phase:
+                GuardPhase::Querying {
+                    kind,
+                    query_id: Some(expected_id),
+                },
+        }) = self.pending.as_ref()
+        else {
             return GuardEffect::None;
         };
+        if *expected_id != query_id {
+            return GuardEffect::None;
+        }
+        let action = *action;
+        let kind = *kind;
+        let status = match result {
+            Ok(status) => status,
+            Err(error) => {
+                self.pending = None;
+                return GuardEffect::Error(format!(
+                    "Could not check the current session before continuing: {error}"
+                ));
+            }
+        };
+        match kind {
+            QueryKind::Preflight if !status.dirty => {
+                self.pending = None;
+                GuardEffect::Continue(action)
+            }
+            QueryKind::Preflight => {
+                self.pending.as_mut().expect("pending action exists").phase =
+                    GuardPhase::AwaitingChoice {
+                        titled: status.path.is_some(),
+                    };
+                GuardEffect::Prompt
+            }
+            QueryKind::PostSave if !status.dirty => {
+                self.pending = None;
+                GuardEffect::Continue(action)
+            }
+            QueryKind::PostSave => {
+                self.pending = None;
+                GuardEffect::Error(
+                    "The session changed while it was being saved. The requested action was cancelled."
+                        .to_string(),
+                )
+            }
+        }
+    }
+
+    pub(super) fn choose(&mut self, choice: GuardChoice) -> GuardEffect {
+        let Some(PendingAction {
+            action,
+            phase: GuardPhase::AwaitingChoice { titled },
+        }) = self.pending.as_ref()
+        else {
+            return GuardEffect::None;
+        };
+        let action = *action;
+        let titled = *titled;
         match choice {
-            GuardChoice::Save if titled => GuardEffect::SaveCurrent,
-            GuardChoice::Save => GuardEffect::ChooseSaveDestination,
+            GuardChoice::Save if titled => {
+                self.pending.as_mut().expect("pending action exists").phase =
+                    GuardPhase::Saving { command_id: None };
+                GuardEffect::SaveCurrent
+            }
+            GuardChoice::Save => {
+                self.pending.as_mut().expect("pending action exists").phase =
+                    GuardPhase::AwaitingSaveDestination;
+                GuardEffect::ChooseSaveDestination
+            }
             GuardChoice::Discard => {
-                self.pending_action = None;
+                self.pending = None;
                 GuardEffect::Continue(action)
             }
             GuardChoice::Cancel => {
-                self.pending_action = None;
+                self.pending = None;
                 GuardEffect::None
             }
         }
     }
 
     pub(super) fn save_destination(&mut self, path: Option<PathBuf>) -> GuardEffect {
-        if self.pending_action.is_none() {
+        if !matches!(
+            self.pending.as_ref().map(|pending| &pending.phase),
+            Some(GuardPhase::AwaitingSaveDestination)
+        ) {
             return GuardEffect::None;
         }
         match path {
-            Some(path) => GuardEffect::SaveTo(path),
+            Some(path) => {
+                self.pending.as_mut().expect("pending action exists").phase =
+                    GuardPhase::Saving { command_id: None };
+                GuardEffect::SaveTo(path)
+            }
             None => {
-                self.pending_action = None;
+                self.pending = None;
                 GuardEffect::None
             }
         }
     }
 
     pub(super) fn save_started(&mut self, command_id: u64) {
-        if self.pending_action.is_some() {
-            self.save_command_id = Some(command_id);
+        if let Some(PendingAction {
+            phase: GuardPhase::Saving { command_id: slot },
+            ..
+        }) = self.pending.as_mut()
+            && slot.is_none()
+        {
+            *slot = Some(command_id);
         }
     }
 
     pub(super) fn command_finished(&mut self, command_id: u64, succeeded: bool) -> GuardEffect {
-        if self.save_command_id != Some(command_id) {
+        let matches = matches!(
+            self.pending.as_ref().map(|pending| &pending.phase),
+            Some(GuardPhase::Saving {
+                command_id: Some(expected_id)
+            }) if *expected_id == command_id
+        );
+        if !matches {
             return GuardEffect::None;
         }
-        self.save_command_id = None;
-        let action = self.pending_action.take();
-        match (succeeded, action) {
-            (true, Some(action)) => GuardEffect::Continue(action),
-            _ => GuardEffect::None,
+        if !succeeded {
+            self.pending = None;
+            return GuardEffect::None;
         }
+        self.pending.as_mut().expect("pending action exists").phase = GuardPhase::Querying {
+            kind: QueryKind::PostSave,
+            query_id: None,
+        };
+        GuardEffect::QueryState
     }
 
     #[cfg(test)]
     fn is_pending(&self) -> bool {
-        self.pending_action.is_some()
+        self.pending.is_some()
     }
 }
 
@@ -116,110 +254,161 @@ impl SessionGuard {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{GuardChoice, GuardEffect, SessionAction, SessionGuard};
+    use super::{GuardChoice, GuardEffect, SessionAction, SessionGuard, SessionStatus};
 
-    #[test]
-    fn close_request_is_accepted_only_when_clean() {
-        let mut guard = SessionGuard::default();
-
-        assert_eq!(guard.request_close(false), (true, GuardEffect::None));
-        assert_eq!(guard.request_close(true), (false, GuardEffect::Prompt));
-        assert!(guard.is_pending());
+    fn status(dirty: bool, titled: bool) -> SessionStatus {
+        SessionStatus {
+            dirty,
+            path: titled.then(|| PathBuf::from("show.ascs")),
+        }
     }
 
     #[test]
-    fn clean_action_continues_without_a_prompt() {
+    fn every_request_enters_correlated_preflight() {
         let mut guard = SessionGuard::default();
 
+        assert_eq!(guard.request(SessionAction::New), GuardEffect::QueryState);
+        guard.query_started(10);
         assert_eq!(
-            guard.request(SessionAction::New, false),
+            guard.state_query_finished(9, Ok(status(false, false))),
+            GuardEffect::None
+        );
+        assert!(guard.is_pending());
+        assert_eq!(
+            guard.state_query_finished(10, Ok(status(false, false))),
             GuardEffect::Continue(SessionAction::New)
         );
         assert!(!guard.is_pending());
     }
 
     #[test]
-    fn dirty_action_prompts_and_rejects_reentrant_requests() {
+    fn close_is_vetoed_through_preflight_prompt_and_save() {
         let mut guard = SessionGuard::default();
 
+        assert_eq!(guard.request_close(), (false, GuardEffect::QueryState));
+        guard.query_started(1);
         assert_eq!(
-            guard.request(SessionAction::Open, true),
+            guard.state_query_finished(1, Ok(status(true, true))),
             GuardEffect::Prompt
         );
-        assert_eq!(guard.request(SessionAction::New, true), GuardEffect::None);
-        assert!(guard.is_pending());
-    }
-
-    #[test]
-    fn discard_continues_and_cancel_clears_the_action() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::NewFromTemplate, true);
+        assert_eq!(guard.request_close(), (false, GuardEffect::None));
+        assert_eq!(guard.choose(GuardChoice::Save), GuardEffect::SaveCurrent);
+        guard.save_started(2);
+        assert_eq!(guard.request_close(), (false, GuardEffect::None));
+        assert_eq!(guard.command_finished(2, true), GuardEffect::QueryState);
+        guard.query_started(3);
+        assert_eq!(guard.request_close(), (false, GuardEffect::None));
         assert_eq!(
-            guard.choose(GuardChoice::Discard, true),
-            GuardEffect::Continue(SessionAction::NewFromTemplate)
-        );
-        assert!(!guard.is_pending());
-
-        guard.request(SessionAction::Quit, true);
-        assert_eq!(guard.choose(GuardChoice::Cancel, true), GuardEffect::None);
-        assert!(!guard.is_pending());
-    }
-
-    #[test]
-    fn titled_save_waits_for_matching_success_before_continuing() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::Open, true);
-        assert_eq!(
-            guard.choose(GuardChoice::Save, true),
-            GuardEffect::SaveCurrent
-        );
-        guard.save_started(42);
-        assert_eq!(guard.command_finished(41, true), GuardEffect::None);
-        assert!(guard.is_pending());
-        assert_eq!(
-            guard.command_finished(42, true),
-            GuardEffect::Continue(SessionAction::Open)
-        );
-        assert!(!guard.is_pending());
-    }
-
-    #[test]
-    fn untitled_save_requires_a_destination_and_cancellation_aborts() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::New, true);
-        assert_eq!(
-            guard.choose(GuardChoice::Save, false),
-            GuardEffect::ChooseSaveDestination
-        );
-        assert_eq!(guard.save_destination(None), GuardEffect::None);
-        assert!(!guard.is_pending());
-    }
-
-    #[test]
-    fn selected_destination_is_saved_before_continuing() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::Quit, true);
-        guard.choose(GuardChoice::Save, false);
-        let path = PathBuf::from("show.ascs");
-        assert_eq!(
-            guard.save_destination(Some(path.clone())),
-            GuardEffect::SaveTo(path)
-        );
-        guard.save_started(7);
-        assert_eq!(
-            guard.command_finished(7, true),
+            guard.state_query_finished(3, Ok(status(false, true))),
             GuardEffect::Continue(SessionAction::Quit)
         );
     }
 
     #[test]
-    fn save_failure_aborts_the_original_action() {
-        let mut guard = SessionGuard::default();
-        guard.request(SessionAction::New, true);
-        guard.choose(GuardChoice::Save, true);
-        guard.save_started(9);
+    fn authoritative_preflight_path_selects_save_or_save_as() {
+        let mut titled = SessionGuard::default();
+        titled.request(SessionAction::Open);
+        titled.query_started(1);
+        assert_eq!(
+            titled.state_query_finished(1, Ok(status(true, true))),
+            GuardEffect::Prompt
+        );
+        assert_eq!(titled.choose(GuardChoice::Save), GuardEffect::SaveCurrent);
 
-        assert_eq!(guard.command_finished(9, false), GuardEffect::None);
+        let mut untitled = SessionGuard::default();
+        untitled.request(SessionAction::Open);
+        untitled.query_started(2);
+        assert_eq!(
+            untitled.state_query_finished(2, Ok(status(true, false))),
+            GuardEffect::Prompt
+        );
+        assert_eq!(
+            untitled.choose(GuardChoice::Save),
+            GuardEffect::ChooseSaveDestination
+        );
+    }
+
+    #[test]
+    fn save_success_rechecks_and_aborts_if_session_remains_dirty() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::NewFromTemplate);
+        guard.query_started(1);
+        guard.state_query_finished(1, Ok(status(true, false)));
+        guard.choose(GuardChoice::Save);
+        guard.save_destination(Some(PathBuf::from("saved.ascs")));
+        guard.save_started(2);
+
+        assert_eq!(guard.command_finished(2, true), GuardEffect::QueryState);
+        guard.query_started(3);
+        assert_eq!(
+            guard.state_query_finished(3, Ok(status(true, true))),
+            GuardEffect::Error(
+                "The session changed while it was being saved. The requested action was cancelled."
+                    .to_string()
+            )
+        );
+        assert!(!guard.is_pending());
+    }
+
+    #[test]
+    fn current_path_save_also_aborts_if_session_remains_dirty() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::Open);
+        guard.query_started(1);
+        guard.state_query_finished(1, Ok(status(true, true)));
+        assert_eq!(guard.choose(GuardChoice::Save), GuardEffect::SaveCurrent);
+        guard.save_started(2);
+
+        assert_eq!(guard.command_finished(2, true), GuardEffect::QueryState);
+        guard.query_started(3);
+        assert!(matches!(
+            guard.state_query_finished(3, Ok(status(true, true))),
+            GuardEffect::Error(_)
+        ));
+        assert!(!guard.is_pending());
+    }
+
+    #[test]
+    fn stale_post_save_query_is_ignored() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::Quit);
+        guard.query_started(4);
+        guard.state_query_finished(4, Ok(status(true, true)));
+        guard.choose(GuardChoice::Save);
+        guard.save_started(5);
+        guard.command_finished(5, true);
+        guard.query_started(6);
+
+        assert_eq!(
+            guard.state_query_finished(4, Ok(status(false, true))),
+            GuardEffect::None
+        );
+        assert!(guard.is_pending());
+    }
+
+    #[test]
+    fn discard_continues_and_cancel_or_failures_clear_intent() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::Open);
+        guard.query_started(1);
+        guard.state_query_finished(1, Ok(status(true, true)));
+        assert_eq!(
+            guard.choose(GuardChoice::Discard),
+            GuardEffect::Continue(SessionAction::Open)
+        );
+
+        guard.request(SessionAction::Quit);
+        guard.query_started(2);
+        guard.state_query_finished(2, Ok(status(true, true)));
+        assert_eq!(guard.choose(GuardChoice::Cancel), GuardEffect::None);
+        assert!(!guard.is_pending());
+
+        guard.request(SessionAction::New);
+        guard.query_started(3);
+        assert!(matches!(
+            guard.state_query_finished(3, Err("show unavailable".to_string())),
+            GuardEffect::Error(_)
+        ));
         assert!(!guard.is_pending());
     }
 }

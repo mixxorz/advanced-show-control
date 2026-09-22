@@ -13,6 +13,7 @@ use crate::cue_lists::CueRecallResult;
 use crate::lv1::TcpConnectProbeResult;
 use crate::projector::{AppViewState, ProjectionSubscription};
 use crate::runtime::errors::AppCommandError;
+use crate::show::ShowSessionState;
 
 #[derive(Debug)]
 pub enum UiEvent {
@@ -32,6 +33,10 @@ pub enum UiEvent {
     },
     SaveDestinationRequired {
         command_id: u64,
+    },
+    SessionStateQueryFinished {
+        query_id: u64,
+        result: Result<ShowSessionState, String>,
     },
     LatencyMeasured {
         session_id: u64,
@@ -167,6 +172,22 @@ impl CommandDispatcher {
             Box::new(move |commands| Box::pin(command(commands))),
         );
         command_id
+    }
+
+    pub fn query_show_session_state(&self) -> u64 {
+        let query_id = self.next_command_id();
+        let ui_events = self.ui_events.clone();
+        self.enqueue_serial(
+            query_id,
+            Box::new(move |commands| {
+                Box::pin(async move {
+                    let result = commands.current_show_session_state().await;
+                    let _ = ui_events.send(UiEvent::SessionStateQueryFinished { query_id, result });
+                    Ok(())
+                })
+            }),
+        );
+        query_id
     }
 
     pub fn save_show(&self) -> u64 {

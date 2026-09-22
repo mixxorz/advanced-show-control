@@ -157,10 +157,11 @@ fn build_show_actor_with_state(
 /// If the Show event subscriber lags, the actor MUST conservatively mark the show dirty and publish
 /// the full Show projection rather than assuming no persisted edit was missed. While its single
 /// actor-owned persistence operation is pending, the actor MUST consume facts, generation-fenced
-/// connection-metadata commands, and read-only state/path commands. On receiving any other command,
-/// it MUST hold only that command and stop polling the mailbox until persistence completes so later
-/// commands cannot bypass it. A persisted edit observed during a successful operation MUST remain
-/// dirty.
+/// connection-metadata commands, and read-only state/path commands. A session-state query MUST drain
+/// only the event facts queued when the query is handled before replying. On receiving any other
+/// command, it MUST hold only that command and stop polling the mailbox until persistence completes
+/// so later commands cannot bypass it. A persisted edit observed during a successful operation MUST
+/// remain dirty.
 async fn run_show_actor(
     mut rx: mpsc::Receiver<ShowCommand>,
     mut events: tokio::sync::broadcast::Receiver<AppEvent>,
@@ -193,6 +194,14 @@ async fn run_show_actor(
                         continue;
                     };
                     match command {
+                        ShowCommand::CurrentSessionState { reply } => {
+                            operation.dirty_during_wait |= drain_available_show_events(
+                                &mut events,
+                                &mut state,
+                                &event_bus,
+                            );
+                            let _ = reply.send(state.session_state());
+                        }
                         ShowCommand::CurrentShowFilePath { reply } => {
                             let _ = reply.send(state.current_show_file_path());
                         }
@@ -230,8 +239,13 @@ async fn run_show_actor(
             tokio::select! {
                 command = rx.recv() => {
                     let Some(command) = command else { break; };
-                    pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
-                    publish_lockout_if_changed(&lockout_tx, &state);
+                    if let ShowCommand::CurrentSessionState { reply } = command {
+                        drain_available_show_events(&mut events, &mut state, &event_bus);
+                        let _ = reply.send(state.session_state());
+                    } else {
+                        pending = handle_command(command, &mut state, &event_bus, &peers, &backup_dir).await;
+                        publish_lockout_if_changed(&lockout_tx, &state);
+                    }
                 }
                 event = events.recv() => {
                     if handle_show_event(event, &mut state, &event_bus).is_none() {
@@ -241,6 +255,37 @@ async fn run_show_actor(
             }
         }
     }
+}
+
+/// @cc [owner:mixxorz,label:persistence;ordering] session-state-query-observes-published-edits
+/// Before replying to `CurrentSessionState`, Show MUST consume every already-queued event-bus fact
+/// and apply persisted-edit dirtying. This drain MUST use only non-blocking receives so lifecycle
+/// commands and pending persistence completion remain responsive.
+fn drain_available_show_events(
+    events: &mut tokio::sync::broadcast::Receiver<AppEvent>,
+    state: &mut ShowState,
+    event_bus: &AppEventBus,
+) -> bool {
+    let mut dirtied = false;
+    let queued = events.len();
+    for _ in 0..queued {
+        match events.try_recv() {
+            Ok(event) => {
+                dirtied |= handle_show_event(Ok(event), state, event_bus).unwrap_or(false);
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(count)) => {
+                dirtied |= handle_show_event(
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)),
+                    state,
+                    event_bus,
+                )
+                .unwrap_or(false);
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+            | Err(tokio::sync::broadcast::error::TryRecvError::Closed) => break,
+        }
+    }
+    dirtied
 }
 
 fn handle_show_event(
@@ -373,6 +418,9 @@ async fn handle_command(
     backup_dir: &std::path::Path,
 ) -> Option<PendingShowOperation> {
     match command {
+        ShowCommand::CurrentSessionState { reply } => {
+            let _ = reply.send(state.session_state());
+        }
         ShowCommand::CurrentShowFilePath { reply } => {
             let _ = reply.send(state.current_show_file_path());
         }
@@ -1102,6 +1150,25 @@ mod tests {
         .await
         .unwrap();
         response.await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn current_session_state_consumes_already_published_persisted_edits() {
+        for _ in 0..64 {
+            let event_bus = AppEventBus::default();
+            let (show, task, _, _) = build_show_actor(event_bus.clone());
+            event_bus.publish(crate::runtime::events::AppEvent::CueLists(
+                crate::cue_lists::CueListsProjectionState::default(),
+            ));
+            let (reply, response) = tokio::sync::oneshot::channel();
+            show.send(ShowCommand::CurrentSessionState { reply })
+                .await
+                .unwrap();
+            task.spawn();
+
+            let state = response.await.unwrap();
+            assert!(state.show_file_dirty);
+        }
     }
 
     async fn current_show_state(
