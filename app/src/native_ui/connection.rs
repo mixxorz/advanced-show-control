@@ -44,6 +44,7 @@ pub struct ConnectionState {
     pub command_error: Option<String>,
     latency_session_id: u64,
     next_latency_attempt_id: u64,
+    in_flight_latency: HashMap<String, u64>,
     latency: HashMap<String, LatencyState>,
 }
 
@@ -87,9 +88,10 @@ impl ConnectionState {
 
     /// @cc [owner:mixxorz,label:safety;presentation] latency-result-active-pending-only
     /// A latency result MUST update presentation state only when its session, exact identity, and
-    /// unique attempt ID match that identity's current pending attempt. Closed-session, stale-session,
-    /// removed-identity, superseded-attempt, duplicate, and unsolicited results MUST leave latency
-    /// state unchanged.
+    /// unique attempt ID match both the in-flight owner and the identity's displayed pending attempt.
+    /// A matching result received while the identity is absent MUST clear in-flight ownership without
+    /// restoring display state. Closed-session, stale-session, superseded-attempt, duplicate, and
+    /// unsolicited results MUST leave latency state unchanged.
     pub fn set_latency(
         &mut self,
         session_id: u64,
@@ -100,8 +102,12 @@ impl ConnectionState {
         let key = identity_key(identity);
         if self.mode.is_none()
             || session_id != self.latency_session_id
-            || self.latency.get(&key) != Some(&LatencyState::Pending { attempt_id })
+            || self.in_flight_latency.get(&key) != Some(&attempt_id)
         {
+            return;
+        }
+        self.in_flight_latency.remove(&key);
+        if self.latency.get(&key) != Some(&LatencyState::Pending { attempt_id }) {
             return;
         }
         self.latency.insert(
@@ -118,27 +124,35 @@ impl ConnectionState {
         if self.mode.is_none() || self.latency.contains_key(&key) {
             return None;
         }
+        if let Some(&attempt_id) = self.in_flight_latency.get(&key) {
+            self.latency
+                .insert(key, LatencyState::Pending { attempt_id });
+            return None;
+        }
         let attempt_id = self.next_latency_attempt_id;
         self.next_latency_attempt_id = self
             .next_latency_attempt_id
             .checked_add(1)
             .expect("connection latency attempt identifier exhausted");
+        self.in_flight_latency.insert(key.clone(), attempt_id);
         self.latency
             .insert(key, LatencyState::Pending { attempt_id });
         Some((self.latency_session_id, attempt_id))
     }
 
     /// @cc [owner:mixxorz,label:product;presentation] discovered-latency-session-reconciliation
-    /// While the dialog is open, reconciliation MUST prune identities absent from the complete
-    /// discovered list and return one probe for each identity not currently tracked in this dialog
-    /// session. A pruned identity that reappears MUST receive a new unique attempt ID. While closed,
-    /// reconciliation MUST return no probes and retain no latency state.
+    /// While the dialog is open, reconciliation MUST prune displayed state for absent identities but
+    /// retain their in-flight ownership. Reappearance before completion MUST restore the same pending
+    /// attempt without dispatching another probe. A completion received while absent MUST remain hidden
+    /// and permit a fresh attempt after reappearance. While closed, reconciliation MUST return no probes
+    /// and retain neither displayed nor in-flight latency state.
     pub fn reconcile_latency_probes(
         &mut self,
         systems: &[DiscoveredLv1System],
     ) -> Vec<(u64, u64, Lv1SystemIdentity)> {
         if self.mode.is_none() {
             self.latency.clear();
+            self.in_flight_latency.clear();
             return Vec::new();
         }
 
@@ -166,6 +180,7 @@ impl ConnectionState {
             .checked_add(1)
             .expect("connection latency session identifier exhausted");
         self.latency.clear();
+        self.in_flight_latency.clear();
     }
 }
 
@@ -644,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn reappearing_identity_rejects_the_removed_attempt_result() {
+    fn remove_then_reappear_before_completion_reuses_the_single_in_flight_attempt() {
         let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
         let systems = |present: bool| {
             present
@@ -657,35 +672,73 @@ mod tests {
         };
         let mut state = ConnectionState::startup();
 
-        let old_probes = state.reconcile_latency_probes(&systems(true));
-        let [(session_id, old_attempt_id, _)] = old_probes.as_slice() else {
-            panic!("first discovery must dispatch one probe");
-        };
-        state.reconcile_latency_probes(&systems(false));
-        let new_probes = state.reconcile_latency_probes(&systems(true));
-        let [(new_session_id, new_attempt_id, _)] = new_probes.as_slice() else {
-            panic!("reappearance must dispatch one probe");
-        };
-
-        assert_eq!(session_id, new_session_id);
-        assert_ne!(old_attempt_id, new_attempt_id);
-        state.set_latency(
-            *session_id,
-            *old_attempt_id,
-            &console,
-            Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
+        let probes = state.reconcile_latency_probes(&systems(true));
+        let (session_id, attempt_id, _) = &probes[0];
+        assert!(state.reconcile_latency_probes(&systems(false)).is_empty());
+        assert!(!state.latency.contains_key(&identity_key(&console)));
+        assert!(state.reconcile_latency_probes(&systems(true)).is_empty());
+        assert_eq!(
+            state.latency.get(&identity_key(&console)),
+            Some(&LatencyState::Pending {
+                attempt_id: *attempt_id
+            })
         );
+
         state.set_latency(
             *session_id,
-            *new_attempt_id,
+            *attempt_id,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
-
         assert_eq!(
             state.latency.get(&identity_key(&console)),
             Some(&LatencyState::Success(12))
         );
+    }
+
+    #[test]
+    fn completion_while_removed_stays_hidden_and_permits_a_fresh_attempt_on_reappearance() {
+        let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let system = DiscoveredLv1System {
+            identity: console.clone(),
+            status: DiscoveredLv1Status::Available,
+        };
+        let mut state = ConnectionState::startup();
+
+        let first = state.reconcile_latency_probes(std::slice::from_ref(&system));
+        let (session_id, first_attempt_id, _) = &first[0];
+        state.reconcile_latency_probes(&[]);
+        state.set_latency(
+            *session_id,
+            *first_attempt_id,
+            &console,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
+        );
+        assert!(!state.latency.contains_key(&identity_key(&console)));
+
+        let second = state.reconcile_latency_probes(&[system]);
+        assert_eq!(second.len(), 1);
+        assert_ne!(second[0].1, *first_attempt_id);
+    }
+
+    #[test]
+    fn reopening_clears_hidden_in_flight_attempts() {
+        let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let system = DiscoveredLv1System {
+            identity: console,
+            status: DiscoveredLv1Status::Available,
+        };
+        let mut state = ConnectionState::startup();
+
+        let first = state.reconcile_latency_probes(std::slice::from_ref(&system));
+        state.reconcile_latency_probes(&[]);
+        state.close();
+        state.open_manual();
+        let reopened = state.reconcile_latency_probes(&[system]);
+
+        assert_eq!(reopened.len(), 1);
+        assert_ne!(reopened[0].0, first[0].0);
+        assert_ne!(reopened[0].1, first[0].1);
     }
 
     #[test]
