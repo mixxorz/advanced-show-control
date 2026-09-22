@@ -67,9 +67,10 @@ impl SessionGuard {
     /// @cc [owner:mixxorz,label:product;persistence] dirty-session-destructive-action-gate
     /// Every destructive session action MUST first obtain an authoritative Show session-state
     /// result. It may continue only when that preflight is clean, the user explicitly chose
-    /// Discard, or a successful save is followed by an authoritative clean recheck. Stale query or
-    /// command results, cancellation, query/save failure, and a dirty post-save recheck MUST NOT
-    /// continue the action.
+    /// Discard, or a successful save is followed by an authoritative clean recheck. A matching
+    /// query whose persisted-edit submission epoch is stale MUST retain its preflight or post-save
+    /// phase and request another query. Uncorrelated results, cancellation, query/save failure, and
+    /// a dirty post-save recheck MUST NOT continue the action.
     pub(super) fn request(&mut self, action: SessionAction) -> GuardEffect {
         if self.pending.is_some() {
             return GuardEffect::None;
@@ -102,6 +103,29 @@ impl SessionGuard {
         {
             *slot = Some(query_id);
         }
+    }
+
+    pub(super) fn state_query_stale(&mut self, query_id: u64) -> GuardEffect {
+        let Some(PendingAction {
+            phase: GuardPhase::Querying { query_id: slot, .. },
+            ..
+        }) = self.pending.as_mut()
+        else {
+            return GuardEffect::None;
+        };
+        if *slot != Some(query_id) {
+            return GuardEffect::None;
+        }
+        *slot = None;
+        GuardEffect::QueryState
+    }
+
+    pub(super) fn cancel_pending(&mut self) -> bool {
+        self.pending.take().is_some()
+    }
+
+    pub(super) fn is_pending(&self) -> bool {
+        self.pending.is_some()
     }
 
     pub(super) fn state_query_finished(
@@ -254,11 +278,6 @@ impl SessionGuard {
         };
         GuardEffect::QueryState
     }
-
-    #[cfg(test)]
-    fn is_pending(&self) -> bool {
-        self.pending.is_some()
-    }
 }
 
 #[cfg(test)]
@@ -395,6 +414,54 @@ mod tests {
             GuardEffect::None
         );
         assert!(guard.is_pending());
+    }
+
+    #[test]
+    fn stale_preflight_epoch_retries_without_losing_the_action() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::Open);
+        guard.query_started(10);
+
+        assert_eq!(guard.state_query_stale(10), GuardEffect::QueryState);
+        assert!(guard.is_pending());
+        guard.query_started(11);
+        assert_eq!(
+            guard.state_query_finished(11, Ok(status(false, true))),
+            GuardEffect::Continue(SessionAction::Open)
+        );
+    }
+
+    #[test]
+    fn stale_post_save_epoch_retries_without_losing_the_phase() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::Quit);
+        guard.query_started(1);
+        guard.state_query_finished(1, Ok(status(true, true)));
+        guard.choose(GuardChoice::Save);
+        guard.save_started(2);
+        assert_eq!(guard.command_finished(2, true), GuardEffect::QueryState);
+        guard.query_started(3);
+
+        assert_eq!(guard.state_query_stale(3), GuardEffect::QueryState);
+        guard.query_started(4);
+        assert_eq!(
+            guard.state_query_finished(4, Ok(status(false, true))),
+            GuardEffect::Continue(SessionAction::Quit)
+        );
+    }
+
+    #[test]
+    fn modal_cancellation_clears_pending_action() {
+        let mut guard = SessionGuard::default();
+        guard.request(SessionAction::New);
+        guard.query_started(5);
+
+        assert!(guard.cancel_pending());
+        assert!(!guard.is_pending());
+        assert_eq!(
+            guard.state_query_finished(5, Ok(status(false, false))),
+            GuardEffect::None
+        );
     }
 
     #[test]

@@ -36,6 +36,7 @@ pub enum UiEvent {
     },
     SessionStateQueryFinished {
         query_id: u64,
+        persisted_edit_epoch: u64,
         result: Result<ShowSessionState, String>,
     },
     LatencyMeasured {
@@ -52,6 +53,7 @@ pub struct CommandDispatcher {
     ui_events: mpsc::UnboundedSender<UiEvent>,
     serial_commands: mpsc::UnboundedSender<SerialCommand>,
     next_command_id: Arc<AtomicU64>,
+    persisted_edit_epoch: Arc<AtomicU64>,
 }
 
 type CommandFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
@@ -86,6 +88,7 @@ impl CommandDispatcher {
             ui_events,
             serial_commands,
             next_command_id: Arc::new(AtomicU64::new(0)),
+            persisted_edit_epoch: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -159,9 +162,11 @@ impl CommandDispatcher {
     }
 
     /// @cc [owner:mixxorz,label:persistence;ordering] persisted-ui-mutations-before-file-preflight
-    /// Every native UI submission that can persistently mutate Scenes, Cue Lists, or Show lockout,
-    /// plus destructive-session preflight queries and save/new/open/template file operations, MUST
-    /// use this lane. FIFO completion MUST ensure a preflight observes all earlier submitted edits.
+    /// Every native UI submission that can persistently mutate Scenes, Cue Lists, or Show lockout
+    /// MUST use `dispatch_persisted_edit`, which enters this lane. Destructive-session preflight
+    /// queries and save/new/open/template file operations MUST enter this lane without incrementing
+    /// the edit epoch. FIFO completion MUST ensure a retried preflight observes the edit that made
+    /// its earlier result stale.
     /// GO recall and latency, connection, discovery, and other network operations MUST NOT be routed
     /// through this lane solely for this ordering guarantee.
     pub fn dispatch_serial<F, Fut>(&self, command: F) -> u64
@@ -177,15 +182,37 @@ impl CommandDispatcher {
         command_id
     }
 
+    /// @cc [owner:mixxorz,label:persistence;ordering] persisted-edit-submission-epoch
+    /// This method MUST increment the shared epoch before enqueueing the mutation on the serial
+    /// lane. Queries MUST capture that epoch when submitted so the UI can reject a result when any
+    /// later persisted edit was submitted, including while the query was in flight.
+    pub fn dispatch_persisted_edit<F, Fut>(&self, command: F) -> u64
+    where
+        F: FnOnce(ApplicationCommandContext) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<(), String>> + Send + 'static,
+    {
+        self.persisted_edit_epoch.fetch_add(1, Ordering::SeqCst);
+        self.dispatch_serial(command)
+    }
+
+    pub fn persisted_edit_epoch(&self) -> u64 {
+        self.persisted_edit_epoch.load(Ordering::SeqCst)
+    }
+
     pub fn query_show_session_state(&self) -> u64 {
         let query_id = self.next_command_id();
+        let persisted_edit_epoch = self.persisted_edit_epoch();
         let ui_events = self.ui_events.clone();
         self.enqueue_serial(
             query_id,
             Box::new(move |commands| {
                 Box::pin(async move {
                     let result = commands.current_show_session_state().await;
-                    let _ = ui_events.send(UiEvent::SessionStateQueryFinished { query_id, result });
+                    let _ = ui_events.send(UiEvent::SessionStateQueryFinished {
+                        query_id,
+                        persisted_edit_epoch,
+                        result,
+                    });
                     Ok(())
                 })
             }),
@@ -284,6 +311,59 @@ mod tests {
     use crate::show::build_show_actor;
 
     #[tokio::test]
+    async fn query_captures_epoch_before_a_later_persisted_edit_submission() {
+        let event_bus = AppEventBus::default();
+        let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
+        let (settings, _settings_rx) = mpsc::channel::<SettingsCommand>(1);
+        let lifecycle = AppLifecycle::new(
+            event_bus,
+            show.clone(),
+            show_peers,
+            lockout,
+            settings.clone(),
+        );
+        show_task.spawn();
+        let (ui_logs, _) = tokio::sync::broadcast::channel(1);
+        let commands = ApplicationCommandContext::new(lifecycle, show, settings, ui_logs);
+        let (events, mut event_rx) = ui_event_channel();
+        let dispatcher =
+            CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+
+        dispatcher.dispatch_serial(|_| async move {
+            let _ = release_rx.await;
+            Ok(())
+        });
+        let query_id = dispatcher.query_show_session_state();
+        dispatcher.dispatch_persisted_edit(|commands| async move {
+            commands
+                .create_cue_list("Later edit".to_string())
+                .await
+                .map(|_| ())
+        });
+        assert_eq!(dispatcher.persisted_edit_epoch(), 1);
+        release_tx.send(()).unwrap();
+
+        let query_epoch = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if let UiEvent::SessionStateQueryFinished {
+                    query_id: completed_id,
+                    persisted_edit_epoch,
+                    ..
+                } = event_rx.recv().await.expect("UI event channel closed")
+                    && completed_id == query_id
+                {
+                    break persisted_edit_epoch;
+                }
+            }
+        })
+        .await
+        .expect("session-state query timed out");
+
+        assert_eq!(query_epoch, 0);
+    }
+
+    #[tokio::test]
     async fn persisted_edit_queued_before_preflight_completes_before_the_query() {
         let event_bus = AppEventBus::default();
         let (show, show_task, show_peers, lockout) = build_show_actor(event_bus.clone());
@@ -302,7 +382,7 @@ mod tests {
         let dispatcher =
             CommandDispatcher::new(tokio::runtime::Handle::current(), commands, events);
 
-        dispatcher.dispatch_serial(|commands| async move {
+        dispatcher.dispatch_persisted_edit(|commands| async move {
             commands
                 .create_cue_list("Ordered edit".to_string())
                 .await
@@ -315,6 +395,7 @@ mod tests {
                 if let UiEvent::SessionStateQueryFinished {
                     query_id: completed_id,
                     result,
+                    ..
                 } = event_rx.recv().await.expect("UI event channel closed")
                     && completed_id == query_id
                 {

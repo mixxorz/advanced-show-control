@@ -153,6 +153,11 @@ impl AppRoot {
         .detach();
     }
 
+    /// @cc [owner:mixxorz,label:persistence;ordering] query-epoch-check-and-continuation-atomic
+    /// A session-state query result MUST compare its captured persisted-edit epoch with the current
+    /// dispatcher epoch and either enqueue a retry or apply the guard result in this same GPUI
+    /// callback, without yielding to another native UI mutation submission between comparison and
+    /// continuation dispatch. If any modal surface is active, it MUST cancel instead.
     fn handle_event(&mut self, event: UiEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             UiEvent::Snapshot(snapshot) => {
@@ -234,15 +239,37 @@ impl AppRoot {
                     }
                 }
             }
-            UiEvent::SessionStateQueryFinished { query_id, result } => {
-                let result = result.map(|state| SessionStatus {
-                    path: state.show_file_path,
-                    dirty: state.show_file_dirty,
-                });
-                let effect = self
-                    .session_guard
-                    .borrow_mut()
-                    .state_query_finished(query_id, result);
+            UiEvent::SessionStateQueryFinished {
+                query_id,
+                persisted_edit_epoch,
+                result,
+            } => {
+                if modal_surface_active(
+                    window.has_active_prompt(),
+                    window.has_active_dialog(cx),
+                    self.shell.read(cx).modal_open(cx),
+                ) {
+                    if self.session_guard.borrow_mut().cancel_pending() {
+                        window.push_notification(
+                            Notification::error(
+                                "The session action was cancelled because another dialog opened.",
+                            ),
+                            cx,
+                        );
+                    }
+                    return;
+                }
+                let effect = if persisted_edit_epoch != self.dispatcher.persisted_edit_epoch() {
+                    self.session_guard.borrow_mut().state_query_stale(query_id)
+                } else {
+                    let result = result.map(|state| SessionStatus {
+                        path: state.show_file_path,
+                        dirty: state.show_file_dirty,
+                    });
+                    self.session_guard
+                        .borrow_mut()
+                        .state_query_finished(query_id, result)
+                };
                 self.apply_guard_effect(effect, window, cx);
             }
             UiEvent::LatencyMeasured {
@@ -316,7 +343,7 @@ impl AppRoot {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if close_request_blocked(
+        if modal_surface_active(
             window.has_active_prompt(),
             window.has_active_dialog(cx),
             self.shell.read(cx).modal_open(cx),
@@ -578,13 +605,17 @@ impl AppRoot {
         window.has_active_dialog(cx) || self.shell.read(cx).modal_open(cx)
     }
 
+    /// Session actions MUST remain blocked while shortcut capture, a native prompt/dialog, an app
+    /// modal, or another destructive-session guard is active.
     fn action_blocked(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.shell.read(cx).shortcut_capture_active(cx) {
             // Let Settings capture the key without running the menu action.
             cx.propagate();
             return true;
         }
-        self.modal_open(window, cx)
+        window.has_active_prompt()
+            || self.modal_open(window, cx)
+            || self.session_guard.borrow().is_pending()
     }
 
     fn on_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
@@ -714,7 +745,7 @@ impl AppRoot {
     }
 }
 
-fn close_request_blocked(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
+fn modal_surface_active(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
     native_prompt || native_dialog || custom_modal
 }
 
@@ -788,17 +819,17 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        about_detail, close_request_blocked, cue_completion_matches_session,
-        ensure_show_file_extension, is_show_file_path, suggested_save_file_name,
+        about_detail, cue_completion_matches_session, ensure_show_file_extension,
+        is_show_file_path, modal_surface_active, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
 
     #[test]
     fn close_request_is_blocked_while_any_modal_surface_is_active() {
-        assert!(!close_request_blocked(false, false, false));
-        assert!(close_request_blocked(true, false, false));
-        assert!(close_request_blocked(false, true, false));
-        assert!(close_request_blocked(false, false, true));
+        assert!(!modal_surface_active(false, false, false));
+        assert!(modal_surface_active(true, false, false));
+        assert!(modal_surface_active(false, true, false));
+        assert!(modal_surface_active(false, false, true));
     }
 
     #[test]
