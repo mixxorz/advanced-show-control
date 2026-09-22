@@ -23,6 +23,7 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 #[cfg(target_os = "macos")]
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
+use super::session_guard::{GuardChoice, GuardEffect, SessionAction, SessionGuard};
 use super::settings_view::SettingsView;
 use super::shell::AppShell;
 use super::state::GoSubmissionGuard;
@@ -38,6 +39,7 @@ pub struct AppRoot {
     latest_snapshot: Rc<RefCell<AppViewState>>,
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     pending_save_command_id: Cell<Option<u64>>,
+    session_guard: RefCell<SessionGuard>,
 }
 
 impl AppRoot {
@@ -114,6 +116,7 @@ impl AppRoot {
             latest_snapshot,
             go_submissions,
             pending_save_command_id: Cell::new(None),
+            session_guard: RefCell::new(SessionGuard::default()),
         }
     }
 
@@ -182,7 +185,12 @@ impl AppRoot {
                 cx.notify();
             }
             UiEvent::CommandFinished { command_id, result } => {
+                let guard_effect = self
+                    .session_guard
+                    .borrow_mut()
+                    .command_finished(command_id, result.is_ok());
                 self.finish_command_event(command_id, result, window, cx);
+                self.apply_guard_effect(guard_effect, window, cx);
             }
             UiEvent::CueRecallFinished {
                 command_id,
@@ -290,6 +298,126 @@ impl AppRoot {
     pub fn open_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.connection.borrow_mut().open_manual();
         self.sync_connection_dialog(window, cx);
+    }
+
+    pub(super) fn handle_close_request(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let dirty = self.latest_snapshot.borrow().show_file_dirty;
+        if dirty && (window.has_active_prompt() || self.modal_open(window, cx)) {
+            return false;
+        }
+        let (accept, effect) = self.session_guard.borrow_mut().request_close(dirty);
+        self.apply_guard_effect(effect, window, cx);
+        accept
+    }
+
+    fn request_session_action(
+        &mut self,
+        action: SessionAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let dirty = self.latest_snapshot.borrow().show_file_dirty;
+        let effect = self.session_guard.borrow_mut().request(action, dirty);
+        self.apply_guard_effect(effect, window, cx);
+    }
+
+    fn apply_guard_effect(
+        &mut self,
+        effect: GuardEffect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match effect {
+            GuardEffect::None => {}
+            GuardEffect::Prompt => self.prompt_for_dirty_session(window, cx),
+            GuardEffect::ChooseSaveDestination => self.prompt_for_guarded_save_destination(cx),
+            GuardEffect::SaveCurrent => {
+                let command_id = self.dispatcher.dispatch_serial(|commands| async move {
+                    if commands.save_show_file(None).await?.is_none() {
+                        return Err("The session no longer has a save destination.".to_string());
+                    }
+                    Ok(())
+                });
+                self.session_guard.borrow_mut().save_started(command_id);
+            }
+            GuardEffect::SaveTo(path) => {
+                let command_id = self.dispatcher.dispatch_serial(move |commands| async move {
+                    commands.save_show_file(Some(path)).await.map(|_| ())
+                });
+                self.session_guard.borrow_mut().save_started(command_id);
+            }
+            GuardEffect::Continue(action) => match action {
+                SessionAction::New => self.new_show(),
+                SessionAction::NewFromTemplate => self.new_show_from_template(cx),
+                SessionAction::Open => self.open_show(cx),
+                SessionAction::Quit => cx.quit(),
+            },
+        }
+    }
+
+    fn prompt_for_dirty_session(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let response = window.prompt(
+            PromptLevel::Warning,
+            "Save changes before continuing?",
+            Some("Your unsaved session changes will be lost if you discard them."),
+            &["Save", "Discard", "Cancel"],
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let choice = match response.await {
+                Ok(0) => GuardChoice::Save,
+                Ok(1) => GuardChoice::Discard,
+                _ => GuardChoice::Cancel,
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                let titled = this.latest_snapshot.borrow().show_file_path.is_some();
+                let effect = this.session_guard.borrow_mut().choose(choice, titled);
+                this.apply_guard_effect(effect, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn prompt_for_guarded_save_destination(&self, cx: &mut Context<Self>) {
+        let folder = crate::show_file::default_show_folder();
+        let file_name = suggested_save_file_name(self.presentation.snapshot(), false);
+        let response = cx.prompt_for_new_path(&folder, Some(&file_name));
+        cx.spawn(async move |this, cx| match response.await {
+            Ok(Ok(path)) => {
+                let path = path.map(ensure_show_file_extension);
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let effect = this.session_guard.borrow_mut().save_destination(path);
+                    this.apply_guard_effect(effect, window, cx);
+                });
+            }
+            Ok(Err(error)) => {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let effect = this.session_guard.borrow_mut().save_destination(None);
+                    this.apply_guard_effect(effect, window, cx);
+                    window.push_notification(
+                        Notification::error(format!("Could not open the save picker: {error}")),
+                        cx,
+                    );
+                });
+            }
+            Err(error) => {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let effect = this.session_guard.borrow_mut().save_destination(None);
+                    this.apply_guard_effect(effect, window, cx);
+                    window.push_notification(
+                        Notification::error(format!(
+                            "The save picker did not return a result: {error}"
+                        )),
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
     }
 
     pub fn new_show(&self) {
@@ -454,7 +582,7 @@ impl AppRoot {
 
     fn on_new_show(&mut self, _: &NewShow, window: &mut Window, cx: &mut Context<Self>) {
         if !self.action_blocked(window, cx) {
-            self.new_show();
+            self.request_session_action(SessionAction::New, window, cx);
         }
     }
 
@@ -465,13 +593,13 @@ impl AppRoot {
         cx: &mut Context<Self>,
     ) {
         if !self.action_blocked(window, cx) {
-            self.new_show_from_template(cx);
+            self.request_session_action(SessionAction::NewFromTemplate, window, cx);
         }
     }
 
     fn on_open_show(&mut self, _: &OpenShow, window: &mut Window, cx: &mut Context<Self>) {
         if !self.action_blocked(window, cx) {
-            self.open_show(cx);
+            self.request_session_action(SessionAction::Open, window, cx);
         }
     }
 
@@ -505,11 +633,11 @@ impl AppRoot {
         }
     }
 
-    fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
         if self.shell.read(cx).shortcut_capture_active(cx) {
             cx.propagate();
-        } else {
-            cx.quit();
+        } else if !self.action_blocked(window, cx) {
+            self.request_session_action(SessionAction::Quit, window, cx);
         }
     }
 
