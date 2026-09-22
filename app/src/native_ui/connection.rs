@@ -31,7 +31,7 @@ pub enum ConnectionDialogMode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LatencyState {
-    Pending,
+    Pending { attempt_id: u64 },
     Success(u64),
     Error(String),
 }
@@ -43,6 +43,7 @@ pub struct ConnectionState {
     pub pending_command_id: Option<u64>,
     pub command_error: Option<String>,
     latency_session_id: u64,
+    next_latency_attempt_id: u64,
     latency: HashMap<String, LatencyState>,
 }
 
@@ -85,19 +86,21 @@ impl ConnectionState {
     }
 
     /// @cc [owner:mixxorz,label:safety;presentation] latency-result-active-pending-only
-    /// A latency result MUST update presentation state only when its session is active and its exact
-    /// identity is currently pending. Closed-session, stale-session, removed-identity, duplicate, and
-    /// unsolicited results MUST leave latency state unchanged.
+    /// A latency result MUST update presentation state only when its session, exact identity, and
+    /// unique attempt ID match that identity's current pending attempt. Closed-session, stale-session,
+    /// removed-identity, superseded-attempt, duplicate, and unsolicited results MUST leave latency
+    /// state unchanged.
     pub fn set_latency(
         &mut self,
         session_id: u64,
+        attempt_id: u64,
         identity: &Lv1SystemIdentity,
         result: Result<TcpConnectProbeResult, String>,
     ) {
         let key = identity_key(identity);
         if self.mode.is_none()
             || session_id != self.latency_session_id
-            || self.latency.get(&key) != Some(&LatencyState::Pending)
+            || self.latency.get(&key) != Some(&LatencyState::Pending { attempt_id })
         {
             return;
         }
@@ -110,23 +113,30 @@ impl ConnectionState {
         );
     }
 
-    pub fn begin_latency(&mut self, identity: &Lv1SystemIdentity) -> Option<u64> {
+    pub fn begin_latency(&mut self, identity: &Lv1SystemIdentity) -> Option<(u64, u64)> {
         let key = identity_key(identity);
         if self.mode.is_none() || self.latency.contains_key(&key) {
             return None;
         }
-        self.latency.insert(key, LatencyState::Pending);
-        Some(self.latency_session_id)
+        let attempt_id = self.next_latency_attempt_id;
+        self.next_latency_attempt_id = self
+            .next_latency_attempt_id
+            .checked_add(1)
+            .expect("connection latency attempt identifier exhausted");
+        self.latency
+            .insert(key, LatencyState::Pending { attempt_id });
+        Some((self.latency_session_id, attempt_id))
     }
 
     /// @cc [owner:mixxorz,label:product;presentation] discovered-latency-session-reconciliation
     /// While the dialog is open, reconciliation MUST prune identities absent from the complete
-    /// discovered list and return one probe for each identity not yet tested in this dialog session.
-    /// While closed it MUST return no probes and retain no latency state.
+    /// discovered list and return one probe for each identity not currently tracked in this dialog
+    /// session. A pruned identity that reappears MUST receive a new unique attempt ID. While closed,
+    /// reconciliation MUST return no probes and retain no latency state.
     pub fn reconcile_latency_probes(
         &mut self,
         systems: &[DiscoveredLv1System],
-    ) -> Vec<(u64, Lv1SystemIdentity)> {
+    ) -> Vec<(u64, u64, Lv1SystemIdentity)> {
         if self.mode.is_none() {
             self.latency.clear();
             return Vec::new();
@@ -143,7 +153,9 @@ impl ConnectionState {
             .iter()
             .filter_map(|system| {
                 self.begin_latency(&system.identity)
-                    .map(|session_id| (session_id, system.identity.clone()))
+                    .map(|(session_id, attempt_id)| {
+                        (session_id, attempt_id, system.identity.clone())
+                    })
             })
             .collect()
     }
@@ -160,10 +172,10 @@ impl ConnectionState {
 pub(super) fn begin_automatic_latency_probes(
     state: &Rc<RefCell<ConnectionState>>,
     systems: &[DiscoveredLv1System],
-    mut dispatch: impl FnMut(u64, Lv1SystemIdentity),
+    mut dispatch: impl FnMut(u64, u64, Lv1SystemIdentity),
 ) {
-    for (session_id, identity) in state.borrow_mut().reconcile_latency_probes(systems) {
-        dispatch(session_id, identity);
+    for (session_id, attempt_id, identity) in state.borrow_mut().reconcile_latency_probes(systems) {
+        dispatch(session_id, attempt_id, identity);
     }
 }
 
@@ -176,8 +188,8 @@ pub fn open_connection_dialog(
 ) {
     let systems = snapshot.borrow().discovered_lv1_systems.clone();
     let probe_dispatcher = dispatcher.clone();
-    begin_automatic_latency_probes(&state, &systems, move |session_id, identity| {
-        probe_dispatcher.probe_latency(session_id, identity, None);
+    begin_automatic_latency_probes(&state, &systems, move |session_id, attempt_id, identity| {
+        probe_dispatcher.probe_latency(session_id, attempt_id, identity, None);
     });
 
     window.open_dialog(cx, move |dialog, _, _| {
@@ -287,6 +299,25 @@ fn build_dialog(
         )
 }
 
+fn latency_text(latency: Option<&LatencyState>) -> String {
+    match latency {
+        None | Some(LatencyState::Pending { .. }) => "Testing…".to_string(),
+        Some(LatencyState::Success(ms)) => format!("{ms} ms"),
+        Some(LatencyState::Error(error)) => format!("Failed: {error}"),
+    }
+}
+
+fn system_accessibility_label(
+    display_name: &str,
+    connection_status: &str,
+    latency: Option<&LatencyState>,
+) -> String {
+    format!(
+        "{display_name}, {connection_status}, latency {}",
+        latency_text(latency)
+    )
+}
+
 fn system_row(
     system: &DiscoveredLv1System,
     connected: Option<&Lv1SystemIdentity>,
@@ -320,6 +351,8 @@ fn system_row(
     } else {
         STATUS_CUED
     };
+    let accessibility_label = system_accessibility_label(&display_name, status, latency);
+    let latency_text = latency_text(latency);
     let select_dispatcher = dispatcher.clone();
     let select_identity = identity.clone();
     let select_state = state;
@@ -342,7 +375,7 @@ fn system_row(
                 "select-system-{}",
                 identity_key(&identity)
             )))
-            .accessibility_label(format!("{display_name}, {status}"))
+            .accessibility_label(accessibility_label)
             .disabled(unavailable || (!is_connected && pending.is_some()))
             .flex()
             .flex_1()
@@ -391,11 +424,7 @@ fn system_row(
                     Some(LatencyState::Error(_)) => STATUS_DANGER,
                     _ => CONSOLE_SECONDARY,
                 }))
-                .child(match latency {
-                    None | Some(LatencyState::Pending) => "Testing…".to_string(),
-                    Some(LatencyState::Success(ms)) => format!("{ms} ms"),
-                    Some(LatencyState::Error(error)) => format!("Failed: {error}"),
-                }),
+                .child(latency_text),
         )
 }
 
@@ -510,9 +539,10 @@ mod tests {
             mode: Some(ConnectionDialogMode::Manual),
             ..Default::default()
         };
-        let session_id = state.begin_latency(&console).unwrap();
+        let (session_id, attempt_id) = state.begin_latency(&console).unwrap();
         state.set_latency(
             session_id,
+            attempt_id,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
@@ -527,17 +557,26 @@ mod tests {
     fn a_probe_result_from_a_closed_dialog_cannot_enter_a_new_session() {
         let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
         let mut state = ConnectionState::startup();
-        let old_session = state.begin_latency(&console).unwrap();
+        let (old_session, old_attempt) = state.begin_latency(&console).unwrap();
 
         state.close();
         state.open_manual();
+        let (new_session, new_attempt) = state.begin_latency(&console).unwrap();
+        assert_ne!(old_session, new_session);
+        assert_ne!(old_attempt, new_attempt);
         state.set_latency(
             old_session,
+            old_attempt,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
 
-        assert!(state.latency.is_empty());
+        assert_eq!(
+            state.latency.get(&identity_key(&console)),
+            Some(&LatencyState::Pending {
+                attempt_id: new_attempt
+            })
+        );
     }
 
     #[test]
@@ -558,8 +597,9 @@ mod tests {
 
         let probes = state.reconcile_latency_probes(&systems);
         assert_eq!(probes.len(), 2);
-        assert_eq!(probes[0].1, first);
-        assert_eq!(probes[1].1, second);
+        assert_eq!(probes[0].2, first);
+        assert_eq!(probes[1].2, second);
+        assert_ne!(probes[0].1, probes[1].1);
         assert!(state.reconcile_latency_probes(&systems).is_empty());
     }
 
@@ -580,7 +620,7 @@ mod tests {
         };
 
         let probes = state.reconcile_latency_probes(&systems(&[removed.clone(), retained.clone()]));
-        let session_id = probes[0].0;
+        let (session_id, attempt_id, _) = &probes[0];
         assert!(
             state
                 .reconcile_latency_probes(&systems(std::slice::from_ref(&retained)))
@@ -588,7 +628,8 @@ mod tests {
         );
 
         state.set_latency(
-            session_id,
+            *session_id,
+            *attempt_id,
             &removed,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
@@ -596,7 +637,54 @@ mod tests {
         assert!(!state.latency.contains_key(&identity_key(&removed)));
         assert_eq!(
             state.latency.get(&identity_key(&retained)),
-            Some(&LatencyState::Pending)
+            Some(&LatencyState::Pending {
+                attempt_id: probes[1].1
+            })
+        );
+    }
+
+    #[test]
+    fn reappearing_identity_rejects_the_removed_attempt_result() {
+        let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
+        let systems = |present: bool| {
+            present
+                .then(|| DiscoveredLv1System {
+                    identity: console.clone(),
+                    status: DiscoveredLv1Status::Available,
+                })
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
+        let mut state = ConnectionState::startup();
+
+        let old_probes = state.reconcile_latency_probes(&systems(true));
+        let [(session_id, old_attempt_id, _)] = old_probes.as_slice() else {
+            panic!("first discovery must dispatch one probe");
+        };
+        state.reconcile_latency_probes(&systems(false));
+        let new_probes = state.reconcile_latency_probes(&systems(true));
+        let [(new_session_id, new_attempt_id, _)] = new_probes.as_slice() else {
+            panic!("reappearance must dispatch one probe");
+        };
+
+        assert_eq!(session_id, new_session_id);
+        assert_ne!(old_attempt_id, new_attempt_id);
+        state.set_latency(
+            *session_id,
+            *old_attempt_id,
+            &console,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
+        );
+        state.set_latency(
+            *session_id,
+            *new_attempt_id,
+            &console,
+            Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
+        );
+
+        assert_eq!(
+            state.latency.get(&identity_key(&console)),
+            Some(&LatencyState::Success(12))
         );
     }
 
@@ -607,19 +695,22 @@ mod tests {
 
         state.set_latency(
             0,
+            0,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
         assert!(state.latency.is_empty());
 
-        let session_id = state.begin_latency(&console).unwrap();
+        let (session_id, attempt_id) = state.begin_latency(&console).unwrap();
         state.set_latency(
             session_id,
+            attempt_id,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
         );
         state.set_latency(
             session_id,
+            attempt_id,
             &console,
             Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
         );
@@ -627,6 +718,36 @@ mod tests {
         assert_eq!(
             state.latency.get(&identity_key(&console)),
             Some(&LatencyState::Success(12))
+        );
+    }
+
+    #[test]
+    fn latency_text_covers_testing_success_and_failure_states() {
+        assert_eq!(latency_text(None), "Testing…");
+        assert_eq!(
+            latency_text(Some(&LatencyState::Pending { attempt_id: 7 })),
+            "Testing…"
+        );
+        assert_eq!(latency_text(Some(&LatencyState::Success(12))), "12 ms");
+        assert_eq!(
+            latency_text(Some(&LatencyState::Error("timed out".to_string()))),
+            "Failed: timed out"
+        );
+    }
+
+    #[test]
+    fn row_accessibility_label_includes_latency_status() {
+        assert_eq!(
+            system_accessibility_label("FOH", "Available", Some(&LatencyState::Success(12))),
+            "FOH, Available, latency 12 ms"
+        );
+        assert_eq!(
+            system_accessibility_label(
+                "FOH",
+                "Available",
+                Some(&LatencyState::Error("timed out".to_string()))
+            ),
+            "FOH, Available, latency Failed: timed out"
         );
     }
 
@@ -640,14 +761,14 @@ mod tests {
         let state = Rc::new(RefCell::new(ConnectionState::startup()));
         let mut dispatched = Vec::new();
 
-        begin_automatic_latency_probes(&state, &systems, |session_id, identity| {
-            dispatched.push((session_id, identity));
+        begin_automatic_latency_probes(&state, &systems, |session_id, attempt_id, identity| {
+            dispatched.push((session_id, attempt_id, identity));
         });
 
-        assert_eq!(dispatched, vec![(0, console.clone())]);
+        assert_eq!(dispatched, vec![(0, 0, console.clone())]);
         assert_eq!(
             state.borrow().latency.get(&identity_key(&console)),
-            Some(&LatencyState::Pending)
+            Some(&LatencyState::Pending { attempt_id: 0 })
         );
     }
 

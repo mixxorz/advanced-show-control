@@ -228,12 +228,13 @@ impl AppRoot {
             }
             UiEvent::LatencyMeasured {
                 session_id,
+                attempt_id,
                 identity,
                 result,
             } => {
                 self.connection
                     .borrow_mut()
-                    .set_latency(session_id, &identity, result);
+                    .set_latency(session_id, attempt_id, &identity, result);
                 self.sync_connection_dialog(window, cx);
             }
         }
@@ -276,9 +277,13 @@ impl AppRoot {
 
         let systems = self.latest_snapshot.borrow().discovered_lv1_systems.clone();
         let dispatcher = self.dispatcher.clone();
-        begin_automatic_latency_probes(&self.connection, &systems, move |session_id, identity| {
-            dispatcher.probe_latency(session_id, identity, None);
-        });
+        begin_automatic_latency_probes(
+            &self.connection,
+            &systems,
+            move |session_id, attempt_id, identity| {
+                dispatcher.probe_latency(session_id, attempt_id, identity, None);
+            },
+        );
 
         if window.has_active_dialog(cx) {
             window.refresh();

@@ -35,6 +35,7 @@ pub enum UiEvent {
     },
     LatencyMeasured {
         session_id: u64,
+        attempt_id: u64,
         identity: Lv1SystemIdentity,
         result: Result<TcpConnectProbeResult, String>,
     },
@@ -203,6 +204,7 @@ impl CommandDispatcher {
     pub fn probe_latency(
         &self,
         session_id: u64,
+        attempt_id: u64,
         identity: Lv1SystemIdentity,
         timeout_ms: Option<u64>,
     ) {
@@ -214,6 +216,7 @@ impl CommandDispatcher {
                 .await;
             let _ = ui_events.send(UiEvent::LatencyMeasured {
                 session_id,
+                attempt_id,
                 identity,
                 result,
             });
