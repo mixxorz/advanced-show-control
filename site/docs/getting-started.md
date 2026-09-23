@@ -16,11 +16,11 @@ Advanced Show Control searches for LV1 systems when it opens.
 
 ![The Connect to LV1 dialog lists available and unavailable systems.](assets/screenshots/connection-systems-found.png)
 
-1. Wait for your console to appear as **Available**.
+1. Wait for your console to appear as **Available**. The dialog automatically checks each listed console and shows **Testing…**, its TCP connection time in milliseconds, or a failure.
 2. Select the console.
 3. Confirm that the top bar shows **Connected** and the correct console name.
 
-If the console appears as **Unavailable**, check the network connection and wait for discovery to update. You can reopen this window at any time by selecting the console name in the top bar.
+If the console appears as **Unavailable** or its automatic check fails, check the network connection and wait for discovery to update. You can reopen this window at any time by selecting the console name in the top bar; reopening starts fresh checks.
 
 ## 3. Create a session
 
