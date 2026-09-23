@@ -26,7 +26,7 @@ use super::scenes::ScenesView;
 use super::session_guard::{GuardChoice, GuardEffect, SessionAction, SessionGuard, SessionStatus};
 use super::settings_view::SettingsView;
 use super::shell::AppShell;
-use super::state::GoSubmissionGuard;
+use super::state::{GoSubmissionGuard, session_display_name};
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
 pub struct AppRoot {
@@ -272,6 +272,7 @@ impl AppRoot {
                 } else {
                     let result = result.map(|state| SessionStatus {
                         path: state.show_file_path,
+                        name: state.show_file_name,
                         dirty: state.show_file_dirty,
                         persisted_session_revision: state.persisted_session_revision,
                     });
@@ -386,7 +387,7 @@ impl AppRoot {
                 let query_id = self.dispatcher.query_show_session_state();
                 self.session_guard.borrow_mut().query_started(query_id);
             }
-            GuardEffect::Prompt => self.prompt_for_dirty_session(window, cx),
+            GuardEffect::Prompt(name) => self.prompt_for_dirty_session(&name, window, cx),
             GuardEffect::ChooseSaveDestination => self.prompt_for_guarded_save_destination(cx),
             GuardEffect::SaveCurrent => {
                 let command_id = self.dispatcher.dispatch_serial(|commands| async move {
@@ -429,12 +430,16 @@ impl AppRoot {
         }
     }
 
-    fn prompt_for_dirty_session(&self, window: &mut Window, cx: &mut Context<Self>) {
+    /// @cc [owner:mixxorz,label:product;presentation] dirty-session-prompt-names-authoritative-session
+    /// The unsaved-changes prompt MUST name the Show session returned by the accepted authoritative
+    /// preflight and offer Save, Don’t Save, and Cancel in that order; it MUST NOT use a stale
+    /// projected session name.
+    fn prompt_for_dirty_session(&self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
         let response = window.prompt(
             PromptLevel::Warning,
-            "Save changes before continuing?",
-            Some("Your unsaved session changes will be lost if you discard them."),
-            &["Save", "Discard", "Cancel"],
+            &dirty_session_prompt_title(name),
+            None,
+            &DIRTY_SESSION_PROMPT_CHOICES,
             cx,
         );
         cx.spawn(async move |this, cx| {
@@ -830,6 +835,15 @@ fn session_query_is_stale(
             .is_ok_and(|state| state.persisted_session_revision != current_persisted_revision)
 }
 
+const DIRTY_SESSION_PROMPT_CHOICES: [&str; 3] = ["Save", "Don’t Save", "Cancel"];
+
+fn dirty_session_prompt_title(show_file_name: &str) -> String {
+    format!(
+        "Do you want to save changes to “{}”?",
+        session_display_name(show_file_name)
+    )
+}
+
 fn modal_surface_active(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
     native_prompt || native_dialog || custom_modal
 }
@@ -904,15 +918,33 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        about_detail, cue_completion_matches_session, ensure_show_file_extension,
-        is_show_file_path, modal_surface_active, session_query_is_stale, suggested_save_file_name,
+        DIRTY_SESSION_PROMPT_CHOICES, about_detail, cue_completion_matches_session,
+        dirty_session_prompt_title, ensure_show_file_extension, is_show_file_path,
+        modal_surface_active, session_query_is_stale, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn dirty_session_prompt_names_the_session_and_uses_standard_choices() {
+        assert_eq!(
+            dirty_session_prompt_title("Tour.Show.ascs"),
+            "Do you want to save changes to “Tour.Show”?"
+        );
+        assert_eq!(
+            dirty_session_prompt_title("Untitled Session"),
+            "Do you want to save changes to “Untitled Session”?"
+        );
+        assert_eq!(
+            DIRTY_SESSION_PROMPT_CHOICES,
+            ["Save", "Don’t Save", "Cancel"]
+        );
+    }
 
     #[test]
     fn owner_revision_change_makes_successful_query_stale() {
         let result = Ok(crate::show::ShowSessionState {
             show_file_path: None,
+            show_file_name: "Untitled Session".to_string(),
             show_file_dirty: false,
             persisted_session_revision: 4,
         });

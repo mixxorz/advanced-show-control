@@ -757,6 +757,7 @@ mod tests {
             reply
                 .send(ShowSessionState {
                     show_file_path: Some(PathBuf::from("authoritative.ascs")),
+                    show_file_name: "authoritative.ascs".to_string(),
                     show_file_dirty: true,
                     persisted_session_revision: 7,
                 })
@@ -769,6 +770,7 @@ mod tests {
             Some(PathBuf::from("authoritative.ascs"))
         );
         assert!(state.show_file_dirty);
+        assert_eq!(state.show_file_name, "authoritative.ascs");
         assert_eq!(state.persisted_session_revision, 7);
         actor.await.unwrap();
     }

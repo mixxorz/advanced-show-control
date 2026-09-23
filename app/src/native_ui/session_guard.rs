@@ -18,6 +18,7 @@ pub(super) enum GuardChoice {
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct SessionStatus {
     pub path: Option<PathBuf>,
+    pub name: String,
     pub dirty: bool,
     pub persisted_session_revision: u64,
 }
@@ -26,7 +27,7 @@ pub(super) struct SessionStatus {
 pub(super) enum GuardEffect {
     None,
     QueryState,
-    Prompt,
+    Prompt(String),
     ChooseSaveDestination,
     SaveCurrent,
     SaveTo(PathBuf),
@@ -178,7 +179,7 @@ impl SessionGuard {
                     GuardPhase::AwaitingChoice {
                         titled: status.path.is_some(),
                     };
-                GuardEffect::Prompt
+                GuardEffect::Prompt(status.name)
             }
             QueryKind::PostSave if !status.dirty => {
                 self.pending = None;
@@ -306,6 +307,12 @@ mod tests {
         SessionStatus {
             dirty,
             path: titled.then(|| PathBuf::from("show.ascs")),
+            name: if titled {
+                "Show.ascs"
+            } else {
+                "Untitled Session"
+            }
+            .to_string(),
             persisted_session_revision: 9,
         }
     }
@@ -339,7 +346,7 @@ mod tests {
         guard.query_started(1);
         assert_eq!(
             guard.state_query_finished(1, Ok(status(true, true))),
-            GuardEffect::Prompt
+            GuardEffect::Prompt("Show.ascs".to_string())
         );
         assert_eq!(guard.request_close(), (false, GuardEffect::None));
         assert_eq!(guard.choose(GuardChoice::Save), GuardEffect::SaveCurrent);
@@ -364,7 +371,7 @@ mod tests {
         titled.query_started(1);
         assert_eq!(
             titled.state_query_finished(1, Ok(status(true, true))),
-            GuardEffect::Prompt
+            GuardEffect::Prompt("Show.ascs".to_string())
         );
         assert_eq!(titled.choose(GuardChoice::Save), GuardEffect::SaveCurrent);
 
@@ -373,7 +380,7 @@ mod tests {
         untitled.query_started(2);
         assert_eq!(
             untitled.state_query_finished(2, Ok(status(true, false))),
-            GuardEffect::Prompt
+            GuardEffect::Prompt("Untitled Session".to_string())
         );
         assert_eq!(
             untitled.choose(GuardChoice::Save),

@@ -5,6 +5,7 @@ use crate::connection_state::{DiscoveredLv1System, Lv1SystemIdentity};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShowSessionState {
     pub show_file_path: Option<PathBuf>,
+    pub show_file_name: String,
     pub show_file_dirty: bool,
     pub persisted_session_revision: u64,
 }

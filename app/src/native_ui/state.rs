@@ -266,13 +266,17 @@ impl PresentationState {
 /// append ` *` if and only if the projected session is dirty; it MUST NOT infer state from a path
 /// or local save operation.
 pub fn format_session_window_title(show_file_name: &str, dirty: bool) -> String {
-    let session_name = show_file_name
-        .rsplit_once('.')
-        .map_or(show_file_name, |(stem, _)| stem);
+    let session_name = session_display_name(show_file_name);
     format!(
         "Advanced Show Control - {session_name}{}",
         if dirty { " *" } else { "" }
     )
+}
+
+pub(super) fn session_display_name(show_file_name: &str) -> &str {
+    show_file_name
+        .rsplit_once('.')
+        .map_or(show_file_name, |(stem, _)| stem)
 }
 
 #[cfg(test)]
@@ -410,6 +414,12 @@ mod tests {
         assert!(!state.complete_command(first, Ok(())));
 
         assert_eq!(state.command_error(), Some("new failure"));
+    }
+
+    #[test]
+    fn session_display_name_omits_the_file_extension() {
+        assert_eq!(session_display_name("Tour.Show.ascs"), "Tour.Show");
+        assert_eq!(session_display_name("Untitled Session"), "Untitled Session");
     }
 
     #[test]
