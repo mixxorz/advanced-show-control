@@ -23,6 +23,9 @@ use super::theme::{
     CONSOLE_SECONDARY, CONSOLE_SECTION, STATUS_CUED, STATUS_CURRENT, STATUS_DANGER,
 };
 
+const LATENCY_COLUMN_WIDTH: f32 = 128.;
+const STATUS_COLUMN_WIDTH: f32 = 116.;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionDialogMode {
     Startup,
@@ -271,6 +274,43 @@ pub(super) fn render_connection_overlay<T: 'static>(
                 .child(error),
         );
     }
+    body = body.child(
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .p_2()
+            .border_b_1()
+            .border_color(rgb(CONSOLE_LINE))
+            .text_xs()
+            .text_color(rgb(CONSOLE_SECONDARY))
+            .child(div().w(px(3.)))
+            .child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .gap_3()
+                    .px_2()
+                    .child(div().flex_1().child("CONSOLE"))
+                    .child(
+                        div()
+                            .id("connection-heading-latency")
+                            .test_support()
+                            .w(px(LATENCY_COLUMN_WIDTH))
+                            .text_right()
+                            .child("LATENCY"),
+                    )
+                    .child(
+                        div()
+                            .id("connection-heading-status")
+                            .test_support()
+                            .w(px(STATUS_COLUMN_WIDTH))
+                            .text_right()
+                            .child("STATUS"),
+                    ),
+            ),
+    );
     if rows.is_empty() {
         body = body.child(
             div()
@@ -450,12 +490,16 @@ fn system_row(
         .gap_3()
         .p_2()
         .border_1()
-        .border_color(rgb(if is_connected {
-            STATUS_CURRENT
-        } else {
-            CONSOLE_LINE
-        }))
+        .border_color(rgb(CONSOLE_LINE))
         .bg(rgb(CONSOLE_PANEL))
+        .child(
+            div()
+                .id(format!("connection-marker-{}", identity_key(&identity)))
+                .test_support()
+                .w(px(3.))
+                .self_stretch()
+                .when(is_connected, |bar| bar.bg(rgb(STATUS_CURRENT))),
+        )
         .child(
             BaseButton::new(SharedString::from(format!(
                 "select-system-{}",
@@ -465,8 +509,9 @@ fn system_row(
             .disabled(unavailable || (!is_connected && pending.is_some()))
             .flex()
             .flex_1()
+            .min_w_0()
             .items_center()
-            .justify_between()
+            .gap_3()
             .px_2()
             .py_1()
             .when(!unavailable && !is_connected && pending.is_none(), |row| {
@@ -491,26 +536,47 @@ fn system_row(
                 })
             })
             .child(
-                div().flex().flex_col().child(display_name).child(
-                    div()
-                        .font_family("Fira Code")
-                        .text_sm()
-                        .text_color(rgb(CONSOLE_MUTED))
-                        .child(format!("{}:{}", identity.address, identity.port)),
-                ),
+                div()
+                    .id(format!("connection-name-{}", identity_key(&identity)))
+                    .test_support()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .overflow_hidden()
+                    .child(display_name)
+                    .child(
+                        div()
+                            .font_family("Fira Code")
+                            .text_sm()
+                            .text_color(rgb(CONSOLE_MUTED))
+                            .child(format!("{}:{}", identity.address, identity.port)),
+                    ),
             )
-            .child(div().text_color(rgb(status_color)).child(status)),
-        )
-        .child(
-            div()
-                .min_w(px(92.))
-                .text_right()
-                .text_sm()
-                .text_color(rgb(match latency {
-                    Some(LatencyState::Error(_)) => STATUS_DANGER,
-                    _ => CONSOLE_SECONDARY,
-                }))
-                .child(latency_text),
+            .child(
+                div()
+                    .id(format!("connection-latency-{}", identity_key(&identity)))
+                    .test_support()
+                    .w(px(LATENCY_COLUMN_WIDTH))
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .text_right()
+                    .text_sm()
+                    .text_color(rgb(match latency {
+                        Some(LatencyState::Error(_)) => STATUS_DANGER,
+                        _ => CONSOLE_SECONDARY,
+                    }))
+                    .child(latency_text),
+            )
+            .child(
+                div()
+                    .id(format!("connection-status-{}", identity_key(&identity)))
+                    .test_support()
+                    .w(px(STATUS_COLUMN_WIDTH))
+                    .text_right()
+                    .text_color(rgb(status_color))
+                    .child(status),
+            ),
         )
 }
 
@@ -1016,6 +1082,24 @@ mod tests {
             assert_eq!(
                 window.find(row_id.clone()).label(),
                 Some("FOH, Available, latency Testing…")
+            );
+            let key = identity_key(&console);
+            let marker = window.find(format!("connection-marker-{key}")).bounds();
+            let name = window.find(format!("connection-name-{key}")).bounds();
+            let latency = window.find(format!("connection-latency-{key}")).bounds();
+            let status = window.find(format!("connection-status-{key}")).bounds();
+            assert_eq!(marker.size.width, px(3.));
+            assert!(marker.right() < name.left());
+            assert!(name.right() < latency.left());
+            assert!(latency.right() < status.left());
+            assert!(
+                (window.find("connection-heading-latency").bounds().right() - latency.right())
+                    .abs()
+                    <= px(1.)
+            );
+            assert!(
+                (window.find("connection-heading-status").bounds().right() - status.right()).abs()
+                    <= px(1.)
             );
             assert_eq!(probes.lock().unwrap().len(), 1);
             let (old_session, old_attempt, _, timeout) = probes.lock().unwrap()[0].clone();

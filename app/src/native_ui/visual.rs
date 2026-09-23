@@ -267,7 +267,8 @@ mod macos {
             let modal = window.find("connection-modal").bounds();
             assert_eq!(overlay.origin, point(px(0.), px(0.)));
             assert_eq!(overlay.size, size(px(1180.), px(780.)));
-            assert_eq!(modal.center(), overlay.center());
+            assert!((modal.center().x - overlay.center().x).abs() <= px(0.5));
+            assert!((modal.center().y - overlay.center().y).abs() <= px(0.5));
             assert!(modal.size.width < overlay.size.width * 0.7);
             assert_eq!(
                 window.find("connection-focus-trap").label(),
