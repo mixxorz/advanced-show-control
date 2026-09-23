@@ -20,7 +20,7 @@ use super::CommandDispatcher;
 use super::button::bordered_button;
 use super::theme::{
     CONSOLE_CONTROL, CONSOLE_LINE, CONSOLE_LINE_STRONG, CONSOLE_MUTED, CONSOLE_PANEL,
-    CONSOLE_SECONDARY, CONSOLE_SECTION, STATUS_CUED, STATUS_CURRENT, STATUS_DANGER,
+    CONSOLE_SECONDARY, CONSOLE_SECTION, STATUS_CUED, STATUS_DANGER,
 };
 
 const LATENCY_COLUMN_WIDTH: f32 = 128.;
@@ -280,8 +280,6 @@ pub(super) fn render_connection_overlay<T: 'static>(
             .items_center()
             .gap_3()
             .p_2()
-            .border_b_1()
-            .border_color(rgb(CONSOLE_LINE))
             .text_xs()
             .text_color(rgb(CONSOLE_SECONDARY))
             .child(div().w(px(3.)))
@@ -472,9 +470,9 @@ fn system_row(
     let status_color = if unavailable {
         STATUS_DANGER
     } else if is_connected {
-        STATUS_CURRENT
-    } else {
         STATUS_CUED
+    } else {
+        CONSOLE_SECONDARY
     };
     let accessibility_label = system_accessibility_label(&display_name, status, latency);
     let latency_text = latency_text(latency);
@@ -498,7 +496,7 @@ fn system_row(
                 .test_support()
                 .w(px(3.))
                 .self_stretch()
-                .when(is_connected, |bar| bar.bg(rgb(STATUS_CURRENT))),
+                .when(is_connected, |bar| bar.bg(rgb(STATUS_CUED))),
         )
         .child(
             BaseButton::new(SharedString::from(format!(

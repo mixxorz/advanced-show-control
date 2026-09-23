@@ -276,7 +276,13 @@ mod macos {
             );
             assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
             assert!(window.is_action_available(&Quit, cx));
-            let dispatched_while_modal = observed_dispatcher.dispatched_count();
+        })?;
+        let connected_connection = cx.capture_screenshot(window.into())?;
+        connected_connection
+            .save(output_dir.join("native-connection-connected.png"))
+            .context("failed to save connected connection screenshot")?;
+        let dispatched_while_modal = observed_dispatcher.dispatched_count();
+        cx.update_window(window.into(), |_, window, cx| {
             window.press(MENU_NEW_SHORTCUT, cx);
             window.press("space", cx);
             assert_eq!(
@@ -583,6 +589,11 @@ mod macos {
                 "native-connection",
                 visual_signature!(connection),
                 include_bytes!("visual_snapshots/native-connection.rgb").as_slice(),
+            ),
+            (
+                "native-connection-connected",
+                visual_signature!(connected_connection),
+                include_bytes!("visual_snapshots/native-connection-connected.rgb").as_slice(),
             ),
             (
                 "native-shell-ready",
