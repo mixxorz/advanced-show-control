@@ -3,7 +3,9 @@ use std::rc::Rc;
 
 use anyhow::Result;
 use gpui_kit::component::Root;
-use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{
+    App, AppContext as _, Bounds, Entity, Window, WindowBounds, WindowOptions, px, size,
+};
 
 use crate::projector::AppViewState;
 
@@ -86,6 +88,7 @@ pub fn run() -> Result<()> {
                             cx,
                         )
                     });
+                    install_session_close_guard(&app, window, cx);
 
                     cx.new(|cx| Root::new(app, window, cx))
                 },
@@ -106,4 +109,20 @@ pub fn run() -> Result<()> {
         anyhow::bail!(error);
     }
     Ok(())
+}
+
+/// @cc [owner:mixxorz,label:product;persistence] native-close-uses-session-guard
+/// Every platform window-close request MUST be vetoed. While a native prompt, native dialog, or
+/// custom modal is active, or another guarded action is pending, the request MUST NOT begin another
+/// guard preflight. Otherwise it MUST consult AppRoot's dirty-session guard, and the window may
+/// close only through the Quit continuation after
+/// an authoritative clean preflight, explicit Discard, or a successful save followed by an
+/// authoritative clean recheck.
+fn install_session_close_guard(app: &Entity<AppRoot>, window: &mut Window, cx: &mut App) {
+    let weak_app = app.downgrade();
+    window.on_window_should_close(cx, move |window, cx| {
+        weak_app
+            .update(cx, |app, cx| app.handle_close_request(window, cx))
+            .unwrap_or(true)
+    });
 }

@@ -21,7 +21,7 @@ use crate::scenes::{
 use crate::settings::{AppSettings, SettingsCommand, SettingsCommandResult, SettingsHandle};
 use crate::show::{
     ConnectCommandResult, LoadShowFileResult, NewShowFileResult, ShowCommand, ShowCommandResult,
-    ShowStateHandle,
+    ShowSessionState, ShowStateHandle,
 };
 
 /// Cloneable access to the app-lifetime command owners.
@@ -93,10 +93,43 @@ impl ApplicationCommandContext {
         self.lifecycle.disconnect_current_runtime().await
     }
 
+    pub async fn current_show_session_state(&self) -> Result<ShowSessionState, String> {
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::CurrentSessionState { reply })
+            .await?;
+        receive(response).await
+    }
+
+    pub fn persisted_session_revision(&self) -> u64 {
+        self.lifecycle.persisted_session_revision()
+    }
+
+    pub fn admit_persisted_session_revision<T>(
+        &self,
+        expected_revision: u64,
+        admit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.lifecycle
+            .admit_persisted_session_revision(expected_revision, admit)
+    }
+
     pub async fn new_show_file(&self) -> Result<NewShowFileResult, String> {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromCurrentLv1 { reply: Some(reply) })
             .await?;
+        receive_nested(response).await
+    }
+
+    pub async fn guarded_new_show_file(
+        &self,
+        expected_persisted_revision: u64,
+    ) -> Result<NewShowFileResult, String> {
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::GuardedNewShowFileFromCurrentLv1 {
+            expected_persisted_revision,
+            reply: Some(reply),
+        })
+        .await?;
         receive_nested(response).await
     }
 
@@ -119,6 +152,24 @@ impl ApplicationCommandContext {
         receive_nested(response).await.map(Some)
     }
 
+    pub async fn guarded_open_show_file(
+        &self,
+        path: Option<PathBuf>,
+        expected_persisted_revision: u64,
+    ) -> Result<Option<LoadShowFileResult>, String> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::GuardedLoadShowFileFromPath {
+            path,
+            expected_persisted_revision,
+            reply: Some(reply),
+        })
+        .await?;
+        receive_nested(response).await.map(Some)
+    }
+
     /// A missing path means the host picker was cancelled without changing the current session.
     pub async fn new_show_file_from_template(
         &self,
@@ -130,6 +181,24 @@ impl ApplicationCommandContext {
         let (reply, response) = oneshot::channel();
         self.send_show(ShowCommand::NewShowFileFromTemplate {
             path,
+            reply: Some(reply),
+        })
+        .await?;
+        receive_nested(response).await.map(Some)
+    }
+
+    pub async fn guarded_new_show_file_from_template(
+        &self,
+        path: Option<PathBuf>,
+        expected_persisted_revision: u64,
+    ) -> Result<Option<NewShowFileResult>, String> {
+        let Some(path) = path else {
+            return Ok(None);
+        };
+        let (reply, response) = oneshot::channel();
+        self.send_show(ShowCommand::GuardedNewShowFileFromTemplate {
+            path,
+            expected_persisted_revision,
             reply: Some(reply),
         })
         .await?;
@@ -674,6 +743,35 @@ mod tests {
                 .selected_scene_internal_id,
             Some("scene-id".to_string())
         );
+        actor.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn current_show_session_state_uses_the_narrow_authoritative_query() {
+        let (show, mut commands) = tokio::sync::mpsc::channel(4);
+        let context = context_with_show(show);
+        let actor = tokio::spawn(async move {
+            let ShowCommand::CurrentSessionState { reply } = commands.recv().await.unwrap() else {
+                panic!("expected current-session-state query");
+            };
+            reply
+                .send(ShowSessionState {
+                    show_file_path: Some(PathBuf::from("authoritative.ascs")),
+                    show_file_name: "authoritative.ascs".to_string(),
+                    show_file_dirty: true,
+                    persisted_session_revision: 7,
+                })
+                .unwrap();
+        });
+
+        let state = context.current_show_session_state().await.unwrap();
+        assert_eq!(
+            state.show_file_path,
+            Some(PathBuf::from("authoritative.ascs"))
+        );
+        assert!(state.show_file_dirty);
+        assert_eq!(state.show_file_name, "authoritative.ascs");
+        assert_eq!(state.persisted_session_revision, 7);
         actor.await.unwrap();
     }
 

@@ -92,19 +92,35 @@ impl ShowState {
         self.show_file_path.clone()
     }
 
-    pub fn projection_state(&self) -> super::events::ShowProjectionState {
-        let show_file_name = self
-            .show_file_path
+    /// @cc [owner:mixxorz,label:product;presentation] session-query-names-current-show
+    /// The authoritative session-state query MUST return the same current show-file name as the
+    /// Show projection, including "Untitled Session" when there is no backing path.
+    pub(crate) fn session_state(
+        &self,
+        persisted_session_revision: u64,
+    ) -> super::events::ShowSessionState {
+        super::events::ShowSessionState {
+            show_file_path: self.show_file_path.clone(),
+            show_file_name: self.show_file_name(),
+            show_file_dirty: self.show_file_dirty,
+            persisted_session_revision,
+        }
+    }
+
+    fn show_file_name(&self) -> String {
+        self.show_file_path
             .as_ref()
             .and_then(|path| path.file_name())
             .and_then(|name| name.to_str())
             .map(str::to_string)
-            .unwrap_or_else(|| "Untitled Session".to_string());
+            .unwrap_or_else(|| "Untitled Session".to_string())
+    }
 
+    pub fn projection_state(&self) -> super::events::ShowProjectionState {
         super::events::ShowProjectionState {
             lockout: self.lockout,
             show_file_path: self.show_file_path.clone(),
-            show_file_name,
+            show_file_name: self.show_file_name(),
             show_file_dirty: self.show_file_dirty,
             show_file_last_saved_at: self.show_file_last_saved_at.clone(),
             discovered_lv1_systems: self.discovered_lv1_systems.clone(),
@@ -133,6 +149,24 @@ impl ShowState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_query_and_projection_name_the_same_show() {
+        let mut state = ShowState::default();
+        assert_eq!(state.session_state(0).show_file_name, "Untitled Session");
+        assert_eq!(
+            state.session_state(0).show_file_name,
+            state.projection_state().show_file_name
+        );
+
+        state.mark_saved("/shows/Tour.Show.ascs".into(), "saved".to_string());
+        state.mark_dirty();
+        assert_eq!(state.session_state(1).show_file_name, "Tour.Show.ascs");
+        assert_eq!(
+            state.session_state(1).show_file_name,
+            state.projection_state().show_file_name
+        );
+    }
 
     fn identity(uuid: &str) -> Lv1SystemIdentity {
         Lv1SystemIdentity {

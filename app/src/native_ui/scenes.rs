@@ -191,7 +191,7 @@ impl ScenesView {
         + Send
         + 'static,
     ) {
-        self.dispatcher.dispatch(command);
+        self.dispatcher.dispatch_persisted_edit(command);
     }
 
     fn commit_duration(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -220,12 +220,13 @@ impl ScenesView {
     }
 
     fn dispatch_duration(&self, scene_id: Uuid, duration_ms: u64) -> u64 {
-        self.dispatcher.dispatch_serial(move |commands| async move {
-            commands
-                .set_scene_duration_ms(scene_id, duration_ms)
-                .await
-                .map(|_| ())
-        })
+        self.dispatcher
+            .dispatch_persisted_edit(move |commands| async move {
+                commands
+                    .set_scene_duration_ms(scene_id, duration_ms)
+                    .await
+                    .map(|_| ())
+            })
     }
 
     pub fn command_finished(
@@ -266,8 +267,8 @@ impl ScenesView {
     }
 
     fn select_scene(&self, scene_id: Uuid) {
-        self.dispatch(move |commands| {
-            Box::pin(async move { commands.select_scene_config(scene_id).await.map(|_| ()) })
+        self.dispatcher.dispatch_serial(move |commands| async move {
+            commands.select_scene_config(scene_id).await.map(|_| ())
         });
     }
 
@@ -284,8 +285,8 @@ impl ScenesView {
             .disabled(recall_scene_id.is_none())
             .on_click(cx.listener(move |this, _, _, _| {
                 if let Some(scene_id) = recall_scene_id {
-                    this.dispatch(move |commands| {
-                        Box::pin(async move { commands.recall_scene(scene_id).await.map(|_| ()) })
+                    this.dispatcher.dispatch(move |commands| async move {
+                        commands.recall_scene(scene_id).await.map(|_| ())
                     });
                 }
             }));
@@ -451,10 +452,8 @@ impl ScenesView {
                         false,
                         cx,
                         move |this| {
-                            this.dispatch(move |commands| {
-                                Box::pin(async move {
-                                    commands.copy_scene_settings(scene_id).await.map(|_| ())
-                                })
+                            this.dispatcher.dispatch_serial(move |commands| async move {
+                                commands.copy_scene_settings(scene_id).await.map(|_| ())
                             });
                         },
                     ))

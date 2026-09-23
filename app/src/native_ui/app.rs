@@ -23,9 +23,10 @@ use super::menu::{About, NewShow, NewShowFromTemplate, OpenShow, Quit, SaveShow,
 #[cfg(target_os = "macos")]
 use super::menu::{Hide, HideOthers};
 use super::scenes::ScenesView;
+use super::session_guard::{GuardChoice, GuardEffect, SessionAction, SessionGuard, SessionStatus};
 use super::settings_view::SettingsView;
 use super::shell::AppShell;
-use super::state::GoSubmissionGuard;
+use super::state::{GoSubmissionGuard, session_display_name};
 use super::{CommandDispatcher, MainTab, PresentationState, UiEvent};
 
 pub struct AppRoot {
@@ -38,6 +39,7 @@ pub struct AppRoot {
     latest_snapshot: Rc<RefCell<AppViewState>>,
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     pending_save_command_id: Cell<Option<u64>>,
+    session_guard: RefCell<SessionGuard>,
 }
 
 impl AppRoot {
@@ -114,6 +116,7 @@ impl AppRoot {
             latest_snapshot,
             go_submissions,
             pending_save_command_id: Cell::new(None),
+            session_guard: RefCell::new(SessionGuard::default()),
         }
     }
 
@@ -150,6 +153,14 @@ impl AppRoot {
         .detach();
     }
 
+    /// @cc [owner:mixxorz,label:persistence;ordering] query-epoch-check-and-continuation-atomic
+    /// A session-state query result MUST compare both its captured persisted-edit submission epoch
+    /// and authoritative owner-side persisted revision with their current values, then either
+    /// enqueue a retry or apply the guard result in this same GPUI callback, without yielding to a
+    /// UI submission or owner fact between comparison and continuation dispatch. A clean result
+    /// MUST carry its validated owner revision into guarded replacement or quit admission; this UI
+    /// comparison alone MUST NOT authorize the destructive action. If any modal surface is active,
+    /// it MUST cancel instead.
     fn handle_event(&mut self, event: UiEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
             UiEvent::Snapshot(snapshot) => {
@@ -182,7 +193,12 @@ impl AppRoot {
                 cx.notify();
             }
             UiEvent::CommandFinished { command_id, result } => {
+                let guard_effect = self
+                    .session_guard
+                    .borrow_mut()
+                    .command_finished(command_id, result.is_ok());
                 self.finish_command_event(command_id, result, window, cx);
+                self.apply_guard_effect(guard_effect, window, cx);
             }
             UiEvent::CueRecallFinished {
                 command_id,
@@ -225,6 +241,46 @@ impl AppRoot {
                         self.prompt_to_save(false, cx);
                     }
                 }
+            }
+            UiEvent::SessionStateQueryFinished {
+                query_id,
+                persisted_edit_epoch,
+                result,
+            } => {
+                if modal_surface_active(
+                    window.has_active_prompt(),
+                    window.has_active_dialog(cx),
+                    self.shell.read(cx).modal_open(cx),
+                ) {
+                    if self.session_guard.borrow_mut().cancel_pending() {
+                        window.push_notification(
+                            Notification::error(
+                                "The session action was cancelled because another dialog opened.",
+                            ),
+                            cx,
+                        );
+                    }
+                    return;
+                }
+                let effect = if session_query_is_stale(
+                    persisted_edit_epoch,
+                    self.dispatcher.persisted_edit_epoch(),
+                    &result,
+                    self.dispatcher.persisted_session_revision(),
+                ) {
+                    self.session_guard.borrow_mut().state_query_stale(query_id)
+                } else {
+                    let result = result.map(|state| SessionStatus {
+                        path: state.show_file_path,
+                        name: state.show_file_name,
+                        dirty: state.show_file_dirty,
+                        persisted_session_revision: state.persisted_session_revision,
+                    });
+                    self.session_guard
+                        .borrow_mut()
+                        .state_query_finished(query_id, result)
+                };
+                self.apply_guard_effect(effect, window, cx);
             }
             UiEvent::LatencyMeasured {
                 session_id,
@@ -292,13 +348,185 @@ impl AppRoot {
         self.sync_connection_dialog(window, cx);
     }
 
+    pub(super) fn handle_close_request(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if modal_surface_active(
+            window.has_active_prompt(),
+            window.has_active_dialog(cx),
+            self.shell.read(cx).modal_open(cx),
+        ) {
+            return false;
+        }
+        let (accept, effect) = self.session_guard.borrow_mut().request_close();
+        self.apply_guard_effect(effect, window, cx);
+        accept
+    }
+
+    fn request_session_action(
+        &mut self,
+        action: SessionAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let effect = self.session_guard.borrow_mut().request(action);
+        self.apply_guard_effect(effect, window, cx);
+    }
+
+    fn apply_guard_effect(
+        &mut self,
+        effect: GuardEffect,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match effect {
+            GuardEffect::None => {}
+            GuardEffect::QueryState => {
+                let query_id = self.dispatcher.query_show_session_state();
+                self.session_guard.borrow_mut().query_started(query_id);
+            }
+            GuardEffect::Prompt(name) => self.prompt_for_dirty_session(&name, window, cx),
+            GuardEffect::ChooseSaveDestination => self.prompt_for_guarded_save_destination(cx),
+            GuardEffect::SaveCurrent => {
+                let command_id = self.dispatcher.dispatch_serial(|commands| async move {
+                    if commands.save_show_file(None).await?.is_none() {
+                        return Err("The session no longer has a save destination.".to_string());
+                    }
+                    Ok(())
+                });
+                self.session_guard.borrow_mut().save_started(command_id);
+            }
+            GuardEffect::SaveTo(path) => {
+                let command_id = self.dispatcher.dispatch_serial(move |commands| async move {
+                    commands.save_show_file(Some(path)).await.map(|_| ())
+                });
+                self.session_guard.borrow_mut().save_started(command_id);
+            }
+            GuardEffect::Continue {
+                action,
+                expected_persisted_revision,
+            } => match (action, expected_persisted_revision) {
+                (SessionAction::New, Some(revision)) => self.guarded_new_show(revision),
+                (SessionAction::NewFromTemplate, Some(revision)) => {
+                    self.guarded_new_show_from_template(revision, cx)
+                }
+                (SessionAction::Open, Some(revision)) => self.guarded_open_show(revision, cx),
+                (SessionAction::Quit, Some(revision)) => {
+                    if !self.dispatcher.admit_guarded_quit(revision, || cx.quit()) {
+                        let effect = self.session_guard.borrow_mut().request(SessionAction::Quit);
+                        self.apply_guard_effect(effect, window, cx);
+                    }
+                }
+                (SessionAction::New, None) => self.new_show(),
+                (SessionAction::NewFromTemplate, None) => self.new_show_from_template(cx),
+                (SessionAction::Open, None) => self.open_show(cx),
+                (SessionAction::Quit, None) => cx.quit(),
+            },
+            GuardEffect::Error(message) => {
+                window.push_notification(Notification::error(message), cx);
+            }
+        }
+    }
+
+    /// @cc [owner:mixxorz,label:product;presentation] dirty-session-prompt-names-authoritative-session
+    /// The unsaved-changes prompt MUST name the Show session returned by the accepted authoritative
+    /// preflight and offer Save, Don’t Save, and Cancel in that order; it MUST NOT use a stale
+    /// projected session name.
+    fn prompt_for_dirty_session(&self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let response = window.prompt(
+            PromptLevel::Warning,
+            &dirty_session_prompt_title(name),
+            None,
+            &DIRTY_SESSION_PROMPT_CHOICES,
+            cx,
+        );
+        cx.spawn(async move |this, cx| {
+            let choice = match response.await {
+                Ok(0) => GuardChoice::Save,
+                Ok(1) => GuardChoice::Discard,
+                _ => GuardChoice::Cancel,
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                let effect = this.session_guard.borrow_mut().choose(choice);
+                this.apply_guard_effect(effect, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn prompt_for_guarded_save_destination(&self, cx: &mut Context<Self>) {
+        let folder = crate::show_file::default_show_folder();
+        let file_name = suggested_save_file_name(self.presentation.snapshot(), false);
+        let response = cx.prompt_for_new_path(&folder, Some(&file_name));
+        cx.spawn(async move |this, cx| match response.await {
+            Ok(Ok(path)) => {
+                let path = path.map(ensure_show_file_extension);
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let effect = this.session_guard.borrow_mut().save_destination(path);
+                    this.apply_guard_effect(effect, window, cx);
+                });
+            }
+            Ok(Err(error)) => {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let effect = this.session_guard.borrow_mut().save_destination(None);
+                    this.apply_guard_effect(effect, window, cx);
+                    window.push_notification(
+                        Notification::error(format!("Could not open the save picker: {error}")),
+                        cx,
+                    );
+                });
+            }
+            Err(error) => {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    let effect = this.session_guard.borrow_mut().save_destination(None);
+                    this.apply_guard_effect(effect, window, cx);
+                    window.push_notification(
+                        Notification::error(format!(
+                            "The save picker did not return a result: {error}"
+                        )),
+                        cx,
+                    );
+                });
+            }
+        })
+        .detach();
+    }
+
     pub fn new_show(&self) {
         self.pending_save_command_id.set(None);
         self.dispatcher
             .dispatch_serial(|commands| async move { commands.new_show_file().await.map(|_| ()) });
     }
 
+    fn guarded_new_show(&self, expected_persisted_revision: u64) {
+        self.pending_save_command_id.set(None);
+        self.dispatcher.dispatch_serial(move |commands| async move {
+            commands
+                .guarded_new_show_file(expected_persisted_revision)
+                .await
+                .map(|_| ())
+        });
+    }
+
     pub fn new_show_from_template(&self, cx: &mut Context<Self>) {
+        self.new_show_from_template_with_revision(None, cx);
+    }
+
+    fn guarded_new_show_from_template(
+        &self,
+        expected_persisted_revision: u64,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_show_from_template_with_revision(Some(expected_persisted_revision), cx);
+    }
+
+    fn new_show_from_template_with_revision(
+        &self,
+        expected_persisted_revision: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -319,7 +547,13 @@ impl AppRoot {
                     return;
                 }
                 dispatcher.dispatch_serial(move |commands| async move {
-                    commands.new_show_file_from_template(path).await.map(|_| ())
+                    match expected_persisted_revision {
+                        Some(revision) => commands
+                            .guarded_new_show_file_from_template(path, revision)
+                            .await
+                            .map(|_| ()),
+                        None => commands.new_show_file_from_template(path).await.map(|_| ()),
+                    }
                 });
             }
             Ok(Ok(None)) => {}
@@ -338,6 +572,18 @@ impl AppRoot {
     }
 
     pub fn open_show(&self, cx: &mut Context<Self>) {
+        self.open_show_with_revision(None, cx);
+    }
+
+    fn guarded_open_show(&self, expected_persisted_revision: u64, cx: &mut Context<Self>) {
+        self.open_show_with_revision(Some(expected_persisted_revision), cx);
+    }
+
+    fn open_show_with_revision(
+        &self,
+        expected_persisted_revision: Option<u64>,
+        cx: &mut Context<Self>,
+    ) {
         self.pending_save_command_id.set(None);
         let response = cx.prompt_for_paths(PathPromptOptions {
             files: true,
@@ -358,7 +604,13 @@ impl AppRoot {
                     return;
                 }
                 dispatcher.dispatch_serial(move |commands| async move {
-                    commands.open_show_file(path).await.map(|_| ())
+                    match expected_persisted_revision {
+                        Some(revision) => commands
+                            .guarded_open_show_file(path, revision)
+                            .await
+                            .map(|_| ()),
+                        None => commands.open_show_file(path).await.map(|_| ()),
+                    }
                 });
             }
             Ok(Ok(None)) => {}
@@ -431,13 +683,17 @@ impl AppRoot {
         window.has_active_dialog(cx) || self.shell.read(cx).modal_open(cx)
     }
 
+    /// Session actions MUST remain blocked while shortcut capture, a native prompt/dialog, an app
+    /// modal, or another destructive-session guard is active.
     fn action_blocked(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.shell.read(cx).shortcut_capture_active(cx) {
             // Let Settings capture the key without running the menu action.
             cx.propagate();
             return true;
         }
-        self.modal_open(window, cx)
+        window.has_active_prompt()
+            || self.modal_open(window, cx)
+            || self.session_guard.borrow().is_pending()
     }
 
     fn on_about(&mut self, _: &About, window: &mut Window, cx: &mut Context<Self>) {
@@ -454,7 +710,7 @@ impl AppRoot {
 
     fn on_new_show(&mut self, _: &NewShow, window: &mut Window, cx: &mut Context<Self>) {
         if !self.action_blocked(window, cx) {
-            self.new_show();
+            self.request_session_action(SessionAction::New, window, cx);
         }
     }
 
@@ -465,13 +721,13 @@ impl AppRoot {
         cx: &mut Context<Self>,
     ) {
         if !self.action_blocked(window, cx) {
-            self.new_show_from_template(cx);
+            self.request_session_action(SessionAction::NewFromTemplate, window, cx);
         }
     }
 
     fn on_open_show(&mut self, _: &OpenShow, window: &mut Window, cx: &mut Context<Self>) {
         if !self.action_blocked(window, cx) {
-            self.open_show(cx);
+            self.request_session_action(SessionAction::Open, window, cx);
         }
     }
 
@@ -505,11 +761,11 @@ impl AppRoot {
         }
     }
 
-    fn on_quit(&mut self, _: &Quit, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_quit(&mut self, _: &Quit, window: &mut Window, cx: &mut Context<Self>) {
         if self.shell.read(cx).shortcut_capture_active(cx) {
             cx.propagate();
-        } else {
-            cx.quit();
+        } else if !self.action_blocked(window, cx) {
+            self.request_session_action(SessionAction::Quit, window, cx);
         }
     }
 
@@ -565,6 +821,31 @@ impl AppRoot {
             }
         }
     }
+}
+
+fn session_query_is_stale(
+    query_edit_epoch: u64,
+    current_edit_epoch: u64,
+    result: &Result<crate::show::ShowSessionState, String>,
+    current_persisted_revision: u64,
+) -> bool {
+    query_edit_epoch != current_edit_epoch
+        || result
+            .as_ref()
+            .is_ok_and(|state| state.persisted_session_revision != current_persisted_revision)
+}
+
+const DIRTY_SESSION_PROMPT_CHOICES: [&str; 3] = ["Save", "Don’t Save", "Cancel"];
+
+fn dirty_session_prompt_title(show_file_name: &str) -> String {
+    format!(
+        "Do you want to save changes to “{}”?",
+        session_display_name(show_file_name)
+    )
+}
+
+fn modal_surface_active(native_prompt: bool, native_dialog: bool, custom_modal: bool) -> bool {
+    native_prompt || native_dialog || custom_modal
 }
 
 fn cue_completion_matches_session(session_revision: u64, snapshot: &AppViewState) -> bool {
@@ -637,10 +918,49 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     use super::{
-        about_detail, cue_completion_matches_session, ensure_show_file_extension,
-        is_show_file_path, suggested_save_file_name,
+        DIRTY_SESSION_PROMPT_CHOICES, about_detail, cue_completion_matches_session,
+        dirty_session_prompt_title, ensure_show_file_extension, is_show_file_path,
+        modal_surface_active, session_query_is_stale, suggested_save_file_name,
     };
     use crate::projector::AppViewState;
+
+    #[test]
+    fn dirty_session_prompt_names_the_session_and_uses_standard_choices() {
+        assert_eq!(
+            dirty_session_prompt_title("Tour.Show.ascs"),
+            "Do you want to save changes to “Tour.Show”?"
+        );
+        assert_eq!(
+            dirty_session_prompt_title("Untitled Session"),
+            "Do you want to save changes to “Untitled Session”?"
+        );
+        assert_eq!(
+            DIRTY_SESSION_PROMPT_CHOICES,
+            ["Save", "Don’t Save", "Cancel"]
+        );
+    }
+
+    #[test]
+    fn owner_revision_change_makes_successful_query_stale() {
+        let result = Ok(crate::show::ShowSessionState {
+            show_file_path: None,
+            show_file_name: "Untitled Session".to_string(),
+            show_file_dirty: false,
+            persisted_session_revision: 4,
+        });
+
+        assert!(!session_query_is_stale(2, 2, &result, 4));
+        assert!(session_query_is_stale(2, 2, &result, 5));
+        assert!(session_query_is_stale(2, 3, &result, 4));
+    }
+
+    #[test]
+    fn close_request_is_blocked_while_any_modal_surface_is_active() {
+        assert!(!modal_surface_active(false, false, false));
+        assert!(modal_surface_active(true, false, false));
+        assert!(modal_surface_active(false, true, false));
+        assert!(modal_surface_active(false, false, true));
+    }
 
     #[test]
     fn stale_cue_completion_cannot_invalidate_a_new_session() {

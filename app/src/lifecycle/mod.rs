@@ -721,6 +721,19 @@ impl AppLifecycle {
         self.cue_lists.clone()
     }
 
+    pub fn persisted_session_revision(&self) -> u64 {
+        self.event_bus.persisted_session_revision()
+    }
+
+    pub fn admit_persisted_session_revision<T>(
+        &self,
+        expected_revision: u64,
+        admit: impl FnOnce() -> T,
+    ) -> Option<T> {
+        self.event_bus
+            .admit_persisted_session_revision(expected_revision, admit)
+    }
+
     async fn last_connected_lv1_identity(
         &self,
     ) -> Result<Option<crate::connection_state::Lv1SystemIdentity>, String> {
