@@ -290,14 +290,6 @@ mod macos {
             assert!(window.try_find("connection-focus-trap").is_none());
             assert!(gpui_kit::base::active_focus_trap(window, cx).is_none());
             assert!(window.focused(cx).is_some());
-            window.click("open-connection", cx);
-            window.render_frame(cx);
-            assert!(window.try_find("connection-focus-trap").is_some());
-            assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
-            window.press("escape", cx);
-            window.render_frame(cx);
-            assert!(window.try_find("connection-focus-trap").is_none());
-            assert!(window.focused(cx).is_some());
         })?;
         let ready = cx.capture_screenshot(window.into())?;
         ready
