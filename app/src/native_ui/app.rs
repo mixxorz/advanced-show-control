@@ -7,14 +7,15 @@ use gpui_kit::component::{Root, WindowExt as _};
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, PathPromptOptions, PromptLevel, Render, Styled as _, Window,
-    div,
+    div, prelude::FluentBuilder as _,
 };
 use tokio::sync::mpsc;
 
 use crate::projector::{AppViewState, ProjectionSubscription};
 
 use super::connection::{
-    ConnectionState, apply_latency_result, begin_automatic_latency_probes, open_connection_dialog,
+    ConnectionFocusRestore, ConnectionState, apply_latency_result, begin_automatic_latency_probes,
+    render_connection_overlay,
 };
 use super::cues::CueListsView;
 use super::keyboard::{
@@ -37,6 +38,8 @@ pub struct AppRoot {
     shell: Entity<AppShell>,
     cue_lists: Entity<CueListsView>,
     connection: Rc<RefCell<ConnectionState>>,
+    connection_focus: FocusHandle,
+    connection_return_focus: Rc<RefCell<Option<FocusHandle>>>,
     latest_snapshot: Rc<RefCell<AppViewState>>,
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     pending_save_command_id: Cell<Option<u64>>,
@@ -44,8 +47,8 @@ pub struct AppRoot {
 
 impl AppRoot {
     /// @cc [owner:mixxorz,label:accessibility;keyboard] session-action-focus
-    /// AppRoot MUST establish a live tracked action context before a startup dialog can open. After
-    /// that dialog closes, fixed session and Quit shortcuts and in-app session-menu actions MUST
+    /// AppRoot MUST establish a live tracked action context before the startup modal can open. After
+    /// that modal closes, fixed session and Quit shortcuts and in-app session-menu actions MUST
     /// reach AppRoot without requiring another pointer or focus event.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn new(
@@ -64,10 +67,16 @@ impl AppRoot {
         focus.focus(window, cx);
         let initial = AppViewState::default();
         let connection = Rc::new(RefCell::new(ConnectionState::startup()));
+        let connection_focus = cx.focus_handle();
+        let connection_return_focus = Rc::new(RefCell::new(Some(focus.clone())));
+        connection_focus.focus(window, cx);
         let latest_snapshot = Rc::new(RefCell::new(initial.clone()));
         let open_connection_state = connection.clone();
+        let open_connection_focus = connection_focus.clone();
+        let open_connection_return_focus = connection_return_focus.clone();
         let open_snapshot = latest_snapshot.clone();
         let open_dispatcher = dispatcher.clone();
+        let open_connection_fallback_focus = focus.clone();
         let shell = cx.new(|cx| {
             AppShell::new(
                 initial.clone(),
@@ -79,16 +88,24 @@ impl AppRoot {
                 go_submissions.clone(),
                 focus.clone(),
                 move |window, cx| {
-                    open_connection_state.borrow_mut().open_manual();
-                    if !window.has_active_dialog(cx) {
-                        open_connection_dialog(
-                            window,
-                            cx,
-                            open_snapshot.clone(),
-                            open_connection_state.clone(),
-                            open_dispatcher.clone(),
+                    if !open_connection_state.borrow().is_visible() {
+                        *open_connection_return_focus.borrow_mut() = Some(
+                            window
+                                .focused(cx)
+                                .unwrap_or_else(|| open_connection_fallback_focus.clone()),
                         );
                     }
+                    open_connection_state.borrow_mut().open_manual();
+                    open_connection_focus.focus(window, cx);
+                    let systems = open_snapshot.borrow().discovered_lv1_systems.clone();
+                    begin_automatic_latency_probes(
+                        &open_connection_state,
+                        &systems,
+                        |session_id, attempt_id, identity| {
+                            open_dispatcher.probe_latency(session_id, attempt_id, identity, None);
+                        },
+                    );
+                    window.refresh();
                 },
                 cx,
             )
@@ -113,6 +130,8 @@ impl AppRoot {
             shell,
             cue_lists,
             connection,
+            connection_focus,
+            connection_return_focus,
             latest_snapshot,
             go_submissions,
             pending_save_command_id: Cell::new(None),
@@ -164,7 +183,7 @@ impl AppRoot {
                     .borrow_mut()
                     .close_startup_if_connected(&snapshot);
                 if connection_was_visible && !self.connection.borrow().is_visible() {
-                    window.close_dialog(cx);
+                    self.restore_connection_focus(window, cx);
                 }
                 self.go_submissions.borrow_mut().observe_snapshot(&snapshot);
                 *self.latest_snapshot.borrow_mut() = snapshot.clone();
@@ -292,22 +311,26 @@ impl AppRoot {
             },
         );
 
-        if window.has_active_dialog(cx) {
-            window.refresh();
-            return;
-        }
-        open_connection_dialog(
-            window,
-            cx,
-            self.latest_snapshot.clone(),
-            self.connection.clone(),
-            self.dispatcher.clone(),
-        );
+        window.refresh();
+        cx.notify();
     }
 
     pub fn open_connection(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.connection.borrow().is_visible() {
+            *self.connection_return_focus.borrow_mut() =
+                Some(window.focused(cx).unwrap_or_else(|| self.focus.clone()));
+        }
         self.connection.borrow_mut().open_manual();
+        self.connection_focus.focus(window, cx);
         self.sync_connection_dialog(window, cx);
+    }
+
+    fn restore_connection_focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(focus) = self.connection_return_focus.borrow_mut().take() {
+            focus.focus(window, cx);
+        } else {
+            self.focus.focus(window, cx);
+        }
     }
 
     pub fn new_show(&self) {
@@ -446,7 +469,9 @@ impl AppRoot {
     }
 
     fn modal_open(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        window.has_active_dialog(cx) || self.shell.read(cx).modal_open(cx)
+        self.connection.borrow().is_visible()
+            || window.has_active_dialog(cx)
+            || self.shell.read(cx).modal_open(cx)
     }
 
     fn action_blocked(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
@@ -537,7 +562,15 @@ impl AppRoot {
     /// earlier recalls are pending. Repeats and key events owned by editable controls, dialogs, or an
     /// open session menu MUST NOT dispatch.
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let connection_modal_open = self.connection.borrow().is_visible();
         let custom_modal_open = self.shell.read(cx).modal_open(cx);
+        if connection_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
+            self.connection.borrow_mut().close();
+            self.restore_connection_focus(window, cx);
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if custom_modal_open && normalized_physical_key(&event.keystroke) == "Escape" {
             self.shell.update(cx, |shell, cx| {
                 shell.dismiss_modal(window, cx);
@@ -546,7 +579,8 @@ impl AppRoot {
             return;
         }
         let interaction = InteractionState {
-            modal_open: window.has_active_dialog(cx)
+            modal_open: connection_modal_open
+                || window.has_active_dialog(cx)
                 || custom_modal_open
                 || self.shell.read(cx).session_menu_open(),
             editable_focused: event.prefer_character_input,
@@ -642,8 +676,22 @@ impl Render for AppRoot {
         let root = root
             .on_action(cx.listener(Self::on_hide))
             .on_action(cx.listener(Self::on_hide_others));
+        let connection_visible = self.connection.borrow().is_visible();
         root.on_key_down(cx.listener(Self::on_key_down))
             .child(self.shell.clone())
+            .when(connection_visible, |root| {
+                root.child(render_connection_overlay(
+                    self.latest_snapshot.borrow().clone(),
+                    self.connection.clone(),
+                    self.dispatcher.clone(),
+                    &self.connection_focus,
+                    ConnectionFocusRestore::new(
+                        self.connection_return_focus.clone(),
+                        self.focus.clone(),
+                    ),
+                    cx,
+                ))
+            })
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))

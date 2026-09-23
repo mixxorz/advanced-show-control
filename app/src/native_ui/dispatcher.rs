@@ -48,7 +48,13 @@ pub struct CommandDispatcher {
     ui_events: mpsc::UnboundedSender<UiEvent>,
     serial_commands: mpsc::UnboundedSender<SerialCommand>,
     next_command_id: Arc<AtomicU64>,
+    #[cfg(any(test, feature = "debug-tools"))]
+    latency_probe_override: Option<LatencyProbeOverride>,
 }
+
+#[cfg(any(test, feature = "debug-tools"))]
+type LatencyProbeOverride =
+    Arc<dyn Fn(u64, u64, Lv1SystemIdentity, Option<u64>) + Send + Sync + 'static>;
 
 type CommandFuture = Pin<Box<dyn Future<Output = Result<(), String>> + Send>>;
 type BoxedCommand = Box<dyn FnOnce(ApplicationCommandContext) -> CommandFuture + Send>;
@@ -82,6 +88,8 @@ impl CommandDispatcher {
             ui_events,
             serial_commands,
             next_command_id: Arc::new(AtomicU64::new(0)),
+            #[cfg(any(test, feature = "debug-tools"))]
+            latency_probe_override: None,
         }
     }
 
@@ -201,6 +209,15 @@ impl CommandDispatcher {
         }
     }
 
+    #[cfg(any(test, feature = "debug-tools"))]
+    pub(crate) fn with_latency_probe_override(
+        mut self,
+        probe: impl Fn(u64, u64, Lv1SystemIdentity, Option<u64>) + Send + Sync + 'static,
+    ) -> Self {
+        self.latency_probe_override = Some(Arc::new(probe));
+        self
+    }
+
     pub fn probe_latency(
         &self,
         session_id: u64,
@@ -208,6 +225,12 @@ impl CommandDispatcher {
         identity: Lv1SystemIdentity,
         timeout_ms: Option<u64>,
     ) {
+        #[cfg(any(test, feature = "debug-tools"))]
+        if let Some(probe) = &self.latency_probe_override {
+            probe(session_id, attempt_id, identity, timeout_ms);
+            return;
+        }
+
         let commands = self.commands.clone();
         let ui_events = self.ui_events.clone();
         self.runtime.spawn(async move {

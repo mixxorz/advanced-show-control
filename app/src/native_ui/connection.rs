@@ -2,14 +2,14 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
-use gpui_kit::base::Button as BaseButton;
-use gpui_kit::component::WindowExt as _;
+use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
+use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::ButtonVariants as _;
-use gpui_kit::component::dialog::{Dialog, DialogContent};
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::{
-    App, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px, rgb,
+    Context, FocusHandle, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
+    div, prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
@@ -19,8 +19,8 @@ use crate::projector::{AppConnectionState, AppViewState};
 use super::CommandDispatcher;
 use super::button::bordered_button;
 use super::theme::{
-    CONSOLE_CONTROL, CONSOLE_LINE, CONSOLE_MUTED, CONSOLE_PANEL, CONSOLE_SECONDARY, STATUS_CUED,
-    STATUS_CURRENT, STATUS_DANGER,
+    CONSOLE_CONTROL, CONSOLE_LINE, CONSOLE_LINE_STRONG, CONSOLE_MUTED, CONSOLE_PANEL,
+    CONSOLE_SECONDARY, CONSOLE_SECTION, STATUS_CUED, STATUS_CURRENT, STATUS_DANGER,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,142 +208,179 @@ pub(super) fn apply_latency_result(
     window.refresh();
 }
 
-pub fn open_connection_dialog(
-    window: &mut Window,
-    cx: &mut App,
-    snapshot: Rc<RefCell<AppViewState>>,
-    state: Rc<RefCell<ConnectionState>>,
-    dispatcher: CommandDispatcher,
-) {
-    let probe_dispatcher = dispatcher.clone();
-    open_connection_dialog_with_probe(
-        window,
-        cx,
-        snapshot,
-        state,
-        dispatcher,
-        move |session_id, attempt_id, identity| {
-            probe_dispatcher.probe_latency(session_id, attempt_id, identity, None);
-        },
-    );
+/// @cc [owner:mixxorz,label:accessibility;keyboard] connection-modal-focus
+/// While visible, the connection chooser MUST expose a named dialog over an interaction-blocking
+/// backdrop, own and trap keyboard focus, consume Escape, and restore the prior action focus when
+/// dismissed, falling back to AppRoot action focus when no prior focus exists. Reopening MUST
+/// establish a fresh latency-probe presentation session.
+#[derive(Clone)]
+pub(super) struct ConnectionFocusRestore {
+    return_focus: Rc<RefCell<Option<FocusHandle>>>,
+    fallback_focus: FocusHandle,
 }
 
-fn open_connection_dialog_with_probe(
-    window: &mut Window,
-    cx: &mut App,
-    snapshot: Rc<RefCell<AppViewState>>,
-    state: Rc<RefCell<ConnectionState>>,
-    dispatcher: CommandDispatcher,
-    dispatch_probe: impl FnMut(u64, u64, Lv1SystemIdentity),
-) {
-    let systems = snapshot.borrow().discovered_lv1_systems.clone();
-    begin_automatic_latency_probes(&state, &systems, dispatch_probe);
-
-    window.open_dialog(cx, move |dialog, _, _| {
-        let close_state = state.clone();
-        let connection = state.borrow();
-        let latencies = connection.latency.clone();
-        let pending_identity = connection.pending_identity.clone();
-        let command_error = connection.command_error.clone();
-        drop(connection);
-        build_dialog(
-            dialog,
-            snapshot.borrow().clone(),
-            command_error,
-            latencies,
-            pending_identity,
-            state.clone(),
-            dispatcher.clone(),
-        )
-        .on_close(move |_, _, _| close_state.borrow_mut().close())
-    });
+impl ConnectionFocusRestore {
+    pub(super) fn new(
+        return_focus: Rc<RefCell<Option<FocusHandle>>>,
+        fallback_focus: FocusHandle,
+    ) -> Self {
+        Self {
+            return_focus,
+            fallback_focus,
+        }
+    }
 }
 
-fn build_dialog(
-    dialog: Dialog,
+pub(super) fn render_connection_overlay<T: 'static>(
     snapshot: AppViewState,
-    command_error: Option<String>,
-    latencies: HashMap<String, LatencyState>,
-    pending_identity: Option<Lv1SystemIdentity>,
     state: Rc<RefCell<ConnectionState>>,
     dispatcher: CommandDispatcher,
-) -> Dialog {
+    modal_focus: &FocusHandle,
+    focus_restore: ConnectionFocusRestore,
+    cx: &mut Context<T>,
+) -> impl IntoElement {
+    let connection = state.borrow();
+    let latencies = connection.latency.clone();
+    let pending_identity = connection.pending_identity.clone();
+    let command_error = connection.command_error.clone();
+    drop(connection);
+
     let connected = snapshot.connected_lv1_identity.clone();
     let rows = snapshot.discovered_lv1_systems.clone();
+    let close_state = state.clone();
+    let close_focus_restore = focus_restore.clone();
+    let close = bordered_button("close-connection")
+        .small()
+        .label("CLOSE")
+        .accessibility_label("Close connection chooser")
+        .on_click(move |_, window, cx| {
+            close_connection_overlay(&close_state, &close_focus_restore, window, cx);
+        });
     let disconnect_dispatcher = dispatcher.clone();
     let disconnect_state = state.clone();
 
-    dialog
-        .width(px(680.))
-        .title("CONNECT TO LV1")
-        .content(move |content: DialogContent, _, _| {
-            let mut body = div()
+    let mut body = div().flex().flex_col().gap_2().max_h(px(420.));
+    if let Some(error) = command_error {
+        body = body.child(
+            div()
+                .p_3()
+                .border_1()
+                .border_color(rgb(STATUS_DANGER))
+                .bg(rgb(CONSOLE_CONTROL))
+                .text_color(rgb(STATUS_DANGER))
+                .child(error),
+        );
+    }
+    if rows.is_empty() {
+        body = body.child(
+            div()
+                .p_5()
+                .border_1()
+                .border_color(rgb(CONSOLE_LINE))
+                .bg(rgb(CONSOLE_SECTION))
+                .text_color(rgb(CONSOLE_SECONDARY))
+                .child("Searching for consoles…"),
+        );
+    } else {
+        body = body.child(
+            div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .overflow_y_scrollbar()
+                .children(rows.iter().map(|system| {
+                    system_row(
+                        system,
+                        connected.as_ref(),
+                        pending_identity.as_ref(),
+                        latencies.get(&identity_key(&system.identity)),
+                        state.clone(),
+                        focus_restore.clone(),
+                        dispatcher.clone(),
+                    )
+                })),
+        );
+    }
+
+    div()
+        .id("connection-overlay")
+        .role(Role::Dialog)
+        .aria_label("Connect to LV1")
+        .test_support()
+        .absolute()
+        .inset_0()
+        .bg(rgb(0x000000).opacity(0.82))
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+        .on_key_down(
+            cx.listener(move |_, event: &gpui_kit::KeyDownEvent, window, cx| {
+                if super::keyboard::normalized_physical_key(&event.keystroke) == "Escape" {
+                    close_connection_overlay(&state, &focus_restore, window, cx);
+                    cx.stop_propagation();
+                }
+            }),
+        )
+        .focus_trap("connection-focus-trap", modal_focus)
+        .flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .id("connection-modal")
+                .test_support()
+                .w(px(620.))
+                .max_h(px(560.))
                 .flex()
                 .flex_col()
                 .gap_3()
-                .min_w(px(560.))
-                .max_h(px(420.));
-            if let Some(error) = command_error.clone() {
-                body = body.child(
-                    div()
-                        .p_3()
-                        .border_1()
-                        .border_color(rgb(STATUS_DANGER))
-                        .bg(rgb(CONSOLE_CONTROL))
-                        .text_color(rgb(STATUS_DANGER))
-                        .child(error),
-                );
-            }
-            if rows.is_empty() {
-                body = body.child(
-                    div()
-                        .p_5()
-                        .border_1()
-                        .border_color(rgb(CONSOLE_LINE))
-                        .bg(rgb(CONSOLE_CONTROL))
-                        .text_color(rgb(CONSOLE_SECONDARY))
-                        .child("Searching for consoles…"),
-                );
-            } else {
-                body = body.child(
+                .p_5()
+                .bg(rgb(CONSOLE_PANEL))
+                .border_1()
+                .border_color(rgb(CONSOLE_LINE_STRONG))
+                .child(
                     div()
                         .flex()
-                        .flex_col()
-                        .gap_3()
-                        .overflow_y_scrollbar()
-                        .children(rows.iter().map(|system| {
-                            system_row(
-                                system,
-                                connected.as_ref(),
-                                pending_identity.as_ref(),
-                                latencies.get(&identity_key(&system.identity)),
-                                state.clone(),
-                                dispatcher.clone(),
-                            )
-                        })),
-                );
-            }
-            content.child(body)
-        })
-        .when(
-            snapshot.connection == AppConnectionState::Connected,
-            |dialog| {
-                dialog.footer(
-                    div().flex().justify_end().child(
-                        bordered_button("disconnect-lv1")
-                            .danger()
-                            .label("DISCONNECT")
-                            .on_click(move |_, window, cx| {
-                                disconnect_dispatcher.dispatch(|commands| async move {
-                                    commands.disconnect_lv1().await.map(|_| ())
-                                });
-                                window.close_dialog(cx);
-                                disconnect_state.borrow_mut().open_manual();
-                            }),
-                    ),
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_lg().child("CONNECT TO LV1"))
+                        .child(close),
                 )
-            },
+                .child(body)
+                .when(
+                    snapshot.connection == AppConnectionState::Connected,
+                    |panel| {
+                        panel.child(
+                            div().flex().justify_end().child(
+                                bordered_button("disconnect-lv1")
+                                    .danger()
+                                    .label("DISCONNECT")
+                                    .on_click(move |_, window, _| {
+                                        disconnect_dispatcher.dispatch(|commands| async move {
+                                            commands.disconnect_lv1().await.map(|_| ())
+                                        });
+                                        disconnect_state.borrow_mut().open_manual();
+                                        window.refresh();
+                                    }),
+                            ),
+                        )
+                    },
+                ),
         )
+}
+
+fn close_connection_overlay(
+    state: &Rc<RefCell<ConnectionState>>,
+    focus_restore: &ConnectionFocusRestore,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) {
+    state.borrow_mut().close();
+    if let Some(focus) = focus_restore.return_focus.borrow_mut().take() {
+        focus.focus(window, cx);
+    } else {
+        focus_restore.fallback_focus.focus(window, cx);
+    }
+    window.refresh();
 }
 
 fn latency_text(latency: Option<&LatencyState>) -> String {
@@ -371,6 +408,7 @@ fn system_row(
     pending: Option<&Lv1SystemIdentity>,
     latency: Option<&LatencyState>,
     state: Rc<RefCell<ConnectionState>>,
+    focus_restore: ConnectionFocusRestore,
     dispatcher: CommandDispatcher,
 ) -> impl IntoElement {
     let identity = system.identity.clone();
@@ -404,6 +442,7 @@ fn system_row(
     let select_identity = identity.clone();
     let select_state = state;
     let resume_state = select_state.clone();
+    let resume_focus_restore = focus_restore;
 
     div()
         .flex()
@@ -448,8 +487,7 @@ fn system_row(
             })
             .when(is_connected, |row| {
                 row.on_click(move |_, window, cx| {
-                    resume_state.borrow_mut().close();
-                    window.close_dialog(cx);
+                    close_connection_overlay(&resume_state, &resume_focus_restore, window, cx);
                 })
             })
             .child(
@@ -466,6 +504,7 @@ fn system_row(
         .child(
             div()
                 .min_w(px(92.))
+                .text_right()
                 .text_sm()
                 .text_color(rgb(match latency {
                     Some(LatencyState::Error(_)) => STATUS_DANGER,
@@ -837,26 +876,66 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn dialog_open_dispatches_renders_completion_and_reopens_with_a_fresh_attempt(
+    fn modal_probes_render_and_reopen_deterministically_while_restoring_focus_and_blocking_pointer(
         cx: &mut gpui_kit::TestAppContext,
     ) {
+        use std::sync::{Arc, Mutex};
+
         use gpui_kit::component::Root;
         use gpui_kit::test::TestWindowExt as _;
-        use gpui_kit::{AppContext as _, Context, Render, div, size};
+        use gpui_kit::{AppContext as _, Context, Render, SharedString, point, size};
 
-        struct Harness;
-
-        struct TestDir(std::path::PathBuf);
-
-        impl Drop for TestDir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
+        struct Harness {
+            snapshot: AppViewState,
+            state: Rc<RefCell<ConnectionState>>,
+            dispatcher: CommandDispatcher,
+            modal_focus: FocusHandle,
+            background_focus: FocusHandle,
+            return_focus: Rc<RefCell<Option<FocusHandle>>>,
+            background_clicks: Rc<RefCell<usize>>,
         }
 
         impl Render for Harness {
-            fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-                div().children(Root::render_dialog_layer(window, cx))
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                let systems = self.snapshot.discovered_lv1_systems.clone();
+                let dispatcher = self.dispatcher.clone();
+                begin_automatic_latency_probes(
+                    &self.state,
+                    &systems,
+                    move |session_id, attempt_id, identity| {
+                        dispatcher.probe_latency(session_id, attempt_id, identity, None);
+                    },
+                );
+                let clicks = self.background_clicks.clone();
+                div()
+                    .relative()
+                    .size_full()
+                    .child(
+                        BaseButton::new("connection-test-background")
+                            .track_focus(&self.background_focus)
+                            .size_full()
+                            .on_click(move |_, _, _| *clicks.borrow_mut() += 1),
+                    )
+                    .when(self.state.borrow().is_visible(), |root| {
+                        root.child(render_connection_overlay(
+                            self.snapshot.clone(),
+                            self.state.clone(),
+                            self.dispatcher.clone(),
+                            &self.modal_focus,
+                            ConnectionFocusRestore::new(
+                                self.return_focus.clone(),
+                                self.background_focus.clone(),
+                            ),
+                            cx,
+                        ))
+                    })
+            }
+        }
+
+        struct TestDir(std::path::PathBuf);
+        impl Drop for TestDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
             }
         }
 
@@ -865,9 +944,10 @@ mod tests {
             .build()
             .unwrap();
         let settings_dir = TestDir(std::env::temp_dir().join(format!(
-            "asc-connection-dialog-test-{}",
+            "asc-connection-modal-test-{}",
             uuid::Uuid::new_v4()
         )));
+        let probes = Arc::new(Mutex::new(Vec::new()));
         let dispatcher = {
             let _entered = runtime.enter();
             let events = crate::runtime::events::AppEventBus::default();
@@ -889,83 +969,118 @@ mod tests {
                 lifecycle, show, settings, ui_logs,
             );
             let (ui_events, _) = tokio::sync::mpsc::unbounded_channel();
+            let captured = probes.clone();
             CommandDispatcher::new(runtime.handle().clone(), commands, ui_events)
+                .with_latency_probe_override(move |session, attempt, identity, timeout| {
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push((session, attempt, identity, timeout));
+                })
         };
 
         let console = identity(Some("a"), Some("FOH"), "10.0.0.1", 1234);
-        let snapshot = Rc::new(RefCell::new(AppViewState {
-            discovered_lv1_systems: vec![DiscoveredLv1System {
-                identity: console.clone(),
-                status: DiscoveredLv1Status::Available,
-            }],
-            ..Default::default()
-        }));
         let state = Rc::new(RefCell::new(ConnectionState::startup()));
-        let dispatched = Rc::new(RefCell::new(Vec::new()));
-
+        let return_focus = Rc::new(RefCell::new(None));
+        let background_clicks = Rc::new(RefCell::new(0));
+        let focus_handles = Rc::new(RefCell::new(None));
         cx.update(gpui_kit::init);
         let handle = cx.open_window(size(px(720.), px(520.)), |window, cx| {
-            Root::new(cx.new(|_| Harness), window, cx)
-        });
-        let first_dispatches = dispatched.clone();
-        cx.update_window(handle.into(), |_, window, cx| {
-            open_connection_dialog_with_probe(
-                window,
-                cx,
-                snapshot.clone(),
-                state.clone(),
-                dispatcher.clone(),
-                move |session_id, attempt_id, identity| {
-                    first_dispatches
-                        .borrow_mut()
-                        .push((session_id, attempt_id, identity));
+            let modal_focus = cx.focus_handle();
+            let background_focus = cx.focus_handle();
+            background_focus.focus(window, cx);
+            *return_focus.borrow_mut() = Some(background_focus.clone());
+            *focus_handles.borrow_mut() = Some((background_focus.clone(), modal_focus.clone()));
+            modal_focus.focus(window, cx);
+            let harness = cx.new(|_| Harness {
+                snapshot: AppViewState {
+                    discovered_lv1_systems: vec![DiscoveredLv1System {
+                        identity: console.clone(),
+                        status: DiscoveredLv1Status::Available,
+                    }],
+                    ..Default::default()
                 },
-            );
+                state: state.clone(),
+                dispatcher,
+                modal_focus,
+                background_focus,
+                return_focus: return_focus.clone(),
+                background_clicks: background_clicks.clone(),
+            });
+            Root::new(harness, window, cx)
+        });
+
+        cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            let row_id = format!("select-system-{}", identity_key(&console));
+            let row_id = SharedString::from(format!("select-system-{}", identity_key(&console)));
             assert_eq!(
-                window.find(SharedString::from(row_id.clone())).label(),
+                window.find(row_id.clone()).label(),
                 Some("FOH, Available, latency Testing…")
             );
+            assert_eq!(probes.lock().unwrap().len(), 1);
+            let (old_session, old_attempt, _, timeout) = probes.lock().unwrap()[0].clone();
+            assert_eq!(timeout, None);
 
-            let (session_id, attempt_id, _) = dispatched.borrow()[0].clone();
             apply_latency_result(
                 &state,
-                session_id,
-                attempt_id,
+                old_session,
+                old_attempt,
                 &console,
                 Ok(TcpConnectProbeResult { tcp_connect_ms: 12 }),
                 window,
             );
             window.render_frame(cx);
             assert_eq!(
-                window.find(SharedString::from(row_id.clone())).label(),
+                window.find(row_id.clone()).label(),
                 Some("FOH, Available, latency 12 ms")
             );
 
-            window.close_dialog(cx);
-            state.borrow_mut().open_manual();
-            let reopened_dispatches = dispatched.clone();
-            open_connection_dialog_with_probe(
-                window,
-                cx,
-                snapshot.clone(),
-                state.clone(),
-                dispatcher.clone(),
-                move |session_id, attempt_id, identity| {
-                    reopened_dispatches
-                        .borrow_mut()
-                        .push((session_id, attempt_id, identity));
-                },
-            );
+            window.click_at("connection-focus-trap", point(px(5.), px(5.)), cx);
+            assert_eq!(*background_clicks.borrow(), 0);
+            window.click("close-connection", cx);
             window.render_frame(cx);
+            let (background_focus, modal_focus) = focus_handles.borrow().clone().unwrap();
+            assert!(background_focus.is_focused(window));
+
+            apply_latency_result(
+                &state,
+                old_session,
+                old_attempt,
+                &console,
+                Ok(TcpConnectProbeResult { tcp_connect_ms: 99 }),
+                window,
+            );
+            assert!(state.borrow().latency.is_empty());
+
+            state.borrow_mut().open_manual();
+            *return_focus.borrow_mut() = Some(background_focus.clone());
+            modal_focus.focus(window, cx);
+            window.refresh();
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(row_id).label(),
+                Some("FOH, Available, latency Testing…")
+            );
+            let probes = probes.lock().unwrap();
+            assert_eq!(probes.len(), 2);
+            assert_ne!(probes[0].0, probes[1].0);
+            assert_ne!(probes[0].1, probes[1].1);
+            drop(probes);
+
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(background_focus.is_focused(window));
+
+            state.borrow_mut().open_manual();
+            *return_focus.borrow_mut() = None;
+            modal_focus.focus(window, cx);
+            window.refresh();
+            window.render_frame(cx);
+            window.click("close-connection", cx);
+            window.render_frame(cx);
+            assert!(background_focus.is_focused(window));
         })
         .unwrap();
-
-        let dispatched = dispatched.borrow();
-        assert_eq!(dispatched.len(), 2);
-        assert_ne!(dispatched[0].0, dispatched[1].0);
-        assert_ne!(dispatched[0].1, dispatched[1].1);
     }
 
     #[test]

@@ -3,7 +3,7 @@ mod macos {
     use std::cell::RefCell;
     use std::path::Path;
     use std::rc::Rc;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use anyhow::{Context as _, Result};
@@ -77,8 +77,16 @@ mod macos {
         let mut runtime = NativeRuntime::build_in(config_dir)?;
         let projections = runtime.take_projections();
         let (ui_events, receiver) = ui_event_channel();
+        let latency_probes = Arc::new(Mutex::new(Vec::new()));
+        let captured_latency_probes = latency_probes.clone();
         let dispatcher =
-            CommandDispatcher::new(runtime.handle(), runtime.commands(), ui_events.clone());
+            CommandDispatcher::new(runtime.handle(), runtime.commands(), ui_events.clone())
+                .with_latency_probe_override(move |session, attempt, identity, timeout| {
+                    captured_latency_probes
+                        .lock()
+                        .unwrap()
+                        .push((session, attempt, identity, timeout));
+                });
         let observed_dispatcher = dispatcher.clone();
 
         let mut cx = HeadlessAppContext::with_platform(
@@ -135,11 +143,43 @@ mod macos {
         let mut offline = reference_snapshot(u64::MAX - 5, false);
         offline.connection = AppConnectionState::Disconnected;
         offline.connected_lv1_identity = None;
+        let measured_identity = offline.discovered_lv1_systems[0].identity.clone();
         ui_events
             .send(UiEvent::Snapshot(Box::new(offline)))
             .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))?;
+        let (session_id, attempt_id, probed_identity, timeout) = latency_probes
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, _, identity, _)| identity == &measured_identity)
+            .cloned()
+            .context("automatic latency probe was not dispatched")?;
+        anyhow::ensure!(
+            timeout.is_none(),
+            "visual latency probe changed its timeout"
+        );
+        ui_events
+            .send(UiEvent::LatencyMeasured {
+                session_id,
+                attempt_id,
+                identity: probed_identity,
+                result: Ok(crate::lv1::TcpConnectProbeResult { tcp_connect_ms: 12 }),
+            })
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window
+                    .find(format!(
+                        "select-system-{}",
+                        super::super::connection::identity_key(&measured_identity)
+                    ))
+                    .label(),
+                Some("FOH Console, Available, latency 12 ms")
+            );
+        })?;
         let connection = cx.capture_screenshot(window.into())?;
         connection
             .save(output_dir.join("native-connection.png"))
@@ -211,14 +251,53 @@ mod macos {
                 assert!((cell.size.width - status_cells[0].size.width).abs() <= px(1.));
             }
 
+            let probes_before_open = latency_probes.lock().unwrap().len();
             window.click("open-connection", cx);
-            assert!(window.has_active_dialog(cx));
+            window.render_frame(cx);
+            let probes_after_open = latency_probes.lock().unwrap();
+            assert_eq!(probes_after_open.len(), probes_before_open + 2);
+            let current_probe = probes_after_open
+                .iter()
+                .rev()
+                .find(|(_, _, identity, _)| identity == &measured_identity)
+                .unwrap();
+            assert_ne!((current_probe.0, current_probe.1), (session_id, attempt_id));
+            drop(probes_after_open);
+            let overlay = window.find("connection-focus-trap").bounds();
+            let modal = window.find("connection-modal").bounds();
+            assert_eq!(overlay.origin, point(px(0.), px(0.)));
+            assert_eq!(overlay.size, size(px(1180.), px(780.)));
+            assert_eq!(modal.center(), overlay.center());
+            assert!(modal.size.width < overlay.size.width * 0.7);
+            assert_eq!(
+                window.find("connection-focus-trap").label(),
+                Some("Connect to LV1")
+            );
+            assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
+            assert!(window.is_action_available(&Quit, cx));
+            let dispatched_while_modal = observed_dispatcher.dispatched_count();
+            window.press(MENU_NEW_SHORTCUT, cx);
+            window.press("space", cx);
+            assert_eq!(
+                observed_dispatcher.dispatched_count(),
+                dispatched_while_modal
+            );
             window.press("escape", cx);
         })?;
         cx.run_until_parked();
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert!(!window.has_active_dialog(cx));
+            assert!(window.try_find("connection-focus-trap").is_none());
+            assert!(gpui_kit::base::active_focus_trap(window, cx).is_none());
+            assert!(window.focused(cx).is_some());
+            window.click("open-connection", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("connection-focus-trap").is_some());
+            assert!(gpui_kit::base::active_focus_trap(window, cx).is_some());
+            window.press("escape", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("connection-focus-trap").is_none());
+            assert!(window.focused(cx).is_some());
         })?;
         let ready = cx.capture_screenshot(window.into())?;
         ready
