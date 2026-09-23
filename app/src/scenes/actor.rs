@@ -501,8 +501,11 @@ async fn run_scenes_actor(task: ScenesTask) {
                         );
                         break;
                     }
-                    if !matches!(command, ScenesCommand::ReplaceSessionDocument { .. })
-                        || (pending_snapshot.is_none() && pending_recall.is_none())
+                    if !matches!(
+                        command,
+                        ScenesCommand::ReplaceSessionDocument { .. }
+                            | ScenesCommand::GuardedReplaceSessionDocument { .. }
+                    ) || (pending_snapshot.is_none() && pending_recall.is_none())
                     {
                         held_scene_command = Some(command);
                         continue;
@@ -525,22 +528,43 @@ async fn run_scenes_actor(task: ScenesTask) {
                     }
                     ScenesCommand::ReplaceSessionDocument { replacement, expected_generation, reply } => {
                         let result = runtime_generation.if_current(expected_generation, || {
-                            replacement.commit(|document| {
-                                recall_coordinator.cancel("session was replaced", true);
-                                cues.cancel_recall();
-                                cancel_queued_cue_recalls(
-                                    &mut cue_commands,
-                                    &mut retained_cue_commands,
-                                    "session was replaced",
-                                );
-                                recall_state.replace_snapshot_for_session(document.scenes);
-                                cues.replace_document(document.cue_lists, recall_state.scene_configs().iter().map(|scene| scene.internal_scene_id));
-                                event_bus.publish(AppEvent::SessionReplaced {
-                                    generation: active_generation, scenes: recall_state.projection_state(),
-                                    cue_lists: cues.projection_state(),
-                                });
-                                crate::session::SessionDocument { scenes: recall_state.snapshot(), cue_lists: cues.state.document() }
-                            })
+                            commit_session_replacement(
+                                &replacement,
+                                &mut recall_coordinator,
+                                &mut cues,
+                                &mut cue_commands,
+                                &mut retained_cue_commands,
+                                &mut recall_state,
+                                &event_bus,
+                                active_generation,
+                            )
+                        }).await.unwrap_or_else(|| Err("LV1 generation is no longer current".into()));
+                        let _ = reply.send(result);
+                        continue;
+                    }
+                    ScenesCommand::GuardedReplaceSessionDocument {
+                        replacement,
+                        expected_generation,
+                        expected_persisted_revision,
+                        reply,
+                    } => {
+                        let result = runtime_generation.if_current(expected_generation, || {
+                            event_bus
+                                .admit_persisted_session_revision(expected_persisted_revision, || {
+                                    commit_session_replacement(
+                                        &replacement,
+                                        &mut recall_coordinator,
+                                        &mut cues,
+                                        &mut cue_commands,
+                                        &mut retained_cue_commands,
+                                        &mut recall_state,
+                                        &event_bus,
+                                        active_generation,
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    Err("Session action cancelled because the current session changed. Try again.".into())
+                                })
                         }).await.unwrap_or_else(|| Err("LV1 generation is no longer current".into()));
                         let _ = reply.send(result);
                         continue;
@@ -899,6 +923,41 @@ enum ScenesCommandDispatch {
     Shutdown,
 }
 
+#[allow(clippy::too_many_arguments)]
+fn commit_session_replacement(
+    replacement: &crate::session::SessionReplacement,
+    recall_coordinator: &mut RecallCoordinator,
+    cues: &mut crate::cue_lists::operations::CueLists,
+    cue_commands: &mut mpsc::Receiver<crate::cue_lists::CueListsCommand>,
+    retained_cue_commands: &mut VecDeque<crate::cue_lists::CueListsCommand>,
+    recall_state: &mut ScenesState,
+    event_bus: &AppEventBus,
+    active_generation: u64,
+) -> Result<crate::session::SessionDocument, String> {
+    replacement.commit(|document| {
+        recall_coordinator.cancel("session was replaced", true);
+        cues.cancel_recall();
+        cancel_queued_cue_recalls(cue_commands, retained_cue_commands, "session was replaced");
+        recall_state.replace_snapshot_for_session(document.scenes);
+        cues.replace_document(
+            document.cue_lists,
+            recall_state
+                .scene_configs()
+                .iter()
+                .map(|scene| scene.internal_scene_id),
+        );
+        event_bus.publish(AppEvent::SessionReplaced {
+            generation: active_generation,
+            scenes: recall_state.projection_state(),
+            cue_lists: cues.projection_state(),
+        });
+        crate::session::SessionDocument {
+            scenes: recall_state.snapshot(),
+            cue_lists: cues.state.document(),
+        }
+    })
+}
+
 fn cancel_queued_cue_recalls(
     commands: &mut mpsc::Receiver<crate::cue_lists::CueListsCommand>,
     retained: &mut VecDeque<crate::cue_lists::CueListsCommand>,
@@ -933,7 +992,9 @@ async fn dispatch_scenes_command(
     scene_library_status: &mut SceneLibraryStatus,
 ) -> ScenesCommandDispatch {
     match command {
-        ScenesCommand::GetSessionDocument { .. } | ScenesCommand::ReplaceSessionDocument { .. } => {
+        ScenesCommand::GetSessionDocument { .. }
+        | ScenesCommand::ReplaceSessionDocument { .. }
+        | ScenesCommand::GuardedReplaceSessionDocument { .. } => {
             unreachable!("handled by the document owner")
         }
         ScenesCommand::GetSceneConfig {

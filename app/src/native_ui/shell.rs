@@ -321,9 +321,11 @@ impl Render for AppShell {
                                     .when(lockout, |button| button.warning())
                                     .disabled(actions_blocked)
                                     .on_click(move |_, _, _| {
-                                        lockout_dispatcher.dispatch(move |commands| async move {
-                                            commands.set_lockout(!lockout).await.map(|_| ())
-                                        });
+                                        lockout_dispatcher.dispatch_persisted_edit(
+                                            move |commands| async move {
+                                                commands.set_lockout(!lockout).await.map(|_| ())
+                                            },
+                                        );
                                     }),
                             ),
                     ),

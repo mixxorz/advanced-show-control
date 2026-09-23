@@ -12,6 +12,7 @@ mod panel;
 mod runtime;
 mod scene_library;
 mod scenes;
+mod session_guard;
 mod settings_view;
 mod shell;
 mod state;

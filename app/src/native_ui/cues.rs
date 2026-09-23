@@ -235,7 +235,7 @@ impl CueListsView {
         + Send
         + 'static,
     ) -> u64 {
-        self.dispatcher.dispatch(command)
+        self.dispatcher.dispatch_persisted_edit(command)
     }
 
     pub fn command_finished(
@@ -359,8 +359,8 @@ impl CueListsView {
             .disabled(recall_scene_id.is_none())
             .on_click(cx.listener(move |this, _, _, _| {
                 if let Some(scene_id) = recall_scene_id {
-                    this.dispatch(move |commands| {
-                        Box::pin(async move { commands.recall_scene(scene_id).await.map(|_| ()) })
+                    this.dispatcher.dispatch(move |commands| async move {
+                        commands.recall_scene(scene_id).await.map(|_| ())
                     });
                 }
             }));
@@ -414,8 +414,8 @@ impl CueListsView {
         .when(selected, |row| row.bg(rgb(theme::CONSOLE_CONTROL)))
         .hover(|style| style.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
         .on_click(cx.listener(move |this, _, _, _| {
-            this.dispatch(move |commands| {
-                Box::pin(async move { commands.select_scene_config(scene_id).await.map(|_| ()) })
+            this.dispatcher.dispatch_serial(move |commands| async move {
+                commands.select_scene_config(scene_id).await.map(|_| ())
             });
         }))
         .on_drag(SceneDrag { scene_id, name }, |payload, _, _, cx| {
