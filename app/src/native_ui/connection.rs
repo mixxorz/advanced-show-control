@@ -3,9 +3,9 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
-use gpui_kit::component::Sizable as _;
 use gpui_kit::component::button::ButtonVariants as _;
 use gpui_kit::component::scroll::ScrollableElement as _;
+use gpui_kit::component::{IconName, Sizable as _};
 use gpui_kit::{
     Context, FocusHandle, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
     Role, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
@@ -251,7 +251,7 @@ pub(super) fn render_connection_overlay<T: 'static>(
     let close_focus_restore = focus_restore.clone();
     let close = bordered_button("close-connection")
         .small()
-        .label("CLOSE")
+        .icon(IconName::Close)
         .accessibility_label("Close connection chooser")
         .on_click(move |_, window, cx| {
             close_connection_overlay(&close_state, &close_focus_restore, window, cx);
