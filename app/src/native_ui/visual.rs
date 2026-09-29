@@ -460,10 +460,12 @@ mod macos {
                     assert!(window.try_find("cue-inline-search").is_some());
                     assert!(window.try_find("cue-result-0").is_some());
                     assert!(window.try_find("cue-result-3").is_none());
-                    window.press("cmd-a", cx);
-                    window.input("002", cx);
-                    window.render_frame(cx);
-                    assert!(window.try_find("cue-result-0").is_some());
+                    for query in ["Op", "OPN", "Opening", "002"] {
+                        window.press("cmd-a", cx);
+                        window.input(query, cx);
+                        window.render_frame(cx);
+                        assert!(window.try_find("cue-result-0").is_some());
+                    }
                     assert!(window.try_find("cue-result-1").is_none());
                     let header = window.find("cue-header-number").bounds();
                     let result = window.find("cue-result-number-0").bounds();
@@ -682,6 +684,155 @@ mod macos {
             assert!(gpui_kit::base::active_focus_trap(window, cx).is_none());
         })?;
 
+        let mut polish = reference_snapshot(u64::MAX - 1, false);
+        polish.scene_configs.extend([
+            scene_config(Uuid::from_u128(0x88888888888848888888888888888888), 2, "Opening Reprise", 1_000),
+            scene_config(Uuid::from_u128(0x99999999999949998999999999999999), 9, "Blackout", 1_000),
+            scene_config(Uuid::from_u128(0xaaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa), 10, "Entr’acte – orchestra reset", 1_000),
+            scene_config(Uuid::from_u128(0xbbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb), 11, "An exceptionally long scene name to verify cue editor truncation and number alignment", 1_000),
+        ]);
+        polish
+            .scenes
+            .extend(polish.scene_configs.iter().skip(2).filter_map(|scene| {
+                Some(SceneSummary {
+                    index: scene.scene_index?,
+                    name: scene.scene_name.clone(),
+                })
+            }));
+        polish.scene_count = polish.scenes.len();
+        ui_events
+            .send(UiEvent::Snapshot(Box::new(polish.clone())))
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tab-Cue Lists", cx);
+            window.clear_notifications(cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find("cue-entry-row-44444444-4444-4444-8444-444444444444")
+                    .is_some()
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-rows.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-edit-hover.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("remove-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-delete-hover.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-insert-gap-1", cx);
+            window.render_frame(cx);
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-gap-hover.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-inline-search").is_some());
+            assert!(
+                window
+                    .try_find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                    .is_none()
+            );
+            assert!(window.try_find("cue-result-1").is_some());
+            assert_eq!(
+                window.find("cue-header-number").bounds().right(),
+                window.find("cue-result-number-0").bounds().right()
+            );
+            assert_eq!(
+                window
+                    .find("cue-entry-number-55555555-5555-4555-8555-555555555555")
+                    .bounds()
+                    .right(),
+                window.find("cue-result-number-0").bounds().right()
+            );
+        })?;
+        let polish_edit = cx.capture_screenshot(window.into())?;
+        polish_edit.save(output_dir.join("native-cue-polish-edit-prefilled.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.input("OPN", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-1").is_some());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-fuzzy.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("cmd-a", cx);
+            window.input("010", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_some());
+            assert!(window.try_find("cue-result-1").is_none());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-number.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("cmd-a", cx);
+            window.input("exceptionally", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_some());
+            assert_eq!(
+                window.find("cue-header-number").bounds().right(),
+                window.find("cue-result-number-0").bounds().right()
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-long-name.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("cmd-a", cx);
+            window.input("zzzzzzz-no-scene", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_none());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-no-results.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+            window.hover("cue-insert-gap-1", cx);
+            window.render_frame(cx);
+            let insert = window.find("insert-cue-1").bounds();
+            window.click_at(
+                "insert-cue-1",
+                gpui_kit::point(insert.size.width / 2., gpui_kit::px(1.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_some());
+            assert!(window.try_find("cue-result-2").is_some());
+            assert!(window.try_find("cue-result-3").is_none());
+        })?;
+        let polish_insert = cx.capture_screenshot(window.into())?;
+        polish_insert.save(output_dir.join("native-cue-polish-insert-empty.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("cancel-cue-editor", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-inline-search").is_none());
+        })?;
+        polish.state_version = u64::MAX;
+        polish.cue_lists[0].entries.clear();
+        polish.current_cue_entry_id = None;
+        polish.cued_cue_entry_id = None;
+        ui_events
+            .send(UiEvent::Snapshot(Box::new(polish)))
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("cue-insert-gap-0").is_some());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-empty-list.png"))?;
+
         let dimensions = ready.dimensions();
         for image in [&connection, &session_menu]
             .into_iter()
@@ -706,6 +857,16 @@ mod macos {
         );
 
         let visual_snapshots = [
+            (
+                "native-cue-polish-edit-prefilled",
+                visual_signature!(polish_edit),
+                include_bytes!("visual_snapshots/native-cue-polish-edit-prefilled.rgb").as_slice(),
+            ),
+            (
+                "native-cue-polish-insert-empty",
+                visual_signature!(polish_insert),
+                include_bytes!("visual_snapshots/native-cue-polish-insert-empty.rgb").as_slice(),
+            ),
             (
                 "native-connection",
                 visual_signature!(connection),

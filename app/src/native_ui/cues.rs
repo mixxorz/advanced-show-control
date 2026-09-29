@@ -156,7 +156,8 @@ impl CueListsView {
                 InputEvent::Change => cx.notify(),
                 InputEvent::Focus | InputEvent::Blur => {}
             });
-        let cue_input = cx.new(|cx| InputState::new(window, cx));
+        let cue_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search scenes or enter 010…"));
         let cue_input_subscription =
             cx.subscribe(&cue_input, |this, _, event: &InputEvent, cx| match event {
                 InputEvent::PressEnter { .. } => this.submit_cue_editor(cx),
@@ -884,7 +885,11 @@ impl CueListsView {
             .id(format!("cue-insert-gap-{index}"))
             .test_support()
             .relative()
-            .h(px(theme::CUE_GAP_HEIGHT))
+            .h(px(if self.active_entries().is_empty() {
+                theme::CUE_EMPTY_GAP_HEIGHT
+            } else {
+                theme::CUE_GAP_HEIGHT
+            }))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -923,9 +928,14 @@ impl CueListsView {
                 BaseButton::new(format!("insert-cue-{index}"))
                     .relative()
                     .px_2()
+                    .h(px(theme::CUE_INSERT_CONTROL_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .gap_1()
                     .bg(rgb(theme::CONSOLE_PANEL))
                     .accessibility_label(format!("Insert cue at position {}", index + 1))
-                    .child("+ Insert cue")
+                    .child(Icon::new(IconName::Plus).size(px(theme::CUE_SMALL_ICON_SIZE)))
+                    .child("Insert cue")
                     .text_xs()
                     .text_color(rgb(theme::ACCENT_ORANGE))
                     .when(!active, |button| button.invisible())
@@ -968,28 +978,62 @@ impl CueListsView {
         };
         let results = search_scenes(&self.snapshot.scene_configs, &query, preferred);
         let updating_order = self.editor_order_pending();
+        let cancel_entity = cx.entity();
+        let cancel = BaseButton::new("cancel-cue-editor")
+            .size(px(theme::CUE_ICON_HIT_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .disabled(editor.pending.is_some())
+            .accessibility_label("Cancel scene search")
+            .text_color(rgb(theme::CONSOLE_MUTED))
+            .hover(|style| {
+                style
+                    .bg(rgb(theme::ICON_ACTION_HOVER))
+                    .text_color(rgb(theme::CONSOLE_BG))
+            })
+            .child(Icon::new(IconName::Close).size(px(theme::CUE_SMALL_ICON_SIZE)))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                cancel_entity.update(cx, |this, cx| this.close_cue_editor(window, cx));
+            });
         let mut panel = div()
             .id("cue-inline-editor")
             .track_focus(&self.editor_focus)
             .flex()
             .flex_col()
+            .flex_shrink_0()
             .border_l_3()
             .border_color(rgb(theme::ACCENT_ORANGE))
             .bg(rgb(theme::CONSOLE_SECTION))
-            .pt(px(theme::CUE_EDITOR_PADDING))
-            .pb(px(theme::CUE_EDITOR_PADDING))
-            .pl(px(theme::CUE_EDITOR_PADDING))
+            .py(px(theme::CUE_EDITOR_PADDING))
             .pr_3()
             .test_support()
             .child(
-                Input::new(&self.cue_input)
-                    .disabled(editor.pending.is_some())
-                    .id("cue-inline-search")
-                    .aria_label("Search scenes"),
+                div()
+                    .pl(px(theme::CUE_EDITOR_PADDING))
+                    .pb(px(theme::CUE_EDITOR_SEARCH_GAP))
+                    .child(
+                        Input::new(&self.cue_input)
+                            .small()
+                            .h(px(theme::CUE_EDITOR_INPUT_HEIGHT))
+                            .focus_bordered(false)
+                            .prefix(
+                                Icon::new(IconName::Search)
+                                    .size(px(theme::CUE_SMALL_ICON_SIZE))
+                                    .text_color(rgb(theme::CONSOLE_MUTED)),
+                            )
+                            .suffix(cancel)
+                            .disabled(editor.pending.is_some())
+                            .id("cue-inline-search")
+                            .aria_label("Search scenes"),
+                    ),
             );
         if updating_order {
             panel = panel.child(
                 div()
+                    .pl(px(theme::CUE_ARROW_WIDTH))
+                    .py_1()
                     .text_xs()
                     .text_color(rgb(theme::CONSOLE_MUTED))
                     .child("Updating cue order…"),
@@ -998,6 +1042,9 @@ impl CueListsView {
         if let Some(error) = &editor.error {
             panel = panel.child(
                 div()
+                    .pl(px(theme::CUE_ARROW_WIDTH))
+                    .py_1()
+                    .text_sm()
                     .text_color(rgb(theme::STATUS_DANGER))
                     .child(error.clone()),
             );
@@ -1005,8 +1052,19 @@ impl CueListsView {
         if results.is_empty() {
             panel = panel.child(
                 div()
+                    .id("cue-search-empty")
+                    .test_support()
+                    .h(px(theme::CUE_RESULT_HEIGHT))
+                    .pl(px(theme::CUE_ARROW_WIDTH))
+                    .flex()
+                    .items_center()
+                    .text_sm()
                     .text_color(rgb(theme::CONSOLE_MUTED))
-                    .child("No matching scenes"),
+                    .child(if self.snapshot.scene_configs.is_empty() {
+                        "No scenes in this session"
+                    } else {
+                        "No matching scenes"
+                    }),
             );
         }
         for (index, id) in results.into_iter().enumerate() {
@@ -1017,17 +1075,35 @@ impl CueListsView {
             panel = panel.child(
                 BaseButton::new(format!("cue-result-{index}"))
                     .disabled(editor.pending.is_some() || updating_order)
-                    .py_2()
+                    .h(px(theme::CUE_RESULT_HEIGHT))
+                    .selected(editor.highlighted == index)
+                    .accessibility_label(format!(
+                        "Choose scene {}: {}",
+                        format_scene_number(scene.scene_index),
+                        scene.scene_name
+                    ))
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .text_sm()
+                    .text_color(rgb(theme::CONSOLE_PRIMARY))
+                    .hover(|row| row.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
                     .when(editor.highlighted == index, |row| {
-                        row.bg(rgb(theme::CONSOLE_CONTROL_HOVER))
+                        row.bg(rgb(theme::CUE_RESULT_SELECTED))
                     })
                     .child(
                         div()
-                            .w(px(theme::CUE_ARROW_WIDTH - theme::CUE_EDITOR_PADDING))
-                            .flex_shrink_0(),
+                            .w(px(theme::CUE_ARROW_WIDTH))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(rgb(theme::ACCENT_ORANGE))
+                            .when(editor.highlighted == index, |gutter| {
+                                gutter.child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .size(px(theme::CUE_SMALL_ICON_SIZE)),
+                                )
+                            }),
                     )
                     .child(
                         div()
@@ -1042,11 +1118,13 @@ impl CueListsView {
                             .id(format!("cue-result-number-{index}"))
                             .test_support()
                             .w(px(theme::CUE_NUMBER_WIDTH))
+                            .flex_shrink_0()
                             .text_right()
+                            .text_color(rgb(theme::CONSOLE_SECONDARY))
                             .font_family("Fira Code")
                             .child(format_scene_number(scene.scene_index)),
                     )
-                    .child(div().w(px(theme::CUE_ACTION_WIDTH)))
+                    .child(div().w(px(theme::CUE_ACTION_WIDTH)).flex_shrink_0())
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |this, cx| {
                             if let Some(editor) = &mut this.cue_editor {
@@ -1152,6 +1230,7 @@ impl CueListsView {
 
         div()
             .id(format!("cue-entry-row-{entry_id}"))
+            .test_support()
             .h(px(46.))
             .pr_3()
             .flex_shrink_0()
@@ -1268,9 +1347,12 @@ impl CueListsView {
             .child(
                 div()
                     .w(px(theme::CUE_ACTION_WIDTH))
+                    .flex_shrink_0()
+                    .pl_3()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_1()
+                    .justify_end()
                     .child(
                         BaseButton::new(format!("edit-cue-entry-{entry_id}"))
                             .size(px(theme::CUE_ICON_HIT_SIZE))
@@ -1309,7 +1391,10 @@ impl CueListsView {
                             .disabled(self.editor_order_pending())
                             .text_color(rgb(theme::STATUS_DANGER))
                             .hover(|style| style.bg(rgb(theme::ICON_ACTION_HOVER)))
-                            .child(Icon::new(IconName::Delete))
+                            .child(
+                                Icon::default()
+                                    .data(include_bytes!("../../assets/icons/trash.svg")),
+                            )
                             .accessibility_label(remove_label)
                             .on_click(move |_, _, cx| {
                                 cx.stop_propagation();

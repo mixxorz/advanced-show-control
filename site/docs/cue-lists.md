@@ -21,9 +21,9 @@ Select the pencil icon beside an entry to change its scene. A search panel repla
 
 To insert a cue, hover before, between, or after entries and select **Insert cue** on the orange line. You can also drop a scene at any of these gaps. An empty list has one insertion point.
 
-Search by scene name or by its displayed, three-digit scene number. For example, `010` prioritizes scene **010**, and `01` finds numbers starting with **01**. `10` is not shorthand for **010**. Name searches use fuzzy matching. The panel shows up to three results, with the best match highlighted. Use **Up/Down** to move the highlight and **Enter** to choose, or click a result.
+Search by scene name or by its displayed, three-digit scene number. For example, `010` prioritizes scene **010**, and `01` finds numbers starting with **01**. `10` is not shorthand for **010**. Name searches use case-insensitive fuzzy matching. The panel shows up to three results, with the best match highlighted. Use **Up/Down** to move the highlight and **Enter** to choose, or click a result.
 
-**Escape** cancels. Opening another Edit or Insert panel cancels the previous search; clicking elsewhere leaves it open. You can still drag scenes into the list and reorder cues while searching. The insertion panel stays locally in place as entries move around it.
+**Escape** or the **×** beside the search field cancels. Opening another Edit or Insert panel cancels the previous search; clicking elsewhere leaves it open. You can still drag scenes into the list and reorder cues while searching. The insertion panel stays locally in place as entries move around it.
 
 Editing is available offline using the scenes already in the app's library. If you change the scene of the cued entry, confirm the updated **Next** scene before pressing **GO**. The red delete icon removes only that cue entry.
 
