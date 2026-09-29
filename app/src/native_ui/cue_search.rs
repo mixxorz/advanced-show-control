@@ -1,4 +1,7 @@
-use nucleo_matcher::{Config, Matcher, Utf32Str};
+use nucleo_matcher::{
+    Config, Matcher, Utf32Str,
+    pattern::{Atom, AtomKind, CaseMatching, Normalization},
+};
 use uuid::Uuid;
 
 use crate::scenes::SceneConfig;
@@ -9,6 +12,11 @@ use super::scene_library::format_scene_number;
 /// Search MUST return at most three existing scene IDs. Numeric queries MUST rank exact displayed
 /// numbers before displayed-number prefixes and fuzzy names, without stripping leading zeroes.
 /// Equal matches MUST retain library order except for the preferred identical-name scene.
+/**
+ * @cc [owner:mixxorz,label:product] normalized-literal-scene-query
+ * Partial scene-name queries MUST match case-insensitively without panicking, including when
+ * prefilled from a mixed-case scene name. Query punctuation MUST remain literal, not search syntax.
+ */
 pub(super) fn search_scenes(
     scenes: &[SceneConfig],
     query: &str,
@@ -28,8 +36,13 @@ pub(super) fn search_scenes(
         && number_query.bytes().all(|b| b.is_ascii_digit()))
     .then_some(number_query);
     let mut matcher = Matcher::new(Config::DEFAULT);
-    let mut needle_buffer = Vec::new();
-    let needle = Utf32Str::new(query, &mut needle_buffer);
+    let needle = Atom::new(
+        query,
+        CaseMatching::Ignore,
+        Normalization::Smart,
+        AtomKind::Fuzzy,
+        false,
+    );
     let mut buffer = Vec::new();
     let mut ranked = Vec::new();
 
@@ -50,7 +63,7 @@ pub(super) fn search_scenes(
         });
         buffer.clear();
         let name = Utf32Str::new(&scene.scene_name, &mut buffer);
-        let score = matcher.fuzzy_match(name, needle);
+        let score = needle.score(name, &mut matcher);
         if number_rank.is_some() || score.is_some() {
             let identical_name = scene.scene_name.eq_ignore_ascii_case(query);
             ranked.push((
@@ -137,9 +150,28 @@ mod tests {
             scene(3, None, "Finale"),
         ];
         assert_eq!(ids(&scenes, "scheck", None), vec![Uuid::from_u128(1)]);
+        assert_eq!(ids(&scenes, "SCheck", None), vec![Uuid::from_u128(1)]);
+        assert_eq!(ids(&scenes, "OPNING", None), vec![Uuid::from_u128(2)]);
         assert_eq!(ids(&scenes, "opning", None), vec![Uuid::from_u128(2)]);
         assert_eq!(ids(&scenes, "FINALE", None), vec![Uuid::from_u128(3)]);
         assert!(ids(&scenes, "zzzzz", None).is_empty());
+    }
+
+    #[test]
+    fn prefilled_names_match_longer_names_and_keep_punctuation_literal() {
+        let scenes = [
+            scene(1, None, "Song 1"),
+            scene(2, None, "Song 10"),
+            scene(3, None, "^Finale$"),
+            scene(4, None, "Finale"),
+            scene(5, None, "Été Finale"),
+        ];
+        assert_eq!(
+            ids(&scenes, "Song 1", Some(1)),
+            vec![Uuid::from_u128(1), Uuid::from_u128(2)]
+        );
+        assert_eq!(ids(&scenes, "^Fin$", None), vec![Uuid::from_u128(3)]);
+        assert_eq!(ids(&scenes, "ÉT F", None), vec![Uuid::from_u128(5)]);
     }
 
     #[test]
