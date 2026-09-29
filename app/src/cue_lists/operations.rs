@@ -158,11 +158,13 @@ impl CueLists {
     /// Every successful cue-list mutation reported with `changed = true` MUST publish the resulting
     /// full document as an `AppEvent::CueLists` persisted edit before replying. Rejected commands MUST
     /// return their domain error without publishing an edit.
-    /// @cc [owner:mixxorz,label:product;safety] inline-cue-scene-validation
-    /// Edit and insert MUST reject scene UUIDs absent from the owner's current scene library
-    /// without modifying or publishing the cue document. Changed edits and inserts MUST publish
-    /// persisted cue facts; unchanged edits and errors MUST NOT publish them. Commands MUST reject
-    /// a session revision different from the retained replacement epoch before any mutation.
+    /**
+     * @cc [owner:mixxorz,label:product;safety] inline-cue-scene-validation
+     * Edit and insert MUST reject scene UUIDs absent from the owner's current scene library
+     * without modifying or publishing the cue document. Changed edits and inserts MUST publish
+     * persisted cue facts; unchanged edits and errors MUST NOT publish them. Commands MUST reject
+     * a session revision different from the retained replacement epoch before any mutation.
+     */
     pub fn dispatch(&mut self, command: CueListsCommand, scenes: &[crate::scenes::SceneConfig]) {
         let state = &mut self.state;
         let changed = |changed| CueListsCommandResult {
