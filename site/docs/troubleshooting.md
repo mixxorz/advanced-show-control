@@ -26,7 +26,7 @@ If **GO** is enabled but the setting is unlinked, the recall is refused and the 
 
 ## Cue displays Missing scene
 
-**Missing scene** and `---` mean the cue points to its original scene fade setting, which is no longer available. Restore that original setting if possible. Otherwise, remove the missing cue entry, add the replacement or restored scene fade setting to the cue list, then cue it again. If you need to relink a setting, select it, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. See [Link A Missing Scene](scenes.md#link-a-missing-scene) and [Build A Cue List](cue-lists.md#build-a-cue-list). Until you replace the entry, it cannot supply **Next** for **GO**.
+**Missing scene** and `---` mean the cue points to its original scene fade setting, which is no longer available. Restore that original setting if possible. Otherwise, use the entry's pencil icon to choose a replacement scene, then cue the entry again. If you need to relink a setting, select it, choose the intended LV1 scene in **LV1 Scene**, and select **Link to scene**. See [Link A Missing Scene](scenes.md#link-a-missing-scene) and [Build A Cue List](cue-lists.md#build-a-cue-list). Until you replace the entry, it cannot supply **Next** for **GO**.
 
 ## Session cannot be opened or saved
 

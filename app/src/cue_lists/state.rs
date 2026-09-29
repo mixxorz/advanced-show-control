@@ -160,6 +160,66 @@ impl CueListsState {
         Ok(entry)
     }
 
+    /// @cc [owner:mixxorz,label:product;persistence] inline-edit-preserves-cue-identity
+    /// Editing MUST require the intended active list and an existing entry, change only its scene
+    /// reference, and preserve entry UUID, order, and cued selection. An identical reference MUST
+    /// report unchanged without modifying the document.
+    pub fn edit_cue_entry(
+        &mut self,
+        cue_list_id: Uuid,
+        cue_entry_id: Uuid,
+        scene_internal_id: Uuid,
+    ) -> Result<bool, String> {
+        let list = self.intended_active_list_mut(cue_list_id)?;
+        let entry = list
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == cue_entry_id)
+            .ok_or_else(|| "Cue entry not found".to_string())?;
+        if entry.scene_internal_id == scene_internal_id {
+            return Ok(false);
+        }
+        entry.scene_internal_id = scene_internal_id;
+        Ok(true)
+    }
+
+    /// @cc [owner:mixxorz,label:product;safety] inline-insert-requires-exact-order
+    /// Insertion MUST require the intended active list, exact current entry UUID ordering, and an
+    /// index at most the entry count. Any mismatch MUST leave the document unchanged; success MUST
+    /// create one fresh entry at that index without changing cued selection.
+    pub fn insert_cue_entry(
+        &mut self,
+        cue_list_id: Uuid,
+        scene_internal_id: Uuid,
+        insert_index: usize,
+        expected_entry_ids: Vec<Uuid>,
+    ) -> Result<CueEntry, String> {
+        let list = self.intended_active_list_mut(cue_list_id)?;
+        if insert_index > list.entries.len()
+            || list
+                .entries
+                .iter()
+                .map(|entry| entry.id)
+                .ne(expected_entry_ids)
+        {
+            return Err("Cue entry insert blocked: cue list order changed".to_string());
+        }
+        let entry = CueEntry {
+            id: Uuid::new_v4(),
+            scene_internal_id,
+        };
+        list.entries.insert(insert_index, entry.clone());
+        Ok(entry)
+    }
+
+    fn intended_active_list_mut(&mut self, cue_list_id: Uuid) -> Result<&mut CueList, String> {
+        if self.document.active_cue_list_id != Some(cue_list_id) {
+            return Err("Cue edit blocked: active cue list changed".to_string());
+        }
+        self.cue_list_mut(cue_list_id)
+            .ok_or_else(|| "Cue edit blocked: active cue list not found".to_string())
+    }
+
     /// @cc [owner:mixxorz,label:product] remove-entry-active-list-only
     /// Removal MUST affect only the active list, fail when that list or entry is absent, and clear the
     /// cued selection when the removed entry was cued.
@@ -372,6 +432,43 @@ mod tests {
         state.set_active_cue_list(Some(first)).unwrap();
         state.set_active_cue_list(Some(second)).unwrap();
         state
+    }
+
+    #[test]
+    fn inline_edit_and_insert_preserve_identity_and_reject_stale_order() {
+        let mut state = CueListsState::default();
+        let list = state.create_cue_list("Main".into()).unwrap().id;
+        let first = state.add_scene_to_active_cue_list(id(10), 0).unwrap();
+        state.cue_entry(Some(first.id)).unwrap();
+        assert!(!state.edit_cue_entry(list, first.id, id(10)).unwrap());
+        assert!(state.edit_cue_entry(list, first.id, id(11)).unwrap());
+        assert!(
+            state
+                .insert_cue_entry(list, id(12), 2, vec![first.id])
+                .is_err()
+        );
+        let inserted = state
+            .insert_cue_entry(list, id(12), 0, vec![first.id])
+            .unwrap();
+        assert!(
+            state
+                .insert_cue_entry(list, id(13), 1, vec![first.id])
+                .is_err()
+        );
+        let document = state.document();
+        assert_eq!(document.cued_cue_entry_id, Some(first.id));
+        assert_eq!(
+            document.cue_lists[0].entries,
+            vec![
+                inserted,
+                CueEntry {
+                    id: first.id,
+                    scene_internal_id: id(11)
+                }
+            ]
+        );
+        assert!(state.edit_cue_entry(id(99), first.id, id(12)).is_err());
+        assert!(state.edit_cue_entry(list, id(99), id(12)).is_err());
     }
 
     #[test]

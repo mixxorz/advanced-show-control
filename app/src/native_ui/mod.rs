@@ -1,6 +1,8 @@
 mod app;
 mod button;
 mod connection;
+mod cue_marker;
+mod cue_search;
 mod cues;
 mod dispatcher;
 mod entry;

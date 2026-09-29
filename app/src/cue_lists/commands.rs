@@ -34,6 +34,21 @@ pub enum CueListsCommand {
         insert_index: usize,
         reply: Option<oneshot::Sender<Result<CueListsCommandResult, String>>>,
     },
+    EditCueEntry {
+        expected_session_revision: u64,
+        cue_list_id: Uuid,
+        cue_entry_id: Uuid,
+        scene_internal_id: Uuid,
+        reply: Option<oneshot::Sender<Result<CueListsCommandResult, String>>>,
+    },
+    InsertCueEntry {
+        expected_session_revision: u64,
+        cue_list_id: Uuid,
+        scene_internal_id: Uuid,
+        insert_index: usize,
+        expected_entry_ids: Vec<Uuid>,
+        reply: Option<oneshot::Sender<Result<CueListsCommandResult, String>>>,
+    },
     RemoveCueEntry {
         cue_entry_id: Uuid,
         reply: Option<oneshot::Sender<Result<CueListsCommandResult, String>>>,

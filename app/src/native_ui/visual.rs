@@ -447,7 +447,128 @@ mod macos {
                 })?;
             }
             if selector == "tab-Cue Lists" {
+                let before_editor = observed_dispatcher.dispatched_count();
                 cx.update_window(window.into(), |_, window, cx| {
+                    assert!(window.try_find("cue-entry-append-drop").is_none());
+                    window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+                    window.render_frame(cx);
+                    assert!(
+                        window
+                            .try_find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                            .is_none()
+                    );
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    assert!(window.try_find("cue-result-0").is_some());
+                    assert!(window.try_find("cue-result-3").is_none());
+                    window.press("cmd-a", cx);
+                    window.input("002", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-result-0").is_some());
+                    assert!(window.try_find("cue-result-1").is_none());
+                    let header = window.find("cue-header-number").bounds();
+                    let result = window.find("cue-result-number-0").bounds();
+                    let row = window
+                        .find("cue-entry-number-55555555-5555-4555-8555-555555555555")
+                        .bounds();
+                    assert_eq!(header.right(), result.right());
+                    assert_eq!(row.right(), result.right());
+                    let panel = window.find("cue-inline-editor").bounds();
+                    assert!(
+                        panel.bottom()
+                            < window
+                                .find("select-cue-entry-55555555-5555-4555-8555-555555555555")
+                                .bounds()
+                                .top()
+                    );
+                })?;
+                cx.capture_screenshot(window.into())?
+                    .save(output_dir.join("native-cue-edit.png"))
+                    .context("failed to save inline cue edit screenshot")?;
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-inline-search").is_none());
+                    assert!(window.is_action_available(&Quit, cx));
+                    assert!(
+                        window
+                            .try_find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                            .is_some()
+                    );
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                })?;
+                cx.capture_screenshot(window.into())?
+                    .save(output_dir.join("native-cue-insert-hover.png"))
+                    .context("failed to save cue insertion hover screenshot")?;
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("insert-cue-1", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-result-0").is_some());
+                    assert!(window.try_find("cue-result-1").is_some());
+                    assert!(window.try_find("cue-result-3").is_none());
+                    window.press("down", cx);
+                    window.press("up", cx);
+                })?;
+                cx.capture_screenshot(window.into())?
+                    .save(output_dir.join("native-cue-insert.png"))
+                    .context("failed to save inline cue insert screenshot")?;
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("edit-cue-entry-55555555-5555-4555-8555-555555555555", cx);
+                    window.render_frame(cx);
+                    assert!(
+                        window
+                            .try_find("select-cue-entry-55555555-5555-4555-8555-555555555555")
+                            .is_none()
+                    );
+                    window.press("cmd-a", cx);
+                    window.input("unmatched scene", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-result-0").is_none());
+                    window.press("enter", cx);
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-inline-search").is_none());
+                })?;
+                anyhow::ensure!(
+                    observed_dispatcher.dispatched_count() == before_editor,
+                    "searching or cancelling inline cue editing dispatched a command"
+                );
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+                    window.render_frame(cx);
+                    let before_drop = observed_dispatcher.dispatched_count();
+                    window.drag_to(
+                        "cue-scene-22222222-2222-4222-8222-222222222222",
+                        "cue-inline-editor",
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_drop + 1);
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                    window.click("insert-cue-1", cx);
+                    window.render_frame(cx);
+                    let before_reorder = observed_dispatcher.dispatched_count();
+                    window.drag_to(
+                        "select-cue-entry-77777777-7777-4777-8777-777777777777",
+                        "select-cue-entry-44444444-4444-4444-8444-444444444444",
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_reorder + 1);
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    window.click("cue-result-0", cx);
+                    window.drag_to(
+                        "select-cue-entry-66666666-6666-4666-8666-666666666666",
+                        "select-cue-entry-44444444-4444-4444-8444-444444444444",
+                        cx,
+                    );
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_reorder + 1);
+                    window.press("escape", cx);
+                    window.render_frame(cx);
                     window.click("manage-cue-lists", cx);
                 })?;
                 cx.run_until_parked();

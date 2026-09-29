@@ -17,6 +17,17 @@ pub const CONSOLE_PRIMARY: u32 = 0xdedbd6;
 pub const CONSOLE_SECONDARY: u32 = 0xb8b3ab;
 pub const CONSOLE_MUTED: u32 = 0x8f8981;
 pub const CONSOLE_DISABLED: u32 = 0x56524d;
+
+pub const CUE_ARROW_WIDTH: f32 = 22.;
+pub const CUE_LEFT_BORDER_WIDTH: f32 = 3.;
+pub const CUE_NUMBER_WIDTH: f32 = 64.;
+pub const CUE_ACTION_WIDTH: f32 = 72.;
+pub const CUE_ICON_HIT_SIZE: f32 = 28.;
+pub const ICON_ACTION_HOVER: u32 = 0xb8b8bd;
+pub const CUE_GAP_HEIGHT: f32 = 22.;
+pub const CUE_EDITOR_PADDING: f32 = 10.;
+pub const CUE_GAP_GLOW_OPACITY: f32 = 0.55;
+pub const CUE_GAP_GLOW_RADIUS: f32 = 8.;
 pub const ACCENT_ORANGE: u32 = 0xff8a00;
 pub const ACCENT_ORANGE_HOVER: u32 = 0xff9f2a;
 pub const ACCENT_ORANGE_ACTIVE: u32 = 0xc95700;

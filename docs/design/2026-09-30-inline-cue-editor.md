@@ -1,5 +1,7 @@
 # Inline cue editing and insertion
 
+Tracked in [issue #84](https://github.com/mixxorz/advanced-show-control/issues/84).
+
 ## Goal
 
 Make precise cue-list edits without recalling scenes or interrupting drag-and-drop. This replaces the originally discussed modal with an inline editor. The implementation remains native GPUI.
@@ -28,7 +30,7 @@ The editor does not disable scene drops or cue reordering. Edit is identified by
 
 An Insert panel behaves as a temporary, non-persisted item in the displayed sequence, not a fixed numeric slot or an attachment to one cue. Apply list insertions, removals, and moves around this marker. For `[Song 1, panel, Song 2]`, inserting Song 0 at the start yields `[Song 0, Song 1, panel, Song 2]`. Moving Song 1 elsewhere removes Song 1 from its old place but does not take the panel with it. Moving Song 2 elsewhere similarly leaves the panel in its local position. A drop at the panel has a defined side (before it), keeping the marker after the dropped item. The resolved count of real cues preceding the marker determines the eventual insertion gap. No synthetic cue is persisted.
 
-Keep this sequence transformation in one focused presentation helper, covered with concrete examples. Reconcile accepted projection changes by entry identity; cancel the editor on active-list/session replacement or loss of its edited cue. Commands validate the intended list and current ordering to reject stale submissions rather than silently inserting in an obsolete numeric slot. Unrelated updates must not reset search or selection.
+Keep this sequence transformation in one focused presentation helper, covered with concrete examples. Reconcile accepted projection changes by entry identity; cancel the editor on active-list/session replacement or loss of its edited cue. Commands validate the intended session revision, list, and current ordering to reject stale submissions rather than silently inserting in an obsolete numeric slot. While an Insert panel awaits a submitted drag's projected order, it shows `Updating cue order…` and briefly holds further ordering changes and result submission. This prevents overlapping drag intentions from moving the insertion point incorrectly. Unrelated updates must not reset search or selection.
 
 ## Ownership and safety
 
