@@ -1,11 +1,12 @@
 use gpui_kit::{
-    Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollHandle,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
     prelude::FluentBuilder as _, px, rgb,
 };
 
 use crate::projector::{AppViewState, LogSeverity};
 
+use super::clipped_overlay::vertical_scrollbar_overlay;
 use super::panel::panel_header;
 use super::theme::{
     CONSOLE_LINE, CONSOLE_LINE_SOFT, CONSOLE_MUTED, CONSOLE_PANEL, CONSOLE_PRIMARY, STATUS_DANGER,
@@ -14,11 +15,15 @@ use super::theme::{
 
 pub struct LogsView {
     snapshot: AppViewState,
+    scroll: ScrollHandle,
 }
 
 impl LogsView {
     pub fn new(snapshot: AppViewState) -> Self {
-        Self { snapshot }
+        Self {
+            snapshot,
+            scroll: ScrollHandle::default(),
+        }
     }
 
     pub fn set_snapshot(
@@ -80,6 +85,8 @@ impl Render for LogsView {
 
         div()
             .size_full()
+            .flex()
+            .flex_col()
             .min_h(px(320.))
             .overflow_hidden()
             .rounded(px(4.))
@@ -90,18 +97,25 @@ impl Render for LogsView {
             .child(
                 div()
                     .id("projected-logs")
-                    .size_full()
+                    .relative()
+                    .track_scroll(&self.scroll)
+                    .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
-                    .p_4()
-                    .when(self.snapshot.logs.is_empty(), |view| {
-                        view.child(
-                            div()
-                                .text_sm()
-                                .text_color(rgb(CONSOLE_MUTED))
-                                .child("No logs yet."),
-                        )
-                    })
-                    .children(entries),
+                    .child(
+                        div()
+                            .p_4()
+                            .when(self.snapshot.logs.is_empty(), |view| {
+                                view.child(
+                                    div()
+                                        .text_sm()
+                                        .text_color(rgb(CONSOLE_MUTED))
+                                        .child("No logs yet."),
+                                )
+                            })
+                            .children(entries),
+                    )
+                    .child(vertical_scrollbar_overlay(&self.scroll)),
             )
     }
 }

@@ -12,6 +12,10 @@ The connection indicator shows a green, amber, or red dot beside **Connected**, 
 
 If LV1 disconnects, the status changes to **Offline**. Open **Connect to LV1**, select the intended available console, and wait for **Connected** before recalling a scene.
 
+## Scrolling
+
+A vertical scrollbar stays visible when a list or work screen has more content than fits. Use the mouse wheel or trackpad, or drag the scrollbar thumb. Cue-list insertion lines do not interrupt scrolling.
+
 ## SAFE
 
 Use **SAFE** when Advanced Show Control must not start a recall.

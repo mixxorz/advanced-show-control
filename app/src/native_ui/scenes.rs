@@ -7,14 +7,15 @@ use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::{Disableable as _, Selectable as _, Sizable as _};
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    MouseButton, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, TestSupportExt as _, Window, div, prelude::FluentBuilder as _, px,
-    rgb,
+    MouseButton, ParentElement as _, Render, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window, div,
+    prelude::FluentBuilder as _, px, rgb,
 };
 use uuid::Uuid;
 
 use crate::native_ui::CommandDispatcher;
 use crate::native_ui::button::bordered_button;
+use crate::native_ui::clipped_overlay::vertical_scrollbar_overlay;
 use crate::native_ui::numeric_control::editable_numeric_control;
 use crate::native_ui::scene_library::{
     format_scene_number, scene_library_columns, scene_library_header, scene_library_panel,
@@ -47,6 +48,8 @@ struct SceneRowState {
 
 pub struct ScenesView {
     snapshot: AppViewState,
+    scene_list_scroll: ScrollHandle,
+    scope_scroll: ScrollHandle,
     dispatcher: CommandDispatcher,
     duration_input: Entity<InputState>,
     duration_identity: Option<(Uuid, u64)>,
@@ -91,6 +94,8 @@ impl ScenesView {
 
         Self {
             snapshot,
+            scene_list_scroll: ScrollHandle::default(),
+            scope_scroll: ScrollHandle::default(),
             dispatcher,
             duration_input,
             duration_identity,
@@ -312,6 +317,8 @@ impl ScenesView {
             .child(
                 div()
                     .id("scene-list")
+                    .relative()
+                    .track_scroll(&self.scene_list_scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -352,7 +359,8 @@ impl ScenesView {
                         .on_click(cx.listener(move |this, _, _, _| {
                             this.select_scene(scene_id);
                         }))
-                    })),
+                    }))
+                    .child(vertical_scrollbar_overlay(&self.scene_list_scroll)),
             )
     }
 
@@ -872,6 +880,8 @@ impl ScenesView {
             .child(
                 div()
                     .id("channel-scope-grid")
+                    .relative()
+                    .track_scroll(&self.scope_scroll)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -915,7 +925,8 @@ impl ScenesView {
                                     }))
                                 }),
                             ))
-                    })),
+                    }))
+                    .child(vertical_scrollbar_overlay(&self.scope_scroll)),
             )
     }
 }

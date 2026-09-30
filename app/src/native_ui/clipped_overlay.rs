@@ -1,9 +1,12 @@
 use std::{cell::Cell, rc::Rc};
 
+use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::{
     AnyElement, App, Bounds, ContentMask, Element, GlobalElementId, InspectorElementId,
-    IntoElement, LayoutId, Pixels, Window,
+    IntoElement, LayoutId, Pixels, ScrollHandle, Window, div, prelude::*, px,
 };
+
+use super::theme;
 
 // GPUI's deferred draw restores clipping for paint but not prepaint. Restore it
 // around the child too, so off-viewport controls cannot register clickable hitboxes.
@@ -19,6 +22,17 @@ pub(super) fn clipped_overlay(child: impl IntoElement) -> impl IntoElement {
         ),
         mask,
     }
+}
+
+// Pin the overlay to the viewport rather than the end of its scrolling content.
+// Deferring keeps the thumb above insertion targets without enlarging the scroll range.
+pub(super) fn vertical_scrollbar_overlay(handle: &ScrollHandle) -> impl IntoElement {
+    clipped_overlay(
+        div().absolute().inset_0().child(
+            Scrollbar::vertical(handle)
+                .styles(|styles| styles.track(|style| style.width(px(theme::SCROLLBAR_WIDTH)))),
+        ),
+    )
 }
 
 struct ClippedOverlay {

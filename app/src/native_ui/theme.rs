@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use anyhow::Context as _;
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode, scroll::ScrollbarMode};
 use gpui_kit::{App, px, rgb};
 
 pub const CONSOLE_BG: u32 = 0x050506;
@@ -18,6 +18,7 @@ pub const CONSOLE_SECONDARY: u32 = 0xb8b3ab;
 pub const CONSOLE_MUTED: u32 = 0x8f8981;
 pub const CONSOLE_DISABLED: u32 = 0x56524d;
 
+pub const SCROLLBAR_WIDTH: f32 = 16.;
 pub const CUE_ARROW_WIDTH: f32 = 22.;
 pub const CUE_LEFT_BORDER_WIDTH: f32 = 3.;
 pub const CUE_NUMBER_WIDTH: f32 = 64.;
@@ -73,6 +74,7 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         theme.radius = px(2.5);
         theme.radius_lg = px(4.0);
         theme.shadow = false;
+        theme.scrollbar_mode = ScrollbarMode::Always;
 
         let colors = &mut theme.colors;
         colors.background = rgb(CONSOLE_BG).into();
@@ -112,7 +114,7 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         colors.tab_active_foreground = rgb(ACCENT_ORANGE).into();
         colors.title_bar = rgb(CONSOLE_CHROME).into();
         colors.title_bar_border = rgb(CONSOLE_LINE).into();
-        colors.scrollbar = rgb(CONSOLE_BG).into();
+        colors.scrollbar = rgb(CONSOLE_BG).opacity(0.).into();
         colors.scrollbar_thumb = rgb(CONSOLE_LINE_STRONG).into();
         colors.scrollbar_thumb_hover = rgb(CONSOLE_SECONDARY).into();
         colors.success = rgb(STATUS_CUED).into();

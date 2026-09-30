@@ -920,6 +920,25 @@ mod macos {
         })?;
         let mut scrolled = polish.clone();
         scrolled.state_version = u64::MAX - 2;
+        scrolled.scene_configs.extend((6..40).map(|index| {
+            scene_config(
+                Uuid::from_u128(500 + index as u128),
+                index,
+                &format!("Scene {:03}", index + 1),
+                1_000,
+            )
+        }));
+        scrolled.scenes = scrolled
+            .scene_configs
+            .iter()
+            .filter_map(|scene| {
+                Some(SceneSummary {
+                    index: scene.scene_index?,
+                    name: scene.scene_name.clone(),
+                })
+            })
+            .collect();
+        scrolled.scene_count = scrolled.scenes.len();
         let sample = scrolled.cue_lists[0].entries[0].clone();
         scrolled.cue_lists[0].entries = (0..40)
             .map(|index| CueEntry {
@@ -933,6 +952,49 @@ mod macos {
         cx.run_until_parked();
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
+            let before_scroll = observed_dispatcher.dispatched_count();
+            for index in 1..=3 {
+                let row = "cue-entry-row-00000000-0000-0000-0000-000000000064";
+                let before = window.find(row).bounds().top();
+                window.hover(format!("cue-insert-gap-{index}"), cx);
+                window.render_frame(cx);
+                window.scroll(
+                    format!("insert-cue-{index}"),
+                    ScrollDelta::Pixels(point(px(0.), px(-46.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert!(
+                    window.find(row).bounds().top() < before,
+                    "scrolling over the insertion line must move the cue list"
+                );
+            }
+            let viewport = window.find("active-cue-entries").bounds();
+            let row = "cue-entry-row-00000000-0000-0000-0000-000000000064";
+            let before_drag = window.find(row).bounds().top();
+            window.drag(
+                point(viewport.right() - px(8.), viewport.top() + px(100.)),
+                point(viewport.right() - px(8.), viewport.top() + px(200.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                window.find(row).bounds().top() < before_drag,
+                "dragging the scrollbar thumb must move the cue list"
+            );
+            assert!(
+                window.try_find("cue-inline-search").is_none(),
+                "dragging the scrollbar must not open Insert"
+            );
+            assert_eq!(
+                observed_dispatcher.dispatched_count(),
+                before_scroll,
+                "scrolling must not insert or select a cue"
+            );
+        })?;
+        let cue_scrollbar = cx.capture_screenshot(window.into())?;
+        cue_scrollbar.save(output_dir.join("native-cue-scrollbar.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
             window.scroll(
                 "active-cue-entries",
                 ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
@@ -1003,6 +1065,11 @@ mod macos {
         );
 
         let visual_snapshots = [
+            (
+                "native-cue-scrollbar",
+                visual_signature!(cue_scrollbar),
+                include_bytes!("visual_snapshots/native-cue-scrollbar.rgb").as_slice(),
+            ),
             (
                 "native-cue-polish-edit-prefilled",
                 visual_signature!(polish_edit),

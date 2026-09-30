@@ -2,14 +2,15 @@ use gpui_kit::base::Button as BaseButton;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::component::switch::Switch;
 use gpui_kit::{
-    AnyElement, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Render, SharedString,
-    Subscription, TestSupportExt as _, Window, div, prelude::*, px, rgb,
+    AnyElement, Context, Entity, FocusHandle, IntoElement, KeyDownEvent, Render, ScrollHandle,
+    SharedString, Subscription, TestSupportExt as _, Window, div, prelude::*, px, rgb,
 };
 
 use crate::projector::AppViewState;
 use crate::settings::{AppSettings, KeyboardShortcut, TimeDisplayFormat};
 
 use super::CommandDispatcher;
+use super::clipped_overlay::vertical_scrollbar_overlay;
 use super::keyboard::{CaptureResult, ShortcutCapture, normalized_physical_key, shortcuts_equal};
 use super::numeric_control::editable_numeric_control;
 use super::panel::panel_header;
@@ -43,6 +44,7 @@ impl NumericSetting {
 
 pub struct SettingsView {
     snapshot: AppViewState,
+    scroll: ScrollHandle,
     draft: Option<AppSettings>,
     pending_command_id: Option<u64>,
     dispatcher: CommandDispatcher,
@@ -103,6 +105,7 @@ impl SettingsView {
         ];
         Self {
             snapshot,
+            scroll: ScrollHandle::default(),
             draft: None,
             pending_command_id: None,
             dispatcher,
@@ -551,6 +554,8 @@ impl Render for SettingsView {
             .unwrap_or(settings.asc_recall_interval_ms);
         div()
             .id("settings-view")
+            .relative()
+            .track_scroll(&self.scroll)
             .test_support()
             .track_focus(&self.focus)
             .key_context(super::keyboard::shortcut_capture_key_context())
@@ -685,6 +690,7 @@ impl Render for SettingsView {
                         cx,
                     )),
             )
+            .child(vertical_scrollbar_overlay(&self.scroll))
     }
 }
 

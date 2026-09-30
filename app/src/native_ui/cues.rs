@@ -10,14 +10,15 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext, BoxShadow, Context, Entity, FocusHandle, Focusable as _, MouseButton, Render, Role,
-    SharedString, Subscription, TestSupportExt as _, Window, div, prelude::*, px, rgb,
+    ScrollHandle, SharedString, Subscription, TestSupportExt as _, Window, div, prelude::*, px,
+    rgb,
 };
 use uuid::Uuid;
 
 use super::{
     CommandDispatcher,
     button::bordered_button,
-    clipped_overlay::clipped_overlay,
+    clipped_overlay::{clipped_overlay, vertical_scrollbar_overlay},
     cue_marker::CueMarker,
     cue_search::search_scenes,
     scene_library::{
@@ -126,6 +127,9 @@ pub struct CueListsView {
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     selected_entry_id: Option<Uuid>,
     hovered_gap: Option<usize>,
+    library_scroll: ScrollHandle,
+    entries_scroll: ScrollHandle,
+    manager_scroll: ScrollHandle,
     manage_open: bool,
     name_editor: Option<NameEditor>,
     pending_delete: Option<Uuid>,
@@ -177,6 +181,9 @@ impl CueListsView {
             go_submissions,
             selected_entry_id: None,
             hovered_gap: None,
+            library_scroll: ScrollHandle::default(),
+            entries_scroll: ScrollHandle::default(),
+            manager_scroll: ScrollHandle::default(),
             manage_open: false,
             name_editor: None,
             pending_delete: None,
@@ -620,13 +627,16 @@ impl CueListsView {
             .child(
                 div()
                     .id("cue-scene-library")
+                    .relative()
+                    .track_scroll(&self.library_scroll)
                     .flex_1()
                     .overflow_y_scroll()
                     .children(
                         scenes
                             .into_iter()
                             .map(|scene| self.render_scene_row(scene, cx)),
-                    ),
+                    )
+                    .child(vertical_scrollbar_overlay(&self.library_scroll)),
             )
     }
 
@@ -782,6 +792,8 @@ impl CueListsView {
         div()
             .id("active-cue-entries")
             .test_support()
+            .relative()
+            .track_scroll(&self.entries_scroll)
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -812,6 +824,7 @@ impl CueListsView {
                 }
                 items
             }))
+            .child(vertical_scrollbar_overlay(&self.entries_scroll))
             .into_any_element()
     }
 
@@ -898,9 +911,9 @@ impl CueListsView {
             .absolute()
             .top(px(if at_start { 0. } else { -hit_height / 2. }))
             .left_0()
-            .right_0()
+            .right(px(theme::SCROLLBAR_WIDTH))
             .h(px(hit_height))
-            .occlude()
+            .block_mouse_except_scroll()
             .flex()
             .items_center()
             .justify_center()
@@ -967,6 +980,7 @@ impl CueListsView {
                     .text_color(rgb(theme::ACCENT_ORANGE))
                     .when(!active, |button| button.invisible())
                     .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
                         entity.update(cx, |this, cx| {
                             this.open_cue_editor(CueEditorMode::Insert, index, window, cx)
                         });
@@ -1534,6 +1548,8 @@ impl CueListsView {
                     .child(
                         div()
                             .id("cue-list-manager-scroll")
+                            .relative()
+                            .track_scroll(&self.manager_scroll)
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
@@ -1546,7 +1562,8 @@ impl CueListsView {
                             )
                             .when(self.name_editor == Some(NameEditor::Create), |rows| {
                                 rows.child(self.render_create_row(cx))
-                            }),
+                            })
+                            .child(vertical_scrollbar_overlay(&self.manager_scroll)),
                     )
                     .when_some(self.pending_delete, |panel, id| {
                         panel.child(self.render_delete_confirmation(id, cx))
