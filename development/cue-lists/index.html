@@ -382,6 +382,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#edit-and-insert-cues" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Edit and insert cues
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#manage-lists" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -691,6 +702,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#edit-and-insert-cues" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Edit and insert cues
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#manage-lists" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -789,11 +811,18 @@
 <ol>
 <li>Select <strong>Manage Cue Lists</strong>.</li>
 <li>Create a list and make it active.</li>
-<li>Drag scene fades from the <strong>Scene library</strong> into the list.</li>
+<li>Drag scene fades from the <strong>Scene library</strong> into the list, or hover at a gap and select <strong>Insert cue</strong>.</li>
 <li>Drag entries into show order.</li>
 </ol>
+<p>Drop a scene or an existing cue into the empty area below the last entry to place it at the end. An empty active list also accepts scene drops.</p>
 <p>The same scene can appear more than once. Removing an entry removes it only from the cue list; the scene fade and LV1 scene are unchanged.</p>
 <p>If no list is active, select or create one before adding entries.</p>
+<h2 id="edit-and-insert-cues">Edit and insert cues<a class="headerlink" href="#edit-and-insert-cues" title="Permanent link">&para;</a></h2>
+<p>Select the pencil icon beside an entry to change its scene. A search panel replaces that row, with its current scene name selected for typing. Choosing a scene changes the existing cue; it does not add a cue or recall anything in LV1.</p>
+<p>To insert a cue, hover on the border before, between, or after entries and click the orange line anywhere along its width. The control overlays the border without adding space or moving the entries. You can also drop a scene at any of these gaps. An empty list has one insertion point.</p>
+<p>Search by scene name or by its displayed, three-digit scene number. For example, <code>010</code> prioritizes scene <strong>010</strong>, and <code>01</code> finds numbers starting with <strong>01</strong>. <code>10</code> is not shorthand for <strong>010</strong>. Name searches use case-insensitive fuzzy matching. The panel shows up to three results, with the best match highlighted. Use <strong>Up/Down</strong> to move the highlight and <strong>Enter</strong> to choose, or click a result.</p>
+<p><strong>Escape</strong> or the <strong>×</strong> beside the search field cancels. Opening another Edit or Insert panel cancels the previous search; clicking elsewhere leaves it open. You can still drag scenes into the list and reorder cues while searching. The insertion panel stays locally in place as entries move around it.</p>
+<p>Editing is available offline using the scenes already in the app's library. If you change the scene of the cued entry, confirm the updated <strong>Next</strong> scene before pressing <strong>GO</strong>. The red delete icon removes only that cue entry.</p>
 <h2 id="manage-lists">Manage lists<a class="headerlink" href="#manage-lists" title="Permanent link">&para;</a></h2>
 <p><img alt="The Manage Cue Lists dialog." src="../assets/screenshots/manage-cue-lists.png" /></p>
 <p>Use <strong>Manage Cue Lists</strong> to create, select, rename, reorder, or delete lists. Deleting a list does not delete its scenes or fade settings.</p>
