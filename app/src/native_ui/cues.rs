@@ -158,7 +158,7 @@ impl CueListsView {
                 InputEvent::Focus | InputEvent::Blur => {}
             });
         let cue_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search scenes or enter 010…"));
+            cx.new(|cx| InputState::new(window, cx).placeholder("Scene name or number…"));
         let cue_input_subscription =
             cx.subscribe(&cue_input, |this, _, event: &InputEvent, cx| match event {
                 InputEvent::PressEnter { .. } => this.submit_cue_editor(cx),
@@ -1040,7 +1040,7 @@ impl CueListsView {
             .border_color(rgb(theme::ACCENT_ORANGE))
             .bg(rgb(theme::CONSOLE_SECTION))
             .text_size(px(theme::CUE_TEXT_SIZE))
-            .py(px(theme::CUE_EDITOR_PADDING))
+            .pt(px(theme::CUE_EDITOR_PADDING))
             .pr_3()
             .test_support()
             .child(
@@ -1051,12 +1051,8 @@ impl CueListsView {
                         Input::new(&self.cue_input)
                             .text_size(px(theme::CUE_TEXT_SIZE))
                             .h(px(theme::CUE_EDITOR_INPUT_HEIGHT))
+                            .pl(px(theme::CUE_EDITOR_INPUT_TEXT_PADDING))
                             .focus_bordered(false)
-                            .prefix(
-                                Icon::new(IconName::Search)
-                                    .size(px(theme::CUE_EDITOR_ICON_SIZE))
-                                    .text_color(rgb(theme::CONSOLE_MUTED)),
-                            )
                             .suffix(cancel)
                             .disabled(editor.pending.is_some())
                             .id("cue-inline-search")

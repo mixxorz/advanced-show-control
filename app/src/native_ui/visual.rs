@@ -507,13 +507,13 @@ mod macos {
                         .bounds();
                     assert_eq!(header.right(), result.right());
                     assert_eq!(row.right(), result.right());
-                    let panel = window.find("cue-inline-editor").bounds();
-                    assert!(
-                        panel.bottom()
-                            <= window
-                                .find("select-cue-entry-55555555-5555-4555-8555-555555555555")
-                                .bounds()
-                                .top()
+                    assert_eq!(
+                        window.find("cue-result-0").bounds().bottom(),
+                        window
+                            .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                            .bounds()
+                            .top(),
+                        "the last result must meet the next cue without bottom padding"
                     );
                 })?;
                 cx.capture_screenshot(window.into())?
@@ -846,6 +846,19 @@ mod macos {
         })?;
         let polish_edit = cx.capture_screenshot(window.into())?;
         polish_edit.save(output_dir.join("native-cue-polish-edit-prefilled.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-result-1", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("cue-result-1").bounds().bottom(),
+                window
+                    .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                    .bounds()
+                    .top()
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-search-last-hover.png"))?;
         cx.update_window(window.into(), |_, window, cx| {
             window.input("OPN", cx);
             window.render_frame(cx);
