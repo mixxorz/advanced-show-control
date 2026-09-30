@@ -14,7 +14,7 @@ If LV1 disconnects, the status changes to **Offline**. Open **Connect to LV1**, 
 
 ## Scrolling
 
-A vertical scrollbar stays visible when a list or work screen has more content than fits. Use the mouse wheel or trackpad, or drag the scrollbar thumb. Cue-list insertion lines do not interrupt scrolling.
+A vertical scrollbar stays visible when a list or work screen has more content than fits. Scene and cue lists reserve a small gutter even when the scrollbar is hidden, keeping text and controls clear of the scrollbar without shifting the columns. Use the mouse wheel or trackpad, or drag the scrollbar thumb. Cue-list insertion lines do not interrupt scrolling.
 
 ## SAFE
 

@@ -751,13 +751,25 @@ mod macos {
             );
         })?;
         cx.run_until_parked();
-        cx.update_window(window.into(), |_, window, cx| {
+        let cue_number_right = cx.update_window(window.into(), |_, window, cx| {
             window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
             window.render_frame(cx);
             assert!(
                 !window.find("insert-cue-1").visible(),
                 "moving off the border must hide Insert cue"
             );
+            let viewport = window.find("active-cue-entries").bounds();
+            let delete = window
+                .find("remove-cue-entry-44444444-4444-4444-8444-444444444444")
+                .bounds();
+            assert!(
+                viewport.right() - delete.right() >= px(24.),
+                "short lists must reserve space beyond the rightmost cue action"
+            );
+            window
+                .find("cue-entry-number-44444444-4444-4444-8444-444444444444")
+                .bounds()
+                .right()
         })?;
         cx.capture_screenshot(window.into())?
             .save(output_dir.join("native-cue-polish-rows.png"))?;
@@ -953,6 +965,22 @@ mod macos {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             let before_scroll = observed_dispatcher.dispatched_count();
+            let viewport = window.find("active-cue-entries").bounds();
+            let delete = window
+                .find("remove-cue-entry-00000000-0000-0000-0000-000000000064")
+                .bounds();
+            assert!(
+                viewport.right() - delete.right() >= px(24.),
+                "overflowing lists must leave space between cue actions and the scrollbar"
+            );
+            assert_eq!(
+                window
+                    .find("cue-entry-number-00000000-0000-0000-0000-000000000064")
+                    .bounds()
+                    .right(),
+                cue_number_right,
+                "cue columns must not shift when the scrollbar appears"
+            );
             for index in 1..=3 {
                 let row = "cue-entry-row-00000000-0000-0000-0000-000000000064";
                 let before = window.find(row).bounds().top();

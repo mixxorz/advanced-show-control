@@ -19,6 +19,7 @@ pub const CONSOLE_MUTED: u32 = 0x8f8981;
 pub const CONSOLE_DISABLED: u32 = 0x56524d;
 
 pub const SCROLLBAR_WIDTH: f32 = 16.;
+pub const SCROLLBAR_CONTENT_INSET: f32 = SCROLLBAR_WIDTH + 12.;
 pub const CUE_ARROW_WIDTH: f32 = 22.;
 pub const CUE_LEFT_BORDER_WIDTH: f32 = 3.;
 pub const CUE_NUMBER_WIDTH: f32 = 64.;

@@ -748,7 +748,7 @@ impl CueListsView {
             .child(
                 div()
                     .flex()
-                    .pr_3()
+                    .pr(px(theme::SCROLLBAR_CONTENT_INSET))
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(theme::CONSOLE_LINE_SOFT))
@@ -1055,7 +1055,7 @@ impl CueListsView {
             .bg(rgb(theme::CONSOLE_SECTION))
             .text_size(px(theme::CUE_TEXT_SIZE))
             .pt(px(theme::CUE_EDITOR_PADDING))
-            .pr_3()
+            .pr(px(theme::SCROLLBAR_CONTENT_INSET))
             .test_support()
             .child(
                 div()
@@ -1273,7 +1273,7 @@ impl CueListsView {
             .test_support()
             .h(px(theme::CUE_ROW_HEIGHT))
             .text_size(px(theme::CUE_TEXT_SIZE))
-            .pr_3()
+            .pr(px(theme::SCROLLBAR_CONTENT_INSET))
             .flex_shrink_0()
             .flex()
             .items_center()
