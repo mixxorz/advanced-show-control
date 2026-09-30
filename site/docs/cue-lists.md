@@ -19,7 +19,7 @@ If no list is active, select or create one before adding entries.
 
 Select the pencil icon beside an entry to change its scene. A search panel replaces that row, with its current scene name selected for typing. Choosing a scene changes the existing cue; it does not add a cue or recall anything in LV1.
 
-To insert a cue, hover before, between, or after entries and select **Insert cue** on the orange line. You can also drop a scene at any of these gaps. An empty list has one insertion point.
+To insert a cue, hover on the border before, between, or after entries and select **Insert cue** on the orange line. The control overlays the border without adding space or moving the entries. You can also drop a scene at any of these gaps. An empty list has one insertion point.
 
 Search by scene name or by its displayed, three-digit scene number. For example, `010` prioritizes scene **010**, and `01` finds numbers starting with **01**. `10` is not shorthand for **010**. Name searches use case-insensitive fuzzy matching. The panel shows up to three results, with the best match highlighted. Use **Up/Down** to move the highlight and **Enter** to choose, or click a result.
 

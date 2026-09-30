@@ -1,5 +1,6 @@
 mod app;
 mod button;
+mod clipped_overlay;
 mod connection;
 mod cue_marker;
 mod cue_search;

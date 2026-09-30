@@ -9,7 +9,9 @@ mod macos {
     use anyhow::{Context as _, Result};
     use gpui_kit::component::{Root, WindowExt as _};
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{AppContext as _, HeadlessAppContext, ScrollDelta, point, px, size};
+    use gpui_kit::{
+        AppContext as _, HeadlessAppContext, InputEvent as _, ScrollDelta, point, px, size,
+    };
     use uuid::Uuid;
 
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
@@ -140,7 +142,7 @@ mod macos {
             })
             .context("failed to open native visual test window")?;
 
-        let mut offline = reference_snapshot(u64::MAX - 5, false);
+        let mut offline = reference_snapshot(u64::MAX - 7, false);
         offline.connection = AppConnectionState::Disconnected;
         offline.connected_lv1_identity = None;
         let measured_identity = offline.discovered_lv1_systems[0].identity.clone();
@@ -187,7 +189,7 @@ mod macos {
 
         ui_events
             .send(UiEvent::Snapshot(Box::new(reference_snapshot(
-                u64::MAX - 4,
+                u64::MAX - 6,
                 false,
             ))))
             .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
@@ -450,6 +452,37 @@ mod macos {
                 let before_editor = observed_dispatcher.dispatched_count();
                 cx.update_window(window.into(), |_, window, cx| {
                     assert!(window.try_find("cue-entry-append-drop").is_none());
+                    let first = window
+                        .find("cue-entry-row-44444444-4444-4444-8444-444444444444")
+                        .bounds();
+                    let second = window
+                        .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                        .bounds();
+                    assert_eq!(
+                        first.bottom(),
+                        second.top(),
+                        "insertion borders must not space cue rows apart"
+                    );
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                    assert_eq!(
+                        window
+                            .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                            .bounds(),
+                        second,
+                        "hover must not move cues"
+                    );
+                    assert_eq!(
+                        window.find("insert-cue-1").bounds().center().y,
+                        first.bottom(),
+                        "Insert cue must overlay the row border"
+                    );
+                    window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
+                    window.render_frame(cx);
+                    assert!(
+                        !window.find("insert-cue-1").visible(),
+                        "leaving the border must hide the insertion control"
+                    );
                     window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
                     window.render_frame(cx);
                     assert!(
@@ -477,7 +510,7 @@ mod macos {
                     let panel = window.find("cue-inline-editor").bounds();
                     assert!(
                         panel.bottom()
-                            < window
+                            <= window
                                 .find("select-cue-entry-55555555-5555-4555-8555-555555555555")
                                 .bounds()
                                 .top()
@@ -634,7 +667,7 @@ mod macos {
 
         ui_events
             .send(UiEvent::Snapshot(Box::new(reference_snapshot(
-                u64::MAX - 3,
+                u64::MAX - 5,
                 true,
             ))))
             .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
@@ -645,7 +678,7 @@ mod macos {
             .context("failed to save safe-state screenshot")?;
 
         let unlinked_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
-        let mut overwrite_state = reference_snapshot(u64::MAX - 2, false);
+        let mut overwrite_state = reference_snapshot(u64::MAX - 4, false);
         let mut unlinked = scene_config(unlinked_id, 0, "Imported Fade", 2_000);
         unlinked.scene_index = None;
         overwrite_state.scene_configs.push(unlinked);
@@ -684,7 +717,7 @@ mod macos {
             assert!(gpui_kit::base::active_focus_trap(window, cx).is_none());
         })?;
 
-        let mut polish = reference_snapshot(u64::MAX - 1, false);
+        let mut polish = reference_snapshot(u64::MAX - 3, false);
         polish.scene_configs.extend([
             scene_config(Uuid::from_u128(0x88888888888848888888888888888888), 2, "Opening Reprise", 1_000),
             scene_config(Uuid::from_u128(0x99999999999949998999999999999999), 9, "Blackout", 1_000),
@@ -709,10 +742,21 @@ mod macos {
             window.click("tab-Cue Lists", cx);
             window.clear_notifications(cx);
             window.render_frame(cx);
+            window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
             assert!(
                 window
                     .try_find("cue-entry-row-44444444-4444-4444-8444-444444444444")
                     .is_some()
+            );
+        })?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+            assert!(
+                !window.find("insert-cue-1").visible(),
+                "moving off the border must hide Insert cue"
             );
         })?;
         cx.capture_screenshot(window.into())?
@@ -735,6 +779,34 @@ mod macos {
         })?;
         cx.capture_screenshot(window.into())?
             .save(output_dir.join("native-cue-polish-gap-hover.png"))?;
+        for index in [0, 1, 4] {
+            for bottom_edge in [false, true] {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.hover(format!("cue-insert-gap-{index}"), cx);
+                    window.render_frame(cx);
+                    let button = window.find(format!("insert-cue-{index}")).bounds();
+                    window.click_at(
+                        format!("insert-cue-{index}"),
+                        gpui_kit::point(
+                            button.size.width / 2.,
+                            if bottom_edge {
+                                button.size.height - gpui_kit::px(1.)
+                            } else {
+                                gpui_kit::px(1.)
+                            },
+                        ),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert!(
+                        window.try_find("cue-inline-search").is_some(),
+                        "insertion button edge must work at position {index}"
+                    );
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                })?;
+            }
+        }
         cx.update_window(window.into(), |_, window, cx| {
             window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
             window.render_frame(cx);
@@ -818,6 +890,52 @@ mod macos {
             window.render_frame(cx);
             assert!(window.try_find("cue-inline-search").is_none());
         })?;
+        let mut scrolled = polish.clone();
+        scrolled.state_version = u64::MAX - 2;
+        let sample = scrolled.cue_lists[0].entries[0].clone();
+        scrolled.cue_lists[0].entries = (0..40)
+            .map(|index| CueEntry {
+                id: Uuid::from_u128(100 + index),
+                ..sample.clone()
+            })
+            .collect();
+        ui_events
+            .send(UiEvent::Snapshot(Box::new(scrolled)))
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.scroll(
+                "active-cue-entries",
+                ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+                cx,
+            );
+            let viewport = window.find("active-cue-entries").bounds();
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position: point(viewport.center().x, viewport.bottom() - px(1.)),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            let button = window.find("insert-cue-40").bounds();
+            assert!(window.try_find("cue-inline-search").is_none());
+            assert!(button.bottom() > viewport.bottom());
+            window.click_at(
+                "insert-cue-40",
+                point(button.size.width / 2., button.size.height - px(1.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                window.try_find("cue-inline-search").is_none(),
+                "clipped insertion control must not receive clicks outside the scroll viewport"
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-border-scroll-clip.png"))?;
         polish.state_version = u64::MAX;
         polish.cue_lists[0].entries.clear();
         polish.current_cue_entry_id = None;

@@ -17,6 +17,7 @@ use uuid::Uuid;
 use super::{
     CommandDispatcher,
     button::bordered_button,
+    clipped_overlay::clipped_overlay,
     cue_marker::CueMarker,
     cue_search::search_scenes,
     scene_library::{
@@ -206,6 +207,7 @@ impl CueListsView {
             self.cue_focus.focus(window, cx);
         }
         self.cue_editor = None;
+        self.hovered_gap = None;
         cx.notify();
     }
 
@@ -433,6 +435,7 @@ impl CueListsView {
                 index,
             )
         });
+        self.hovered_gap = None;
         self.cue_editor = Some(CueEditor {
             list_id,
             session_revision: self.snapshot.session_revision,
@@ -778,6 +781,7 @@ impl CueListsView {
             displayed_next_cue_entry_id(&list.entries, projected_next_entry_id, pending_go_count);
         div()
             .id("active-cue-entries")
+            .test_support()
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -880,17 +884,25 @@ impl CueListsView {
         let drop_entity = cx.entity();
         let hover_entity = cx.entity();
         let reorder_entity = cx.entity();
-        let active = self.hovered_gap == Some(index) || self.active_entries().is_empty();
-        div()
+        let empty = self.active_entries().is_empty();
+        let active = self.hovered_gap == Some(index) || empty;
+        let hit_height = if empty {
+            theme::CUE_EMPTY_GAP_HEIGHT
+        } else if active {
+            theme::CUE_INSERT_CONTROL_HEIGHT
+        } else {
+            theme::CUE_GAP_HIT_HEIGHT
+        };
+        let at_start = index == 0;
+        let target = div()
             .id(format!("cue-insert-gap-{index}"))
             .test_support()
-            .relative()
-            .h(px(if self.active_entries().is_empty() {
-                theme::CUE_EMPTY_GAP_HEIGHT
-            } else {
-                theme::CUE_GAP_HEIGHT
-            }))
-            .flex_shrink_0()
+            .absolute()
+            .top(px(if at_start { 0. } else { -hit_height / 2. }))
+            .left_0()
+            .right_0()
+            .h(px(hit_height))
+            .occlude()
             .flex()
             .items_center()
             .justify_center()
@@ -900,6 +912,11 @@ impl CueListsView {
                         .absolute()
                         .left_0()
                         .right_0()
+                        .top(px(if at_start && !empty {
+                            0.
+                        } else {
+                            hit_height / 2.
+                        }))
                         .h(px(1.))
                         .bg(rgb(theme::ACCENT_ORANGE))
                         .shadow(vec![
@@ -959,7 +976,12 @@ impl CueListsView {
                         this.move_entry(from, ids, false, cx);
                     }
                 });
-            })
+            });
+        div()
+            .relative()
+            .h_0()
+            .flex_shrink_0()
+            .child(clipped_overlay(target))
             .into_any_element()
     }
 
