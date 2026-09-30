@@ -449,6 +449,84 @@ mod macos {
                 })?;
             }
             if selector == "tab-Cue Lists" {
+                cx.update_window(window.into(), |_, window, cx| {
+                    let viewport = window.find("active-cue-entries").bounds();
+                    let last = window
+                        .find("cue-entry-row-77777777-7777-4777-8777-777777777777")
+                        .bounds();
+                    let trailing = point(
+                        viewport.center().x,
+                        last.bottom() + (viewport.bottom() - last.bottom()) / 2.,
+                    );
+                    assert!(trailing.y > last.bottom() + px(16.));
+                    let before_drop = observed_dispatcher.dispatched_count();
+                    window.drag(
+                        window
+                            .find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                            .bounds()
+                            .center(),
+                        trailing,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 1,
+                        "dropping an existing cue below the last row must reorder it to the end"
+                    );
+                    window.drag(
+                        window
+                            .find("cue-scene-22222222-2222-4222-8222-222222222222")
+                            .bounds()
+                            .center(),
+                        trailing,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 2,
+                        "dropping a scene below the last row must append a new cue"
+                    );
+                    window.drag(
+                        window
+                            .find("select-cue-entry-77777777-7777-4777-8777-777777777777")
+                            .bounds()
+                            .center(),
+                        trailing,
+                        cx,
+                    );
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 2,
+                        "dropping the last cue below itself must not submit an unchanged reorder"
+                    );
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                    window.click("insert-cue-1", cx);
+                    window.render_frame(cx);
+                    assert!(window.find("cue-trailing-drop-target").bounds().size.height > px(20.));
+                    window.drag_to(
+                        "select-cue-entry-44444444-4444-4444-8444-444444444444",
+                        "cue-trailing-drop-target",
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_drop + 3);
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    window.drag_to(
+                        "cue-scene-22222222-2222-4222-8222-222222222222",
+                        "cue-trailing-drop-target",
+                        cx,
+                    );
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 3,
+                        "trailing drops must respect the pending insertion-marker order guard"
+                    );
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                })?;
                 let before_editor = observed_dispatcher.dispatched_count();
                 cx.update_window(window.into(), |_, window, cx| {
                     assert!(window.try_find("cue-entry-append-drop").is_none());
@@ -965,6 +1043,11 @@ mod macos {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             let before_scroll = observed_dispatcher.dispatched_count();
+            assert_eq!(
+                window.find("cue-trailing-drop-target").bounds().size.height,
+                px(0.),
+                "the trailing drop target must not extend an overflowing list"
+            );
             let viewport = window.find("active-cue-entries").bounds();
             let delete = window
                 .find("remove-cue-entry-00000000-0000-0000-0000-000000000064")
@@ -1065,6 +1148,21 @@ mod macos {
         cx.update_window(window.into(), |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("cue-insert-gap-0").is_some());
+            let before_drop = observed_dispatcher.dispatched_count();
+            window.drag(
+                window
+                    .find("cue-scene-22222222-2222-4222-8222-222222222222")
+                    .bounds()
+                    .center(),
+                window.find("active-cue-entries").bounds().center(),
+                cx,
+            );
+            window.render_frame(cx);
+            assert_eq!(
+                observed_dispatcher.dispatched_count(),
+                before_drop + 1,
+                "dropping a scene into an empty cue list must append its first cue"
+            );
         })?;
         cx.capture_screenshot(window.into())?
             .save(output_dir.join("native-cue-polish-empty-list.png"))?;

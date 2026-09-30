@@ -796,6 +796,8 @@ impl CueListsView {
             .track_scroll(&self.entries_scroll)
             .flex_1()
             .min_h_0()
+            .flex()
+            .flex_col()
             .overflow_y_scroll()
             .children((0..=list.entries.len()).flat_map(|index| {
                 let mut items = Vec::new();
@@ -824,8 +826,39 @@ impl CueListsView {
                 }
                 items
             }))
+            .child(self.render_trailing_drop_target(cx))
             .child(vertical_scrollbar_overlay(&self.entries_scroll))
             .into_any_element()
+    }
+
+    /// @cc [owner:mixxorz,label:product] cue-trailing-blank-drop
+    /// Unused space below the last cue MUST accept scene append and cue move-to-end without
+    /// adding scroll extent or replacing the end gap's own drop position.
+    fn render_trailing_drop_target(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let scene_entity = cx.entity();
+        let entry_entity = cx.entity();
+        div()
+            .id("cue-trailing-drop-target")
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .block_mouse_except_scroll()
+            .on_drop(move |payload: &SceneDrag, _, cx| {
+                let scene_id = payload.scene_id;
+                scene_entity.update(cx, |this, cx| {
+                    let len = this.active_entries().len();
+                    this.add_scene_at(scene_id, len, cx);
+                });
+            })
+            .on_drop(move |payload: &CueEntryDrag, _, cx| {
+                let from = payload.entry_id;
+                entry_entity.update(cx, |this, cx| {
+                    let entries = this.active_entries();
+                    if let Some(ids) = reordered_to_gap(entries, from, entries.len()) {
+                        this.move_entry(from, ids, false, cx);
+                    }
+                });
+            })
     }
 
     fn add_scene_at(&mut self, scene_id: Uuid, index: usize, cx: &mut Context<Self>) {

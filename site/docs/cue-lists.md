@@ -11,6 +11,8 @@ Cue lists put your scene fades in show order without changing the scene order in
 3. Drag scene fades from the **Scene library** into the list, or hover at a gap and select **Insert cue**.
 4. Drag entries into show order.
 
+Drop a scene or an existing cue into the empty area below the last entry to place it at the end. An empty active list also accepts scene drops.
+
 The same scene can appear more than once. Removing an entry removes it only from the cue list; the scene fade and LV1 scene are unchanged.
 
 If no list is active, select or create one before adding entries.
