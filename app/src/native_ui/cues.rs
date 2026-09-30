@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
 use gpui_kit::component::{
-    Disableable, Icon, IconName, Sizable,
+    ActiveTheme as _, Disableable, Icon, IconName, Sizable,
     button::ButtonVariants,
     input::{Input, InputEvent, InputState},
 };
@@ -888,8 +888,6 @@ impl CueListsView {
         let active = self.hovered_gap == Some(index) || empty;
         let hit_height = if empty {
             theme::CUE_EMPTY_GAP_HEIGHT
-        } else if active {
-            theme::CUE_INSERT_CONTROL_HEIGHT
         } else {
             theme::CUE_GAP_HIT_HEIGHT
         };
@@ -944,15 +942,27 @@ impl CueListsView {
             .child(
                 BaseButton::new(format!("insert-cue-{index}"))
                     .relative()
-                    .px_2()
-                    .h(px(theme::CUE_INSERT_CONTROL_HEIGHT))
+                    .w_full()
+                    .h_full()
                     .flex()
                     .items_center()
-                    .gap_1()
-                    .bg(rgb(theme::CONSOLE_PANEL))
+                    .justify_center()
                     .accessibility_label(format!("Insert cue at position {}", index + 1))
-                    .child(Icon::new(IconName::Plus).size(px(theme::CUE_SMALL_ICON_SIZE)))
-                    .child("Insert cue")
+                    .child(
+                        div()
+                            .relative()
+                            .when(at_start && !empty, |label| {
+                                label.top(px((theme::CUE_INSERT_CONTROL_HEIGHT - hit_height) / 2.))
+                            })
+                            .h(px(theme::CUE_INSERT_CONTROL_HEIGHT))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .bg(rgb(theme::CONSOLE_PANEL))
+                            .child(Icon::new(IconName::Plus).size(px(theme::CUE_SMALL_ICON_SIZE)))
+                            .child("Insert cue"),
+                    )
                     .text_xs()
                     .text_color(rgb(theme::ACCENT_ORANGE))
                     .when(!active, |button| button.invisible())
@@ -1002,6 +1012,7 @@ impl CueListsView {
         let updating_order = self.editor_order_pending();
         let cancel_entity = cx.entity();
         let cancel = BaseButton::new("cancel-cue-editor")
+            .rounded(cx.theme().radius)
             .size(px(theme::CUE_ICON_HIT_SIZE))
             .flex()
             .items_center()
@@ -1011,10 +1022,10 @@ impl CueListsView {
             .text_color(rgb(theme::CONSOLE_MUTED))
             .hover(|style| {
                 style
-                    .bg(rgb(theme::ICON_ACTION_HOVER))
-                    .text_color(rgb(theme::CONSOLE_BG))
+                    .bg(rgb(theme::CONSOLE_CONTROL_HOVER))
+                    .text_color(rgb(theme::CONSOLE_PRIMARY))
             })
-            .child(Icon::new(IconName::Close).size(px(theme::CUE_SMALL_ICON_SIZE)))
+            .child(Icon::new(IconName::Close).size(px(theme::CUE_EDITOR_ICON_SIZE)))
             .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 cancel_entity.update(cx, |this, cx| this.close_cue_editor(window, cx));
@@ -1028,6 +1039,7 @@ impl CueListsView {
             .border_l_3()
             .border_color(rgb(theme::ACCENT_ORANGE))
             .bg(rgb(theme::CONSOLE_SECTION))
+            .text_size(px(theme::CUE_TEXT_SIZE))
             .py(px(theme::CUE_EDITOR_PADDING))
             .pr_3()
             .test_support()
@@ -1037,12 +1049,12 @@ impl CueListsView {
                     .pb(px(theme::CUE_EDITOR_SEARCH_GAP))
                     .child(
                         Input::new(&self.cue_input)
-                            .small()
+                            .text_size(px(theme::CUE_TEXT_SIZE))
                             .h(px(theme::CUE_EDITOR_INPUT_HEIGHT))
                             .focus_bordered(false)
                             .prefix(
                                 Icon::new(IconName::Search)
-                                    .size(px(theme::CUE_SMALL_ICON_SIZE))
+                                    .size(px(theme::CUE_EDITOR_ICON_SIZE))
                                     .text_color(rgb(theme::CONSOLE_MUTED)),
                             )
                             .suffix(cancel)
@@ -1056,7 +1068,6 @@ impl CueListsView {
                 div()
                     .pl(px(theme::CUE_ARROW_WIDTH))
                     .py_1()
-                    .text_xs()
                     .text_color(rgb(theme::CONSOLE_MUTED))
                     .child("Updating cue order…"),
             );
@@ -1066,7 +1077,6 @@ impl CueListsView {
                 div()
                     .pl(px(theme::CUE_ARROW_WIDTH))
                     .py_1()
-                    .text_sm()
                     .text_color(rgb(theme::STATUS_DANGER))
                     .child(error.clone()),
             );
@@ -1080,7 +1090,6 @@ impl CueListsView {
                     .pl(px(theme::CUE_ARROW_WIDTH))
                     .flex()
                     .items_center()
-                    .text_sm()
                     .text_color(rgb(theme::CONSOLE_MUTED))
                     .child(if self.snapshot.scene_configs.is_empty() {
                         "No scenes in this session"
@@ -1106,7 +1115,6 @@ impl CueListsView {
                     ))
                     .flex()
                     .items_center()
-                    .text_sm()
                     .text_color(rgb(theme::CONSOLE_PRIMARY))
                     .hover(|row| row.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
                     .when(editor.highlighted == index, |row| {
@@ -1123,7 +1131,7 @@ impl CueListsView {
                             .when(editor.highlighted == index, |gutter| {
                                 gutter.child(
                                     Icon::new(IconName::ChevronRight)
-                                        .size(px(theme::CUE_SMALL_ICON_SIZE)),
+                                        .size(px(theme::CUE_EDITOR_ICON_SIZE)),
                                 )
                             }),
                     )
@@ -1253,7 +1261,8 @@ impl CueListsView {
         div()
             .id(format!("cue-entry-row-{entry_id}"))
             .test_support()
-            .h(px(46.))
+            .h(px(theme::CUE_ROW_HEIGHT))
+            .text_size(px(theme::CUE_TEXT_SIZE))
             .pr_3()
             .flex_shrink_0()
             .flex()
@@ -1377,6 +1386,7 @@ impl CueListsView {
                     .justify_end()
                     .child(
                         BaseButton::new(format!("edit-cue-entry-{entry_id}"))
+                            .rounded(cx.theme().radius)
                             .size(px(theme::CUE_ICON_HIT_SIZE))
                             .flex()
                             .items_center()
@@ -1389,8 +1399,8 @@ impl CueListsView {
                             .text_color(rgb(theme::CONSOLE_SECONDARY))
                             .hover(|style| {
                                 style
-                                    .bg(rgb(theme::ICON_ACTION_HOVER))
-                                    .text_color(rgb(theme::CONSOLE_BG))
+                                    .bg(rgb(theme::CONSOLE_CONTROL_HOVER))
+                                    .text_color(rgb(theme::CONSOLE_PRIMARY))
                             })
                             .on_click(move |_, window, cx| {
                                 cx.stop_propagation();
@@ -1406,13 +1416,14 @@ impl CueListsView {
                     )
                     .child(
                         BaseButton::new(format!("remove-cue-entry-{entry_id}"))
+                            .rounded(cx.theme().radius)
                             .size(px(theme::CUE_ICON_HIT_SIZE))
                             .flex()
                             .items_center()
                             .justify_center()
                             .disabled(self.editor_order_pending())
                             .text_color(rgb(theme::STATUS_DANGER))
-                            .hover(|style| style.bg(rgb(theme::ICON_ACTION_HOVER)))
+                            .hover(|style| style.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
                             .child(
                                 Icon::default()
                                     .data(include_bytes!("../../assets/icons/trash.svg")),

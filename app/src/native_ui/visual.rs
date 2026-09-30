@@ -780,7 +780,7 @@ mod macos {
         cx.capture_screenshot(window.into())?
             .save(output_dir.join("native-cue-polish-gap-hover.png"))?;
         for index in [0, 1, 4] {
-            for bottom_edge in [false, true] {
+            for edge in 0..4 {
                 cx.update_window(window.into(), |_, window, cx| {
                     window.hover(format!("cue-insert-gap-{index}"), cx);
                     window.render_frame(cx);
@@ -788,11 +788,15 @@ mod macos {
                     window.click_at(
                         format!("insert-cue-{index}"),
                         gpui_kit::point(
-                            button.size.width / 2.,
-                            if bottom_edge {
-                                button.size.height - gpui_kit::px(1.)
-                            } else {
-                                gpui_kit::px(1.)
+                            match edge {
+                                2 => gpui_kit::px(8.),
+                                3 => button.size.width - gpui_kit::px(8.),
+                                _ => button.size.width / 2.,
+                            },
+                            match edge {
+                                0 => gpui_kit::px(1.),
+                                1 => button.size.height - gpui_kit::px(1.),
+                                _ => button.size.height / 2.,
                             },
                         ),
                         cx,
@@ -800,7 +804,7 @@ mod macos {
                     window.render_frame(cx);
                     assert!(
                         window.try_find("cue-inline-search").is_some(),
-                        "insertion button edge must work at position {index}"
+                        "insertion line must be clickable at every edge at position {index}"
                     );
                     window.press("escape", cx);
                     window.render_frame(cx);
@@ -808,6 +812,17 @@ mod macos {
             }
         }
         cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-insert-gap-1", cx);
+            window.render_frame(cx);
+            let line = window.find("cue-insert-gap-1").bounds();
+            window.click_at("cue-insert-gap-1", point(px(8.), line.size.height / 2.), cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("cue-inline-search").is_some(),
+                "clicking the visible line outside its label must open Insert"
+            );
+            window.press("escape", cx);
+            window.render_frame(cx);
             window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
             window.render_frame(cx);
             assert!(window.try_find("cue-inline-search").is_some());
