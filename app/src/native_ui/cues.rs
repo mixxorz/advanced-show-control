@@ -4,19 +4,23 @@ use std::rc::Rc;
 
 use gpui_kit::base::{Button as BaseButton, FocusTrapElement as _};
 use gpui_kit::component::{
-    Disableable, Icon, IconName, Sizable,
+    ActiveTheme as _, Disableable, Icon, IconName, Sizable,
     button::ButtonVariants,
     input::{Input, InputEvent, InputState},
 };
 use gpui_kit::{
-    AppContext, Context, Entity, FocusHandle, Focusable as _, MouseButton, Render, Role,
-    SharedString, Subscription, TestSupportExt as _, Window, div, prelude::*, px, rgb,
+    AppContext, BoxShadow, Context, Entity, FocusHandle, Focusable as _, MouseButton, Render, Role,
+    ScrollHandle, SharedString, Subscription, TestSupportExt as _, Window, div, prelude::*, px,
+    rgb,
 };
 use uuid::Uuid;
 
 use super::{
     CommandDispatcher,
     button::bordered_button,
+    clipped_overlay::{clipped_overlay, vertical_scrollbar_overlay},
+    cue_marker::CueMarker,
+    cue_search::search_scenes,
     scene_library::{
         format_scene_number, scene_library_columns, scene_library_header, scene_library_panel,
         scene_library_row,
@@ -100,11 +104,32 @@ enum ManageCommand {
     Reorder,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CueEditorMode {
+    Edit(Uuid),
+    Insert,
+}
+
+struct CueEditor {
+    list_id: Uuid,
+    session_revision: u64,
+    mode: CueEditorMode,
+    marker: Option<CueMarker>,
+    highlighted: usize,
+    pending: Option<u64>,
+    drag_commands: HashSet<u64>,
+    error: Option<String>,
+}
+
 pub struct CueListsView {
     snapshot: AppViewState,
     dispatcher: CommandDispatcher,
     go_submissions: Rc<RefCell<GoSubmissionGuard>>,
     selected_entry_id: Option<Uuid>,
+    hovered_gap: Option<usize>,
+    library_scroll: ScrollHandle,
+    entries_scroll: ScrollHandle,
+    manager_scroll: ScrollHandle,
     manage_open: bool,
     name_editor: Option<NameEditor>,
     pending_delete: Option<Uuid>,
@@ -114,6 +139,11 @@ pub struct CueListsView {
     manage_return_focus: Option<FocusHandle>,
     name_input: Entity<InputState>,
     _name_input_subscription: Subscription,
+    cue_editor: Option<CueEditor>,
+    cue_focus: FocusHandle,
+    editor_focus: FocusHandle,
+    cue_input: Entity<InputState>,
+    _cue_input_subscription: Subscription,
 }
 
 impl CueListsView {
@@ -131,11 +161,29 @@ impl CueListsView {
                 InputEvent::Change => cx.notify(),
                 InputEvent::Focus | InputEvent::Blur => {}
             });
+        let cue_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Scene name or number…"));
+        let cue_input_subscription =
+            cx.subscribe(&cue_input, |this, _, event: &InputEvent, cx| match event {
+                InputEvent::PressEnter { .. } => this.submit_cue_editor(cx),
+                InputEvent::Change => {
+                    if let Some(editor) = &mut this.cue_editor {
+                        editor.highlighted = 0;
+                        editor.error = None;
+                    }
+                    cx.notify();
+                }
+                InputEvent::Focus | InputEvent::Blur => {}
+            });
         Self {
             snapshot,
             dispatcher,
             go_submissions,
             selected_entry_id: None,
+            hovered_gap: None,
+            library_scroll: ScrollHandle::default(),
+            entries_scroll: ScrollHandle::default(),
+            manager_scroll: ScrollHandle::default(),
             manage_open: false,
             name_editor: None,
             pending_delete: None,
@@ -145,6 +193,61 @@ impl CueListsView {
             manage_return_focus: None,
             name_input,
             _name_input_subscription: name_input_subscription,
+            cue_editor: None,
+            cue_focus: cx.focus_handle(),
+            editor_focus: cx.focus_handle(),
+            cue_input,
+            _cue_input_subscription: cue_input_subscription,
+        }
+    }
+
+    pub fn editor_open(&self) -> bool {
+        self.cue_editor.is_some()
+    }
+
+    pub fn editor_focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        self.cue_editor.is_some() && self.cue_input.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    fn close_cue_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_focus.contains_focused(window, cx) {
+            self.cue_focus.focus(window, cx);
+        }
+        self.cue_editor = None;
+        self.hovered_gap = None;
+        cx.notify();
+    }
+
+    pub fn editor_key(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(editor) = &mut self.cue_editor else {
+            return false;
+        };
+        match key {
+            "Escape" => {
+                if editor.pending.is_none() {
+                    self.close_cue_editor(window, cx);
+                }
+                true
+            }
+            "ArrowUp" => {
+                editor.highlighted = editor.highlighted.saturating_sub(1);
+                cx.notify();
+                true
+            }
+            "ArrowDown" => {
+                let query = self.cue_input.read(cx).value().to_string();
+                let preferred = match editor.mode {
+                    CueEditorMode::Edit(id) => active_cue_list(&self.snapshot)
+                        .and_then(|list| list.entries.iter().find(|entry| entry.id == id))
+                        .map(|entry| entry.scene_internal_id),
+                    CueEditorMode::Insert => None,
+                };
+                let count = search_scenes(&self.snapshot.scene_configs, &query, preferred).len();
+                editor.highlighted = (editor.highlighted + 1).min(count.saturating_sub(1));
+                cx.notify();
+                true
+            }
+            _ => false,
         }
     }
 
@@ -185,7 +288,20 @@ impl CueListsView {
         cx: &mut Context<Self>,
     ) {
         let nested_editor_was_open = self.pending_delete.is_some() || self.name_editor.is_some();
+        if self.snapshot.session_revision != snapshot.session_revision {
+            self.close_cue_editor(window, cx);
+            self.hovered_gap = None;
+        }
         self.snapshot = snapshot;
+        if let Some(editor) = &mut self.cue_editor {
+            let list = active_cue_list(&self.snapshot);
+            if list.is_none_or(|list| list.id != editor.list_id ||
+                matches!(editor.mode, CueEditorMode::Edit(id) if !list.entries.iter().any(|entry| entry.id == id))) {
+                self.close_cue_editor(window, cx);
+            } else if let (Some(marker), Some(list)) = (&mut editor.marker, list) {
+                marker.reconcile(&list.entries.iter().map(|entry| entry.id).collect::<Vec<_>>());
+            }
+        }
         if self
             .selected_entry_id
             .is_some_and(|id| !self.active_entries().iter().any(|entry| entry.id == id))
@@ -245,6 +361,29 @@ impl CueListsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Some(editor) = &mut self.cue_editor
+            && editor.drag_commands.remove(&command_id)
+            && failed
+            && let Some(marker) = &mut editor.marker
+        {
+            marker.clear_pending();
+            cx.notify();
+        }
+        if let Some(editor) = &mut self.cue_editor
+            && editor.pending == Some(command_id)
+        {
+            editor.pending = None;
+            if failed {
+                if let Some(marker) = &mut editor.marker {
+                    marker.clear_pending();
+                }
+                editor.error = Some("Could not save cue edit. Please retry.".into());
+            } else {
+                self.close_cue_editor(window, cx);
+            }
+            cx.notify();
+            return;
+        }
         let Some((pending_id, command)) = self.pending_manage_command else {
             return;
         };
@@ -268,6 +407,123 @@ impl CueListsView {
                 ManageCommand::Reorder => {}
                 _ => {}
             }
+        }
+        cx.notify();
+    }
+
+    fn open_cue_editor(
+        &mut self,
+        mode: CueEditorMode,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(list) = self.active_list() else {
+            return;
+        };
+        let list_id = list.id;
+        let value = match mode {
+            CueEditorMode::Edit(id) => list
+                .entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .and_then(|entry| scene_by_id(&self.snapshot, entry.scene_internal_id))
+                .map_or("", |scene| scene.scene_name.as_str())
+                .to_string(),
+            CueEditorMode::Insert => String::new(),
+        };
+        let marker = matches!(mode, CueEditorMode::Insert).then(|| {
+            CueMarker::new(
+                &list
+                    .entries
+                    .iter()
+                    .map(|entry| entry.id)
+                    .collect::<Vec<_>>(),
+                index,
+            )
+        });
+        self.hovered_gap = None;
+        self.cue_editor = Some(CueEditor {
+            list_id,
+            session_revision: self.snapshot.session_revision,
+            mode,
+            marker,
+            highlighted: 0,
+            pending: None,
+            drag_commands: HashSet::new(),
+            error: None,
+        });
+        self.cue_input.update(cx, |input, cx| {
+            input.set_value(value, window, cx);
+            input.select_all(window, cx);
+            input.focus(window, cx);
+        });
+        cx.notify();
+    }
+
+    fn editor_order_pending(&self) -> bool {
+        self.cue_editor
+            .as_ref()
+            .and_then(|editor| editor.marker.as_ref())
+            .is_some_and(CueMarker::is_pending)
+    }
+
+    fn submit_cue_editor(&mut self, cx: &mut Context<Self>) {
+        if self.editor_order_pending() {
+            return;
+        }
+        let Some(editor) = &self.cue_editor else {
+            return;
+        };
+        if editor.pending.is_some() {
+            return;
+        }
+        let query = self.cue_input.read(cx).value().to_string();
+        let preferred = match editor.mode {
+            CueEditorMode::Edit(id) => self
+                .active_entries()
+                .iter()
+                .find(|entry| entry.id == id)
+                .map(|entry| entry.scene_internal_id),
+            CueEditorMode::Insert => None,
+        };
+        let Some(scene_id) = search_scenes(&self.snapshot.scene_configs, &query, preferred)
+            .get(editor.highlighted)
+            .copied()
+        else {
+            return;
+        };
+        let list_id = editor.list_id;
+        let session_revision = editor.session_revision;
+        let mode = editor.mode;
+        let index = editor.marker.as_ref().map(CueMarker::index);
+        let order: Vec<_> = self.active_entries().iter().map(|entry| entry.id).collect();
+        let command_id = match mode {
+            CueEditorMode::Edit(entry_id) => self.dispatch(move |commands| {
+                Box::pin(async move {
+                    commands
+                        .edit_cue_entry(list_id, entry_id, scene_id, session_revision)
+                        .await
+                        .map(|_| ())
+                })
+            }),
+            CueEditorMode::Insert => self.dispatch(move |commands| {
+                Box::pin(async move {
+                    commands
+                        .insert_cue_entry(
+                            list_id,
+                            scene_id,
+                            index.unwrap_or(0),
+                            order,
+                            session_revision,
+                        )
+                        .await
+                        .map(|_| ())
+                })
+            }),
+        };
+        if let Some(editor) = &mut self.cue_editor {
+            editor.pending = Some(command_id);
         }
         cx.notify();
     }
@@ -371,13 +627,16 @@ impl CueListsView {
             .child(
                 div()
                     .id("cue-scene-library")
+                    .relative()
+                    .track_scroll(&self.library_scroll)
                     .flex_1()
                     .overflow_y_scroll()
                     .children(
                         scenes
                             .into_iter()
                             .map(|scene| self.render_scene_row(scene, cx)),
-                    ),
+                    )
+                    .child(vertical_scrollbar_overlay(&self.library_scroll)),
             )
     }
 
@@ -458,6 +717,7 @@ impl CueListsView {
             });
 
         div()
+            .track_focus(&self.cue_focus)
             .h_full()
             .flex_1()
             .min_w_0()
@@ -488,16 +748,23 @@ impl CueListsView {
             .child(
                 div()
                     .flex()
-                    .pr_3()
+                    .pr(px(theme::SCROLLBAR_CONTENT_INSET))
                     .py_2()
                     .border_b_1()
                     .border_color(rgb(theme::CONSOLE_LINE_SOFT))
                     .text_xs()
                     .text_color(rgb(theme::CONSOLE_SECONDARY))
-                    .child(div().w(px(25.)))
+                    .child(div().w(px(theme::CUE_LEFT_BORDER_WIDTH + theme::CUE_ARROW_WIDTH)))
                     .child(div().flex_1().child("SCENE NAME"))
-                    .child(div().w(px(64.)).text_right().child("#"))
-                    .child(div().w(px(44.))),
+                    .child(
+                        div()
+                            .id("cue-header-number")
+                            .test_support()
+                            .w(px(theme::CUE_NUMBER_WIDTH))
+                            .text_right()
+                            .child("#"),
+                    )
+                    .child(div().w(px(theme::CUE_ACTION_WIDTH))),
             )
             .child(self.render_active_entries(list, cx))
     }
@@ -507,34 +774,6 @@ impl CueListsView {
         list: Option<CueList>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let entity = cx.entity();
-        let append = div()
-            .id("cue-entry-append-drop")
-            .h(px(42.))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .border_1()
-            .border_color(rgb(theme::CONSOLE_LINE_SOFT))
-            .text_color(rgb(theme::CONSOLE_MUTED))
-            .child("DROP SCENE HERE TO APPEND")
-            .on_drop(move |payload: &SceneDrag, _, cx| {
-                let scene_id = payload.scene_id;
-                entity.update(cx, |this, cx| {
-                    let index = this.active_entries().len();
-                    this.dispatch(move |commands| {
-                        Box::pin(async move {
-                            commands
-                                .add_scene_to_active_cue_list(scene_id, index)
-                                .await
-                                .map(|_| ())
-                        })
-                    });
-                    cx.notify();
-                });
-            });
-
         let Some(list) = list else {
             return div()
                 .flex_1()
@@ -552,15 +791,477 @@ impl CueListsView {
             displayed_next_cue_entry_id(&list.entries, projected_next_entry_id, pending_go_count);
         div()
             .id("active-cue-entries")
+            .test_support()
+            .relative()
+            .track_scroll(&self.entries_scroll)
             .flex_1()
             .min_h_0()
+            .flex()
+            .flex_col()
             .overflow_y_scroll()
-            .children(list.entries.into_iter().enumerate().map(|(index, entry)| {
-                let pending = pending_entry_ids.contains(&entry.id);
-                let next = next_entry_id == Some(entry.id);
-                self.render_entry_row(entry, index, pending, next, cx)
+            .children((0..=list.entries.len()).flat_map(|index| {
+                let mut items = Vec::new();
+                if self
+                    .cue_editor
+                    .as_ref()
+                    .and_then(|editor| editor.marker.as_ref())
+                    .is_some_and(|marker| marker.index() == index)
+                {
+                    items.push(self.render_cue_editor(cx));
+                } else {
+                    items.push(self.render_insert_gap(index, cx));
+                }
+                if let Some(entry) = list.entries.get(index) {
+                    let pending = pending_entry_ids.contains(&entry.id);
+                    let next = next_entry_id == Some(entry.id);
+                    if self
+                        .cue_editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.mode == CueEditorMode::Edit(entry.id))
+                    {
+                        items.push(self.render_cue_editor(cx));
+                    } else {
+                        items.push(self.render_entry_row(entry.clone(), index, pending, next, cx));
+                    }
+                }
+                items
             }))
-            .child(append)
+            .child(self.render_trailing_drop_target(cx))
+            .child(vertical_scrollbar_overlay(&self.entries_scroll))
+            .into_any_element()
+    }
+
+    /// @cc [owner:mixxorz,label:product] cue-trailing-blank-drop
+    /// Unused space below the last cue MUST accept scene append and cue move-to-end without
+    /// adding scroll extent or replacing the end gap's own drop position.
+    fn render_trailing_drop_target(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let scene_entity = cx.entity();
+        let entry_entity = cx.entity();
+        div()
+            .id("cue-trailing-drop-target")
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .block_mouse_except_scroll()
+            .on_drop(move |payload: &SceneDrag, _, cx| {
+                let scene_id = payload.scene_id;
+                scene_entity.update(cx, |this, cx| {
+                    let len = this.active_entries().len();
+                    this.add_scene_at(scene_id, len, cx);
+                });
+            })
+            .on_drop(move |payload: &CueEntryDrag, _, cx| {
+                let from = payload.entry_id;
+                entry_entity.update(cx, |this, cx| {
+                    let entries = this.active_entries();
+                    if let Some(ids) = reordered_to_gap(entries, from, entries.len()) {
+                        this.move_entry(from, ids, false, cx);
+                    }
+                });
+            })
+    }
+
+    fn add_scene_at(&mut self, scene_id: Uuid, index: usize, cx: &mut Context<Self>) {
+        if self.editor_order_pending() {
+            return;
+        }
+        if let Some(marker) = self
+            .cue_editor
+            .as_mut()
+            .and_then(|editor| editor.marker.as_mut())
+        {
+            marker.record_insert(index);
+        }
+        let command_id = self.dispatch(move |commands| {
+            Box::pin(async move {
+                commands
+                    .add_scene_to_active_cue_list(scene_id, index)
+                    .await
+                    .map(|_| ())
+            })
+        });
+        if let Some(editor) = &mut self.cue_editor {
+            editor.drag_commands.insert(command_id);
+        }
+        cx.notify();
+    }
+
+    /// @cc [owner:mixxorz,label:product] insert-marker-serial-drag-admission
+    /// While an Insert marker awaits a drag's projected order, another drag MUST NOT replace its
+    /// recorded intent and selecting a search result MUST NOT submit an obsolete insertion gap.
+    fn move_entry(&mut self, from: Uuid, ids: Vec<Uuid>, at_marker: bool, cx: &mut Context<Self>) {
+        if self.editor_order_pending() {
+            return;
+        }
+        let changed = self
+            .active_entries()
+            .iter()
+            .map(|entry| entry.id)
+            .ne(ids.iter().copied());
+        if let Some(marker) = self
+            .cue_editor
+            .as_mut()
+            .and_then(|editor| editor.marker.as_mut())
+        {
+            if at_marker {
+                marker.record_move_to_marker(from);
+            } else if changed {
+                let before = ids
+                    .iter()
+                    .position(|id| *id == from)
+                    .and_then(|index| ids.get(index + 1))
+                    .copied();
+                marker.record_move(from, before);
+            }
+        }
+        if changed {
+            let command_id = self.dispatch(move |commands| {
+                Box::pin(async move { commands.reorder_cue_entries(ids).await.map(|_| ()) })
+            });
+            if let Some(editor) = &mut self.cue_editor {
+                editor.drag_commands.insert(command_id);
+            }
+        }
+        cx.notify();
+    }
+
+    fn render_insert_gap(&self, index: usize, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let entity = cx.entity();
+        let drop_entity = cx.entity();
+        let hover_entity = cx.entity();
+        let reorder_entity = cx.entity();
+        let empty = self.active_entries().is_empty();
+        let active = self.hovered_gap == Some(index) || empty;
+        let hit_height = if empty {
+            theme::CUE_EMPTY_GAP_HEIGHT
+        } else {
+            theme::CUE_GAP_HIT_HEIGHT
+        };
+        let at_start = index == 0;
+        let target = div()
+            .id(format!("cue-insert-gap-{index}"))
+            .test_support()
+            .absolute()
+            .top(px(if at_start { 0. } else { -hit_height / 2. }))
+            .left_0()
+            .right(px(theme::SCROLLBAR_WIDTH))
+            .h(px(hit_height))
+            .block_mouse_except_scroll()
+            .flex()
+            .items_center()
+            .justify_center()
+            .when(active, |gap| {
+                gap.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(if at_start && !empty {
+                            0.
+                        } else {
+                            hit_height / 2.
+                        }))
+                        .h(px(1.))
+                        .bg(rgb(theme::ACCENT_ORANGE))
+                        .shadow(vec![
+                            BoxShadow::new(
+                                px(0.),
+                                px(0.),
+                                rgb(theme::ACCENT_ORANGE)
+                                    .opacity(theme::CUE_GAP_GLOW_OPACITY)
+                                    .into(),
+                            )
+                            .blur_radius(px(theme::CUE_GAP_GLOW_RADIUS)),
+                        ]),
+                )
+            })
+            .on_hover(move |hovered, _, cx| {
+                hover_entity.update(cx, |this, cx| {
+                    if *hovered {
+                        this.hovered_gap = Some(index);
+                    } else if this.hovered_gap == Some(index) {
+                        this.hovered_gap = None;
+                    }
+                    cx.notify();
+                });
+            })
+            .child(
+                BaseButton::new(format!("insert-cue-{index}"))
+                    .relative()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .accessibility_label(format!("Insert cue at position {}", index + 1))
+                    .child(
+                        div()
+                            .relative()
+                            .when(at_start && !empty, |label| {
+                                label.top(px((theme::CUE_INSERT_CONTROL_HEIGHT - hit_height) / 2.))
+                            })
+                            .h(px(theme::CUE_INSERT_CONTROL_HEIGHT))
+                            .px_2()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .bg(rgb(theme::CONSOLE_PANEL))
+                            .child(Icon::new(IconName::Plus).size(px(theme::CUE_SMALL_ICON_SIZE)))
+                            .child("Insert cue"),
+                    )
+                    .text_xs()
+                    .text_color(rgb(theme::ACCENT_ORANGE))
+                    .when(!active, |button| button.invisible())
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        entity.update(cx, |this, cx| {
+                            this.open_cue_editor(CueEditorMode::Insert, index, window, cx)
+                        });
+                    }),
+            )
+            .on_drop(move |payload: &SceneDrag, _, cx| {
+                let scene_id = payload.scene_id;
+                drop_entity.update(cx, |this, cx| {
+                    let index = index.min(this.active_entries().len());
+                    this.add_scene_at(scene_id, index, cx);
+                });
+            })
+            .on_drop(move |payload: &CueEntryDrag, _, cx| {
+                let from = payload.entry_id;
+                reorder_entity.update(cx, |this, cx| {
+                    if let Some(ids) = reordered_to_gap(this.active_entries(), from, index) {
+                        this.move_entry(from, ids, false, cx);
+                    }
+                });
+            });
+        div()
+            .relative()
+            .h_0()
+            .flex_shrink_0()
+            .child(clipped_overlay(target))
+            .into_any_element()
+    }
+
+    fn render_cue_editor(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let Some(editor) = &self.cue_editor else {
+            return div().into_any_element();
+        };
+        let query = self.cue_input.read(cx).value().to_string();
+        let preferred = match editor.mode {
+            CueEditorMode::Edit(id) => self
+                .active_entries()
+                .iter()
+                .find(|entry| entry.id == id)
+                .map(|entry| entry.scene_internal_id),
+            CueEditorMode::Insert => None,
+        };
+        let results = search_scenes(&self.snapshot.scene_configs, &query, preferred);
+        let updating_order = self.editor_order_pending();
+        let cancel_entity = cx.entity();
+        let cancel = BaseButton::new("cancel-cue-editor")
+            .rounded(cx.theme().radius)
+            .size(px(theme::CUE_ICON_HIT_SIZE))
+            .flex()
+            .items_center()
+            .justify_center()
+            .disabled(editor.pending.is_some())
+            .accessibility_label("Cancel scene search")
+            .text_color(rgb(theme::CONSOLE_MUTED))
+            .hover(|style| {
+                style
+                    .bg(rgb(theme::CONSOLE_CONTROL_HOVER))
+                    .text_color(rgb(theme::CONSOLE_PRIMARY))
+            })
+            .child(Icon::new(IconName::Close).size(px(theme::CUE_EDITOR_ICON_SIZE)))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                cancel_entity.update(cx, |this, cx| this.close_cue_editor(window, cx));
+            });
+        let mut panel = div()
+            .id("cue-inline-editor")
+            .track_focus(&self.editor_focus)
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .border_l_3()
+            .border_color(rgb(theme::ACCENT_ORANGE))
+            .bg(rgb(theme::CONSOLE_SECTION))
+            .text_size(px(theme::CUE_TEXT_SIZE))
+            .pt(px(theme::CUE_EDITOR_PADDING))
+            .pr(px(theme::SCROLLBAR_CONTENT_INSET))
+            .test_support()
+            .child(
+                div()
+                    .pl(px(theme::CUE_EDITOR_PADDING))
+                    .pb(px(theme::CUE_EDITOR_SEARCH_GAP))
+                    .child(
+                        Input::new(&self.cue_input)
+                            .text_size(px(theme::CUE_TEXT_SIZE))
+                            .h(px(theme::CUE_EDITOR_INPUT_HEIGHT))
+                            .pl(px(theme::CUE_EDITOR_INPUT_TEXT_PADDING))
+                            .focus_bordered(false)
+                            .suffix(cancel)
+                            .disabled(editor.pending.is_some())
+                            .id("cue-inline-search")
+                            .aria_label("Search scenes"),
+                    ),
+            );
+        if updating_order {
+            panel = panel.child(
+                div()
+                    .pl(px(theme::CUE_ARROW_WIDTH))
+                    .py_1()
+                    .text_color(rgb(theme::CONSOLE_MUTED))
+                    .child("Updating cue order…"),
+            );
+        }
+        if let Some(error) = &editor.error {
+            panel = panel.child(
+                div()
+                    .pl(px(theme::CUE_ARROW_WIDTH))
+                    .py_1()
+                    .text_color(rgb(theme::STATUS_DANGER))
+                    .child(error.clone()),
+            );
+        }
+        if results.is_empty() {
+            panel = panel.child(
+                div()
+                    .id("cue-search-empty")
+                    .test_support()
+                    .h(px(theme::CUE_RESULT_HEIGHT))
+                    .pl(px(theme::CUE_ARROW_WIDTH))
+                    .flex()
+                    .items_center()
+                    .text_color(rgb(theme::CONSOLE_MUTED))
+                    .child(if self.snapshot.scene_configs.is_empty() {
+                        "No scenes in this session"
+                    } else {
+                        "No matching scenes"
+                    }),
+            );
+        }
+        for (index, id) in results.into_iter().enumerate() {
+            let Some(scene) = scene_by_id(&self.snapshot, id) else {
+                continue;
+            };
+            let entity = cx.entity();
+            panel = panel.child(
+                BaseButton::new(format!("cue-result-{index}"))
+                    .disabled(editor.pending.is_some() || updating_order)
+                    .h(px(theme::CUE_RESULT_HEIGHT))
+                    .selected(editor.highlighted == index)
+                    .accessibility_label(format!(
+                        "Choose scene {}: {}",
+                        format_scene_number(scene.scene_index),
+                        scene.scene_name
+                    ))
+                    .flex()
+                    .items_center()
+                    .text_color(rgb(theme::CONSOLE_PRIMARY))
+                    .hover(|row| row.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
+                    .when(editor.highlighted == index, |row| {
+                        row.bg(rgb(theme::CUE_RESULT_SELECTED))
+                    })
+                    .child(
+                        div()
+                            .w(px(theme::CUE_ARROW_WIDTH))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_color(rgb(theme::ACCENT_ORANGE))
+                            .when(editor.highlighted == index, |gutter| {
+                                gutter.child(
+                                    Icon::new(IconName::ChevronRight)
+                                        .size(px(theme::CUE_EDITOR_ICON_SIZE)),
+                                )
+                            }),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .text_ellipsis()
+                            .child(scene.scene_name.clone()),
+                    )
+                    .child(
+                        div()
+                            .id(format!("cue-result-number-{index}"))
+                            .test_support()
+                            .w(px(theme::CUE_NUMBER_WIDTH))
+                            .flex_shrink_0()
+                            .text_right()
+                            .text_color(rgb(theme::CONSOLE_SECONDARY))
+                            .font_family("Fira Code")
+                            .child(format_scene_number(scene.scene_index)),
+                    )
+                    .child(div().w(px(theme::CUE_ACTION_WIDTH)).flex_shrink_0())
+                    .on_click(move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            if let Some(editor) = &mut this.cue_editor {
+                                editor.highlighted = index;
+                            }
+                            this.submit_cue_editor(cx);
+                        });
+                    }),
+            );
+        }
+        let entity = cx.entity();
+        let reorder_entity = cx.entity();
+        let editor_mode = editor.mode;
+        panel
+            .when(matches!(editor_mode, CueEditorMode::Edit(_)), |panel| {
+                let CueEditorMode::Edit(entry_id) = editor_mode else {
+                    unreachable!()
+                };
+                panel.on_drag(
+                    CueEntryDrag {
+                        entry_id,
+                        name: "Cue".into(),
+                    },
+                    |payload, _, _, cx| cx.new(|_| payload.clone()),
+                )
+            })
+            .on_drop(move |payload: &CueEntryDrag, _, cx| {
+                let from = payload.entry_id;
+                reorder_entity.update(cx, |this, cx| {
+                    let ids = match editor_mode {
+                        CueEditorMode::Edit(id) => reordered_ids(this.active_entries(), from, id),
+                        CueEditorMode::Insert => this
+                            .cue_editor
+                            .as_ref()
+                            .and_then(|editor| editor.marker.as_ref())
+                            .and_then(|marker| {
+                                reordered_to_gap(this.active_entries(), from, marker.index())
+                            }),
+                    };
+                    if let Some(ids) = ids {
+                        this.move_entry(from, ids, editor_mode == CueEditorMode::Insert, cx);
+                    }
+                    cx.notify();
+                });
+            })
+            .on_drop(move |payload: &SceneDrag, _, cx| {
+                let scene_id = payload.scene_id;
+                entity.update(cx, |this, cx| {
+                    let index = match editor_mode {
+                        CueEditorMode::Edit(id) => this
+                            .active_entries()
+                            .iter()
+                            .position(|entry| entry.id == id),
+                        CueEditorMode::Insert => this
+                            .cue_editor
+                            .as_ref()
+                            .and_then(|editor| editor.marker.as_ref().map(CueMarker::index)),
+                    };
+                    if let Some(index) = index {
+                        this.add_scene_at(scene_id, index, cx);
+                    }
+                    cx.notify();
+                });
+            })
             .into_any_element()
     }
 
@@ -595,13 +1296,17 @@ impl CueListsView {
         let drop_entity = cx.entity();
         let scene_drop_entity = cx.entity();
         let remove_entity = cx.entity();
+        let edit_entity = cx.entity();
         let cue_number = index + 1;
         let select_label = format!("Select cue {cue_number}: {display_name}");
         let remove_label = format!("Remove cue {cue_number}: {display_name}");
 
         div()
             .id(format!("cue-entry-row-{entry_id}"))
-            .h(px(46.))
+            .test_support()
+            .h(px(theme::CUE_ROW_HEIGHT))
+            .text_size(px(theme::CUE_TEXT_SIZE))
+            .pr(px(theme::SCROLLBAR_CONTENT_INSET))
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -624,11 +1329,7 @@ impl CueListsView {
                 let from = payload.entry_id;
                 drop_entity.update(cx, |this, cx| {
                     if let Some(ids) = reordered_ids(this.active_entries(), from, entry_id) {
-                        this.dispatch(move |commands| {
-                            Box::pin(
-                                async move { commands.reorder_cue_entries(ids).await.map(|_| ()) },
-                            )
-                        });
+                        this.move_entry(from, ids, false, cx);
                     }
                     cx.notify();
                 });
@@ -636,24 +1337,22 @@ impl CueListsView {
             .on_drop(move |payload: &SceneDrag, _, cx| {
                 let scene_id = payload.scene_id;
                 scene_drop_entity.update(cx, |this, cx| {
-                    if this
+                    if let Some(index) = this
                         .active_entries()
-                        .get(index)
-                        .is_some_and(|entry| entry.id == entry_id)
+                        .iter()
+                        .position(|entry| entry.id == entry_id)
                     {
-                        this.dispatch(move |commands| {
-                            Box::pin(async move {
-                                commands
-                                    .add_scene_to_active_cue_list(scene_id, index)
-                                    .await
-                                    .map(|_| ())
-                            })
-                        });
+                        this.add_scene_at(scene_id, index, cx);
                     }
                     cx.notify();
                 });
             })
-            .child(div().w(px(3.)).h_full().bg(rgb(left_border)))
+            .child(
+                div()
+                    .w(px(theme::CUE_LEFT_BORDER_WIDTH))
+                    .h_full()
+                    .bg(rgb(left_border)),
+            )
             .child(
                 BaseButton::new(format!("select-cue-entry-{entry_id}"))
                     .accessibility_label(select_label)
@@ -674,11 +1373,14 @@ impl CueListsView {
                         });
                     })
                     .child(
-                        div().w(px(22.)).text_color(rgb(arrow_color)).child(
-                            div()
-                                .ml(px(-2.))
-                                .child(if arrow.is_some() { "▶" } else { "" }),
-                        ),
+                        div()
+                            .w(px(theme::CUE_ARROW_WIDTH))
+                            .text_color(rgb(arrow_color))
+                            .child(div().ml(px(-2.)).child(if arrow.is_some() {
+                                "▶"
+                            } else {
+                                ""
+                            })),
                     )
                     .child(
                         div()
@@ -691,7 +1393,9 @@ impl CueListsView {
                     )
                     .child(
                         div()
-                            .w(px(64.))
+                            .id(format!("cue-entry-number-{entry_id}"))
+                            .test_support()
+                            .w(px(theme::CUE_NUMBER_WIDTH))
                             .flex()
                             .items_center()
                             .justify_end()
@@ -715,27 +1419,77 @@ impl CueListsView {
                     ),
             )
             .child(
-                bordered_button(format!("remove-cue-entry-{entry_id}"))
-                    .small()
-                    .ml_4()
-                    .mr_3()
-                    .danger()
-                    .icon(IconName::Delete)
-                    .accessibility_label(remove_label)
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        remove_entity.update(cx, |this, cx| {
-                            this.dispatch(move |commands| {
-                                Box::pin(async move {
-                                    commands.remove_cue_entry(entry_id).await.map(|_| ())
-                                })
-                            });
-                            if this.selected_entry_id == Some(entry_id) {
-                                this.selected_entry_id = None;
-                            }
-                            cx.notify();
-                        });
-                    }),
+                div()
+                    .w(px(theme::CUE_ACTION_WIDTH))
+                    .flex_shrink_0()
+                    .pl_3()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .justify_end()
+                    .child(
+                        BaseButton::new(format!("edit-cue-entry-{entry_id}"))
+                            .rounded(cx.theme().radius)
+                            .size(px(theme::CUE_ICON_HIT_SIZE))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                Icon::default()
+                                    .data(include_bytes!("../../assets/icons/pencil.svg")),
+                            )
+                            .accessibility_label(format!("Edit cue {cue_number}: {scene_name}"))
+                            .text_color(rgb(theme::CONSOLE_SECONDARY))
+                            .hover(|style| {
+                                style
+                                    .bg(rgb(theme::CONSOLE_CONTROL_HOVER))
+                                    .text_color(rgb(theme::CONSOLE_PRIMARY))
+                            })
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                edit_entity.update(cx, |this, cx| {
+                                    this.open_cue_editor(
+                                        CueEditorMode::Edit(entry_id),
+                                        index,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    )
+                    .child(
+                        BaseButton::new(format!("remove-cue-entry-{entry_id}"))
+                            .rounded(cx.theme().radius)
+                            .size(px(theme::CUE_ICON_HIT_SIZE))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .disabled(self.editor_order_pending())
+                            .text_color(rgb(theme::STATUS_DANGER))
+                            .hover(|style| style.bg(rgb(theme::CONSOLE_CONTROL_HOVER)))
+                            .child(
+                                Icon::default()
+                                    .data(include_bytes!("../../assets/icons/trash.svg")),
+                            )
+                            .accessibility_label(remove_label)
+                            .on_click(move |_, _, cx| {
+                                cx.stop_propagation();
+                                remove_entity.update(cx, |this, cx| {
+                                    if this.editor_order_pending() {
+                                        return;
+                                    }
+                                    this.dispatch(move |commands| {
+                                        Box::pin(async move {
+                                            commands.remove_cue_entry(entry_id).await.map(|_| ())
+                                        })
+                                    });
+                                    if this.selected_entry_id == Some(entry_id) {
+                                        this.selected_entry_id = None;
+                                    }
+                                    cx.notify();
+                                });
+                            }),
+                    ),
             )
             .into_any_element()
     }
@@ -827,6 +1581,8 @@ impl CueListsView {
                     .child(
                         div()
                             .id("cue-list-manager-scroll")
+                            .relative()
+                            .track_scroll(&self.manager_scroll)
                             .flex_1()
                             .min_h_0()
                             .overflow_y_scroll()
@@ -839,7 +1595,8 @@ impl CueListsView {
                             )
                             .when(self.name_editor == Some(NameEditor::Create), |rows| {
                                 rows.child(self.render_create_row(cx))
-                            }),
+                            })
+                            .child(vertical_scrollbar_overlay(&self.manager_scroll)),
                     )
                     .when_some(self.pending_delete, |panel, id| {
                         panel.child(self.render_delete_confirmation(id, cx))
@@ -1383,6 +2140,17 @@ fn cue_entry_highlight(selected: bool, arrow: Option<CueArrowState>, missing: bo
     }
 }
 
+fn reordered_to_gap(items: &[CueEntry], from: Uuid, gap: usize) -> Option<Vec<Uuid>> {
+    let from_index = items.iter().position(|entry| entry.id == from)?;
+    let mut ids: Vec<_> = items.iter().map(|entry| entry.id).collect();
+    ids.remove(from_index);
+    let destination = gap
+        .saturating_sub(usize::from(from_index < gap))
+        .min(ids.len());
+    ids.insert(destination, from);
+    Some(ids)
+}
+
 fn reordered_ids<T: StableId>(items: &[T], from: Uuid, to: Uuid) -> Option<Vec<Uuid>> {
     if from == to {
         return None;
@@ -1398,6 +2166,24 @@ fn reordered_ids<T: StableId>(items: &[T], from: Uuid, to: Uuid) -> Option<Vec<U
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gap_reorder_places_entry_before_gap_without_shifting_it() {
+        let entries = vec![entry(1, 10), entry(2, 20), entry(3, 30)];
+        assert_eq!(
+            reordered_to_gap(&entries, id(3), 1),
+            Some(vec![id(1), id(3), id(2)])
+        );
+        assert_eq!(
+            reordered_to_gap(&entries, id(1), 3),
+            Some(vec![id(2), id(3), id(1)])
+        );
+        assert_eq!(
+            reordered_to_gap(&entries, id(2), 1),
+            Some(vec![id(1), id(2), id(3)])
+        );
+        assert_eq!(reordered_to_gap(&entries, id(99), 1), None);
+    }
 
     fn id(value: u128) -> Uuid {
         Uuid::from_u128(value)

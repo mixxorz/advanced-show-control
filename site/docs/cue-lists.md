@@ -8,12 +8,26 @@ Cue lists put your scene fades in show order without changing the scene order in
 
 1. Select **Manage Cue Lists**.
 2. Create a list and make it active.
-3. Drag scene fades from the **Scene library** into the list.
+3. Drag scene fades from the **Scene library** into the list, or hover at a gap and select **Insert cue**.
 4. Drag entries into show order.
+
+Drop a scene or an existing cue into the empty area below the last entry to place it at the end. An empty active list also accepts scene drops.
 
 The same scene can appear more than once. Removing an entry removes it only from the cue list; the scene fade and LV1 scene are unchanged.
 
 If no list is active, select or create one before adding entries.
+
+## Edit and insert cues
+
+Select the pencil icon beside an entry to change its scene. A search panel replaces that row, with its current scene name selected for typing. Choosing a scene changes the existing cue; it does not add a cue or recall anything in LV1.
+
+To insert a cue, hover on the border before, between, or after entries and click the orange line anywhere along its width. The control overlays the border without adding space or moving the entries. You can also drop a scene at any of these gaps. An empty list has one insertion point.
+
+Search by scene name or by its displayed, three-digit scene number. For example, `010` prioritizes scene **010**, and `01` finds numbers starting with **01**. `10` is not shorthand for **010**. Name searches use case-insensitive fuzzy matching. The panel shows up to three results, with the best match highlighted. Use **Up/Down** to move the highlight and **Enter** to choose, or click a result.
+
+**Escape** or the **×** beside the search field cancels. Opening another Edit or Insert panel cancels the previous search; clicking elsewhere leaves it open. You can still drag scenes into the list and reorder cues while searching. The insertion panel stays locally in place as entries move around it.
+
+Editing is available offline using the scenes already in the app's library. If you change the scene of the cued entry, confirm the updated **Next** scene before pressing **GO**. The red delete icon removes only that cue entry.
 
 ## Manage lists
 

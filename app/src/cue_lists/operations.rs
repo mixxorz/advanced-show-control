@@ -158,7 +158,14 @@ impl CueLists {
     /// Every successful cue-list mutation reported with `changed = true` MUST publish the resulting
     /// full document as an `AppEvent::CueLists` persisted edit before replying. Rejected commands MUST
     /// return their domain error without publishing an edit.
-    pub fn dispatch(&mut self, command: CueListsCommand) {
+    /**
+     * @cc [owner:mixxorz,label:product;safety] inline-cue-scene-validation
+     * Edit and insert MUST reject scene UUIDs absent from the owner's current scene library
+     * without modifying or publishing the cue document. Changed edits and inserts MUST publish
+     * persisted cue facts; unchanged edits and errors MUST NOT publish them. Commands MUST reject
+     * a session revision different from the retained replacement epoch before any mutation.
+     */
+    pub fn dispatch(&mut self, command: CueListsCommand, scenes: &[crate::scenes::SceneConfig]) {
         let state = &mut self.state;
         let changed = |changed| CueListsCommandResult {
             changed,
@@ -212,6 +219,57 @@ impl CueLists {
                         entry: Some(entry),
                         ..changed(true)
                     }),
+            ),
+            CueListsCommand::EditCueEntry {
+                expected_session_revision,
+                cue_list_id,
+                cue_entry_id,
+                scene_internal_id,
+                reply,
+            } => (
+                reply,
+                if expected_session_revision != self.event_bus.state().borrow().session_revision {
+                    Err("Cue edit canceled: session was replaced".to_string())
+                } else if scenes
+                    .iter()
+                    .any(|scene| scene.internal_scene_id == scene_internal_id)
+                {
+                    state
+                        .edit_cue_entry(cue_list_id, cue_entry_id, scene_internal_id)
+                        .map(changed)
+                } else {
+                    Err("Cue edit blocked: scene not found".to_string())
+                },
+            ),
+            CueListsCommand::InsertCueEntry {
+                expected_session_revision,
+                cue_list_id,
+                scene_internal_id,
+                insert_index,
+                expected_entry_ids,
+                reply,
+            } => (
+                reply,
+                if expected_session_revision != self.event_bus.state().borrow().session_revision {
+                    Err("Cue edit canceled: session was replaced".to_string())
+                } else if scenes
+                    .iter()
+                    .any(|scene| scene.internal_scene_id == scene_internal_id)
+                {
+                    state
+                        .insert_cue_entry(
+                            cue_list_id,
+                            scene_internal_id,
+                            insert_index,
+                            expected_entry_ids,
+                        )
+                        .map(|entry| CueListsCommandResult {
+                            entry: Some(entry),
+                            ..changed(true)
+                        })
+                } else {
+                    Err("Cue insert blocked: scene not found".to_string())
+                },
             ),
             CueListsCommand::RemoveCueEntry {
                 cue_entry_id,

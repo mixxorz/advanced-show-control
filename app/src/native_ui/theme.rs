@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use anyhow::Context as _;
-use gpui_kit::component::{Theme, ThemeMode};
+use gpui_kit::component::{Theme, ThemeMode, scroll::ScrollbarMode};
 use gpui_kit::{App, px, rgb};
 
 pub const CONSOLE_BG: u32 = 0x050506;
@@ -17,6 +17,29 @@ pub const CONSOLE_PRIMARY: u32 = 0xdedbd6;
 pub const CONSOLE_SECONDARY: u32 = 0xb8b3ab;
 pub const CONSOLE_MUTED: u32 = 0x8f8981;
 pub const CONSOLE_DISABLED: u32 = 0x56524d;
+
+pub const SCROLLBAR_WIDTH: f32 = 16.;
+pub const SCROLLBAR_CONTENT_INSET: f32 = SCROLLBAR_WIDTH + 12.;
+pub const CUE_ARROW_WIDTH: f32 = 22.;
+pub const CUE_LEFT_BORDER_WIDTH: f32 = 3.;
+pub const CUE_NUMBER_WIDTH: f32 = 64.;
+pub const CUE_ACTION_WIDTH: f32 = 72.;
+pub const CUE_ICON_HIT_SIZE: f32 = 28.;
+pub const CUE_TEXT_SIZE: f32 = 16.;
+pub const CUE_ROW_HEIGHT: f32 = 46.;
+pub const CUE_GAP_HIT_HEIGHT: f32 = 8.;
+pub const CUE_EMPTY_GAP_HEIGHT: f32 = 46.;
+pub const CUE_INSERT_CONTROL_HEIGHT: f32 = 20.;
+pub const CUE_SMALL_ICON_SIZE: f32 = 14.;
+pub const CUE_EDITOR_ICON_SIZE: f32 = CUE_TEXT_SIZE;
+pub const CUE_EDITOR_PADDING: f32 = 8.;
+pub const CUE_EDITOR_INPUT_TEXT_PADDING: f32 = CUE_ARROW_WIDTH - CUE_EDITOR_PADDING - 1.;
+pub const CUE_EDITOR_INPUT_HEIGHT: f32 = 40.;
+pub const CUE_EDITOR_SEARCH_GAP: f32 = 6.;
+pub const CUE_RESULT_HEIGHT: f32 = CUE_ROW_HEIGHT;
+pub const CUE_RESULT_SELECTED: u32 = 0x2b2117;
+pub const CUE_GAP_GLOW_OPACITY: f32 = 0.55;
+pub const CUE_GAP_GLOW_RADIUS: f32 = 8.;
 pub const ACCENT_ORANGE: u32 = 0xff8a00;
 pub const ACCENT_ORANGE_HOVER: u32 = 0xff9f2a;
 pub const ACCENT_ORANGE_ACTIVE: u32 = 0xc95700;
@@ -52,6 +75,7 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         theme.radius = px(2.5);
         theme.radius_lg = px(4.0);
         theme.shadow = false;
+        theme.scrollbar_mode = ScrollbarMode::Always;
 
         let colors = &mut theme.colors;
         colors.background = rgb(CONSOLE_BG).into();
@@ -91,7 +115,7 @@ pub fn install(cx: &mut App) -> anyhow::Result<()> {
         colors.tab_active_foreground = rgb(ACCENT_ORANGE).into();
         colors.title_bar = rgb(CONSOLE_CHROME).into();
         colors.title_bar_border = rgb(CONSOLE_LINE).into();
-        colors.scrollbar = rgb(CONSOLE_BG).into();
+        colors.scrollbar = rgb(CONSOLE_BG).opacity(0.).into();
         colors.scrollbar_thumb = rgb(CONSOLE_LINE_STRONG).into();
         colors.scrollbar_thumb_hover = rgb(CONSOLE_SECONDARY).into();
         colors.success = rgb(STATUS_CUED).into();

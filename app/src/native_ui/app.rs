@@ -834,6 +834,23 @@ impl AppRoot {
             cx.stop_propagation();
             return;
         }
+        let key = normalized_physical_key(&event.keystroke);
+        if !connection_modal_open
+            && !custom_modal_open
+            && !window.has_active_dialog(cx)
+            && !self.shell.read(cx).session_menu_open()
+            && self.shell.read(cx).active_tab() == MainTab::CueLists
+            && (self.cue_lists.read(cx).editor_focused(window, cx)
+                || (key == "Escape" && self.cue_lists.read(cx).editor_open()))
+        {
+            if self
+                .cue_lists
+                .update(cx, |view, cx| view.editor_key(&key, window, cx))
+            {
+                cx.stop_propagation();
+            }
+            return;
+        }
         let interaction = InteractionState {
             modal_open: connection_modal_open
                 || window.has_active_dialog(cx)

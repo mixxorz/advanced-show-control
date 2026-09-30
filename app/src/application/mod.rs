@@ -488,6 +488,42 @@ impl ApplicationCommandContext {
         .await
     }
 
+    pub async fn edit_cue_entry(
+        &self,
+        cue_list_id: Uuid,
+        cue_entry_id: Uuid,
+        scene_internal_id: Uuid,
+        expected_session_revision: u64,
+    ) -> Result<CueListsCommandResult, String> {
+        self.send_cue_mutation(|reply| CueListsCommand::EditCueEntry {
+            expected_session_revision,
+            cue_list_id,
+            cue_entry_id,
+            scene_internal_id,
+            reply: Some(reply),
+        })
+        .await
+    }
+
+    pub async fn insert_cue_entry(
+        &self,
+        cue_list_id: Uuid,
+        scene_internal_id: Uuid,
+        insert_index: usize,
+        expected_entry_ids: Vec<Uuid>,
+        expected_session_revision: u64,
+    ) -> Result<CueListsCommandResult, String> {
+        self.send_cue_mutation(|reply| CueListsCommand::InsertCueEntry {
+            expected_session_revision,
+            cue_list_id,
+            scene_internal_id,
+            insert_index,
+            expected_entry_ids,
+            reply: Some(reply),
+        })
+        .await
+    }
+
     pub async fn remove_cue_entry(
         &self,
         cue_entry_id: Uuid,

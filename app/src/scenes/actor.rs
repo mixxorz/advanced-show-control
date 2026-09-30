@@ -475,7 +475,7 @@ async fn run_scenes_actor(task: ScenesTask) {
                         }
                     }
                     Some(crate::cue_lists::CueListsCommand::Shutdown) | None => cue_commands_open = false,
-                    Some(command) => cues.dispatch(command),
+                    Some(command) => cues.dispatch(command, recall_state.scene_configs()),
                 }
             }
             () = cues.complete_recall(), if events.is_empty() && events.sender_strong_count() > 0 => {}
@@ -938,6 +938,7 @@ fn commit_session_replacement(
         recall_coordinator.cancel("session was replaced", true);
         cues.cancel_recall();
         cancel_queued_cue_recalls(cue_commands, retained_cue_commands, "session was replaced");
+        cancel_queued_cue_edits(retained_cue_commands);
         recall_state.replace_snapshot_for_session(document.scenes);
         cues.replace_document(
             document.cue_lists,
@@ -956,6 +957,22 @@ fn commit_session_replacement(
             cue_lists: cues.state.document(),
         }
     })
+}
+
+/// @cc [owner:mixxorz,label:persistence] replacement-cancels-inline-cue-edits
+/// Session replacement MUST reject queued inline edits and inserts before replacing documents,
+/// even when the replacement reuses the same list, entry, and scene UUIDs.
+fn cancel_queued_cue_edits(retained: &mut VecDeque<crate::cue_lists::CueListsCommand>) {
+    retained.retain_mut(|command| match command {
+        crate::cue_lists::CueListsCommand::EditCueEntry { reply, .. }
+        | crate::cue_lists::CueListsCommand::InsertCueEntry { reply, .. } => {
+            if let Some(reply) = reply.take() {
+                let _ = reply.send(Err("Cue edit canceled: session was replaced".to_string()));
+            }
+            false
+        }
+        _ => true,
+    });
 }
 
 fn cancel_queued_cue_recalls(

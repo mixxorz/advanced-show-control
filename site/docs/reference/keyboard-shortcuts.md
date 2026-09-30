@@ -12,6 +12,16 @@
 | **Save Session As…** | `CmdOrCtrl+Shift+S` |
 | **Quit** | `Cmd+Q` on macOS; `Alt+F4` on Windows |
 
+## Inline cue search
+
+| Action | Shortcut |
+| --- | --- |
+| Highlight a result | `Up` / `Down` |
+| Choose the highlighted scene | `Enter` |
+| Cancel editing or insertion | `Escape` |
+
+See [Edit and insert cues](../cue-lists.md#edit-and-insert-cues).
+
 ## GO and CUE
 
 | Action | Default |

@@ -6,6 +6,7 @@ use gpui_kit::{
 use crate::scenes::SceneConfig;
 
 use super::panel::panel_header_with_action;
+use super::theme::SCROLLBAR_CONTENT_INSET;
 use super::theme::{
     CONSOLE_LINE, CONSOLE_LINE_SOFT, CONSOLE_MUTED, CONSOLE_PANEL, CONSOLE_PRIMARY,
     CONSOLE_SECONDARY,
@@ -33,7 +34,8 @@ pub(super) fn scene_library_columns() -> Div {
         .flex()
         .items_center()
         .gap_3()
-        .px_3()
+        .pl_3()
+        .pr(px(SCROLLBAR_CONTENT_INSET))
         .py_2()
         .border_b_1()
         .border_color(rgb(CONSOLE_LINE_SOFT))
@@ -54,7 +56,8 @@ pub(super) fn scene_library_row(
         .justify_start()
         .line_height(relative(1.5))
         .gap_3()
-        .px_3()
+        .pl_3()
+        .pr(px(SCROLLBAR_CONTENT_INSET))
         .py_2()
         .border_b_1()
         .border_color(rgb(CONSOLE_LINE_SOFT))

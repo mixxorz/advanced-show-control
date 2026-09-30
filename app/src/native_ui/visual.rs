@@ -9,7 +9,9 @@ mod macos {
     use anyhow::{Context as _, Result};
     use gpui_kit::component::{Root, WindowExt as _};
     use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{AppContext as _, HeadlessAppContext, ScrollDelta, point, px, size};
+    use gpui_kit::{
+        AppContext as _, HeadlessAppContext, InputEvent as _, ScrollDelta, point, px, size,
+    };
     use uuid::Uuid;
 
     use crate::connection_state::{DiscoveredLv1Status, DiscoveredLv1System, Lv1SystemIdentity};
@@ -140,7 +142,7 @@ mod macos {
             })
             .context("failed to open native visual test window")?;
 
-        let mut offline = reference_snapshot(u64::MAX - 5, false);
+        let mut offline = reference_snapshot(u64::MAX - 7, false);
         offline.connection = AppConnectionState::Disconnected;
         offline.connected_lv1_identity = None;
         let measured_identity = offline.discovered_lv1_systems[0].identity.clone();
@@ -187,7 +189,7 @@ mod macos {
 
         ui_events
             .send(UiEvent::Snapshot(Box::new(reference_snapshot(
-                u64::MAX - 4,
+                u64::MAX - 6,
                 false,
             ))))
             .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
@@ -448,6 +450,238 @@ mod macos {
             }
             if selector == "tab-Cue Lists" {
                 cx.update_window(window.into(), |_, window, cx| {
+                    let viewport = window.find("active-cue-entries").bounds();
+                    let last = window
+                        .find("cue-entry-row-77777777-7777-4777-8777-777777777777")
+                        .bounds();
+                    let trailing = point(
+                        viewport.center().x,
+                        last.bottom() + (viewport.bottom() - last.bottom()) / 2.,
+                    );
+                    assert!(trailing.y > last.bottom() + px(16.));
+                    let before_drop = observed_dispatcher.dispatched_count();
+                    window.drag(
+                        window
+                            .find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                            .bounds()
+                            .center(),
+                        trailing,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 1,
+                        "dropping an existing cue below the last row must reorder it to the end"
+                    );
+                    window.drag(
+                        window
+                            .find("cue-scene-22222222-2222-4222-8222-222222222222")
+                            .bounds()
+                            .center(),
+                        trailing,
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 2,
+                        "dropping a scene below the last row must append a new cue"
+                    );
+                    window.drag(
+                        window
+                            .find("select-cue-entry-77777777-7777-4777-8777-777777777777")
+                            .bounds()
+                            .center(),
+                        trailing,
+                        cx,
+                    );
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 2,
+                        "dropping the last cue below itself must not submit an unchanged reorder"
+                    );
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                    window.click("insert-cue-1", cx);
+                    window.render_frame(cx);
+                    assert!(window.find("cue-trailing-drop-target").bounds().size.height > px(20.));
+                    window.drag_to(
+                        "select-cue-entry-44444444-4444-4444-8444-444444444444",
+                        "cue-trailing-drop-target",
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_drop + 3);
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    window.drag_to(
+                        "cue-scene-22222222-2222-4222-8222-222222222222",
+                        "cue-trailing-drop-target",
+                        cx,
+                    );
+                    assert_eq!(
+                        observed_dispatcher.dispatched_count(),
+                        before_drop + 3,
+                        "trailing drops must respect the pending insertion-marker order guard"
+                    );
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                })?;
+                let before_editor = observed_dispatcher.dispatched_count();
+                cx.update_window(window.into(), |_, window, cx| {
+                    assert!(window.try_find("cue-entry-append-drop").is_none());
+                    let first = window
+                        .find("cue-entry-row-44444444-4444-4444-8444-444444444444")
+                        .bounds();
+                    let second = window
+                        .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                        .bounds();
+                    assert_eq!(
+                        first.bottom(),
+                        second.top(),
+                        "insertion borders must not space cue rows apart"
+                    );
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                    assert_eq!(
+                        window
+                            .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                            .bounds(),
+                        second,
+                        "hover must not move cues"
+                    );
+                    assert_eq!(
+                        window.find("insert-cue-1").bounds().center().y,
+                        first.bottom(),
+                        "Insert cue must overlay the row border"
+                    );
+                    window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
+                    window.render_frame(cx);
+                    assert!(
+                        !window.find("insert-cue-1").visible(),
+                        "leaving the border must hide the insertion control"
+                    );
+                    window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+                    window.render_frame(cx);
+                    assert!(
+                        window
+                            .try_find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                            .is_none()
+                    );
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    assert!(window.try_find("cue-result-0").is_some());
+                    assert!(window.try_find("cue-result-3").is_none());
+                    for query in ["Op", "OPN", "Opening", "002"] {
+                        window.press("cmd-a", cx);
+                        window.input(query, cx);
+                        window.render_frame(cx);
+                        assert!(window.try_find("cue-result-0").is_some());
+                    }
+                    assert!(window.try_find("cue-result-1").is_none());
+                    let header = window.find("cue-header-number").bounds();
+                    let result = window.find("cue-result-number-0").bounds();
+                    let row = window
+                        .find("cue-entry-number-55555555-5555-4555-8555-555555555555")
+                        .bounds();
+                    assert_eq!(header.right(), result.right());
+                    assert_eq!(row.right(), result.right());
+                    assert_eq!(
+                        window.find("cue-result-0").bounds().bottom(),
+                        window
+                            .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                            .bounds()
+                            .top(),
+                        "the last result must meet the next cue without bottom padding"
+                    );
+                })?;
+                cx.capture_screenshot(window.into())?
+                    .save(output_dir.join("native-cue-edit.png"))
+                    .context("failed to save inline cue edit screenshot")?;
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-inline-search").is_none());
+                    assert!(window.is_action_available(&Quit, cx));
+                    assert!(
+                        window
+                            .try_find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                            .is_some()
+                    );
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                })?;
+                cx.capture_screenshot(window.into())?
+                    .save(output_dir.join("native-cue-insert-hover.png"))
+                    .context("failed to save cue insertion hover screenshot")?;
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("insert-cue-1", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-result-0").is_some());
+                    assert!(window.try_find("cue-result-1").is_some());
+                    assert!(window.try_find("cue-result-3").is_none());
+                    window.press("down", cx);
+                    window.press("up", cx);
+                })?;
+                cx.capture_screenshot(window.into())?
+                    .save(output_dir.join("native-cue-insert.png"))
+                    .context("failed to save inline cue insert screenshot")?;
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("edit-cue-entry-55555555-5555-4555-8555-555555555555", cx);
+                    window.render_frame(cx);
+                    assert!(
+                        window
+                            .try_find("select-cue-entry-55555555-5555-4555-8555-555555555555")
+                            .is_none()
+                    );
+                    window.press("cmd-a", cx);
+                    window.input("unmatched scene", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-result-0").is_none());
+                    window.press("enter", cx);
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find("cue-inline-search").is_none());
+                })?;
+                anyhow::ensure!(
+                    observed_dispatcher.dispatched_count() == before_editor,
+                    "searching or cancelling inline cue editing dispatched a command"
+                );
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+                    window.render_frame(cx);
+                    let before_drop = observed_dispatcher.dispatched_count();
+                    window.drag_to(
+                        "cue-scene-22222222-2222-4222-8222-222222222222",
+                        "cue-inline-editor",
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_drop + 1);
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                    window.hover("cue-insert-gap-1", cx);
+                    window.render_frame(cx);
+                    window.click("insert-cue-1", cx);
+                    window.render_frame(cx);
+                    let before_reorder = observed_dispatcher.dispatched_count();
+                    window.drag_to(
+                        "select-cue-entry-77777777-7777-4777-8777-777777777777",
+                        "select-cue-entry-44444444-4444-4444-8444-444444444444",
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_reorder + 1);
+                    assert!(window.try_find("cue-inline-search").is_some());
+                    window.click("cue-result-0", cx);
+                    window.drag_to(
+                        "select-cue-entry-66666666-6666-4666-8666-666666666666",
+                        "select-cue-entry-44444444-4444-4444-8444-444444444444",
+                        cx,
+                    );
+                    assert_eq!(observed_dispatcher.dispatched_count(), before_reorder + 1);
+                    window.press("escape", cx);
+                    window.render_frame(cx);
                     window.click("manage-cue-lists", cx);
                 })?;
                 cx.run_until_parked();
@@ -511,7 +745,7 @@ mod macos {
 
         ui_events
             .send(UiEvent::Snapshot(Box::new(reference_snapshot(
-                u64::MAX - 3,
+                u64::MAX - 5,
                 true,
             ))))
             .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
@@ -522,7 +756,7 @@ mod macos {
             .context("failed to save safe-state screenshot")?;
 
         let unlinked_id = Uuid::parse_str("55555555-5555-4555-8555-555555555555").unwrap();
-        let mut overwrite_state = reference_snapshot(u64::MAX - 2, false);
+        let mut overwrite_state = reference_snapshot(u64::MAX - 4, false);
         let mut unlinked = scene_config(unlinked_id, 0, "Imported Fade", 2_000);
         unlinked.scene_index = None;
         overwrite_state.scene_configs.push(unlinked);
@@ -561,6 +795,378 @@ mod macos {
             assert!(gpui_kit::base::active_focus_trap(window, cx).is_none());
         })?;
 
+        let mut polish = reference_snapshot(u64::MAX - 3, false);
+        polish.scene_configs.extend([
+            scene_config(Uuid::from_u128(0x88888888888848888888888888888888), 2, "Opening Reprise", 1_000),
+            scene_config(Uuid::from_u128(0x99999999999949998999999999999999), 9, "Blackout", 1_000),
+            scene_config(Uuid::from_u128(0xaaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa), 10, "Entr’acte – orchestra reset", 1_000),
+            scene_config(Uuid::from_u128(0xbbbbbbbbbbbb4bbb8bbbbbbbbbbbbbbb), 11, "An exceptionally long scene name to verify cue editor truncation and number alignment", 1_000),
+        ]);
+        polish
+            .scenes
+            .extend(polish.scene_configs.iter().skip(2).filter_map(|scene| {
+                Some(SceneSummary {
+                    index: scene.scene_index?,
+                    name: scene.scene_name.clone(),
+                })
+            }));
+        polish.scene_count = polish.scenes.len();
+        ui_events
+            .send(UiEvent::Snapshot(Box::new(polish.clone())))
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("tab-Cue Lists", cx);
+            window.clear_notifications(cx);
+            window.render_frame(cx);
+            window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+            assert!(
+                window
+                    .try_find("cue-entry-row-44444444-4444-4444-8444-444444444444")
+                    .is_some()
+            );
+        })?;
+        cx.run_until_parked();
+        let cue_number_right = cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-entry-row-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+            assert!(
+                !window.find("insert-cue-1").visible(),
+                "moving off the border must hide Insert cue"
+            );
+            let viewport = window.find("active-cue-entries").bounds();
+            let delete = window
+                .find("remove-cue-entry-44444444-4444-4444-8444-444444444444")
+                .bounds();
+            assert!(
+                viewport.right() - delete.right() >= px(24.),
+                "short lists must reserve space beyond the rightmost cue action"
+            );
+            window
+                .find("cue-entry-number-44444444-4444-4444-8444-444444444444")
+                .bounds()
+                .right()
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-rows.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-edit-hover.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("remove-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-delete-hover.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-insert-gap-1", cx);
+            window.render_frame(cx);
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-gap-hover.png"))?;
+        for index in [0, 1, 4] {
+            for edge in 0..4 {
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.hover(format!("cue-insert-gap-{index}"), cx);
+                    window.render_frame(cx);
+                    let button = window.find(format!("insert-cue-{index}")).bounds();
+                    window.click_at(
+                        format!("insert-cue-{index}"),
+                        gpui_kit::point(
+                            match edge {
+                                2 => gpui_kit::px(8.),
+                                3 => button.size.width - gpui_kit::px(8.),
+                                _ => button.size.width / 2.,
+                            },
+                            match edge {
+                                0 => gpui_kit::px(1.),
+                                1 => button.size.height - gpui_kit::px(1.),
+                                _ => button.size.height / 2.,
+                            },
+                        ),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert!(
+                        window.try_find("cue-inline-search").is_some(),
+                        "insertion line must be clickable at every edge at position {index}"
+                    );
+                    window.press("escape", cx);
+                    window.render_frame(cx);
+                })?;
+            }
+        }
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-insert-gap-1", cx);
+            window.render_frame(cx);
+            let line = window.find("cue-insert-gap-1").bounds();
+            window.click_at("cue-insert-gap-1", point(px(8.), line.size.height / 2.), cx);
+            window.render_frame(cx);
+            assert!(
+                window.try_find("cue-inline-search").is_some(),
+                "clicking the visible line outside its label must open Insert"
+            );
+            window.press("escape", cx);
+            window.render_frame(cx);
+            window.click("edit-cue-entry-44444444-4444-4444-8444-444444444444", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-inline-search").is_some());
+            assert!(
+                window
+                    .try_find("select-cue-entry-44444444-4444-4444-8444-444444444444")
+                    .is_none()
+            );
+            assert!(window.try_find("cue-result-1").is_some());
+            assert_eq!(
+                window.find("cue-header-number").bounds().right(),
+                window.find("cue-result-number-0").bounds().right()
+            );
+            assert_eq!(
+                window
+                    .find("cue-entry-number-55555555-5555-4555-8555-555555555555")
+                    .bounds()
+                    .right(),
+                window.find("cue-result-number-0").bounds().right()
+            );
+        })?;
+        let polish_edit = cx.capture_screenshot(window.into())?;
+        polish_edit.save(output_dir.join("native-cue-polish-edit-prefilled.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.hover("cue-result-1", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("cue-result-1").bounds().bottom(),
+                window
+                    .find("cue-entry-row-55555555-5555-4555-8555-555555555555")
+                    .bounds()
+                    .top()
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-search-last-hover.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.input("OPN", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-1").is_some());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-fuzzy.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("cmd-a", cx);
+            window.input("010", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_some());
+            assert!(window.try_find("cue-result-1").is_none());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-number.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("cmd-a", cx);
+            window.input("exceptionally", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_some());
+            assert_eq!(
+                window.find("cue-header-number").bounds().right(),
+                window.find("cue-result-number-0").bounds().right()
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-long-name.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("cmd-a", cx);
+            window.input("zzzzzzz-no-scene", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_none());
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-no-results.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.press("escape", cx);
+            window.render_frame(cx);
+            window.hover("cue-insert-gap-1", cx);
+            window.render_frame(cx);
+            let insert = window.find("insert-cue-1").bounds();
+            window.click_at(
+                "insert-cue-1",
+                gpui_kit::point(insert.size.width / 2., gpui_kit::px(1.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(window.try_find("cue-result-0").is_some());
+            assert!(window.try_find("cue-result-2").is_some());
+            assert!(window.try_find("cue-result-3").is_none());
+        })?;
+        let polish_insert = cx.capture_screenshot(window.into())?;
+        polish_insert.save(output_dir.join("native-cue-polish-insert-empty.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.click("cancel-cue-editor", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("cue-inline-search").is_none());
+        })?;
+        let mut scrolled = polish.clone();
+        scrolled.state_version = u64::MAX - 2;
+        scrolled.scene_configs.extend((6..40).map(|index| {
+            scene_config(
+                Uuid::from_u128(500 + index as u128),
+                index,
+                &format!("Scene {:03}", index + 1),
+                1_000,
+            )
+        }));
+        scrolled.scenes = scrolled
+            .scene_configs
+            .iter()
+            .filter_map(|scene| {
+                Some(SceneSummary {
+                    index: scene.scene_index?,
+                    name: scene.scene_name.clone(),
+                })
+            })
+            .collect();
+        scrolled.scene_count = scrolled.scenes.len();
+        let sample = scrolled.cue_lists[0].entries[0].clone();
+        scrolled.cue_lists[0].entries = (0..40)
+            .map(|index| CueEntry {
+                id: Uuid::from_u128(100 + index),
+                ..sample.clone()
+            })
+            .collect();
+        ui_events
+            .send(UiEvent::Snapshot(Box::new(scrolled)))
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let before_scroll = observed_dispatcher.dispatched_count();
+            assert_eq!(
+                window.find("cue-trailing-drop-target").bounds().size.height,
+                px(0.),
+                "the trailing drop target must not extend an overflowing list"
+            );
+            let viewport = window.find("active-cue-entries").bounds();
+            let delete = window
+                .find("remove-cue-entry-00000000-0000-0000-0000-000000000064")
+                .bounds();
+            assert!(
+                viewport.right() - delete.right() >= px(24.),
+                "overflowing lists must leave space between cue actions and the scrollbar"
+            );
+            assert_eq!(
+                window
+                    .find("cue-entry-number-00000000-0000-0000-0000-000000000064")
+                    .bounds()
+                    .right(),
+                cue_number_right,
+                "cue columns must not shift when the scrollbar appears"
+            );
+            for index in 1..=3 {
+                let row = "cue-entry-row-00000000-0000-0000-0000-000000000064";
+                let before = window.find(row).bounds().top();
+                window.hover(format!("cue-insert-gap-{index}"), cx);
+                window.render_frame(cx);
+                window.scroll(
+                    format!("insert-cue-{index}"),
+                    ScrollDelta::Pixels(point(px(0.), px(-46.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert!(
+                    window.find(row).bounds().top() < before,
+                    "scrolling over the insertion line must move the cue list"
+                );
+            }
+            let viewport = window.find("active-cue-entries").bounds();
+            let row = "cue-entry-row-00000000-0000-0000-0000-000000000064";
+            let before_drag = window.find(row).bounds().top();
+            window.drag(
+                point(viewport.right() - px(8.), viewport.top() + px(100.)),
+                point(viewport.right() - px(8.), viewport.top() + px(200.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                window.find(row).bounds().top() < before_drag,
+                "dragging the scrollbar thumb must move the cue list"
+            );
+            assert!(
+                window.try_find("cue-inline-search").is_none(),
+                "dragging the scrollbar must not open Insert"
+            );
+            assert_eq!(
+                observed_dispatcher.dispatched_count(),
+                before_scroll,
+                "scrolling must not insert or select a cue"
+            );
+        })?;
+        let cue_scrollbar = cx.capture_screenshot(window.into())?;
+        cue_scrollbar.save(output_dir.join("native-cue-scrollbar.png"))?;
+        cx.update_window(window.into(), |_, window, cx| {
+            window.scroll(
+                "active-cue-entries",
+                ScrollDelta::Pixels(point(px(0.), px(-10_000.))),
+                cx,
+            );
+            let viewport = window.find("active-cue-entries").bounds();
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position: point(viewport.center().x, viewport.bottom() - px(1.)),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.render_frame(cx);
+            let button = window.find("insert-cue-40").bounds();
+            assert!(window.try_find("cue-inline-search").is_none());
+            assert!(button.bottom() > viewport.bottom());
+            window.click_at(
+                "insert-cue-40",
+                point(button.size.width / 2., button.size.height - px(1.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(
+                window.try_find("cue-inline-search").is_none(),
+                "clipped insertion control must not receive clicks outside the scroll viewport"
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-border-scroll-clip.png"))?;
+        polish.state_version = u64::MAX;
+        polish.cue_lists[0].entries.clear();
+        polish.current_cue_entry_id = None;
+        polish.cued_cue_entry_id = None;
+        ui_events
+            .send(UiEvent::Snapshot(Box::new(polish)))
+            .map_err(|_| anyhow::anyhow!("native visual event receiver closed"))?;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("cue-insert-gap-0").is_some());
+            let before_drop = observed_dispatcher.dispatched_count();
+            window.drag(
+                window
+                    .find("cue-scene-22222222-2222-4222-8222-222222222222")
+                    .bounds()
+                    .center(),
+                window.find("active-cue-entries").bounds().center(),
+                cx,
+            );
+            window.render_frame(cx);
+            assert_eq!(
+                observed_dispatcher.dispatched_count(),
+                before_drop + 1,
+                "dropping a scene into an empty cue list must append its first cue"
+            );
+        })?;
+        cx.capture_screenshot(window.into())?
+            .save(output_dir.join("native-cue-polish-empty-list.png"))?;
+
         let dimensions = ready.dimensions();
         for image in [&connection, &session_menu]
             .into_iter()
@@ -585,6 +1191,21 @@ mod macos {
         );
 
         let visual_snapshots = [
+            (
+                "native-cue-scrollbar",
+                visual_signature!(cue_scrollbar),
+                include_bytes!("visual_snapshots/native-cue-scrollbar.rgb").as_slice(),
+            ),
+            (
+                "native-cue-polish-edit-prefilled",
+                visual_signature!(polish_edit),
+                include_bytes!("visual_snapshots/native-cue-polish-edit-prefilled.rgb").as_slice(),
+            ),
+            (
+                "native-cue-polish-insert-empty",
+                visual_signature!(polish_insert),
+                include_bytes!("visual_snapshots/native-cue-polish-insert-empty.rgb").as_slice(),
+            ),
             (
                 "native-connection",
                 visual_signature!(connection),
