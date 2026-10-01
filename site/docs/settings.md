@@ -34,6 +34,12 @@ Press `Escape` to cancel. Hold Shift, Control, Alt, or Meta with the key when ne
 
 Shortcuts do not operate while you are entering text or working in a dialog. Holding a shortcut does not repeat CUE or GO. A shortcut does not bypass **SAFE**, connection checks, or the LV1 scene number-and-name check.
 
+### Updates
+
+**Automatically check for updates** is on by default. Automatic checks only look for available updates; they do not download or install them. You explicitly initiate download and installation, and the app restarts for an update only after you confirm.
+
+**Include nightly updates** is off by default. Leave it off for stable releases, which are recommended for show use. Enable it to include experimental nightly builds; rehearse and test these builds before using them in a show.
+
 ### Time display
 
 Choose **24 hour** or **12 hour** to control the clock format in the bottom status bar. The default is **24 hour**.

@@ -673,6 +673,29 @@ impl Render for SettingsView {
                             this.update(cx, |s| s.enable_extensive_diagnostics = *checked)
                         }),
                     ))
+                    .child(section_title("UPDATES"))
+                    .child(self.toggle_row(
+                        "automatically-check-for-updates",
+                        "Automatically check for updates",
+                        settings.automatically_check_for_updates,
+                        cx.listener(|this, checked, _, cx| {
+                            this.update(cx, |s| s.automatically_check_for_updates = *checked)
+                        }),
+                    ))
+                    .child(self.toggle_row(
+                        "include-nightly-updates",
+                        "Include nightly updates",
+                        settings.include_nightly_updates,
+                        cx.listener(|this, checked, _, cx| {
+                            this.update(cx, |s| s.include_nightly_updates = *checked)
+                        }),
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(rgb(CONSOLE_MUTED))
+                            .child("Stable releases are recommended for show use. Nightly builds are experimental. Automatic checks do not download or install updates. Download and installation are explicitly initiated; updates restart the app only after confirmation."),
+                    )
                     .child(section_title("KEYBOARD SHORTCUTS"))
                     .child(self.shortcut_row(
                         ShortcutAction::Go,
@@ -905,6 +928,106 @@ fn format_shortcut(shortcut: &KeyboardShortcut) -> SharedString {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui_kit::test]
+    fn updater_switches_dispatch_complete_settings_replacements(cx: &mut gpui_kit::TestAppContext) {
+        use crate::settings::{SettingsCommand, SettingsCommandResult};
+        use gpui_kit::component::Root;
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{AppContext as _, size};
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let (settings, mut mailbox) = tokio::sync::mpsc::channel(8);
+        let dispatcher = {
+            let _entered = runtime.enter();
+            let events = crate::runtime::events::AppEventBus::default();
+            let (show, _task, peers, lockout) = crate::show::build_show_actor(events.clone());
+            let lifecycle = crate::lifecycle::AppLifecycle::new(
+                events,
+                show.clone(),
+                peers,
+                lockout,
+                settings.clone(),
+            );
+            let (logs, _) = tokio::sync::broadcast::channel(8);
+            let commands =
+                crate::application::ApplicationCommandContext::new(lifecycle, show, settings, logs);
+            let (events, _) = tokio::sync::mpsc::unbounded_channel();
+            CommandDispatcher::new(runtime.handle().clone(), commands, events)
+        };
+        let original = AppSettings {
+            auto_save_sessions: true,
+            asc_recall_interval_ms: 1200,
+            ..Default::default()
+        };
+        cx.update(gpui_kit::init);
+        let handle = cx.open_window(size(px(800.), px(1400.)), |window, cx| {
+            let view = cx.new(|cx| {
+                SettingsView::new(
+                    AppViewState {
+                        settings: original.clone(),
+                        ..Default::default()
+                    },
+                    dispatcher,
+                    window,
+                    cx,
+                )
+            });
+            Root::new(view, window, cx)
+        });
+        for (id, label, automatic, nightly) in [
+            (
+                "automatically-check-for-updates",
+                "Automatically check for updates",
+                false,
+                false,
+            ),
+            (
+                "include-nightly-updates",
+                "Include nightly updates",
+                false,
+                true,
+            ),
+            (
+                "automatically-check-for-updates",
+                "Automatically check for updates",
+                true,
+                true,
+            ),
+            (
+                "include-nightly-updates",
+                "Include nightly updates",
+                true,
+                false,
+            ),
+        ] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(window.find(id).label(), Some(label));
+                window.click(id, cx);
+            })
+            .unwrap();
+            let command = runtime.block_on(async {
+                tokio::time::timeout(std::time::Duration::from_secs(2), mailbox.recv())
+                    .await
+                    .unwrap()
+                    .unwrap()
+            });
+            let SettingsCommand::ReplaceSettings { settings, reply } = command else {
+                panic!("expected full settings replacement")
+            };
+            let mut expected = original.clone();
+            expected.automatically_check_for_updates = automatic;
+            expected.include_nightly_updates = nightly;
+            assert_eq!(settings, expected);
+            reply
+                .send(Ok(SettingsCommandResult { changed: true }))
+                .unwrap();
+        }
+    }
 
     #[test]
     fn numeric_settings_accept_typed_units_and_clamp_to_domain_ranges() {
