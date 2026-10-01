@@ -14,6 +14,7 @@ use crate::lv1::TcpConnectProbeResult;
 use crate::projector::{AppViewState, ProjectionSubscription};
 use crate::runtime::errors::AppCommandError;
 use crate::show::ShowSessionState;
+use crate::updates::UpdateInstallPlan;
 
 #[derive(Debug)]
 pub enum UiEvent {
@@ -38,6 +39,16 @@ pub enum UiEvent {
         query_id: u64,
         persisted_edit_epoch: u64,
         result: Result<ShowSessionState, String>,
+    },
+    UpdateInstallPrepared {
+        command_id: u64,
+        result: Result<UpdateInstallPlan, String>,
+    },
+    UpdateShutdownPrepared {
+        command_id: u64,
+        expected_revision: Option<u64>,
+        expected_edit_epoch: Option<u64>,
+        result: Result<UpdateInstallPlan, String>,
     },
     LatencyMeasured {
         session_id: u64,
@@ -219,6 +230,44 @@ impl CommandDispatcher {
         self.commands
             .admit_persisted_session_revision(expected_revision, quit)
             .is_some()
+    }
+
+    pub fn prepare_update_install(&self) -> u64 {
+        let command_id = self.next_command_id();
+        let commands = self.commands.clone();
+        let ui_events = self.ui_events.clone();
+        let _ = ui_events.send(UiEvent::CommandStarted { command_id });
+        self.runtime.spawn(async move {
+            let result = commands.prepare_update_install().await;
+            let _ = ui_events.send(UiEvent::UpdateInstallPrepared { command_id, result });
+        });
+        command_id
+    }
+
+    pub fn disconnect_for_update(
+        &self,
+        plan: UpdateInstallPlan,
+        expected_revision: Option<u64>,
+        expected_edit_epoch: Option<u64>,
+    ) -> u64 {
+        let command_id = self.next_command_id();
+        let commands = self.commands.clone();
+        let ui_events = self.ui_events.clone();
+        let _ = ui_events.send(UiEvent::CommandStarted { command_id });
+        self.runtime.spawn(async move {
+            let result = commands.disconnect_lv1().await.map(|_| plan);
+            let _ = ui_events.send(UiEvent::UpdateShutdownPrepared {
+                command_id,
+                expected_revision,
+                expected_edit_epoch,
+                result,
+            });
+        });
+        command_id
+    }
+
+    pub fn arm_update_install(&self, plan: UpdateInstallPlan) -> Result<(), String> {
+        self.commands.arm_update_install(plan)
     }
 
     pub fn query_show_session_state(&self) -> u64 {

@@ -4,11 +4,16 @@
 )]
 
 /// @cc [owner:mixxorz,label:platform] production-entrypoint-boundary
-/// The production binary MUST construct the production GPUI host and terminate startup with an
-/// explicit error if either the automation runtime or native window cannot be initialized. Release
+/// Ordinary launches MUST construct the production GPUI host and terminate startup with an
+/// explicit error if either the automation runtime or native window cannot be initialized.
+/// Velopack lifecycle hooks MUST run before GPUI initialization; downloaded updates MUST NOT
+/// auto-apply at startup. Release
 /// builds on Windows MUST use the GUI subsystem so launching the app does not create a console
 /// window; debug builds MUST retain the console subsystem for development diagnostics.
 fn main() {
+    velopack::VelopackApp::build()
+        .set_auto_apply_on_startup(false)
+        .run();
     if let Err(error) = advanced_show_control::native_ui::run() {
         let message = format!("Advanced Show Control could not start:\n\n{error:#}");
         report_startup_error(&message);

@@ -21,8 +21,8 @@ pub enum RuntimeLifecycleEvent {
 /// @cc [owner:mixxorz,label:architecture] event-lifetime-classification
 /// `Lv1` and `Fade` facts MUST carry the connection generation that produced them. `Scenes` and
 /// `SessionReplaced` generations are runtime context for app-lifetime documents, while `CueLists`,
-/// `Show`, and `Settings` are also app-lifetime; consumers MUST NOT discard any of these app-lifetime
-/// facts based on generation.
+/// `Show`, `Settings`, and `Updates` are also app-lifetime; consumers MUST NOT discard any of these
+/// app-lifetime facts based on generation.
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum AppEvent {
@@ -47,6 +47,7 @@ pub enum AppEvent {
     },
     Show(ShowProjectionState),
     Settings(SettingsEvent),
+    Updates(crate::updates::UpdateState),
 }
 
 #[derive(Clone)]

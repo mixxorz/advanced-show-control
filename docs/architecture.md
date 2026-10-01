@@ -16,6 +16,7 @@ The production crate is `app/`. Domain actors and services live under `app/src/`
 | `cue_lists` | Synchronous domain component inside the Scenes actor. Holds cue documents, active/cued entries, and the runtime current-cue identity; has no task, peers, or event subscription. |
 | `show`      | App-lifetime actor. Owns show-file metadata/dirty state, lockout, discovery/connected-LV1 metadata, and persistence orchestration.              |
 | `settings`  | App-lifetime actor. Owns app settings and private remembered LV1 identity in app-config `settings.json`.                                        |
+| `updates`   | App-lifetime owner. Checks and downloads Velopack releases, owns available/downloaded intent, and supplies deferred installation plans.           |
 | `lifecycle` | Owns connection-generation transitions and generation-scoped peer installation/removal.                                                         |
 | `projector` | App-lifetime `AppViewState` cache and sole publisher to the native projection sink.                                                            |
 | `runtime`   | Owns `AppEventBus`, lifecycle facts, generation guards, and UI-safe command errors.                                                             |
@@ -40,9 +41,10 @@ CueLists(state)
 SessionReplaced { generation, scenes, cue_lists }
 Show(state)
 Settings(event)
+Updates(state)
 ```
 
-LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, and Settings facts are app-lifetime. The production event bus retains 4,096 facts so normal LV1 parameter bursts do not immediately overrun a temporarily occupied subscriber.
+LV1 and Fade facts are generation-bound and consumers ignore stale generations. Scenes facts carry a generation for runtime context, but their document is app-lifetime; projector and Show do not discard valid document facts solely because of that tag. Cue Lists, Show, Settings, and Updates facts are app-lifetime. The production event bus retains 4,096 facts so normal LV1 parameter bursts do not immediately overrun a temporarily occupied subscriber.
 
 `Lv1Event::PingReceived { sequence }` is an operational keepalive fact: it drives post-recall Fade readiness and is not presented UI state. `SceneObservation { sequence, scene }` is a connection-local sequence. It identifies an observation occurring _after_ an ASC recall dispatch; it is not a durable scene ID or general ordering guarantee. Fade continues processing relevant LV1 and generation facts while a fresh LV1 snapshot request is pending, so snapshot latency does not suspend readiness, manual override, or disconnect handling.
 
@@ -144,6 +146,38 @@ The projector accepts LV1/Fade facts only for its active generation. It receives
 Every emitted `AppViewState` has a monotonically increasing `state_version`. The GPUI bridge applies a snapshot only when its version is newer than the latest accepted version; command completion and projection delivery may arrive out of order and must not overwrite newer UI state.
 
 On broadcast lag, the projector drains queued facts, resets generation-bound cache state, and obtains an authoritative connected LV1 snapshot when possible. Recovery is bounded; retained-state and log inputs remain responsive, while post-cutoff generation facts wait in an actor-owned bounded queue for ordered replay. Queue overflow establishes a new cutoff and restarts recovery. Recovery falls back to disconnected state if LV1 is unavailable or the generation changed. App-lifetime projections remain available through the watch snapshot without mailbox recovery, including for late subscribers.
+
+## Software Updates
+
+Velopack owns the installed application layout and update replacement on Windows and macOS. Its
+lifecycle hooks run before GPUI starts, with startup auto-apply explicitly disabled. Development
+executables and old non-Velopack distributions do not check the network for updates.
+
+The app-lifetime Updates owner reads retained Settings policy. Automatic checks run at startup and
+every six hours when enabled; checks and downloads execute on blocking workers without holding an
+LV1 mailbox or GPUI thread. Checks never download, and downloads never install. A channel change
+clears available/downloaded intent and rejects stale worker completions. Update state enters GPUI
+through the same complete, versioned projector snapshots as the other app-lifetime domains and
+never advances the persisted-session revision.
+
+Stable checks use the latest GitHub release's download endpoint. Nightly checks use Velopack's
+GitHub source and the platform-specific nightly channel. Disabling nightlies waits for a newer
+stable build rather than automatically downgrading the installed app.
+
+**Software Updates…** in the session menu (and macOS application menu) offers explicit download and
+**Update and restart** actions. Restart enters the existing dirty-session Save/Discard/Cancel guard.
+After admission, the host requests lifecycle disconnect off the GPUI thread, then revalidates the
+owner's persisted revision and UI edit-submission epoch before arming a bounded in-memory
+installation plan and quitting. Only
+this explicit continuation arms installation; ordinary Quit never installs a downloaded update.
+The native quit hook starts Velopack's helper, which waits for the current process to exit before
+applying and restarting. This handoff must happen before AppKit termination, not in code after the
+native application loop. Existing native shutdown cleanup remains in place.
+
+Velopack may terminate remaining package processes on Windows during replacement. This workflow
+assumes one ASC instance per computer and explicit consent to quit when updating. Settings and logs
+use the existing app-data directory. Users must keep show files outside the replaceable installation
+directory.
 
 ## Debug Smoke Boundary
 

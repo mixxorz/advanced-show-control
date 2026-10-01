@@ -53,7 +53,8 @@ actions!(
         OpenShow,
         Quit,
         SaveShow,
-        SaveShowAs
+        SaveShowAs,
+        SoftwareUpdates
     ]
 );
 
@@ -143,6 +144,7 @@ impl RenderOnce for SessionMenuPopover {
                                 .menu("Save Session", Box::new(SaveShow))
                                 .menu("Save Session As…", Box::new(SaveShowAs))
                                 .separator()
+                                .menu("Software Updates…", Box::new(SoftwareUpdates))
                                 .menu("Quit", Box::new(Quit))
                         });
                         menu_state.update(cx, |state, _| state.menu = Some(menu.clone()));
@@ -179,6 +181,7 @@ impl RenderOnce for SessionMenuPopover {
 fn application_menu() -> Menu {
     Menu::new("Advanced Show Control").items([
         MenuItem::action("About Advanced Show Control", About),
+        MenuItem::action("Software Updates…", SoftwareUpdates),
         MenuItem::separator(),
         MenuItem::os_submenu("Services", SystemMenuType::Services),
         MenuItem::separator(),
@@ -273,6 +276,10 @@ mod tests {
             );
             assert_eq!(
                 window.within("popup-menu").find(7usize).label().as_deref(),
+                Some("Software Updates…")
+            );
+            assert_eq!(
+                window.within("popup-menu").find(8usize).label().as_deref(),
                 Some("Quit")
             );
             window.within("popup-menu").click(0usize, cx);
@@ -289,9 +296,9 @@ mod tests {
     fn macos_application_menu_has_standard_items() {
         let menu = application_menu();
         assert_eq!(menu.name.as_ref(), "Advanced Show Control");
-        assert_eq!(menu.items.len(), 8);
+        assert_eq!(menu.items.len(), 9);
         assert!(matches!(
-            &menu.items[2],
+            &menu.items[3],
             MenuItem::SystemMenu(os_menu)
                 if os_menu.name.as_ref() == "Services"
                     && os_menu.menu_type == SystemMenuType::Services
@@ -308,6 +315,7 @@ mod tests {
             action_names,
             [
                 "About Advanced Show Control",
+                "Software Updates…",
                 "Hide Advanced Show Control",
                 "Hide Others",
                 "Quit Advanced Show Control",

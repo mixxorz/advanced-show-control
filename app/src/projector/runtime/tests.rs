@@ -107,6 +107,28 @@ async fn projector_starts_from_latest_state_even_when_published_before_subscript
 }
 
 #[tokio::test]
+async fn updates_are_retained_for_late_projection_and_survive_generation_change() {
+    let events = AppEventBus::default();
+    let updates = crate::updates::UpdateState {
+        status: crate::updates::UpdateStatus::Available,
+        available_version: Some("2026.601.1200".into()),
+        current_version: Some("2026.601.1100".into()),
+        error: None,
+    };
+    events.publish(AppEvent::Updates(updates.clone()));
+    let mut test = ProjectorTest::new(events);
+    assert_eq!(test.snapshot().await.updates, updates);
+    test.events.publish_runtime_generation_changed(9);
+    assert_eq!(test.snapshot().await.updates, updates);
+    let ready = crate::updates::UpdateState {
+        status: crate::updates::UpdateStatus::Ready,
+        ..updates
+    };
+    test.events.publish(AppEvent::Updates(ready.clone()));
+    assert_eq!(test.snapshot().await.updates, ready);
+}
+
+#[tokio::test]
 async fn projector_emits_ui_log_entries_from_log_input() {
     let mut test = ProjectorTest::new(AppEventBus::default());
     test.logs
