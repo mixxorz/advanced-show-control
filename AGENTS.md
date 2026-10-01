@@ -2,7 +2,7 @@
 
 ## Project Context
 
-This project is a native Rust desktop app built with GPUI Kit. It adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows. Supported production targets are macOS 15 or newer and Windows 10 or newer.
+This project is a native Rust desktop app built with GPUI Kit. It adds timed fader fades to Waves eMotion LV1 and LV1 Classic scene workflows. Supported production targets are macOS 15 or newer and 64-bit Windows 10 version 1703 or newer.
 
 Project layout:
 
@@ -135,7 +135,7 @@ make package-windows RELEASE_ID="local"
 make probe ARGS="..."
 ```
 
-`make dev` runs the GPUI application. `make visual-test` runs the GPUI native visual/component tests on macOS. The package targets create distributable archives under `dist/release/`; macOS packaging requires macOS and builds an ad-hoc-signed universal `.app` without Developer ID signing or notarization, while Windows packaging creates an unsigned archive and requires PowerShell and the MSVC x64 target. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
+`make dev` runs the GPUI application. `make visual-test` runs the GPUI native visual/component tests on macOS. The package targets use Velopack to create distributions and update feeds under `dist/release/`. Both require Python 3 and .NET 8, with local tooling and caches under `dist/`. macOS packaging requires macOS and builds an ad-hoc-signed universal `.app` ZIP without Developer ID signing or notarization. Windows packaging creates unsigned per-user MSI, setup, and portable ZIP distributions and requires PowerShell 7 and the MSVC x64 target. See `docs/releases.md` for release versions, channels, and updater behavior. `make probe` runs the LV1 probe CLI and forwards optional `ARGS`.
 
 Debug smoke target:
 

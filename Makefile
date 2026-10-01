@@ -2,7 +2,7 @@
 	rust-fmt rust-lint rust-test rust-build \
 	dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-check dev-tools-build \
 	docs-install docs-build docs-serve dev dev-watch gallery probe smoke \
-	visual-test visual-update package-macos package-windows
+	visual-test visual-update package-macos package-windows release-test
 
 DOCS_VENV := .venv-docs
 DOCS_PYTHON := $(DOCS_VENV)/bin/python
@@ -29,7 +29,8 @@ help:
 	  '  make visual-test          Run GPUI native visual/component tests (macOS)' \
 	  '  make visual-update        Update reviewed native visual snapshots (macOS)' \
 	  '  make package-macos        Build an ad-hoc-signed universal macOS app archive' \
-	  '  make package-windows      Build an unsigned Windows x64 app archive' \
+	  '  make package-windows      Build Velopack Windows MSI, setup, ZIP, and update assets' \
+	  '  make release-test         Check release versions and updater payloads' \
 	  '' \
 	  'Development-tool targets:' \
 	  '  make probe                Run LV1 probe CLI (pass ARGS="...")' \
@@ -98,10 +99,13 @@ visual-update:
 	ASC_UPDATE_NATIVE_VISUALS=1 cargo run -p advanced-show-control --features debug-tools --bin native-visual-test -- dist/visual
 
 package-macos:
-	./scripts/package-macos.sh "$(or $(RELEASE_ID),local)"
+	./scripts/package-macos.sh "$(or $(RELEASE_ID),local)" "$(RELEASE_VERSION)"
 
 package-windows:
-	powershell -ExecutionPolicy Bypass -File scripts/package-windows.ps1 -ReleaseId "$(or $(RELEASE_ID),local)"
+	pwsh -NoProfile -File scripts/package-windows.ps1 -ReleaseId "$(or $(RELEASE_ID),local)" -ReleaseVersion "$(RELEASE_VERSION)"
+
+release-test:
+	python3 -m unittest discover -s scripts/tests -p 'test_*.py'
 
 probe:
 	cargo run --manifest-path dev-tools/Cargo.toml --bin lv1-probe -- $(ARGS)

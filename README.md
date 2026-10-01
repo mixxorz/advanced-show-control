@@ -47,7 +47,9 @@ Prefer `cargo nextest run` for Rust tests, including targeted checks such as `ca
 
 `pre-commit` runs Rust formatting and workspace-wide clippy. It does not run tests.
 
-Native UI interaction and screenshot-regression tests run on macOS with `make visual-test`; update reviewed snapshots with `make visual-update`. Build distributable archives with `make package-macos RELEASE_ID="local"` on macOS or `make package-windows RELEASE_ID="local"` on Windows. The Windows executable is unsigned; the macOS app is ad-hoc signed, not Developer ID signed or notarized.
+Native UI interaction and screenshot-regression tests run on macOS with `make visual-test`; update reviewed snapshots with `make visual-update`. Velopack packages the app with `make package-macos RELEASE_ID="local"` on macOS or `make package-windows RELEASE_ID="local"` on Windows. Packaging requires Python 3 and .NET 8; tooling and caches stay under `dist/`. Windows produces a per-user MSI, setup executable, and portable ZIP; macOS produces a universal app ZIP. The Windows executable is unsigned; the macOS app is ad-hoc signed, not Developer ID signed or notarized. Windows requires version 1703 or newer for system ICU.
+
+Packaged installations check GitHub Releases automatically unless disabled in Settings. A separate setting enables nightly updates. **Software Updates…** in the session menu offers download and explicit **Update and restart**, preserving the unsaved-session prompt. Development builds and old non-Velopack distributions need a one-time installation of a new packaged release. See [Packaging and software updates](docs/releases.md) for channels, release assets, and verification limits.
 
 The separate tools run with `make probe ARGS="..."` and `make smoke`. Hardware smoke requires an LV1-compatible environment. After every smoke run, inspect `logs/debug-smoke-report.txt`; it is the authoritative suite result, not terminal output.
 

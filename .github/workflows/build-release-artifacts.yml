@@ -4,13 +4,48 @@ on:
   workflow_call:
     inputs:
       release_id:
-        description: Identifier included in release asset names
+        description: Identifier included in human-facing release asset names
         required: true
         type: string
+      release_version:
+        description: Optional shared numeric version; otherwise resolved once from UTC build time
+        required: false
+        type: string
+        default: ""
 
 jobs:
+  resolve-version:
+    name: Resolve shared release version
+    runs-on: ubuntu-latest
+    outputs:
+      release_version: ${{ steps.metadata.outputs.release_version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Test release metadata and payload validators
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3 -m unittest discover -s scripts/tests -p 'test_*.py'
+
+      - name: Resolve one version for both platforms
+        id: metadata
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          args=(--release-id "$RELEASE_ID" --format github)
+          if [[ -n "$RELEASE_VERSION" ]]; then args+=(--release-version "$RELEASE_VERSION"); fi
+          python3 scripts/release-metadata.py "${args[@]}" >> "$GITHUB_OUTPUT"
+
   build-windows:
     name: Build Windows x64
+    needs: resolve-version
     runs-on: windows-latest
     steps:
       - name: Check out repository
@@ -21,22 +56,64 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Cache Rust build outputs
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK for repo-local Velopack
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Set up MSVC import inspection
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Cache Rust release build outputs
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> dist/build/windows"
+          key: windows-release-static-crt
 
-      - name: Build Windows archive
+      - name: Build Velopack Windows packages and feed
         shell: pwsh
-        run: ./scripts/package-windows.ps1 -ReleaseId "${{ inputs.release_id }}"
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.release_version }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: ./scripts/package-windows.ps1 -ReleaseId $env:RELEASE_ID -ReleaseVersion $env:RELEASE_VERSION
 
-      - name: Upload Windows release artifact
+      - name: Smoke test Velopack MSI on disposable runner
+        shell: pwsh
+        env:
+          CI: "true"
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.release_version }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: ./scripts/tests/windows-installer-smoke.ps1 -ReleaseId $env:RELEASE_ID -ReleaseVersion $env:RELEASE_VERSION
+
+      - name: Upload installer smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer-smoke
+          path: |
+            dist/installer-smoke/*.log
+            dist/installer-smoke/executable-imports.txt
+          if-no-files-found: ignore
+
+      - name: Upload Windows release assets
         uses: actions/upload-artifact@v4
         with:
           name: release-windows
-          path: dist/release/Advanced-Show-Control_${{ inputs.release_id }}_Windows_x64.zip
+          path: dist/release/windows/*
           if-no-files-found: error
 
   build-macos:
     name: Build macOS universal
+    needs: resolve-version
     runs-on: macos-15
     steps:
       - name: Check out repository
@@ -47,15 +124,32 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
-      - name: Cache Rust build outputs
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up .NET SDK for repo-local Velopack
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache Rust release build outputs
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> dist/build/macos"
+          key: macos-universal-release
 
-      - name: Build macOS application archive
-        run: ./scripts/package-macos.sh "${{ inputs.release_id }}"
+      - name: Build and verify Velopack macOS packages and feed
+        env:
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_VERSION: ${{ needs.resolve-version.outputs.release_version }}
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: ./scripts/package-macos.sh "$RELEASE_ID" "$RELEASE_VERSION"
 
-      - name: Upload macOS release artifact
+      - name: Upload macOS release assets
         uses: actions/upload-artifact@v4
         with:
           name: release-macos
-          path: dist/release/Advanced-Show-Control_${{ inputs.release_id }}_macOS_universal.zip
+          path: dist/release/macos/*
           if-no-files-found: error

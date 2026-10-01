@@ -9,6 +9,7 @@ rustc-ice-*.txt
 # Generated application output
 dist/
 logs/
+scripts/**/__pycache__/
 
 # Tooling
 .superpowers/
