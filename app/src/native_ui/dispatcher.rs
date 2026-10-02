@@ -114,7 +114,7 @@ impl CommandDispatcher {
 
     fn next_command_id(&self) -> u64 {
         self.next_command_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
             .expect("application command identifier exhausted")
             + 1
     }
