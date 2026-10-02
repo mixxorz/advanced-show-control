@@ -99,7 +99,7 @@ jobs:
             else
               printf 'This is the first nightly release.\n'
             fi
-            printf '\n---\n\nWindows Setup.exe, MSI, and portable ZIP are unsigned and require 64-bit Windows 10 version 1703 or newer. The MSI installs for the current user. The macOS universal app ZIP is ad-hoc signed, not Developer ID signed or notarized. Velopack owns installation and updates; applying an update may close and restart the app. Keep settings, logs, and show files outside installation directories. These updater feeds use nightly channels; numeric package versions follow UTC build time, not release tag precedence.\n'
+            printf '\n---\n\nWindows Setup.exe, MSI, and portable ZIP are unsigned and require 64-bit Windows 10 version 1703 or newer. The MSI installs for the current user. The macOS universal app ZIP is ad-hoc signed, not Developer ID signed or notarized. Applying an update will close and restart Advanced Show Control. Keep settings, logs, and show files outside installation directories. These updater feeds use nightly channels; numeric package versions follow UTC build time, not release tag precedence.\n'
           } > release-notes.md
 
       - name: Download staged release artifacts

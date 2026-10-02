@@ -8,9 +8,9 @@ Download the appropriate installer or archive from the [latest Advanced Show Con
 
 On Windows, run the x64 **MSI installer** for a per-user installation and Start-menu shortcut. A setup executable and portable ZIP are also available. On macOS, extract the universal ZIP archive, move **Advanced Show Control.app** to Applications, and open it.
 
-New installations use Velopack for updates. In **Settings**, automatic checks are on and nightly updates are off by default. Open **Software Updates…** in the session menu to download an update, then confirm **Update and restart** when you are ready to stop ASC. Unsaved changes still offer Save, Don’t Save, and Cancel. Checks never install updates silently.
+New installations support in-app updates. In **Settings**, automatic checks are on and nightly updates are off by default. Open **Software Updates…** in the session menu to download an update, then confirm **Update and restart** when you are ready to stop ASC. Unsaved changes still offer Save, Don’t Save, and Cancel. Checks never install updates silently.
 
-If you installed an older release without Velopack, install a new packaged release once to enable updates. Existing settings retain their app-data location. Keep show files outside the installation directory, which is replaced during updates.
+If your copy does not support in-app updates, install the latest release once to enable them. Existing settings retain their app-data location. Keep show files outside the installation directory, which is replaced during updates.
 
 The Windows download is unsigned. The macOS app is ad-hoc signed, not Developer ID signed or notarized. If your computer blocks the app, approve it in your operating-system security settings and open it again.
 

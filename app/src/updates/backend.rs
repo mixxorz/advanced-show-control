@@ -55,7 +55,7 @@ impl Backend for VelopackBackend {
             }), options, None),
             ReleaseSource::NightlyGithub => UpdateManager::new(GithubSource::new("https://github.com/mixxorz/advanced-show-control", None, true), options, None),
         }.map_err(|error| match error {
-            velopack::Error::NotInstalled(_) => BackendError::Unavailable("Updates are unavailable because this application is not installed as a Velopack package.".into()),
+            velopack::Error::NotInstalled(_) => BackendError::Unavailable("Updates are unavailable in this copy of Advanced Show Control. Install the latest release from GitHub to enable updates.".into()),
             _ => BackendError::Failed(format!("Could not initialize updates: {error}")),
         })?;
         let current = manager.get_current_version_as_string();

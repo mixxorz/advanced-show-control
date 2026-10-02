@@ -989,7 +989,7 @@ impl AppRoot {
                 );
             }
             UpdateStatus::Unavailable => {
-                let detail = update.error.as_deref().unwrap_or("Updates require a Velopack-packaged installation. Install a new release from GitHub to enable updates.");
+                let detail = update.error.as_deref().unwrap_or("Updates are unavailable in this copy of Advanced Show Control. Install the latest release from GitHub to enable updates.");
                 let _response = window.prompt(
                     PromptLevel::Info,
                     "Software Updates",

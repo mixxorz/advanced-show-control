@@ -55,8 +55,8 @@ Advanced Show Control ($ReleaseId / $ReleaseVersion)
 
 Requires 64-bit Windows 10 version 1703 (build 15063) or newer. Packages are unsigned.
 Use Setup.exe or the per-user MSI to install. For portable use, extract the ZIP and run
-"Advanced Show Control.exe" (the Velopack launcher). Do not run installed and portable copies together.
-Velopack owns installation and updates; applying an update may close and restart the app.
+"Advanced Show Control.exe". Do not run installed and portable copies together.
+Applying an update will close and restart Advanced Show Control.
 Settings, diagnostic logs, and .ascs show files belong outside the installation directory.
 "@ | Set-Content -Encoding UTF8 (Join-Path $PackageDir "README.txt")
 
