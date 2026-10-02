@@ -108,6 +108,22 @@ Do not test side-effecting actor behavior by directly mutating actor internals o
 - Make safety blocks visible through logs or UI state.
 - Preserve manual override, overlap/same-scene, readiness-timeout, and disconnect safety behavior.
 
+## Worktree Build Setup
+
+Immediately after creating a worktree, run `make cargo-setup` from its root before compiling.
+This writes an ignored, checkout-local `.cargo/config.toml` that shares the main checkout's
+`target/` and a repo-local, size-limited sccache. Python 3.11 or newer is required. Do not create
+worktree-specific target directories or override `CARGO_TARGET_DIR`, `RUSTC_WRAPPER`, or the
+configured incremental policy. If working on an older branch without the setup script, run
+`python3 /absolute/path/to/main-checkout/scripts/cargo-setup.py` from that worktree instead.
+Run `make cargo-cache-check` to verify setup. Packaging's explicit `--target-dir` is intentional
+and is exempt from target sharing. CI keeps its existing runner-local caching.
+
+`cargo clean` now removes shared artifacts for every worktree. Do not run it merely to clean up
+one worktree. Setup does not delete or migrate existing worktree `target/` directories; ask before
+removing obsolete build directories. Keep the main checkout in place while using this setup;
+rerun setup in each worktree if the main checkout moves.
+
 ## Verification Commands
 
 Use the smallest relevant `make` target while developing, then run broader verification before completion. The root `Makefile` is a thin command index over the native Cargo workflows below.

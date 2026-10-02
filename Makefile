@@ -2,7 +2,10 @@
 	rust-fmt rust-lint rust-test rust-build \
 	dev-tools-fmt dev-tools-lint dev-tools-test dev-tools-check dev-tools-build \
 	docs-install docs-build docs-serve dev dev-watch gallery probe smoke \
-	visual-test visual-update package-macos package-windows release-test
+	visual-test visual-update package-macos package-windows release-test \
+	cargo-setup cargo-cache-check cargo-cache-test
+
+PYTHON ?= $(if $(filter Windows_NT,$(OS)),python,python3)
 
 DOCS_VENV := .venv-docs
 DOCS_PYTHON := $(DOCS_VENV)/bin/python
@@ -16,6 +19,9 @@ help:
 	  '  make test                 Run app and development-tool tests' \
 	  '  make build                Build the app and development tools' \
 	  '  make check                Run CI-like formatting, lint, test, and build checks' \
+	  '  make cargo-setup          Share Cargo artifacts and repo-local sccache across worktrees' \
+	  '  make cargo-cache-check    Verify this checkout uses the shared Cargo setup' \
+	  '  make cargo-cache-test     Test worktree Cargo setup behavior' \
 	  '' \
 	  'Documentation targets:' \
 	  '  make docs-install         Install pinned documentation dependencies' \
@@ -46,6 +52,21 @@ test: rust-test dev-tools-test
 build: rust-build dev-tools-build
 
 check: fmt lint test build
+
+cargo-setup:
+	$(PYTHON) scripts/cargo-setup.py
+
+cargo-cache-check:
+	$(PYTHON) scripts/cargo-setup.py --check
+
+cargo-cache-test:
+	$(PYTHON) -m unittest discover -s scripts/tests -p 'test_cargo_setup.py'
+
+# CI retains its existing runner-local Rust cache; this guard is for developer checkouts.
+ifneq ($(CI),true)
+rust-lint rust-test rust-build dev-tools-lint dev-tools-test dev-tools-build \
+	dev dev-watch gallery visual-test visual-update probe smoke package-macos package-windows: cargo-cache-check
+endif
 
 docs-install:
 	@test -x "$(DOCS_PYTHON)" || python3 -m venv "$(DOCS_VENV)"

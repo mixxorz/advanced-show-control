@@ -1,4 +1,5 @@
 # Rust / Cargo
+.cargo/config.toml
 target/
 **/target/
 **/*.rs.bk

@@ -25,7 +25,38 @@ Install the local tooling with:
 ```bash
 cargo install cargo-nextest --locked
 pre-commit install
+make cargo-setup
 ```
+
+### Shared Cargo artifacts across worktrees
+
+Run `make cargo-setup` once in each checkout or newly created Git worktree (Python 3.11+).
+The setup targets use `python` on Windows and `python3` elsewhere; override with
+`make cargo-setup PYTHON=python3.11` if needed.
+It generates an ignored `.cargo/config.toml` with absolute paths to the main checkout's
+`target/` and a pinned sccache binary downloaded from its official release and verified against
+its published SHA-256 checksum. The tool lives under the main checkout's `dist/tools/sccache/`;
+its disk cache lives under `dist/cache/sccache/` and is limited to 5 GB. No global installation
+or shell configuration is changed. Setup refuses to overwrite an existing unmanaged Cargo config.
+
+Plain Cargo commands, nextest, and IDE Cargo builds use this configuration. Incremental compilation
+is disabled so sccache can cache Rust compilation. Worktrees share dependencies and artifacts,
+but different features, toolchains, and branch contents can still grow the shared target directory.
+Cargo serializes simultaneous builds that share it.
+
+Local Make build/check targets validate setup and reject conflicting environment overrides,
+including incremental-enabling Rust flags and external sccache sockets. Inherited workspace
+compiler wrappers are disabled so sccache receives rustc directly.
+Use `make cargo-cache-check` to check setup and `make cargo-cache-test` to test the setup tooling.
+CI retains its existing runner-local caching, and packaging keeps its explicit release target
+directories. Direct Cargo flags/environment overrides can bypass the setup and should not be used
+for ordinary development builds.
+
+For an older worktree without the setup script, run
+`python3 /absolute/path/to/main-checkout/scripts/cargo-setup.py` from that worktree's root.
+Keep the main checkout in place; if it moves, rerun setup in every worktree.
+Existing worktree `target/` directories are left untouched and can be removed after checking
+that Cargo uses the shared directory. **`cargo clean` now cleans shared artifacts for all worktrees.**
 
 Run the native app and standard checks with:
 
